@@ -14,6 +14,9 @@ import { registration } from './registrations.js';
 const id = (n: number) => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
 const gymId = id(1), userId = id(2), householdId = id(3);
 const row = { memberId: id(4), firstName: 'Alex', lastName: 'Rivera', balance: 1200, soonestExpiry: '2026-11-12T08:00:00Z' };
+const bank: PortalPaymentMethod = { id: id(5), type: 'acss_debit', bankName: null, brand: null, last4: '6789', expiryMonth: null, expiryYear: null, isDefault: true };
+const card: PortalPaymentMethod = { id: id(6), type: 'card', bankName: null, brand: 'visa', last4: '4242', expiryMonth: 8, expiryYear: 2030, isDefault: false };
+const bankNote = 'Automatic payments will use this card instead of your bank account.';
 function mount({ data = [row], methods = [], role = 'payer', answeredFor = householdId, fail = false, contextResponse }: {
   data?: (typeof row | Omit<typeof row, 'soonestExpiry'> & { soonestExpiry: null })[];
   methods?: PortalPaymentMethod[];
@@ -39,28 +42,34 @@ function mount({ data = [row], methods = [], role = 'payer', answeredFor = house
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 it.each([false, true])('explains adding a card when a bank account is saved: %s', async savedBank => {
-  mount({ methods: savedBank ? [
-    { id: id(5), type: 'acss_debit', bankName: null, brand: null, last4: '6789', expiryMonth: null, expiryYear: null, isDefault: true },
-  ] : [] });
+  mount({ methods: savedBank ? [bank] : [] });
   const button = await screen.findByRole('button', { name: savedBank ? 'Use a card instead' : 'Add a card' });
   await waitFor(() => expect(button).toHaveProperty('disabled', false));
-  const note = screen.queryByText('Automatic payments will use this card instead of your bank account.');
+  const note = screen.queryByText(bankNote);
   expect(Boolean(note)).toBe(savedBank);
 });
 
 it('shows a bank account as the default without expiry and keeps the card label and expiry', async () => {
-  mount({ data: [], methods: [
-    { id: id(5), type: 'acss_debit', bankName: null, brand: null, last4: '6789', expiryMonth: null, expiryYear: null, isDefault: true },
-    { id: id(6), type: 'card', bankName: null, brand: 'visa', last4: '4242', expiryMonth: 8, expiryYear: 2030, isDefault: false },
-  ] });
-  const bank = await screen.findByText('Bank account ending 6789');
-  const method = within(bank.closest('li')!);
+  mount({ data: [], methods: [bank, card] });
+  const bankLabel = await screen.findByText('Bank account ending 6789');
+  const method = within(bankLabel.closest('li')!);
   expect(screen.getByRole('heading', { name: 'Payment methods' })).toBeTruthy();
   expect(method.getByText('Default payment method')).toBeTruthy();
   expect(method.queryByText(/expir/i)).toBeNull();
   expect(screen.getByText('Visa •••• 4242')).toBeTruthy();
   expect(screen.getByText('Expires 08/2030')).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Update card' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Use a card instead' })).toBeTruthy();
+  expect(screen.getByText(bankNote)).toBeTruthy();
+});
+
+it.each([
+  { name: 'a card default and a saved bank account', methods: [{ ...bank, isDefault: false }, { ...card, isDefault: true }] },
+  { name: 'only a card without a default', methods: [card] },
+])('offers Update card for $name without the bank note', async ({ methods }) => {
+  mount({ methods });
+  const button = await screen.findByRole('button', { name: 'Update card' });
+  expect(button).toHaveProperty('disabled', false);
+  expect(screen.queryByText(bankNote)).toBeNull();
 });
 
 it('waits for the role before showing either billing layout, and retries a failed context alone', async () => {

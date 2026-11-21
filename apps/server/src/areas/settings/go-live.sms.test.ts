@@ -72,20 +72,22 @@ describe('member SMS go-live', () => {
     else f.configured.mockResolvedValue(true);
     const options = { ...f.options, smsConfigured: f.configured };
     const service = createGoLiveService(reader === 'status' ? { ...options, smsStatus: f.smsStatus } : options);
-    const check = reader === 'status'
-      ? { status: 'needs_attention', message: 'SMS readiness could not be checked. Refresh the checklist to try again.' }
-      : { status: 'not_applicable', message: 'Member texts are off and no SMS provider is configured.' };
+    const check = { status: 'needs_attention', message: 'SMS readiness could not be checked. Refresh the checklist to try again.' };
     const before = await service.checklist(f.gymId);
     expect(before.memberSmsEnabled).toBe(false);
     expect(smsItem(before)).toMatchObject(check);
     await expect(service.update(f.context, { revision: before.revision, memberSmsEnabled: true })).rejects.toMatchObject({
       code: 'unavailable', message: 'The SMS provider could not be checked. Try turning member texts on again.',
+      details: { memberSmsEnabled: ['read_failed'] },
     });
     await expect(service.update(f.context, { revision: before.revision - 1, memberSmsEnabled: true }))
       .rejects.toMatchObject({ name: 'RevisionConflictError' });
     expect(await f.settings.get(f.gymId)).toMatchObject({ memberSmsEnabled: false, revision: before.revision });
     expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'settings.go_live.updated')))).toEqual([]);
     await db.forGym(f.gymId, tx => tx.update(gyms).set({ memberSmsEnabled: true }).where(eq(gyms.id, f.gymId)));
+    const enabled = await service.checklist(f.gymId);
+    expect(enabled.memberSmsEnabled).toBe(true);
+    expect(smsItem(enabled)).toMatchObject(check);
     const disabled = await service.update(f.context, { revision: before.revision, memberSmsEnabled: false });
     expect(disabled.memberSmsEnabled).toBe(false);
     expect(smsItem(disabled)).toMatchObject(check);

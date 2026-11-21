@@ -77,6 +77,39 @@ describe('go-live settings', () => {
     await user.click(await screen.findByRole('button', { name: 'Turn on: Member texts' }));
     expect((await screen.findByRole('alert')).textContent).toContain('Save a working SMS provider');
   });
+  it.each([
+    { name: 'Member texts', details: { memberSmsEnabled: ['read_failed'] }, message: 'The SMS provider could not be checked. Try turning member texts on again.' },
+    { name: 'Billing', details: { billingEnabled: ['read_failed'] }, message: 'Stripe could not be checked. Try turning billing on again.' },
+    { name: 'Member texts', details: undefined, message: 'The request failed' },
+  ])('shows the right 503 message for $name with details $details', async ({ name, details, message }) => {
+    client.PATCH.mockResolvedValue({ response: { ok: false, status: 503 },
+      error: { error: { code: 'unavailable', message: 'Private provider detail', details } } });
+    const user = userEvent.setup(); start();
+    const button = await screen.findByRole<HTMLButtonElement>('button', { name: 'Turn on: ' + name });
+    await user.click(button);
+    expect((await screen.findByRole('alert')).textContent).toContain(message);
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.queryByText('Private provider detail')).toBeNull();
+    expect(button.getAttribute('aria-pressed')).toBe('false');
+    expect(button.disabled).toBe(false);
+  });
+  it('shows the Stripe read failure on the page and in the past-due confirmation', async () => {
+    live.mockResolvedValue(reply(200, overdue()));
+    client.PATCH.mockResolvedValue({ response: { ok: false, status: 503 },
+      error: { error: { code: 'unavailable', details: { billingEnabled: ['read_failed'] } } } });
+    const user = userEvent.setup(); start();
+    const billing = await screen.findByRole('button', { name: 'Turn on: Billing' });
+    await user.click(billing);
+    const dialog = screen.getByRole('dialog', { name: 'Review past billing dates' });
+    const confirm = within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Confirm dates and turn billing on' });
+    await user.click(within(dialog).getByRole('checkbox'));
+    await user.click(confirm);
+    const message = 'Stripe could not be checked. Try turning billing on again.';
+    expect((await within(dialog).findByRole('alert')).textContent).toBe(message);
+    expect(screen.getAllByText(message)).toHaveLength(2);
+    expect(confirm.disabled).toBe(false);
+    expect(billing.getAttribute('aria-pressed')).toBe('false');
+  });
   it('sends the revision with one switch and shows the saved state', async () => {
     client.PATCH.mockResolvedValue(reply(200, checklist(4, false, true)));
     const user = userEvent.setup(); start();

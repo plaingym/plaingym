@@ -48,7 +48,9 @@ function PageHost({ children }: { children: ReactNode }) {
  * (the open household unless a test says otherwise); the household lists, which the pages read again after an answer for
  * another household, keep naming the open one.
  */
-function mount(element: ReactNode, handle: Handler, { context, answeredFor, householdLists }: { context?: PortalContext; answeredFor?: string; householdLists?: () => Promise<Response> } = {}) {
+function mount(element: ReactNode, handle: Handler, { context, answeredFor, householdLists, usePageHost = true }: {
+  context?: PortalContext; answeredFor?: string; householdLists?: () => Promise<Response>; usePageHost?: boolean;
+} = {}) {
   vi.stubGlobal('scrollTo', vi.fn());
   let current = ids.household;
   const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -69,7 +71,9 @@ function mount(element: ReactNode, handle: Handler, { context, answeredFor, hous
   const services: ShellServices = { loadBootstrap: async () => ({ gym: { id: ids.gym, name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] },
     session: { userId: ids.user, displayName: 'Test User', roles: [], member: true }, login: { password: true, magicLink: false } }), signOut: vi.fn(), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
   const cache = portalTestCache(ids.gym, ids.user, ids.household, { defaultOptions: { queries: { retry: false } } });
-  render(<ShellServicesContext.Provider value={services}><QueryClientProvider client={cache}><PageHost>{element}</PageHost></QueryClientProvider></ShellServicesContext.Provider>);
+  render(<ShellServicesContext.Provider value={services}><QueryClientProvider client={cache}>
+    {usePageHost ? <PageHost>{element}</PageHost> : element}
+  </QueryClientProvider></ShellServicesContext.Provider>);
   const calls = (method: string, path: string) => fetcher.mock.calls.filter(([url, init]) => String(url).split('?')[0] === path && (init?.method ?? 'GET') === method);
   /** Nothing is cached under the open household's key: an answer for another household was never stored. */
   const stored = () => cache.getQueryCache().findAll({ queryKey: portalHouseholdKey(portalLoginKey(ids.gym, ids.user), ids.household) }).filter(query => query.state.data !== undefined);
@@ -419,6 +423,71 @@ describe('portal waivers page', () => {
 });
 
 describe('portal household page', () => {
+  it.each(['a draft', 'pending consent'] as const)('resets member controls on a household switch with %s', async state => {
+    const nextHousehold = id(99), login = portalLoginKey(ids.gym, ids.user);
+    const endpoint = `/api/portal/members/${ids.child}/sms-consent`;
+    let current = ids.household;
+    const view = mount(<PortalHousehold />, (path, init) => {
+      if (path === '/api/portal/household') return { data: { ...household, id: current } };
+      if (path.startsWith('/api/portal/members?')) return page([contactable(people[0]!),
+        { ...contactable(people[1]!), firstName: current === nextHousehold ? 'Kai' : 'Kim' }]);
+      if (path === endpoint && init?.method === 'PUT') return new Promise<Response>(() => {});
+      return undefined;
+    }, { context: payer, usePageHost: false, householdLists: async () => Response.json({ data: { current, households: [
+      { householdId: ids.household, name: 'First home', role: 'payer' }, { householdId: nextHousehold, name: 'Second home', role: 'payer' },
+    ] } }) });
+    // Keep context available during the switch so the page key must reset the state.
+    view.cache.setQueryData([...portalHouseholdKey(login, nextHousehold), 'context'], payer);
+    const user = userEvent.setup();
+    await screen.findByText('Kim Rivera');
+    const child = within(memberRow('Kim'));
+    const edit = child.getByRole<HTMLButtonElement>('button', { name: 'Edit details' });
+    if (state === 'a draft') {
+      await user.click(edit);
+      const firstName = within(screen.getByRole('dialog')).getByLabelText<HTMLInputElement>('First name');
+      await user.type(firstName, ' draft');
+      expect(firstName.value).toBe('Kim draft');
+    } else {
+      await user.click(child.getByRole('button', { name: 'Agree to notices' }));
+      await waitFor(() => expect(view.calls('PUT', endpoint)).toHaveLength(1));
+      expect(edit.disabled).toBe(true);
+    }
+
+    for (const [householdId, childName] of [[nextHousehold, 'Kai'], [ids.household, 'Kim']] as const) {
+      current = householdId;
+      await act(async () => { await view.cache.fetchQuery(portalHouseholdsOptions(login, true)); });
+      await screen.findByText(`${childName} Rivera`);
+      expect(screen.queryByRole('dialog')).toBeNull();
+      for (const name of ['Pat', childName]) {
+        const row = within(memberRow(name));
+        for (const action of ['Edit details', 'Agree to notices', 'Agree to announcements'])
+          expect(row.getByRole<HTMLButtonElement>('button', { name: action }).disabled).toBe(false);
+      }
+    }
+  });
+  it('closes the editor when its member disappears and keeps it closed when the member returns', async () => {
+    let listed = people;
+    const view = mount(<PortalHousehold />, path => {
+      if (path === '/api/portal/household') return { data: household };
+      if (path.startsWith('/api/portal/members?')) return page(listed);
+      return undefined;
+    }, { context: payer });
+    const user = userEvent.setup();
+    await screen.findByText('Kim Rivera');
+    await user.click(within(memberRow('Kim')).getByRole('button', { name: 'Edit details' }));
+    expect(screen.getByRole('dialog')).toBeDefined();
+
+    const queryKey = [...portalHouseholdKey(portalLoginKey(ids.gym, ids.user), ids.household), 'household', 'members'];
+    listed = people.filter(member => member.id !== ids.child);
+    await act(async () => { await view.cache.invalidateQueries({ queryKey, exact: true }); });
+    await waitFor(() => expect(screen.queryByText('Kim Rivera')).toBeNull());
+    expect(screen.queryByRole('dialog')).toBeNull();
+
+    listed = people;
+    await act(async () => { await view.cache.invalidateQueries({ queryKey, exact: true }); });
+    await screen.findByText('Kim Rivera');
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
   it.each(['household', 'member'] as const)('omits untouched JSON after reading extended %s data', async kind => {
     const storedHome = { ...household, address: { ...household.address, future: 'stored extension' } };
     const storedChild = { ...people[1]!, emergencyContacts: [{ ...people[1]!.emergencyContacts[0]!, future: true }] };

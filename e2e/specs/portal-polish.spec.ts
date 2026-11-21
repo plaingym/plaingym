@@ -44,7 +44,11 @@ for (const width of [360, 1280]) {
         dateOfBirth: '1980-04-02', photoKey: null, status: 'active', emergencyContacts: [], revision: 1 }]);
       if (path.endsWith('/progress')) return answer({ history: [], programs: [], ranks: [], criteria: [] });
       if (path.endsWith('/checkin-code')) return answer({ memberId, code: null, version: 1, revision: 1 });
-      if (path === '/api/portal/credits' || path === '/api/portal/payment-methods') return answer([]);
+      if (path === '/api/portal/credits') return answer([]);
+      if (path === '/api/portal/payment-methods') return answer([
+        { id: id(6), type: 'acss_debit', bankName: null, brand: null, last4: '6789', expiryMonth: null, expiryYear: null, isDefault: true },
+        { id: id(7), type: 'card', bankName: null, brand: 'visa', last4: '4242', expiryMonth: 8, expiryYear: 2030, isDefault: false },
+      ]);
       if (path.endsWith('/waivers') || path.endsWith('/waivers/pending') || path.endsWith('/attendance') || path === '/api/portal/invoices') return list([]);
       return route.fulfill({ status: 404, json: { error: { code: 'not_found' } } });
     });
@@ -60,6 +64,10 @@ for (const width of [360, 1280]) {
       contentWidth ??= measured;
       expect(measured).toBe(contentWidth);
       if (path === '/schedule') await expect(content.getByText('Cancelled', { exact: true })).toHaveCount(1);
+      if (path === '/billing') {
+        await expect(content.getByRole('button', { name: 'Use a card instead' })).toBeEnabled();
+        await expect(content.getByText('Automatic payments will use this card instead of your bank account.')).toBeVisible();
+      }
       if (path === '/waivers') await expect(content.getByText('Everything is signed')).toBeVisible();
       await accessibleLayout(page, info, 'portal-polish-' + (path.slice(1) || 'home'));
       await info.attach(`portal-${path.slice(1) || 'home'}-${width}`, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });

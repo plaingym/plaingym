@@ -32,7 +32,9 @@ const checkRunning = (body: unknown) => {
 export function GoLiveSettings() {
   const cache = useQueryClient();
   const [lastChecklist, rememberChecklist] = useState<Checklist | null>(null);
-  const [saving, setBusy] = useState(false), [message, setMessage] = useState<'error' | 'timeout' | 'changed' | 'justSaved' | 'smsProviderRequired' | null>(null);
+  const [saving, setBusy] = useState(false);
+  const [message, setMessage] = useState<'error' | 'timeout' | 'changed' | 'justSaved' | 'smsProviderRequired'
+    | 'smsProviderReadFailed' | 'paymentsReadFailed' | null>(null);
   const [confirmBilling, setConfirmBilling] = useState(false), [confirmed, setConfirmed] = useState(false);
   const [checking, setChecking] = useState(false), [checkError, setCheckError] = useState<'reconcileError' | 'reconcileTimeout' | 'reconcileBusy' | null>(null);
   // The switches save the gym revision that every section of the page shares, so another section's save doesn't stale them.
@@ -85,11 +87,18 @@ export function GoLiveSettings() {
       const result = await gym.save((revision, signal) => api.PATCH('/api/settings/go-live', { signal, body: { revision, [name]: !checklist[name],
         ...(confirmDates ? { confirmedPastDueDates: checklist.pastDueMemberships.map(({ id, revision, nextDueOn }) => ({ id, revision, nextDueOn })) } : {}),
       } }), { adopt, readAt: checklist.revision });
-      const reasons = (result.error as { error?: { details?: { memberSmsEnabled?: unknown } } } | undefined)?.error?.details?.memberSmsEnabled;
-      if (result.status === 409 && Array.isArray(reasons) && reasons.includes('no_provider')) {
+      const details = (result.error as { error?: { details?: { memberSmsEnabled?: unknown; billingEnabled?: unknown } } } | undefined)?.error?.details;
+      const smsReasons = details?.memberSmsEnabled, billingReasons = details?.billingEnabled;
+      if (result.status === 409 && Array.isArray(smsReasons) && smsReasons.includes('no_provider')) {
         setMessage('smsProviderRequired'); reloadChecklist(); return;
       }
       if (result.status === 409) { conflict(result, checklist.revision); return; }
+      if (result.status === 503 && Array.isArray(smsReasons) && smsReasons.includes('read_failed')) {
+        setMessage('smsProviderReadFailed'); return;
+      }
+      if (result.status === 503 && Array.isArray(billingReasons) && billingReasons.includes('read_failed')) {
+        setMessage('paymentsReadFailed'); return;
+      }
       if (result.status >= 300) throw new Error();
       setChecklist(parseChecklist(result.data));
       setConfirmBilling(false); setConfirmed(false);
@@ -164,7 +173,7 @@ export function GoLiveSettings() {
           <CheckboxField label={label('confirmDates')} checked={confirmed} disabled={busy}
             onChange={(event) => setConfirmed(event.target.checked)}/>
           {/* The dialog is modal: the page's alert behind it can't be seen, so a failed save shows here too. */}
-          {message === 'error' && <Alert variant="error" focusOnReveal>{label('error')}</Alert>}
+          {(message === 'error' || message === 'paymentsReadFailed') && <Alert variant="error" focusOnReveal>{label(message)}</Alert>}
           <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
             <Button variant="outline" disabled={busy} onClick={() => setConfirmBilling(false)}>{label('cancel')}</Button>
             <Button disabled={locked || !confirmed} onClick={() => void toggle('billingEnabled', true)}>{label('confirmEnable')}</Button>

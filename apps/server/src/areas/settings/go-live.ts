@@ -88,12 +88,12 @@ export function createGoLiveService(options: {
     return source !== null && !unreadable;
   }
   async function smsReadiness(gymId: string): Promise<GoLiveChecklistItem | null> {
-    if (!options.smsStatus) return await canEnableSms(gymId).catch(() => false) ? item('sms_ready', 'ready') : null;
-    let status: Awaited<ReturnType<SmsResolver['status']>>;
-    try { status = await options.smsStatus(gymId); }
-    catch { return item('sms_ready', 'needs_attention', t('settings/go-live:check.sms_ready.read_failed')); }
-    if (status.unreadable) return item('sms_ready', 'needs_attention', t('settings/go-live:check.sms_ready.unreadable'));
-    return status.source === null ? null : item('sms_ready', 'ready');
+    try {
+      if (!options.smsStatus) return await canEnableSms(gymId) ? item('sms_ready', 'ready') : null;
+      const status = await options.smsStatus(gymId);
+      if (status.unreadable) return item('sms_ready', 'needs_attention', t('settings/go-live:check.sms_ready.unreadable'));
+      return status.source === null ? null : item('sms_ready', 'ready');
+    } catch { return item('sms_ready', 'needs_attention', t('settings/go-live:check.sms_ready.read_failed')); }
   }
   async function checklist(gymId: string): Promise<Checklist> {
     // These accessors open their own short transactions, so run outside our scope.
@@ -176,8 +176,8 @@ export function createGoLiveService(options: {
     },
     async update(context: MutationContext, input: UpdateGoLiveRequest): Promise<Checklist> {
       const { revision, confirmedPastDueDates, ...changes } = updateGoLiveRequestSchema.parse(input);
-      // Resolver reads can open their own transactions. Defer any SMS error until after the revision check.
-      const payments = changes.billingEnabled ? await options.paymentsConfigured?.(context.gymId) : undefined;
+      // Resolver reads can open their own transactions. Defer read errors until after the revision check.
+      const payments = changes.billingEnabled ? await options.paymentsConfigured?.(context.gymId).catch(() => null) : undefined;
       const sms = changes.memberSmsEnabled ? await canEnableSms(context.gymId).catch(() => null) : undefined;
       await scope(context.gymId, async (tx) => {
         const [before] = await tx.select(projection).from(gyms).where(eq(gyms.id, context.gymId)).for('update');
@@ -185,11 +185,14 @@ export function createGoLiveService(options: {
         const guard = revisionGuard(gyms.revision, revision);
         // Check revisions first, even if the stale request also needs a date confirmation.
         if (before.revision !== revision) assertRevised([]);
-        if (sms === null) throw new AppError('unavailable', t('settings/go-live:smsProviderReadFailed'));
+        if (sms === null)
+          throw new AppError('unavailable', t('settings/go-live:smsProviderReadFailed'), { memberSmsEnabled: ['read_failed'] });
         if (sms === false)
           throw new AppError('conflict', t('settings/go-live:smsProviderRequired'), { memberSmsEnabled: ['no_provider'] });
         let confirmed: ReturnType<typeof dates> | undefined;
         if (!before.billingEnabled && changes.billingEnabled) {
+          if (payments === null)
+            throw new AppError('unavailable', t('settings/go-live:paymentsReadFailed'), { billingEnabled: ['read_failed'] });
           // `payments` was read before the lock: settings stored since then also count, so a Stripe save that commits
           // between the two can't clear a check that ran without Stripe.
           const recovery = await reconciliation(tx, Boolean(payments) || Boolean(before.stripeConfigured));

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { calendarDateLabel as date } from '../../../lib/instant.js';
 import { PortalRecovery } from './recovery.js';
-import { useRef, useState, type ComponentProps, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type ComponentProps, type FormEvent } from 'react';
 import { useDraft } from '../../../lib/use-draft.js';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { portalContracts as contracts, type PortalContext, type PortalEmergencyContact, type PortalHousehold, type PortalMember } from '@plaingym/shared/contracts';
@@ -25,7 +25,7 @@ const text = (key: string, values?: Record<string, string | number>) => t('porta
 export function PortalHousehold() {
   const scope = usePortalScope(), context = usePortalContext(scope);
   if (!context.data) return context.isPending || scope.settling ? <LoadingState /> : <ErrorState onRetry={() => void context.refetch()} />;
-  return <PortalHouseholdPage context={context.data} scope={scope} />;
+  return <PortalHouseholdPage key={JSON.stringify(scope.key)} context={context.data} scope={scope} />;
 }
 function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope: PortalScope }) {
   const bootstrap = useBootstrap(), cache = useQueryClient(), { ready, own } = scope, payer = context.role === 'payer';
@@ -55,6 +55,9 @@ function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope
     : [own(await scope.call(contracts.profile, undefined, { memberId: context.memberId! })).data] });
   // The editor follows its member's latest read so a save uses the current revision.
   const editing = editingId ? members.data?.find(member => member.id === editingId) : undefined;
+  useEffect(() => {
+    if (editingId && members.data && !editing) setEditingId(null);
+  }, [editingId, members.data, editing]);
   const timezone = bootstrap.data?.gym.timezone ?? 'UTC', today = gymToday(timezone);
   const editable = (member: PortalMember) => payer && (member.id === context.memberId || knownMinor(member.dateOfBirth, today));
   return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>

@@ -105,6 +105,24 @@ describe.each(['settings', 'setup'] as const)('connecting Stripe through %s afte
   });
 });
 
+it('checks the revision before refusing to turn billing on after a failed Stripe configuration read', async () => {
+  const gymId = uuidv7(), revision = 2;
+  await factory('gyms', gymId, { billingEnabled: false, revision });
+  const context = { gymId, actor: { kind: 'system' } } as const;
+  const paymentsConfigured = vi.fn().mockRejectedValue(new Error('internal provider error'));
+  const service = createGoLiveService({ scope, clock, smtpConfigured: async () => false, paymentsConfigured });
+
+  await expect(service.update(context, { revision: revision - 1, billingEnabled: true }))
+    .rejects.toMatchObject({ name: 'RevisionConflictError' });
+  await expect(service.update(context, { revision, billingEnabled: true })).rejects.toMatchObject({
+    code: 'unavailable', message: 'Stripe could not be checked. Try turning billing on again.',
+    details: { billingEnabled: ['read_failed'] },
+  });
+  expect(paymentsConfigured.mock.calls).toEqual([[gymId], [gymId]]);
+  expect(await createGymSettingsAccessor({ scope, clock }).get(gymId)).toMatchObject({ billingEnabled: false, revision });
+  expect(await scope(gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'settings.go_live.updated')))).toEqual([]);
+});
+
 it('refuses to turn billing on when Stripe settings were saved after the request read whether payments are configured', async () => {
   const f = await fixture();
   await f.service.update(f.context, { revision: (await f.read()).gym.revision, billingEnabled: false });

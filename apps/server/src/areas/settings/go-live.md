@@ -13,11 +13,13 @@ requires a readable gym or demo provider. The checklist and enable check both
 prefer `smsStatus` and fall back to `smsConfigured` when no status reader is
 supplied. Omitting both means no provider. The enable check reads the provider
 before the write transaction. After the revision guard, a missing or unreadable
-provider returns `no_provider` and a failed read returns `unavailable`. Disabling
-needs no provider. `settings.go_live.updated` audits all three switches.
-With `smsStatus`, `sms_ready` needs attention when saved settings are unreadable
-or the status read fails. A missing provider is not applicable with texts off
-and needs attention with texts on.
+provider returns `no_provider` and a failed read returns `unavailable` with
+`details.memberSmsEnabled: ["read_failed"]`. Disabling needs no provider.
+`settings.go_live.updated` audits all three switches.
+The `sms_ready` item needs attention when either SMS configuration reader fails,
+using the `check.sms_ready.read_failed` message. `smsStatus` also reports unreadable
+saved settings as needing attention. A missing provider is not applicable with
+texts off and needs attention with texts on.
 Readiness checks configuration without sending a text or checking individual consent.
 Restore turns billing, member emails and member texts off in the same transaction and
 records all three in `restore.completed`. Shut down the old server before enabling them again.
@@ -32,7 +34,10 @@ not satisfy the current version, and a retired latest version never revives an o
 template. With no applicable memberships or waivers those checks are not applicable.
 Payment configuration comes from the runtime's payments resolver
 (`paymentsConfigured`), so demo sandboxes on the shared test account count as
-configured; without it, the gym's stored Stripe settings decide.
+configured; without it, the gym's stored Stripe settings decide. Turning billing
+on reads the resolver before the write transaction. A failed read returns
+`unavailable` with `details.billingEnabled: ["read_failed"]` after the revision
+guard and before reconciliation or any writes.
 
 Webhook readiness uses `WebhookHealthQuery`, implemented by the real inbox by
 default: a processed event and no pending/failed events are ready. It never reads
@@ -114,8 +119,10 @@ and webhook accessor run outside transactions because they open their own gym
 scopes. Calendar dates use the injected clock and the gym's IANA timezone.
 
 The web settings registration requires `go_live.manage`, renders every returned
-checklist item, and reloads current values on a revision conflict. The confirmation
-dialog uses the shared phone/full-screen dialog and an explicit checkbox.
+checklist item, and reloads current values on a revision conflict. It uses the
+503 response details to show the SMS or Stripe read failure message. The shared
+phone/full-screen confirmation dialog shows the Stripe message during a failed
+billing enable and uses an explicit checkbox.
 
 ## Switch inventory
 

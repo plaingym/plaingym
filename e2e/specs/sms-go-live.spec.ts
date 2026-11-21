@@ -14,14 +14,17 @@ sms: { configured: false, provider: 'twilio', unreadable: false, accountSid: nul
 payments: { configured: false, mode: null, webhookRegistered: false, accountLocked: false, testData: null, importedCustomersOnly: false },
 backups: null, sandbox: false, integrationsEditable: true, revision: 3 };
 const ids = ['last_backup', 'failed_jobs', 'smtp', 'disk', 'version', 'stripe_webhooks', 'last_charge_run', 'automatic_updates', 'update_available', 'google_login', 'sms', 'invoice_effects'];
+const overdue = { id: '00000000-0000-7000-8000-000000000005', memberId: '00000000-0000-7000-8000-000000000006',
+  memberName: 'Ana Silva', planName: 'Monthly classes', revision: 2, nextDueOn: '2026-10-20' };
 
 for (const width of [360, 1280]) {
   test(`SMS go-live, cap, Health and mixed demo outbox at ${width}px`, async ({ page }, info) => {
     await page.setViewportSize({ width, height: 900 });
-    let settings = { ...initial }, hasProvider = false;
+    let settings = { ...initial }, hasProvider = false, smsReadFails = false;
     const requests: unknown[] = [];
     const checklist = () => ({ data: { revision: settings.revision, billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: settings.memberSmsEnabled,
-      items: [{ id: 'sms_ready', status: hasProvider ? 'ready' : 'needs_attention', message: hasProvider ? 'Text delivery is configured.' : 'Save an SMS provider before turning member texts on.' }] } });
+      items: [{ id: 'sms_ready', status: hasProvider ? 'ready' : 'needs_attention', message: hasProvider ? 'Text delivery is configured.' : 'Save an SMS provider before turning member texts on.' }],
+      pastDueMemberships: [overdue] } });
     await page.route('**/api/**', async route => {
       const path = new URL(route.request().url()).pathname, method = route.request().method();
       if (path === '/api/auth/bootstrap') return route.fulfill({ json: { data: { gym, session, login } } });
@@ -38,9 +41,12 @@ for (const width of [360, 1280]) {
       } } });
       if (path === '/api/settings/go-live') {
         if (method === 'PATCH') {
-          const body = route.request().postDataJSON() as { revision: number; memberSmsEnabled: boolean }; requests.push(body);
+          const body = route.request().postDataJSON() as { revision: number; memberSmsEnabled?: boolean; billingEnabled?: boolean };
+          requests.push(body);
+          const failedSwitch = body.billingEnabled ? 'billingEnabled' : smsReadFails && body.memberSmsEnabled ? 'memberSmsEnabled' : null;
+          if (failedSwitch) return route.fulfill({ status: 503, json: { error: { code: 'unavailable', details: { [failedSwitch]: ['read_failed'] } } } });
           if (!hasProvider && body.memberSmsEnabled) return route.fulfill({ status: 409, json: { error: { code: 'conflict', details: { memberSmsEnabled: ['no_provider'] } } } });
-          settings = { ...settings, revision: settings.revision + 1, memberSmsEnabled: body.memberSmsEnabled };
+          if (body.memberSmsEnabled !== undefined) settings = { ...settings, revision: settings.revision + 1, memberSmsEnabled: body.memberSmsEnabled };
         }
         return route.fulfill({ json: checklist() });
       }
@@ -64,14 +70,31 @@ for (const width of [360, 1280]) {
     await page.getByRole('button', { name: 'Turn on: Member texts', exact: true }).click();
     await expect(page.getByRole('alert').filter({ hasText: 'Save a working SMS provider' })).toBeVisible();
     hasProvider = true;
-    await page.getByRole('button', { name: 'Turn on: Member texts', exact: true }).click();
+    const enableTexts = page.getByRole('button', { name: 'Turn on: Member texts', exact: true });
+    smsReadFails = true;
+    await enableTexts.click();
+    const smsAlert = page.getByRole('alert').filter({ hasText: 'The SMS provider could not be checked. Try turning member texts on again.' });
+    await expect(smsAlert).toBeVisible();
+    await expect(enableTexts).toBeEnabled();
+    await info.attach('sms-read-failed-' + width, { body: await smsAlert.screenshot(), contentType: 'image/png' });
+    smsReadFails = false;
+    await enableTexts.click();
     await expect(page.getByRole('button', { name: 'Turn off: Member texts', exact: true })).toBeVisible();
     await page.getByRole('spinbutton', { name: 'Daily text cap' }).fill('12');
     await page.getByRole('button', { name: 'Save daily text cap', exact: true }).click();
     await expect(page.getByRole('region', { name: 'SMS', exact: true }).getByRole('status')).toContainText('daily text cap is saved');
-    expect(requests).toEqual([{ revision: 3, memberSmsEnabled: true }, { revision: 3, memberSmsEnabled: true }, { revision: 4, smsDailyCap: 12 }]);
     await accessibleLayout(page, info, 'sms-go-live-' + width);
     await page.screenshot({ path: info.outputPath('sms-go-live-' + width + '.png'), fullPage: true });
+    await page.getByRole('button', { name: 'Turn on: Billing', exact: true }).click();
+    const confirmation = page.getByRole('dialog', { name: 'Review past billing dates' });
+    await confirmation.getByRole('checkbox').check();
+    await confirmation.getByRole('button', { name: 'Confirm dates and turn billing on' }).click();
+    await expect(confirmation.getByRole('alert')).toHaveText('Stripe could not be checked. Try turning billing on again.');
+    expect(requests).toEqual([{ revision: 3, memberSmsEnabled: true }, { revision: 3, memberSmsEnabled: true },
+      { revision: 3, memberSmsEnabled: true }, { revision: 4, smsDailyCap: 12 }, { revision: 5, billingEnabled: true,
+        confirmedPastDueDates: [{ id: overdue.id, revision: overdue.revision, nextDueOn: overdue.nextDueOn }] }]);
+    await info.attach('stripe-read-failed-' + width, { body: await confirmation.screenshot(), contentType: 'image/png' });
+    await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
     await page.goto(gymOrigin + '/admin/health');
     await expect(page.getByRole('heading', { name: 'SMS', exact: true })).toBeVisible();
     await expect(page.getByText('Refused past the cap today', { exact: true })).toBeVisible();
