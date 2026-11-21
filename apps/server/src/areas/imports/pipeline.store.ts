@@ -33,16 +33,19 @@ export class PipelineStore {
     try { await this.put(gymId, key, {}); return true; }
     catch (error) { if (await this.exists(gymId, key)) return false; throw error; }
   }
-  /** Renew with a new immutable key; readers need only the three potentially live buckets, never a storage listing. */
+  leaseKey(prefix: string, now: number): string {
+    return `${prefix}/lease/${Math.floor(now / PREVIEW_LEASE_INTERVAL_MS)}.json`;
+  }
+  /** Renew with an immutable key that expires relative to its bucket's start. */
   async renewLease(gymId: string, prefix: string, now: number): Promise<number> {
     const bucket = Math.floor(now / PREVIEW_LEASE_INTERVAL_MS);
-    await this.putOnce(gymId, `${prefix}/lease/${bucket}.json`, {});
+    await this.putOnce(gymId, this.leaseKey(prefix, now), {});
     return bucket * PREVIEW_LEASE_INTERVAL_MS + PREVIEW_LEASE_MS;
   }
   async hasLease(gymId: string, prefix: string, now: number): Promise<boolean> {
-    const bucket = Math.floor(now / PREVIEW_LEASE_INTERVAL_MS);
-    const live = await Promise.all(Array.from({ length: PREVIEW_LEASE_MS / PREVIEW_LEASE_INTERVAL_MS },
-      (_, index) => this.exists(gymId, `${prefix}/lease/${bucket - index}.json`)));
-    return live.some(Boolean);
+    for (let index = 0; index < PREVIEW_LEASE_MS / PREVIEW_LEASE_INTERVAL_MS; index++) {
+      if (await this.exists(gymId, this.leaseKey(prefix, now - index * PREVIEW_LEASE_INTERVAL_MS))) return true;
+    }
+    return false;
   }
 }

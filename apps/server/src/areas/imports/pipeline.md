@@ -76,20 +76,26 @@ ready, its requested page. Both routes require `settings.manage` and send
 result live under the upload's `preview/requests/<id>/` prefix, so ticket writes
 and renewals do not extend upload retention. A poll can reach
 another app process; it reads the same stored progress and result without
-starting work. The coordinator answers its own pending tickets from memory,
+starting work. The coordinator answers its own pending tickets with live leases from memory,
 checking the cached gym, upload and expiry without storage or revision reads.
 Other processes check upload ownership and expiry in storage. The gym's current
 import revision is read only when a ready result exists, before returning rows.
 Failed computations store only a safe
 application explanation; other failures use a generic retry message. A retry of
 a failed start gets a new ticket. All ticket files expire with the upload.
-Pending work renews a lease every ten seconds, while queued, computing, cleaning
-up, and saving its terminal result. A renewal writes an immutable
-`lease/<ten-second-bucket>.json` key under the ticket, valid for 30 seconds from
-the bucket's start (20–30 seconds after the write). Readers check only the three
-potentially live buckets, without listing storage. A process that exits, or fails
-to save its result, stops renewing; the ticket reports failure when its last
-lease lapses. Healthy work is not failed because a fixed total lifetime elapsed.
+Pending work renews a 60-second lease every ten seconds while queued,
+computing, cleaning up, or saving its terminal result. Each renewal writes an
+immutable `lease/<ten-second-bucket>.json` key valid from the bucket's start.
+Readers check their current and five preceding buckets newest first and stop
+at the first hit. After a miss they check up to two buckets ahead to allow
+for a reader clock that is behind the writer's.
+Renewals stop when the time since the ticket started reaches
+`(queueLimit + 1) × (previewTimeoutMs + PREVIEW_CLEANUP_MS)` (about 37 minutes
+by default). When a result is saved, the process stops renewing and marks the
+lease files it wrote deleted. A process that exits or fails to save its result
+leaves the last lease to lapse. A lapsed ticket still returns its stored
+result if available. A new Preview skips a lapsed entry and creates a new
+ticket if a fresh preview is needed.
 Tickets written by earlier releases at `preview-requests/<id>/` remain readable
 and retain their original expiry behavior.
 The internal `preview` helper joins the same ticket and awaits its computation;

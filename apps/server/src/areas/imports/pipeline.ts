@@ -62,6 +62,7 @@ export function createImportPipeline(options: PipelineOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const budget = options.previewBudget ?? previewBudget, timeout = options.previewTimeoutMs ?? PREVIEW_TIMEOUT_MS;
   if (!Number.isSafeInteger(timeout) || timeout < 1) throw new Error('Invalid preview deadline');
+  const leaseCeiling = (budget.queueLimit + 1) * (timeout + PREVIEW_CLEANUP_MS);
   const store = new PipelineStore(options.uploadsFor);
   const pending = budget.pending;
   // Retention excludes the preview subtree when finding an upload's original age.
@@ -259,7 +260,9 @@ export function createImportPipeline(options: PipelineOptions) {
     const found = await readPreview(context.gymId, prefix, page);
     if (found) return { preview: previewResponse(found, page) };
     let entry = pending.get(prefix);
+    if (entry && entry.leaseUntil !== 0 && entry.leaseUntil <= clock.now().getTime()) entry = undefined;
     if (!entry) {
+      const startedAt = clock.now().getTime();
       const id = uuidv7(), saved = Promise.withResolvers<void>(), finished = Promise.withResolvers<StoredPreview>();
       entry = { id, gymId: context.gymId, uploadId: plan.uploadId, expiresAt: meta.expiresAt, leaseUntil: 0,
         status: 'queued', admitted: saved.promise, finished: finished.promise };
@@ -268,12 +271,22 @@ export function createImportPipeline(options: PipelineOptions) {
       pending.set(prefix, entry);
       const current = entry, ticket: PreviewTicket = { prefix, revision, leased: true };
       const requestPrefix = ticketPrefix(context.gymId, plan.uploadId, id);
+      const leases = new Set<string>();
+      let renewing: Promise<void> | undefined;
       let heartbeat: ReturnType<typeof setTimeout> | undefined, stopped = false;
       const renew = async (): Promise<void> => {
-        try { current.leaseUntil = await store.renewLease(context.gymId, requestPrefix, clock.now().getTime()); }
+        const now = clock.now().getTime();
+        if (now - startedAt >= leaseCeiling) {
+          stopped = true;
+          return;
+        }
+        leases.add(store.leaseKey(requestPrefix, now));
+        try { current.leaseUntil = await store.renewLease(context.gymId, requestPrefix, now); }
         finally {
-          // Serialize writes, and stop on every terminal outcome, including a failed result write.
-          if (!stopped) heartbeat = setTimeout(() => { void renew().catch(() => undefined); }, PREVIEW_LEASE_INTERVAL_MS);
+          if (!stopped && clock.now().getTime() - startedAt + PREVIEW_LEASE_INTERVAL_MS < leaseCeiling) heartbeat = setTimeout(() => {
+            renewing = renew();
+            void renewing.catch(() => undefined);
+          }, PREVIEW_LEASE_INTERVAL_MS);
         }
       };
       let computation: Promise<StoredPreview>;
@@ -284,7 +297,8 @@ export function createImportPipeline(options: PipelineOptions) {
           current.status = 'computing';
         });
       } catch (error) {
-        pending.delete(prefix); saved.reject(error);
+        if (pending.get(prefix) === current) pending.delete(prefix);
+        saved.reject(error);
         // No duplicate caller can have observed the entry before this synchronous rejection.
         void saved.promise.catch(() => undefined);
         throw error;
@@ -293,7 +307,8 @@ export function createImportPipeline(options: PipelineOptions) {
       // Every background failure is observed, and only safe application explanations are persisted.
       void (async () => {
         try {
-          await renew();
+          renewing = renew();
+          await renewing;
           await store.put(context.gymId, ticketKey(context.gymId, plan.uploadId, id, 'meta'), ticket);
           saved.resolve();
           const stored = await computation;
@@ -306,7 +321,15 @@ export function createImportPipeline(options: PipelineOptions) {
             ? error.message : t('imports/pipeline:previewFailed');
           finished.reject(error);
           await store.put(context.gymId, ticketKey(context.gymId, plan.uploadId, id, 'result'), { status: 'failed', message });
-        } finally { stopped = true; clearTimeout(heartbeat); pending.delete(prefix); }
+        } finally {
+          stopped = true;
+          clearTimeout(heartbeat);
+          if (pending.get(prefix) === current) pending.delete(prefix);
+        }
+        // A saved result ends the lease. Wait for any write already in progress before marking its key.
+        await renewing?.catch(() => undefined);
+        const uploads = await options.uploadsFor(context.gymId);
+        for (const key of leases) await uploads.markDeleted(key).catch(() => undefined);
       })().catch(() => undefined);
     }
     await entry.admitted;
@@ -323,30 +346,44 @@ export function createImportPipeline(options: PipelineOptions) {
     if (current) {
       await current.admitted;
       if (Date.parse(current.expiresAt) <= clock.now().getTime()) throw new AppError('not_found', t('imports/pipeline:notFound'));
-      if (current.leaseUntil <= clock.now().getTime()) return { status: 'failed', message: t('imports/pipeline:previewFailed') };
-      return { status: current.status, id, uploadId };
+      if (current.leaseUntil > clock.now().getTime()) return { status: current.status, id, uploadId };
     }
     // Checking the upload first also enforces deletion, expiry, and gym ownership for every poll.
     const meta = await store.get<StoredUpload>(gymId, store.key(gymId, 'uploads', uploadId, 'meta.json'));
     if (Date.parse(meta.expiresAt) <= clock.now().getTime()) throw new AppError('not_found', t('imports/pipeline:notFound'));
     let requestPrefix = ticketPrefix(gymId, uploadId, id);
-    if (!await store.exists(gymId, `${requestPrefix}/meta.json`))
+    let ticket: PreviewTicket;
+    try { ticket = await store.get<PreviewTicket>(gymId, `${requestPrefix}/meta.json`); }
+    catch (error) {
+      if (!(error instanceof AppError) || error.code !== 'not_found') throw error;
       requestPrefix = store.key(gymId, 'uploads', uploadId, `preview-requests/${id}`);
-    const ticket = await store.get<PreviewTicket>(gymId, `${requestPrefix}/meta.json`);
+      ticket = await store.get<PreviewTicket>(gymId, `${requestPrefix}/meta.json`);
+    }
     const uploads = await options.uploadsFor(gymId);
-    const result = await readJson<PreviewResult>(uploads, `${requestPrefix}/result.json`);
-    if (result?.status === 'failed') return result;
-    if (result?.status === 'ready') {
+    const respondToResult = async (result: PreviewResult): Promise<ImportPreviewState> => {
+      if (result.status === 'failed') return result;
       if (ticket.revision !== await importRevision(gymId)) return { status: 'failed', message: t('imports/pipeline:previewChanged') };
       if (!fresh(result.stored, clock.now())) return { status: 'failed', message: t('imports/pipeline:previewChanged') };
       const rows = await readRows(uploads, ticket.prefix, result.stored, page);
       if (rows) return { status: 'ready', preview: previewResponse(rows, page) };
       return { status: 'failed', message: t('imports/pipeline:previewFailed') };
-    }
+    };
+    const resultKey = `${requestPrefix}/result.json`;
+    const result = await readJson<PreviewResult>(uploads, resultKey);
+    if (result) return respondToResult(result);
     // Older releases used a fixed expiry; new tickets stay alive only while their owning process renews the lease.
-    const alive = ticket.leased ? await store.hasLease(gymId, requestPrefix, clock.now().getTime())
-      : !!ticket.expiresAt && Date.parse(ticket.expiresAt) > clock.now().getTime();
-    if (!alive) return { status: 'failed', message: t('imports/pipeline:previewFailed') };
+    const now = clock.now().getTime();
+    const alive = ticket.leased
+      ? await store.hasLease(gymId, requestPrefix, now)
+        // A reader up to 20 seconds behind can miss the first renewal in its own buckets.
+        || await store.exists(gymId, store.leaseKey(requestPrefix, now + 2 * PREVIEW_LEASE_INTERVAL_MS))
+        || await store.exists(gymId, store.leaseKey(requestPrefix, now + PREVIEW_LEASE_INTERVAL_MS))
+      : !!ticket.expiresAt && Date.parse(ticket.expiresAt) > now;
+    if (!alive) {
+      const saved = ticket.leased ? await readJson<PreviewResult>(uploads, resultKey) : undefined;
+      if (saved) return respondToResult(saved);
+      return { status: 'failed', message: t('imports/pipeline:previewFailed') };
+    }
     return { status: await store.exists(gymId, `${requestPrefix}/computing.json`) ? 'computing' : 'queued', id, uploadId };
   }
   async function get(gymId: string, id: string): Promise<ImportJob> {

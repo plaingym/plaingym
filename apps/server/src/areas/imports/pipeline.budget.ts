@@ -12,7 +12,7 @@ export const PREVIEW_CLEANUP_MS = 10_000;
 export const PREVIEW_QUEUE_LIMIT = 16;
 export const PREVIEW_GYM_QUEUE_LIMIT = 3;
 export const PREVIEW_LEASE_INTERVAL_MS = 10_000;
-export const PREVIEW_LEASE_MS = 30_000;
+export const PREVIEW_LEASE_MS = 60_000;
 
 export interface PreviewSummary { totalRows: number; create: number; update: number; skip: number; errors: number }
 /** Summary written after all immutable preview row files. */
