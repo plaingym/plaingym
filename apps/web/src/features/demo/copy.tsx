@@ -4,7 +4,7 @@ import { demoCopyPage, demoCreationResponse, demoRoleSchema, shellBootstrapRespo
 import { Button } from '../../components/ui/button.js';
 import { Alert } from '../../components/ui/alert.js';
 import { Dialog } from '../../components/ui/dialog.js';
-import { createJsonTransport, onApiError } from '../../lib/api.js';
+import { ApiError, createJsonTransport, onApiError } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 
 const request = createJsonTransport();
@@ -36,17 +36,27 @@ export function CopyPrompt({ showcase }: { showcase: boolean }) {
     <div className="space-y-4"><p>{t('demo/demo:copyHelp')}</p><CreateCopyButton /></div>
   </Dialog> : null;
 }
+type CopyError = { key: 'demo/demo:copyLimitError'; minutes: number } |
+  { key: 'demo/demo:capacityError' | 'demo/demo:creationError'; minutes?: never };
+
 export function CreateCopyButton({ navigate = (url: string) => window.location.assign(url) }: { navigate?: (url: string) => void } = {}) {
-  const [pending, setPending] = useState(false), [position, setPosition] = useState<number>(), [error, setError] = useState(false);
+  const [pending, setPending] = useState(false), [position, setPosition] = useState<number>();
+  const [error, setError] = useState<CopyError>();
   const controller = useRef<AbortController | null>(null);
   useEffect(() => () => controller.current?.abort(), []);
   async function copy() {
     if (controller.current) return;
     const abort = new AbortController(); controller.current = abort;
-    setPending(true); setError(false);
+    setPending(true); setError(undefined);
+    let retryAfter = '';
+    const createCopy = createJsonTransport(async (input, init) => {
+      const response = await fetch(input, init);
+      if (response.status === 429) retryAfter = response.headers.get('Retry-After') ?? '';
+      return response;
+    });
     try {
       const target = await copyTarget(abort.signal);
-      let data = demoCreationResponse.parse(await request('/api/demo/sandboxes', target, abort.signal)).data;
+      let data = demoCreationResponse.parse(await createCopy('/api/demo/sandboxes', target, abort.signal)).data;
       // A queue ticket remains on this origin. Polling never consumes the client creation budget.
       const deadline = Date.now() + 3_600_000;
       while ('pending' in data) {
@@ -63,12 +73,22 @@ export function CreateCopyButton({ navigate = (url: string) => window.location.a
       const destination = new URL('/demo', data.origin);
       destination.hash = new URLSearchParams(data.handoffToken ? { copyToken: data.handoffToken } : { kioskToken: data.kioskToken }).toString();
       navigate(destination.href);
-    } catch {
-      if (!abort.signal.aborted) { setError(true); setPending(false); controller.current = null; }
+    } catch (failure) {
+      if (abort.signal.aborted) return;
+      if (failure instanceof ApiError && failure.status === 429) {
+        const seconds = /^\d+$/.test(retryAfter) ? Number(retryAfter) : 0;
+        setError(Number.isSafeInteger(seconds) && seconds >= 1
+          ? { key: 'demo/demo:copyLimitError', minutes: Math.max(1, Math.ceil(seconds / 60)) }
+          : { key: 'demo/demo:capacityError' });
+      } else {
+        setError({ key: 'demo/demo:creationError' });
+      }
+      setPending(false);
+      controller.current = null;
     }
   }
   return <div className="space-y-2"><Button type="button" disabled={pending} className="min-h-11 w-full sm:w-auto" onClick={() => { void copy(); }}>{t(pending ? 'demo/demo:starting' : 'demo/demo:copy')}</Button>
     <p role="status" aria-live="polite">{pending && t(position ? 'demo/demo:queuePosition' : 'demo/demo:creationProgress', position ? { position } : {})}</p>
-    {error && <Alert variant="error">{t('demo/demo:creationError')}</Alert>}
+    {error && <Alert variant="error">{t(error.key, error.minutes === undefined ? {} : { minutes: error.minutes })}</Alert>}
   </div>;
 }

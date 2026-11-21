@@ -7,7 +7,8 @@ showcase with sample data and one-click owner, coach and student logins. The
 button is disabled while the showcase starts, and a note asks visitors to
 reload. The next link opens the repository configured for the install. Old
 entry-host `/demo` links redirect to the product page. Choose **Make my own copy**
-to edit a private sandbox.
+to edit a private sandbox. If you reach the per-network hourly limit, the
+button shows how many minutes to wait.
 Copies expire after two idle hours and at most 24 hours after allocation.
 Each private copy keeps its start page at `/demo`, ending with the current deletion
 time and a reminder that using the copy moves that time later, up to 24 hours
@@ -37,14 +38,15 @@ use a test Stripe key ([going-live.md](going-live.md#1-try-it-in-test-mode-optio
   bar at the top of every page shows when the sandbox expires and opens the menu,
   which also goes to the start page, the admin, the member portal, the kiosk, the join
   page, the gym's website (when it's on) and the outbox. If you're signed out,
-  **Gym admin** signs you in as the owner and **Member portal** signs you in as
-  the student. If you're signed in, both links use your current session. The
-  sample kiosk members check in by full name and PIN `2468`; the kiosk's name
-  search shows one.
+  **Gym admin** and **Demo outbox** sign you in as the owner, and **Member portal**
+  signs you in as the student. If you're signed in, the links use your current
+  session. The sample kiosk members check in by full name and PIN `2468`. The
+  kiosk's name search shows one.
 * **No outside effects.** Emails and texts are captured in an in-app **outbox** the owner
-  and admins can read. On `/login`, after **Email me a sign-in link**, **Open my
-  sign-in link** opens the link sent to the address you entered, without the owner. General uploads are off. A demo refuses to start with a
-  live Stripe key.
+  and admins can read. On a private copy's `/login` page, **Open my sign-in link**
+  opens the link sent to the address you entered after choosing **Email me a
+  sign-in link**, without the owner. General uploads are off. A demo refuses to
+  start with a live Stripe key.
   The sample gym has member texts enabled, with fictional consenting recipients
   and example texts in the outbox. SMS provider credentials are never consulted.
 * **Test payments, optionally.** With a Stripe *test* key configured for the install
@@ -65,10 +67,10 @@ use a test Stripe key ([going-live.md](going-live.md#1-try-it-in-test-mode-optio
 The showcase uses `showcase.<DEMO_DOMAIN>`, one level below the demo domain, and
 is replaced 24 hours after promotion, remaining available until the replacement
 is ready if capacity delays the swap. It refuses changes including kiosk check-ins, bookings, public
-submissions, magic-link requests and signed links, and runs no gym jobs. Use its
-one-click role logins. Copies open signed in as the
-selected seeded role on the same static page where possible; resource-detail
-URLs open the role's home because each seed has different resource IDs.
+submissions, magic-link requests and signed links, and runs no gym jobs. Its
+`/login` page offers one-click owner, coach and student sign-ins. Copies open
+signed in as the selected seeded role on the same static page where possible.
+Resource-detail URLs open the role's home because each seed has different resource IDs.
 
 A demo needs a multi-gym install: `TENANCY=multi`, `DEMO_MODE=true`, a
 `DEMO_DOMAIN` with wildcard DNS and TLS, and working S3-compatible storage (even

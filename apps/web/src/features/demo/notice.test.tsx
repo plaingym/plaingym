@@ -212,11 +212,12 @@ it('opens the demo menu with its labelled groups and returns focus to the bar on
   const goTo = within(menu).getByRole('navigation', { name: 'Go to' });
   const admin = await within(goTo).findByRole('link', { name: 'Gym admin' });
   const portal = within(goTo).getByRole('link', { name: 'Member portal' });
+  const outbox = within(goTo).getByRole('link', { name: 'Demo outbox' });
   expect(within(goTo).getAllByRole('link').map((link) => [link.textContent?.replace('→', ''), link.getAttribute('href')])).toEqual([
     ['Start page', '/demo'], ['Gym admin', '/admin'], ['Member portal', '/portal'], ['Kiosk', '/kiosk'], ['Join page', '/join'], ['Demo outbox', '/admin/outbox']]);
   expect(portal.getAttribute('aria-current')).toBe('page');
   expect(admin.getAttribute('aria-current')).toBeNull();
-  for (const link of [admin, portal]) {
+  for (const link of [admin, portal, outbox]) {
     link.addEventListener('click', event => event.preventDefault(), { once: true });
     fireEvent.click(link);
   }
@@ -230,10 +231,11 @@ it('opens the demo menu with its labelled groups and returns focus to the bar on
   expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Demo menu' }));
 });
 const protectedDestinations = [
-  ['Gym admin', 'owner', '/admin'],
-  ['Member portal', 'student', '/portal'],
+  ['Gym admin', 'owner', '/admin', '/admin'],
+  ['Member portal', 'student', '/portal', '/portal'],
+  ['Demo outbox', 'owner', '/admin/outbox', '/admin'],
 ] as const;
-it.each(protectedDestinations)('signs in from %s as the seeded %s', async (name, role, redirect) => {
+it.each(protectedDestinations)('signs in from %s as the seeded %s', async (name, role, href, redirect) => {
   const assign = vi.fn();
   vi.stubGlobal('location', { ...window.location, assign });
   loadBootstrap.mockResolvedValue(signedOutBootstrap);
@@ -243,8 +245,9 @@ it.each(protectedDestinations)('signs in from %s as the seeded %s', async (name,
   const goTo = within(within(await openMenu()).getByRole('navigation', { name: 'Go to' }));
   await waitFor(() => expect((goTo.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(goTo.getByRole('button', { name }));
-  await waitFor(() => expect(assign).toHaveBeenCalledExactlyOnceWith(redirect));
+  await waitFor(() => expect(assign).toHaveBeenCalledExactlyOnceWith(href));
   const calls = fetcher.mock.calls.filter(([path]) => path === '/api/demo/login');
+  expect(calls.map(([, init]) => init.method)).toEqual(['POST']);
   expect(calls.map(([, init]) => JSON.parse(String(init.body)))).toEqual([{ role }]);
 });
 it('disables guarded destinations during bootstrap and offers links when it fails', async () => {

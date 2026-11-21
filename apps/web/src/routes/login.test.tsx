@@ -8,11 +8,12 @@ import { App } from '../app.js';
 import { createAppRouter } from '../app/router.js';
 import type { ShellBootstrap, ShellServices } from '../app/services.js';
 
-const discovery = vi.hoisted(() => ({ mode: 'disabled' as 'disabled' | 'sandbox', link: (_body: unknown) => Response.json({}, { status: 404 }) }));
+const discovery = vi.hoisted(() => ({ mode: 'disabled' as 'disabled' | 'sandbox' | 'showcase', link: (_body: unknown) => Response.json({}, { status: 404 }) }));
 const fetcher = vi.hoisted(() => vi.fn(async (path: string, init?: RequestInit) => {
-  if (path === '/api/demo') return discovery.mode === 'sandbox'
-    ? Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString(), join: true } })
+  if (path === '/api/demo') return discovery.mode !== 'disabled'
+    ? Response.json({ data: { mode: discovery.mode, expiresAt: new Date(Date.now() + 3600_000).toISOString(), join: discovery.mode === 'sandbox' } })
     : Response.json({ data: { mode: 'disabled' } });
+  if (path === '/api/demo/login') return Response.json({ data: { redirect: '/admin' } });
   if (path === '/api/demo/sign-in-link') return discovery.link(JSON.parse(String(init?.body)));
   return Response.json({}, { status: 404 });
 }));
@@ -162,6 +163,32 @@ describe('Google sign-in on the login page', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Sign in with Google' }));
     await waitFor(() => expect(assign).toHaveBeenCalled());
     expect(screen.queryByText(/Google sign-in was cancelled/)).toBeNull();
+  });
+});
+
+describe('demo sign-in choices', () => {
+  const showcaseMessage = "This shared demo doesn't send sign-in emails. Choose who to sign in as, or open the Demo menu above.";
+  it('offers the three seeded roles on the showcase and signs in as owner', async () => {
+    discovery.mode = 'showcase';
+    start();
+    await screen.findByText(showcaseMessage);
+    expect(screen.queryByLabelText('Email address')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Email me a sign-in link' })).toBeNull();
+    for (const role of ['owner', 'coach', 'student']) {
+      expect(screen.getByRole('button', { name: 'Sign in as ' + role })).toBeDefined();
+    }
+    await userEvent.click(screen.getByRole('button', { name: 'Sign in as owner' }));
+    await waitFor(() => expect(assign).toHaveBeenCalledExactlyOnceWith('/admin'));
+    const logins = fetcher.mock.calls.filter(([path]) => path === '/api/demo/login');
+    expect(logins.map(([, init]) => [init?.method, JSON.parse(String(init?.body))])).toEqual([['POST', { role: 'owner' }]]);
+  });
+  it.each(['sandbox', 'disabled'] as const)('offers the email form in %s mode', async mode => {
+    discovery.mode = mode;
+    start();
+    if (mode === 'sandbox') await screen.findByRole('button', { name: 'Demo menu' });
+    await screen.findByLabelText('Email address');
+    expect(screen.getByRole('button', { name: 'Email me a sign-in link' })).toBeDefined();
+    expect(screen.queryByText(showcaseMessage)).toBeNull();
   });
 });
 

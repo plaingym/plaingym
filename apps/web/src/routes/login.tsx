@@ -13,7 +13,8 @@ import { ApiError } from '../lib/api.js';
 import { t } from '../lib/i18n.js';
 import { bootstrapKey, useBootstrap, useShellServices } from '../app/context.js';
 import { sessionDestination } from '../app/services.js';
-import { DemoSignInLink } from '../features/demo/sign-in-link.js';
+import { useDemoMode } from '../features/demo/notice.js';
+import { DemoShowcaseSignIn, DemoSignInLink } from '../features/demo/sign-in-link.js';
 /** Messages for the error codes a sign-in returns with: Google's, and those of an email sign-in link (Better Auth's magic-link
  * verify codes). Any other code gets the generic message. */
 const returnedErrors: Record<string, string> = {
@@ -24,6 +25,7 @@ const returnedErrors: Record<string, string> = {
   failed_to_create_user: 'shell/shell:linkFailed', failed_to_create_session: 'shell/shell:linkFailed', user_not_found: 'shell/shell:linkFailed',
 };
 function LoginPage() {
+  const showcase = useDemoMode() === 'showcase';
   const bootstrap = useBootstrap();
   const services = useShellServices();
   const queryClient = useQueryClient();
@@ -98,25 +100,27 @@ function LoginPage() {
     <Card className="w-full min-w-0 max-w-md space-y-6 p-4 sm:p-6">
       <PageHeader title={t('shell/shell:title')} description={bootstrap.data.gym.name} />
       {returnedError && !sent && <Alert variant="error" focusOnReveal>{t(returnedError)}</Alert>}
-      {googleOn && !sent && <div className="space-y-4">
-        <Button type="button" variant="outline" className="w-full" disabled={googleBusy || login.isPending} onClick={() => { google.mutate(); }}>
-          {t(googleBusy ? 'auth/google:pending' : 'auth/google:signIn')}</Button>
-        {google.isError && <Alert variant="error" focusOnReveal>{t('auth/google:startFailed')}</Alert>}
-        {(methods.password || methods.magicLink) && <p className="text-center text-sm text-muted-foreground">{t('auth/google:or')}</p>}
-      </div>}
-      {sent ? <div className="space-y-4"><p role="status">{t('shell/shell:sent')}</p><DemoSignInLink email={email} />
-        <Button variant="outline" className="w-full" onClick={() => { setSent(false); setEmail(''); login.reset(); }}>{t('shell/shell:sendAgain')}</Button></div>
-      : methods.password || methods.magicLink ? <form onSubmit={submit} className="space-y-4" aria-busy={login.isPending || google.isPending}>
-        <div className="space-y-2"><Label htmlFor="login-email">{t('shell/shell:email')}</Label>
-          <Input id="login-email" type="email" autoComplete="username" autoCapitalize="none" spellCheck={false} required value={email} onChange={(e) => setEmail(e.target.value)} disabled={login.isPending || google.isPending} /></div>
-        {methods.password && <div className="space-y-2"><Label htmlFor="login-password">{t('shell/shell:password')}</Label>
-          <Input id="login-password" type="password" autoComplete="current-password" aria-describedby="password-help" value={password} onChange={(e) => setPassword(e.target.value)} disabled={login.isPending || google.isPending} />
-          <p id="password-help" className="text-sm text-muted-foreground">{t('shell/shell:forgotPassword')}</p></div>}
-        {login.isError && <Alert variant="error" focusOnReveal>{t(login.error instanceof ApiError && login.error.status === 429 ? 'shell/shell:rateLimited' : 'shell/shell:failed')}</Alert>}
-        {methods.password && <Button type="submit" value="password" className="w-full" disabled={login.isPending || google.isPending || !password}>{t(login.isPending ? 'shell/shell:pending' : 'shell/shell:passwordSubmit')}</Button>}
-        {methods.magicLink && <><p className="text-sm text-muted-foreground">{t('shell/shell:magicHint')}</p>
-          <Button type="submit" value="magic" variant="outline" className="w-full" disabled={login.isPending || google.isPending}>{t('shell/shell:magicSubmit')}</Button></>}
-      </form> : !googleOn && <Alert>{t('shell/shell:unavailable')}</Alert>}
+      {showcase ? <DemoShowcaseSignIn /> : <>
+        {googleOn && !sent && <div className="space-y-4">
+          <Button type="button" variant="outline" className="w-full" disabled={googleBusy || login.isPending} onClick={() => { google.mutate(); }}>
+            {t(googleBusy ? 'auth/google:pending' : 'auth/google:signIn')}</Button>
+          {google.isError && <Alert variant="error" focusOnReveal>{t('auth/google:startFailed')}</Alert>}
+          {(methods.password || methods.magicLink) && <p className="text-center text-sm text-muted-foreground">{t('auth/google:or')}</p>}
+        </div>}
+        {sent ? <div className="space-y-4"><p role="status">{t('shell/shell:sent')}</p><DemoSignInLink email={email} />
+          <Button variant="outline" className="w-full" onClick={() => { setSent(false); setEmail(''); login.reset(); }}>{t('shell/shell:sendAgain')}</Button></div>
+        : methods.password || methods.magicLink ? <form onSubmit={submit} className="space-y-4" aria-busy={login.isPending || google.isPending}>
+          <div className="space-y-2"><Label htmlFor="login-email">{t('shell/shell:email')}</Label>
+            <Input id="login-email" type="email" autoComplete="username" autoCapitalize="none" spellCheck={false} required value={email} onChange={(e) => setEmail(e.target.value)} disabled={login.isPending || google.isPending} /></div>
+          {methods.password && <div className="space-y-2"><Label htmlFor="login-password">{t('shell/shell:password')}</Label>
+            <Input id="login-password" type="password" autoComplete="current-password" aria-describedby="password-help" value={password} onChange={(e) => setPassword(e.target.value)} disabled={login.isPending || google.isPending} />
+            <p id="password-help" className="text-sm text-muted-foreground">{t('shell/shell:forgotPassword')}</p></div>}
+          {login.isError && <Alert variant="error" focusOnReveal>{t(login.error instanceof ApiError && login.error.status === 429 ? 'shell/shell:rateLimited' : 'shell/shell:failed')}</Alert>}
+          {methods.password && <Button type="submit" value="password" className="w-full" disabled={login.isPending || google.isPending || !password}>{t(login.isPending ? 'shell/shell:pending' : 'shell/shell:passwordSubmit')}</Button>}
+          {methods.magicLink && <><p className="text-sm text-muted-foreground">{t('shell/shell:magicHint')}</p>
+            <Button type="submit" value="magic" variant="outline" className="w-full" disabled={login.isPending || google.isPending}>{t('shell/shell:magicSubmit')}</Button></>}
+        </form> : !googleOn && <Alert>{t('shell/shell:unavailable')}</Alert>}
+      </>}
     </Card>
   </main>;
 }

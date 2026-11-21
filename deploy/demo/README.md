@@ -14,6 +14,9 @@ show no deletion notice. Ordinary installs and gym website roots are unchanged.
 The showcase is replaced 24 hours after promotion and runs no gym jobs. It stays
 available until a replacement is ready if capacity delays the swap. Use the
 one-click role logins; magic-link requests are refused on the shared showcase.
+The showcase's `/login` page offers those role sign-ins in place of the email
+form. When the per-network hourly limit refuses a new copy, the copy button
+shows how many minutes to wait before trying again.
 
 Optional settings accepted by the installer and saved in its protected `.env`:
 

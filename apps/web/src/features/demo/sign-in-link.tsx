@@ -6,8 +6,16 @@ import { Alert } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
 import { ApiError, createJsonTransport } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
-import { useDemoSandbox } from './notice.js';
+import { DemoSignInButtons, useDemoMode, useDemoSandbox } from './notice.js';
 const request = createJsonTransport();
+
+export function DemoShowcaseSignIn() {
+  if (useDemoMode() !== 'showcase') return null;
+  return <div className="space-y-4">
+    <p className="text-sm">{t('demo/demo:showcaseSignIn')}</p>
+    <DemoSignInButtons />
+  </div>;
+}
 
 /** On `/login` in a sandbox, after "Email me a link": the link went to the demo outbox, and this opens it for the address
  * just entered, without switching to the owner. Elsewhere it renders nothing. */

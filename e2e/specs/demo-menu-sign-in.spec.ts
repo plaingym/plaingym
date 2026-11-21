@@ -5,6 +5,7 @@ const showcase = 'https://showcase.demo.localhost';
 const destinations = [
   { name: 'Gym admin', role: 'owner', path: '/admin', heading: 'Dashboard', session: { roles: ['owner'], member: false } },
   { name: 'Member portal', role: 'student', path: '/portal', heading: 'Welcome to your member portal', session: { roles: [], member: true } },
+  { name: 'Demo outbox', role: 'owner', path: '/admin/outbox', heading: 'Demo outbox', session: { roles: ['owner'], member: false } },
 ] as const;
 
 for (const destination of destinations) for (const width of [360, 1280]) {
@@ -45,5 +46,31 @@ for (const destination of destinations) for (const width of [360, 1280]) {
     await expect(page.getByRole('heading', { name: destination.heading, exact: true })).toBeVisible();
     expect(await readSession()).toMatchObject(destination.session);
     expect(visitedPaths).not.toContain('/login');
+  });
+}
+
+for (const width of [360, 1280]) {
+  test(`showcase login offers role sign-ins at ${width}px`, async ({ page }, info) => {
+    await page.context().setExtraHTTPHeaders({ 'x-forwarded-for': clientAddress() });
+    const height = 900;
+    await page.setViewportSize({ width, height });
+    await page.goto(showcase + '/login');
+    const main = page.getByRole('main');
+    await expect(main.getByText(/This shared demo doesn't send sign-in emails/)).toBeVisible();
+    await expect(main.getByLabel('Email address')).toHaveCount(0);
+    for (const role of ['owner', 'coach', 'student']) {
+      const button = main.getByRole('button', { name: 'Sign in as ' + role, exact: true });
+      await expect(button).toBeVisible();
+      const bounds = (await button.boundingBox())!;
+      expect(bounds.height).toBeGreaterThanOrEqual(44);
+      expect(bounds.x).toBeGreaterThanOrEqual(0);
+      expect(bounds.y).toBeGreaterThanOrEqual(0);
+      expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
+      expect(bounds.y + bounds.height).toBeLessThanOrEqual(height);
+    }
+    await info.attach('showcase-login', { body: await page.screenshot(), contentType: 'image/png' });
+    await main.getByRole('button', { name: 'Sign in as owner', exact: true }).click();
+    await expect(page).toHaveURL(showcase + '/admin');
+    await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
   });
 }

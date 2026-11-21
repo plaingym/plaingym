@@ -206,7 +206,7 @@ function DemoMenu({ expires, onClose }: { expires: string | undefined; onClose: 
     ['/demo', 'startPage', pathname === '/demo'], ['/admin', 'admin', within('/admin') && !within('/admin/outbox'), 'owner'],
     ['/portal', 'portal', within('/portal'), 'student'],
     ['/kiosk', 'kiosk', within('/kiosk')], ...join ? [['/join', 'join', false] as [string, string, boolean]] : [],
-    ...menu.data?.website ? [['/', 'website', false] as [string, string, boolean]] : [], ['/admin/outbox', 'outbox', within('/admin/outbox')],
+    ...menu.data?.website ? [['/', 'website', false] as [string, string, boolean]] : [], ['/admin/outbox', 'outbox', within('/admin/outbox'), 'owner'],
   ];
   const section = 'space-y-2', heading = 'text-sm font-semibold text-muted-foreground';
   return <Dialog title={t('demo/demo:menu')} closeLabel={t('demo/demo:closeMenu')} onClose={onClose}
@@ -220,7 +220,8 @@ function DemoMenu({ expires, onClose }: { expires: string | undefined; onClose: 
       <nav className={section} aria-labelledby="demo-menu-go-to"><h3 id="demo-menu-go-to" className={heading}>{t('demo/demo:goTo')}</h3>
         <ul className="space-y-2">{destinations.map(([href, key, current, role]) => <li key={href}>
           {role && (bootstrap.isPending || signedOut)
-            ? <DemoMenuControl current={current} disabled={bootstrap.isPending || pending} onClick={() => { void login(role); }}>{t(`demo/demo:${key}`)}</DemoMenuControl>
+            ? <DemoMenuControl current={current} disabled={bootstrap.isPending || pending}
+                onClick={() => { void login(role, href.startsWith('/admin/') ? href as `/admin/${string}` : undefined); }}>{t(`demo/demo:${key}`)}</DemoMenuControl>
             : <DemoMenuLink href={href} current={current}>{t(`demo/demo:${key}`)}</DemoMenuLink>}
         </li>)}</ul>
       </nav>
