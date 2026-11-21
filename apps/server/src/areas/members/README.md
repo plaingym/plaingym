@@ -171,7 +171,9 @@ custom fields are cleared and its tax IDs deleted. Customer redaction also lists
 the billing name, email, phone and address of every attached card, including cards
 added in the provider dashboard and previously revoked cards still awaiting detach.
 It paginates and leaves the cards attached. The detach jobs carry `redactBillingDetails: true`, so each card's billing
-name, email, phone and address are cleared before the card is detached (Stripe updates only an attached card). A failed attempt
+name, email, phone and address are cleared before the card is detached (Stripe updates only an attached card). A method Stripe
+won't leave without a billing name or email (a pre-authorized debit account) gets the name `Erased member` and the email
+`erased-member@example.com` instead, in both the customer redaction and the detach. A failed attempt
 is logged with identifiers only and the erasure still succeeds, since its committed job retries it.
 
 Customers erased before the redaction covered every field are handled by `members.erasure.redact_earlier`, a daily job

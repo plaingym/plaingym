@@ -63,6 +63,17 @@ it('retries a partially cleared customer after an outage without clearing a repl
     .toEqual([{ email: '' }, { billing_details: { email: '' } }]);
 });
 
+it('writes the placeholder email to a debit account that must keep one, leaving its name', async () => {
+  const { payments, transport, state } = stripe();
+  Object.assign(transport.objects.get(paymentMethodId)!, { type: 'acss_debit', acss_debit: { last4: '6789' } });
+  expect(await payments.clearCustomerEmail(customerId, options)).toBe(true);
+  expect(state()).toMatchObject({ email: null, cardEmail: 'erased-member@example.com', cardName: 'Card holder', attached: true });
+  const posts = () => transport.requests.filter(request => request.method === 'POST');
+  const before = posts().length;
+  expect(await payments.clearCustomerEmail(customerId, options)).toBe(false);
+  expect(posts()).toHaveLength(before);
+});
+
 it('accepts an untagged customer and leaves an already detached card alone', async () => {
   const { payments, transport, state } = stripe();
   transport.objects.get(customerId)!.metadata = {};

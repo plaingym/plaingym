@@ -117,6 +117,25 @@ export function stripeTransport(apiKey: string, options: { testOnly?: boolean; d
 function holds(value: unknown): boolean {
   return typeof value === 'object' && value !== null ? Object.values(value).some(holds) : !!value;
 }
+/** Stripe won't leave some payment methods (a pre-authorized debit account) without a billing name and email, so erasure
+ * writes these fixed placeholders there instead of blanks. */
+const ERASED_METHOD_EMAIL = 'erased-member@example.com';
+const ERASED_METHOD_DETAILS = { name: ERASED_CUSTOMER_NAME, email: ERASED_METHOD_EMAIL, phone: '', address: '' };
+const BLANK_METHOD_DETAILS = { name: '', email: '', phone: '', address: '' };
+/** Billing details that hold nothing, or only the erasure placeholders, are already redacted. */
+function redactedDetails(value: unknown): boolean {
+  if (!holds(value)) return true;
+  if (typeof value !== 'object' || value === null) return false;
+  const { name, email, ...rest } = value as Record<string, unknown>;
+  return name === ERASED_CUSTOMER_NAME && email === ERASED_METHOD_EMAIL && !holds(rest);
+}
+/** Stripe's refusal to leave one of these billing fields blank on a payment method. */
+function detailRequired(error: unknown, fields: readonly string[]): boolean {
+  const value = error as { statusCode?: number; code?: string; param?: string; raw?: { code?: string; param?: string } } | null;
+  if (value?.statusCode !== 400 || (value.code ?? value.raw?.code) !== 'parameter_missing') return false;
+  const param = value.param ?? value.raw?.param;
+  return fields.some(field => param === 'billing_details[' + field + ']');
+}
 function absent(error: unknown): boolean {
   const value = error as { code?: string; statusCode?: number } | null;
   return value?.code === 'resource_missing' && [400, 404].includes(value.statusCode ?? 0);
@@ -499,8 +518,8 @@ export class StripePayments implements Payments {
     await this.#ownedCustomer(id(method.customer));
     // Stripe updates only an attached card, so erasure clears the billing details first. A failure here stops the detach:
     // the retry finds the card still attached, whereas a detached card could no longer be cleared.
-    if (options.redactBillingDetails && holds(method.billing_details)) {
-      try { await this.#post(path, { billing_details: { name: '', email: '', phone: '', address: '' } }); }
+    if (options.redactBillingDetails && !redactedDetails(method.billing_details)) {
+      try { await this.#redactMethodDetails(path); }
       catch (error) {
         if (absent(error)) return;
         // Updating a card needs the same Payment Methods permission as detaching it.
@@ -552,10 +571,24 @@ export class StripePayments implements Payments {
     }
     for (const { path: methodPath, method } of methods) {
       if (matchesBillingEmail(data(method.billing_details ?? {}).email, options.emailDigest, options.secret)) {
-        await this.#post(methodPath, { billing_details: { email: '' } }); matched = true;
+        try { await this.#post(methodPath, { billing_details: { email: '' } }); }
+        catch (error) {
+          // A method that must keep an email gets the placeholder; its name is left as it is.
+          if (!detailRequired(error, ['email'])) throw error;
+          await this.#post(methodPath, { billing_details: { email: ERASED_METHOD_EMAIL } });
+        }
+        matched = true;
       }
     }
     return matched;
+  }
+  /** Blanks a payment method's billing details, or writes the placeholders when Stripe requires a name or email there. */
+  async #redactMethodDetails(path: string): Promise<void> {
+    try { await this.#post(path, { billing_details: BLANK_METHOD_DETAILS }); }
+    catch (error) {
+      if (!detailRequired(error, ['name', 'email'])) throw error;
+      await this.#post(path, { billing_details: ERASED_METHOD_DETAILS });
+    }
   }
   async redactCustomer(customerId: string): Promise<void> {
     assertNoTransaction('payments.redactCustomer');
@@ -604,8 +637,8 @@ export class StripePayments implements Payments {
               logWarn('payments.redaction.method_skipped_foreign', { gymId: this.gymId, customerId, paymentMethodId: id(method.id) });
               continue;
             }
-            if (holds(method.billing_details)) await this.#post(this.#path('payment_methods', id(method.id)),
-              { billing_details: { name: '', email: '', phone: '', address: '' } });
+            if (!redactedDetails(method.billing_details))
+              await this.#redactMethodDetails(this.#path('payment_methods', id(method.id)));
           } catch (error) {
             const status = (error as { statusCode?: number } | null)?.statusCode;
             if (status === 401 || status === 403) throw error;
