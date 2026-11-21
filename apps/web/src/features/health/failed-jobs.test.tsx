@@ -40,6 +40,18 @@ it('asks before acknowledging, posts the tile\'s check time once, closes and ref
   await waitFor(() => expect(tiles).toHaveBeenCalledTimes(2));
 });
 
+it('keeps the original cutoff when the tile refreshes during confirmation', async () => {
+  POST.mockResolvedValue({ response: new Response(), data: { data: { acknowledged: 2 } } } as never);
+  const client = new QueryClient();
+  const view = render(<FailedJobsActions gymId="gym-a" tile={tile(2)}/>, {
+    wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider> });
+  fireEvent.click(screen.getByRole('button', { name: 'Acknowledge failed jobs' }));
+  view.rerender(<FailedJobsActions gymId="gym-a" tile={{ ...tile(3), checkedAt: '2026-10-22T12:01:00.000Z' }}/>);
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Acknowledge' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(POST).toHaveBeenCalledWith('/api/health/failed-jobs/acknowledge', { body: { through: checkedAt } });
+});
+
 it('keeps the dialog open with an error when acknowledging fails', async () => {
   POST.mockResolvedValue({ response: new Response(null, { status: 500 }), data: undefined } as never);
   start(2);
