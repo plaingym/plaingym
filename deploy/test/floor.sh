@@ -733,10 +733,12 @@ cleanup_warnings_are 1
 refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP=late-remove-killed
 snapshot_cleanup_calls_are 'rm -f' 'container inspect' 'rm -f'
 cleanup_warnings_are 1
+[ -f "$SNAPSHOTS/$snapshot_container.container" ]
 
 refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP=late-removal-inspect-timeout
 snapshot_cleanup_calls_are 'rm -f' 'container inspect' 'rm -f' 'container inspect'
 cleanup_warnings_are 1
+[ -f "$SNAPSHOTS/$snapshot_container.container" ]
 
 # The history fallback still runs the check when there is no compatibility file.
 rm "$case_dir/schema-compatibility.yaml"
