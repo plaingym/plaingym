@@ -331,9 +331,12 @@ jobs:
           [ -n "$floor" ] || { echo '::error::The build recorded no rollback floor.'; exit 1; }
           [ -f deploy/prerelease-signing.pem ] || { echo '::error::deploy/prerelease-signing.pem is missing.'; exit 1; }
           [ -n "$PRERELEASE_SIGNING_KEY" ] || { echo '::error::The PRERELEASE_SIGNING_KEY secret is not set.'; exit 1; }
-          # A version already tagged or released is never pushed again.
-          if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null; then echo "::error::$VERSION is already tagged."; exit 1; fi
-          if gh release view "$VERSION" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then echo "::error::$VERSION is already released."; exit 1; fi
+          # A version already tagged or released is never pushed again. A lookup that fails is not an answer.
+          tag_status=0; git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null || tag_status=$?
+          if [ "$tag_status" -eq 0 ]; then echo "::error::$VERSION is already tagged."; exit 1; fi
+          if [ "$tag_status" -ne 2 ]; then echo "::error::Could not check whether $VERSION is tagged."; exit 1; fi
+          if release_error=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION" --silent 2>&1); then echo "::error::$VERSION is already released."; exit 1; fi
+          case "$release_error" in *"(HTTP 404)"*) ;; *) echo "::error::Could not check whether $VERSION is released."; exit 1 ;; esac
           printf '%s\n' "$PRERELEASE_SIGNING_KEY" > "$RUNNER_TEMP/key.pem"
           trap 'rm -f "$RUNNER_TEMP/key.pem"; docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
           # The secret must match the committed prerelease key, and must not be the release key, before anything is pushed.
@@ -345,6 +348,25 @@ jobs:
           fi
           printf '%s\n' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          # A tag left by an earlier night is pushed again only for this commit.
+          image_tag=$(printf '%s' "$VERSION" | tr '+' '_')
+          for ref in "ghcr.io/$owner/app:$image_tag" "ghcr.io/$owner/app:$image_tag-amd64" "ghcr.io/$owner/app:$image_tag-arm64"; do
+            inspect_status=0; docker manifest inspect "$ref" >/dev/null 2>"$RUNNER_TEMP/inspect.err" || inspect_status=$?
+            if [ "$inspect_status" -eq 0 ]; then
+              image=$(docker buildx imagetools inspect "$ref" --format '{{json .Image}}') || { echo "::error::Could not read the revision of $ref."; exit 1; }
+              revisions=$(printf '%s\n' "$image" | tr -d '[:space:]' | grep -o '"org.opencontainers.image.revision":"[^"]*"' | sort -u || true)
+              expected=$(printf '"org.opencontainers.image.revision":"%s"' "$GITHUB_SHA")
+              if [ "$revisions" != "$expected" ]; then
+                echo "::error::$ref already exists for another commit; nothing was published."
+                exit 1
+              fi
+            elif grep -Eqi 'manifest unknown|no such manifest|not found' "$RUNNER_TEMP/inspect.err"; then
+              continue
+            else
+              echo "::error::Could not check whether $ref exists."
+              exit 1
+            fi
+          done
           sh deploy/release/publish.sh --prerelease --registry ghcr.io --name "$owner/app" \
             --version "$VERSION" --revision "$GITHUB_SHA" --migrations packages/db/src/migrations \
             --rollback-floor "$floor" \

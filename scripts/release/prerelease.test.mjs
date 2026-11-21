@@ -166,3 +166,35 @@ test('each signing key is reachable only from its own job, and no workflow write
   assert.equal([...prerelease.matchAll(/^\s*secrets:/gm)].length, 1);
   assert.doesNotMatch(prerelease, /secrets\./);
 });
+
+test('the prerelease publish refuses lookup errors and an image tag from another commit', () => {
+  const release = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8');
+  const nightly = job(release, 'publish-prerelease');
+  // Only exit 2 from the tag lookup means "not tagged"; a failure to look is not an answer.
+  assert.match(nightly, /tag_status=0; git ls-remote --exit-code --tags origin "refs\/tags\/\$VERSION" >\/dev\/null \|\| tag_status=\$\?/);
+  assert.match(nightly, /if \[ "\$tag_status" -eq 0 \]; then echo "::error::\$VERSION is already tagged\."; exit 1; fi/);
+  assert.match(nightly, /if \[ "\$tag_status" -ne 2 \]; then echo "::error::Could not check whether \$VERSION is tagged\."; exit 1; fi/);
+  // Only a 404 from the release lookup means "not released"; a failure to look is not an answer.
+  assert.match(nightly, /if release_error=\$\(gh api "repos\/\$GITHUB_REPOSITORY\/releases\/tags\/\$VERSION" --silent 2>&1\); then echo "::error::\$VERSION is already released\."; exit 1; fi/);
+  assert.match(nightly, /case "\$release_error" in \*"\(HTTP 404\)"\*\) ;; \*\) echo "::error::Could not check whether \$VERSION is released\."; exit 1 ;; esac/);
+  assert.doesNotMatch(nightly, /gh release view/);
+  // An image tag from an earlier night is only pushed again for this commit; all three tags are checked.
+  for (const suffix of ['', '-amd64', '-arm64']) assert.match(nightly, new RegExp(`"ghcr\\.io/\\$owner/app:\\$image_tag${suffix}"`));
+  // imagetools' `json` template pretty-prints, so the label is only compact after whitespace is stripped.
+  assert.match(nightly, /tr -d '\[:space:\]'.*org\.opencontainers\.image\.revision/);
+  assert.match(nightly, /org\.opencontainers\.image\.revision.*\$GITHUB_SHA/);
+  assert.match(nightly, /already exists for another commit; nothing was published\./);
+  assert.match(nightly, /Could not read the revision of \$ref\./);
+  assert.match(nightly, /Could not check whether \$ref exists\./);
+  // The image guard runs once the registry login is done and before publish.sh pushes anything.
+  const login = nightly.indexOf('docker login ghcr.io');
+  const guard = nightly.indexOf('docker manifest inspect');
+  const push = nightly.indexOf('publish.sh --prerelease');
+  assert.ok(login >= 0 && guard > login && push > guard, 'the image guard sits after docker login and before publish.sh');
+  // Both lookup guards run before the signing key is written.
+  const key = nightly.indexOf('> "$RUNNER_TEMP/key.pem"');
+  const tagGuard = nightly.indexOf('tag_status=0');
+  const releaseGuard = nightly.indexOf('release_error=$(');
+  assert.ok(tagGuard >= 0 && releaseGuard >= 0 && key > tagGuard && key > releaseGuard,
+    'the tag and release guards sit before key.pem is written');
+});
