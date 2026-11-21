@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { Page } from '@playwright/test';
 import { expect, gymOrigin, test } from '../support.js';
-import { check, open, viewports } from './mobile-screens.js';
+import { check, dialogLayout, open, viewports } from './mobile-screens.js';
 
 const sourceUrl = 'https://example.test/source/v0.1.0';
 
@@ -118,6 +118,13 @@ for (const viewport of viewports) {
       const jobs = page.locator('section, article').filter({ has: page.getByRole('heading', { name: 'Background jobs', exact: true }) });
       await expect(jobs.getByText('Problem detected', { exact: true })).toBeVisible();
       await expect(jobs.locator(`time[datetime="${oldest}"]`)).toBeVisible();
+      await jobs.getByRole('button', { name: 'Acknowledge failed jobs' }).click();
+      const dialog = page.getByRole('dialog', { name: 'Acknowledge failed jobs' });
+      await expect(dialog.getByRole('button', { name: 'Acknowledge', exact: true })).toBeVisible();
+      await dialogLayout(page, 'Acknowledge failed jobs', viewport.name === 'phone');
+      await check(page, info, `${viewport.name}-acknowledge-failed-jobs`);
+      await dialog.getByRole('button', { name: 'Cancel' }).click();
+      await expect(dialog).toHaveCount(0);
       const disk = page.locator('section, article').filter({ has: page.getByRole('heading', { name: 'Disk space', exact: true }) });
       for (const [label, value] of [['Uploads volume capacity', '20 GB'], ['Uploads volume available', '10 GB'],
         ['Backup staging volume capacity', '8 GB'], ['Backup staging volume available', '500 MB']]) {
