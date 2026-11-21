@@ -200,8 +200,14 @@ Database discovery and the source-reader guard follow runtime imports and re-exp
 through `*.test-helper` and fixture modules, including literal dynamic imports,
 CommonJS `require` calls, and TypeScript `import = require` declarations. They skip
 type-only edges. The source-reader guard also recognizes literal `module.require`,
-`createRequire(...)(...)`, and `getBuiltinModule` calls through `process`,
-`globalThis.process` or a destructured binding. A call to any function named `require`
+`createRequire(...)(...)`, and `getBuiltinModule` calls through dot access on
+`process` or `globalThis.process`, or a bare call to a function named `getBuiltinModule`.
+The guard matches names, not bindings, so it misses, for example, calls through a loader
+assigned from `createRequire` to a name other than `require`, calls through a variable
+alias of `process` or `globalThis.process`, bracket access to `getBuiltinModule`, and a
+`getBuiltinModule` binding renamed on import or destructuring. To keep a test's
+filesystem read in the source-reader inventory, use a static `import`, a literal `require`
+call or one of the recognized forms above. A call to any function named `require`
 counts as a load even when it is a local binding, because the parser has no type
 checker. It classifies named and destructured filesystem bindings by their imported
 names, treats whole-module bindings conservatively as readers even when they are only
