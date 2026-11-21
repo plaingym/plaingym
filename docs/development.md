@@ -199,10 +199,15 @@ checks also use Vitest's discovery, including database tests in the integration 
 Database discovery and the source-reader guard follow runtime imports and re-exports
 through `*.test-helper` and fixture modules, including literal dynamic imports,
 CommonJS `require` calls, and TypeScript `import = require` declarations. They skip
-type-only edges. The source-reader guard also recognizes literal `process.getBuiltinModule`
-calls. It classifies named and destructured filesystem bindings by their imported names,
-treats whole-module bindings conservatively as readers, and ignores bare loads for reader
-classification. Both checks use the parser and resolver in `scripts/test-imports.ts`.
+type-only edges. The source-reader guard also recognizes literal `module.require`,
+`createRequire(...)(...)`, and `getBuiltinModule` calls through `process`,
+`globalThis.process` or a destructured binding. A call to any function named `require`
+counts as a load even when it is a local binding, because the parser has no type
+checker. It classifies named and destructured filesystem bindings by their imported
+names, treats whole-module bindings conservatively as readers even when they are only
+written through, and ignores bare loads for reader classification: a load is bare
+under `void`, on the left of a comma, or as an expression statement. Both checks use
+the parser and resolver in `scripts/test-imports.ts`.
 Verification includes docs specs from Vitest's own discovery
 in the same test run as the selected tests (or the full suite).
 End-to-end skips Markdown-only pushes too, and still runs nightly, as does the **Memory** workflow, which measures the whole

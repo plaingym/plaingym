@@ -103,6 +103,13 @@ describe('verification discovery', () => {
     "import fs = require('node:fs');",
     "const fs = process.getBuiltinModule('fs');",
     "process.getBuiltinModule('node:fs').readFileSync('fixture.json');",
+    "const { readFileSync } = module.require('node:fs');",
+    "const { readFileSync } = createRequire(import.meta.url)('node:fs');",
+    "const fs = globalThis.process.getBuiltinModule('node:fs');",
+    "const { getBuiltinModule } = process; const fs = getBuiltinModule('node:fs');",
+    "const fs = (0, require('node:fs'));",
+    "function load(require: (id: string) => unknown) { return require('node:fs'); }",
+    "import fs = require('node:fs'); fs.writeFileSync('out.txt', '');",
   ])('recognizes filesystem readers: %s', source => {
     expect(fileReader('fixture.test.ts', () => source)).toBe(true);
   });
@@ -117,6 +124,10 @@ describe('verification discovery', () => {
     "const { writeFile: readFile } = require('node:fs');",
     "const { writeFile } = process.getBuiltinModule('node:fs/promises');",
     "import type fs = require('node:fs');",
+    "void import('node:fs');",
+    "void require('node:fs');",
+    "(require('node:fs'), 0);",
+    "module.require('node:fs');",
   ])('ignores filesystem imports without a reader binding: %s', source => {
     expect(fileReader('fixture.test.ts', () => source)).toBe(false);
   });
@@ -149,6 +160,9 @@ describe('verification discovery', () => {
       ['fixture.mjs', "const fs = await import('node:fs/promises');"]]);
     expect(fileReader('example.test.ts', file => sources.get(file)!, new Set(),
       file => sources.has(relative(root, file).replaceAll('\\', '/')))).toBe(true);
+  });
+  it('finds database loads through module.require', () => {
+    expect(usesDatabase('fixture.test.ts', () => "module.require('@plaingym/db/testing/database');")).toBe(true);
   });
   it('follows CommonJS fixture loads for database and filesystem discovery', () => {
     const sources = new Map([

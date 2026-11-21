@@ -23,6 +23,8 @@ function readsFilesystemCall(call: ts.CallExpression): boolean {
   while (ts.isAwaitExpression(expression.parent) || ts.isParenthesizedExpression(expression.parent))
     expression = expression.parent;
   const parent = expression.parent;
+  if (ts.isVoidExpression(parent)
+    || ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.CommaToken && parent.left === expression) return false;
   if (ts.isVariableDeclaration(parent) && ts.isObjectBindingPattern(parent.name))
     return parent.name.elements.some(binding => !!binding.dotDotDotToken || readsFilesystemProperty(binding.propertyName ?? binding.name));
   if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
@@ -36,8 +38,17 @@ function moduleLoadSpecifier(call: ts.CallExpression): string | undefined {
   if (!argument || !ts.isStringLiteralLike(argument)) return;
   const callee = call.expression;
   if (callee.kind === ts.SyntaxKind.ImportKeyword || ts.isIdentifier(callee) && callee.text === 'require') return argument.text;
-  if (ts.isPropertyAccessExpression(callee) && callee.name.text === 'getBuiltinModule'
-    && ts.isIdentifier(callee.expression) && callee.expression.text === 'process' && isBuiltin(argument.text)) return argument.text;
+  if (ts.isPropertyAccessExpression(callee) && callee.name.text === 'require'
+    && ts.isIdentifier(callee.expression) && callee.expression.text === 'module') return argument.text;
+  if (ts.isCallExpression(callee) && (ts.isIdentifier(callee.expression) && callee.expression.text === 'createRequire'
+    || ts.isPropertyAccessExpression(callee.expression) && callee.expression.name.text === 'createRequire')) return argument.text;
+  if (ts.isPropertyAccessExpression(callee) && callee.name.text === 'getBuiltinModule' && isBuiltin(argument.text)) {
+    const target = callee.expression;
+    if (ts.isIdentifier(target) && target.text === 'process') return argument.text;
+    if (ts.isPropertyAccessExpression(target) && target.name.text === 'process'
+      && ts.isIdentifier(target.expression) && target.expression.text === 'globalThis') return argument.text;
+  }
+  if (ts.isIdentifier(callee) && callee.text === 'getBuiltinModule' && isBuiltin(argument.text)) return argument.text;
 }
 
 /** Runtime imports, re-exports and literal module loads. Type-only edges do not execute. */

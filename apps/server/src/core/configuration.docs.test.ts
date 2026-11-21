@@ -112,7 +112,8 @@ function scanVariables(sources: Map<string, string>): Set<string> {
       const symbol = checker.getSymbolAtLocation(callee);
       const target = symbol && (symbol.flags & ts.SymbolFlags.Alias) ? checker.getAliasedSymbol(symbol) : symbol;
       const value = target?.valueDeclaration;
-      const implementation = value && ts.isVariableDeclaration(value) ? value.initializer : value;
+      const implementation = value && (ts.isVariableDeclaration(value) || ts.isPropertyAssignment(value) || ts.isPropertyDeclaration(value))
+        ? value.initializer : value;
       if (implementation !== declaration) return false;
       const parameter = argumentParameters(declaration)[index];
       return !!parameter && ts.isIdentifier(parameter.name) && parameter.name.text === 'env';
@@ -235,6 +236,7 @@ describe('docs/configuration.md', () => {
     "function read(name: string) { return process.env[name]; } read('LOCAL'); export { read };",
     "import { env as source } from 'node:process'; source.X;",
     "import { env } from 'node:process'; export { env as source };",
+    'const wrap = <T>(fn: T) => fn; const read = wrap((env: Record<string, string>) => env.WRAPPED); read(process.env);',
   ])('rejects incomplete environment scans: %s', source => {
     expect(() => scanVariables(new Map([[resolve(root, 'scan-fixture.ts'), source]]))).toThrow('Unresolved environment variable');
   });
@@ -264,6 +266,12 @@ describe('docs/configuration.md', () => {
         readKey('KEY');
       `],
     ]))].sort()).toEqual(['ARROW', 'KEY', 'LOCAL', 'READER']);
+  });
+  it.each([
+    ['object-literal', 'const helpers = { read: (env: Record<string, string>) => env.PROPERTY }; helpers.read(process.env);', 'PROPERTY'],
+    ['class', 'class Reader { read = (env: Record<string, string>) => env.FIELD; } new Reader().read(process.env);', 'FIELD'],
+  ])('follows helpers held in %s properties', (_shape, source, name) => {
+    expect([...scanVariables(new Map([[resolve(root, 'scan-fixture.ts'), source]]))]).toEqual([name]);
   });
   it('accepts env declarations in specifiers, destructured parameters and type queries', () => {
     expect([...scanVariables(new Map([[resolve(root, 'scan-shapes.ts'), `
