@@ -67,6 +67,9 @@ notices belong to the release image inventory in addition to this application fi
 It handles pull request and signing-comment events without checking out refs,
 installing dependencies, importing repository code or executing contributor text.
 The agreement is fetched from an immutable commit on the default branch.
+A run that detects an agreement change checks once more using the updated agreement.
+If the agreement changes again during that check, the run stops and `CLA` stays
+pending until the next pull request or comment event.
 Unresolved publication placeholders prevent external signing.
 
 The `CLA` commit status covers the current PR author and head commit.

@@ -61,35 +61,22 @@ jobs:
                 const { data: ref } = await api.git.getRef({ owner, repo, ref: `heads/${repository.default_branch}` });
                 return ref.object.sha;
               };
-              const defaultSha = await readDefaultSha();
-              // Read the agreement from the trusted default branch, pinned to one commit.
               const readAgreement = async (ref) => {
                 const { data } = await api.repos.getContent({ owner, repo, path: 'CLA.md', ref });
                 return data;
               };
-              const agreement = await readAgreement(defaultSha);
-              if (Array.isArray(agreement) || agreement.type !== 'file' || agreement.encoding !== 'base64') throw new Error('Cannot read CLA.md');
-              isAgreementCurrent = async () => {
-                const currentSha = await readDefaultSha();
-                try {
-                  const currentAgreement = await readAgreement(currentSha);
-                  return currentAgreement.type === 'file' && currentAgreement.sha === agreement.sha;
-                } catch (error) {
-                  if (error.status === 404) return false;
-                  throw error;
-                }
-              };
-              const text = Buffer.from(agreement.content, 'base64').toString('utf8');
-              if (/\[TODO[^\]]*\]/i.test(text)) throw new Error('CLA.md has unresolved publication placeholders; a maintainer must complete it');
-              const version = /^Version\s+(\S+)/m.exec(text)?.[1];
-              if (!version) throw new Error('CLA.md must declare a version');
-              const hash = createHash('sha256').update(text).digest('hex');
-              const marker = `<!-- plaingym-cla:${hash} -->`;
               const listComments = () => github.paginate(api.issues.listComments, { owner, repo, issue_number: issueNumber, per_page: 100 });
               const isOurPrompt = (comment) => comment.user?.login === 'github-actions[bot]'
                 && comment.user?.type === 'Bot' && comment.body?.startsWith('<!-- plaingym-cla:');
               // The earliest trusted prompt is the one every run keeps and signs against.
-              const listPromptsById = async () => (await listComments()).filter(isOurPrompt).sort((a, b) => a.id - b.id);
+              const listTrustedPromptsById = async () => (await listComments()).filter(isOurPrompt).sort((a, b) => a.id - b.id);
+              const deletePrompt = async (commentId) => {
+                try {
+                  await api.issues.deleteComment({ owner, repo, comment_id: commentId });
+                } catch (error) {
+                  if (error.status !== 404) throw error; // Another run already removed it.
+                }
+              };
 
               async function readLedger() {
                 let stored;
@@ -103,101 +90,123 @@ jobs:
                 if (ledger.schemaVersion !== 1 || !Array.isArray(ledger.signatures)) throw new Error('Unsupported CLA signature store');
                 return { stored, ledger };
               }
-              const { ledger } = await readLedger();
-              let signed = ledger.signatures.some((entry) => entry.userId === pr.user.id && entry.claSha256 === hash);
-              if (!signed && context.eventName === 'issue_comment') {
-                // Refetch the comment: payload strings are data and are never evaluated as code.
-                const { data: comment } = await api.issues.getComment({ owner, repo, comment_id: context.payload.comment.id });
-                const isCandidate = comment.user.id === pr.user.id && comment.user.type === 'User' && comment.body.trim() === phrase
-                  && comment.issue_url === `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`;
-                const [prompt] = isCandidate ? await listPromptsById() : [];
-                if (prompt?.body.startsWith(marker) && Date.parse(comment.updated_at) >= Date.parse(prompt.updated_at)) {
-                  const signature = {
-                    userId: pr.user.id, login: pr.user.login, commentId: comment.id,
-                    signedAt: comment.updated_at, claVersion: version, claSha256: hash, claBlobSha: agreement.sha,
-                  };
-                  // Bootstrap only our fixed signature branch; never use a PR-controlled ref.
+              // An obsolete pass can re-evaluate once, using the agreement now on the default branch.
+              for (let pass = 0; pass < 2; pass++) {
+                // Until this pass reads its agreement, an error is checked against the previous pass's.
+                // Read the agreement from the trusted default branch, pinned to one commit.
+                const defaultSha = await readDefaultSha();
+                const agreement = await readAgreement(defaultSha);
+                if (Array.isArray(agreement) || agreement.type !== 'file' || agreement.encoding !== 'base64') throw new Error('Cannot read CLA.md');
+                isAgreementCurrent = async () => {
+                  const currentSha = await readDefaultSha();
                   try {
-                    await api.git.getRef({ owner, repo, ref: `heads/${signatureBranch}` });
+                    const currentAgreement = await readAgreement(currentSha);
+                    return currentAgreement.type === 'file' && currentAgreement.sha === agreement.sha;
                   } catch (error) {
-                    if (error.status !== 404) throw error;
+                    if (error.status === 404) return false;
+                    throw error;
+                  }
+                };
+                const text = Buffer.from(agreement.content, 'base64').toString('utf8');
+                if (/\[TODO[^\]]*\]/i.test(text)) throw new Error('CLA.md has unresolved publication placeholders; a maintainer must complete it');
+                const version = /^Version\s+(\S+)/m.exec(text)?.[1];
+                if (!version) throw new Error('CLA.md must declare a version');
+                const hash = createHash('sha256').update(text).digest('hex');
+                const marker = `<!-- plaingym-cla:${hash} -->`;
+                const { ledger } = await readLedger();
+                let signed = ledger.signatures.some((entry) => entry.userId === pr.user.id && entry.claSha256 === hash);
+                if (!signed && context.eventName === 'issue_comment') {
+                  // Refetch the comment: payload strings are data and are never evaluated as code.
+                  const { data: comment } = await api.issues.getComment({ owner, repo, comment_id: context.payload.comment.id });
+                  const isCandidate = comment.user.id === pr.user.id && comment.user.type === 'User' && comment.body.trim() === phrase
+                    && comment.issue_url === `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`;
+                  const [prompt] = isCandidate ? await listTrustedPromptsById() : [];
+                  if (prompt?.body.startsWith(marker) && Date.parse(comment.updated_at) >= Date.parse(prompt.updated_at)) {
+                    const signature = {
+                      userId: pr.user.id, login: pr.user.login, commentId: comment.id,
+                      signedAt: comment.updated_at, claVersion: version, claSha256: hash, claBlobSha: agreement.sha,
+                    };
+                    // Bootstrap only our fixed signature branch; never use a PR-controlled ref.
                     try {
-                      await api.git.createRef({ owner, repo, ref: `refs/heads/${signatureBranch}`, sha: defaultSha });
-                    } catch (error) {
-                      if (error.status !== 422) throw error;
-                      // Another run may have created the branch after our read.
                       await api.git.getRef({ owner, repo, ref: `heads/${signatureBranch}` });
-                    }
-                  }
-                  // GitHub retains only one pending run per concurrency group. Let every
-                  // event run, and merge signatures against the latest blob on conflict.
-                  for (let attempt = 0; attempt < 5; attempt++) {
-                    const { stored, ledger } = await readLedger();
-                    if (ledger.signatures.some(entry => entry.userId === pr.user.id && entry.claSha256 === hash)) {
-                      signed = true;
-                      break;
-                    }
-                    ledger.signatures.push(signature);
-                    try {
-                      await api.repos.createOrUpdateFileContents({
-                        owner, repo, path: signaturePath, branch: signatureBranch,
-                        message: `docs: record CLA signature for user ${pr.user.id}`,
-                        content: Buffer.from(JSON.stringify(ledger, null, 2) + '\n').toString('base64'),
-                        ...(stored ? { sha: stored.sha } : {}),
-                      });
-                      signed = true;
-                      break;
                     } catch (error) {
-                      // A stale sha answers 409; a sha-less write to a file another run just created answers 422.
-                      const conflict = error.status === 409 || (!stored && error.status === 422);
-                      if (!conflict || attempt === 4) throw error;
+                      if (error.status !== 404) throw error;
+                      try {
+                        await api.git.createRef({ owner, repo, ref: `refs/heads/${signatureBranch}`, sha: defaultSha });
+                      } catch (error) {
+                        if (error.status !== 422) throw error;
+                        // Another run may have created the branch after our read.
+                        await api.git.getRef({ owner, repo, ref: `heads/${signatureBranch}` });
+                      }
+                    }
+                    // GitHub retains only one pending run per concurrency group. Let every
+                    // event run, and merge signatures against the latest blob on conflict.
+                    for (let attempt = 0; attempt < 5; attempt++) {
+                      const { stored, ledger } = await readLedger();
+                      if (ledger.signatures.some(entry => entry.userId === pr.user.id && entry.claSha256 === hash)) {
+                        signed = true;
+                        break;
+                      }
+                      ledger.signatures.push(signature);
+                      try {
+                        await api.repos.createOrUpdateFileContents({
+                          owner, repo, path: signaturePath, branch: signatureBranch,
+                          message: `docs: record CLA signature for user ${pr.user.id}`,
+                          content: Buffer.from(JSON.stringify(ledger, null, 2) + '\n').toString('base64'),
+                          ...(stored ? { sha: stored.sha } : {}),
+                        });
+                        signed = true;
+                        break;
+                      } catch (error) {
+                        // A stale sha answers 409; a sha-less write to a file another run just created answers 422.
+                        const conflict = error.status === 409 || (!stored && error.status === 422);
+                        if (!conflict || attempt === 4) throw error;
+                      }
                     }
                   }
                 }
-              }
-              if (!signed) {
-                const agreementMarkers = `${marker}\n<!-- plaingym-cla-blob:${agreement.sha} -->\n`;
-                const body = `${agreementMarkers}@${pr.user.login}, please read [Contributor License Agreement v${version}](${context.serverUrl}/${owner}/${repo}/blob/${defaultSha}/CLA.md).\n\nReply with this exact comment to sign:\n\n> ${phrase}\n\nYou keep your copyright. Your signature records this agreement's SHA-256: \`${hash}\`.`;
-                let [prompt, ...duplicates] = await listPromptsById();
-                if (!prompt) {
-                  // Leave a signing prompt even if the default branch moved since the initial read.
-                  await api.issues.createComment({ owner, repo, issue_number: issueNumber, body });
-                  const agreementCurrent = await isAgreementCurrent();
-                  // A concurrent create may have posted the earliest prompt for another revision.
-                  [prompt, ...duplicates] = await listPromptsById();
-                  if (!agreementCurrent) return;
-                }
-                if (prompt) {
-                  const needsRefresh = !prompt.body.startsWith(agreementMarkers);
-                  if (needsRefresh || duplicates.length > 0) {
-                    if (!await isAgreementCurrent()) return;
-                  }
-                  if (needsRefresh) {
-                    await api.issues.updateComment({ owner, repo, comment_id: prompt.id, body });
-                    if (!await isAgreementCurrent()) {
-                      await listPromptsById();
-                      return;
+                if (!signed) {
+                  const agreementMarkers = `${marker}\n<!-- plaingym-cla-blob:${agreement.sha} -->\n`;
+                  const body = `${agreementMarkers}@${pr.user.login}, please read [Contributor License Agreement v${version}](${context.serverUrl}/${owner}/${repo}/blob/${defaultSha}/CLA.md).\n\nReply with this exact comment to sign:\n\n> ${phrase}\n\nYou keep your copyright. Your signature records this agreement's SHA-256: \`${hash}\`.`;
+                  let [prompt, ...duplicates] = await listTrustedPromptsById();
+                  if (!prompt) {
+                    // If the agreement moved, keep the created prompt only when it is the earliest trusted one.
+                    const { data: created } = await api.issues.createComment({ owner, repo, issue_number: issueNumber, body });
+                    const agreementCurrent = await isAgreementCurrent();
+                    // A concurrent create may have posted the earliest prompt for another revision.
+                    [prompt, ...duplicates] = await listTrustedPromptsById();
+                    if (!agreementCurrent) {
+                      if (prompt && prompt.id < created.id) await deletePrompt(created.id);
+                      continue;
                     }
                   }
-                  for (const duplicate of duplicates) {
-                    try {
-                      await api.issues.deleteComment({ owner, repo, comment_id: duplicate.id });
-                    } catch (error) {
-                      if (error.status !== 404) throw error; // Another run already removed it.
+                  if (prompt) {
+                    const needsRefresh = !prompt.body.startsWith(agreementMarkers);
+                    if (needsRefresh || duplicates.length > 0) {
+                      if (!await isAgreementCurrent()) continue;
                     }
+                    if (needsRefresh) {
+                      await api.issues.updateComment({ owner, repo, comment_id: prompt.id, body });
+                      if (!await isAgreementCurrent()) continue;
+                    }
+                    for (const duplicate of duplicates) await deletePrompt(duplicate.id);
                   }
+                  // A signing run may have completed while we were preparing the prompt.
+                  signed = (await readLedger()).ledger.signatures.some((entry) => entry.userId === pr.user.id && entry.claSha256 === hash);
                 }
-                // A signing run may have completed while we were preparing the prompt.
-                signed = (await readLedger()).ledger.signatures.some((entry) => entry.userId === pr.user.id && entry.claSha256 === hash);
+                if (!signed) {
+                  if (!await isAgreementCurrent()) continue;
+                  await status('failure', 'CLA signature required; see the signing comment');
+                  // Also repair a failure request that was in flight when signing succeeded.
+                  signed = (await readLedger()).ledger.signatures.some((entry) => entry.userId === pr.user.id && entry.claSha256 === hash);
+                  if (!signed) core.setFailed('The pull request author must sign CLA.md');
+                }
+                if (signed) {
+                  if (!await isAgreementCurrent()) continue;
+                  await status('success', 'Contributor agreement signed');
+                }
+                break;
               }
-              if (!signed) {
-                if (!await isAgreementCurrent()) return;
-                await status('failure', 'CLA signature required; see the signing comment');
-                // Also repair a failure request that was in flight when signing succeeded.
-                signed = (await readLedger()).ledger.signatures.some((entry) => entry.userId === pr.user.id && entry.claSha256 === hash);
-                if (!signed) core.setFailed('The pull request author must sign CLA.md');
-              }
-              if (signed && await isAgreementCurrent()) await status('success', 'Contributor agreement signed');
             } catch (error) {
               let agreementCurrent = true;
               try {

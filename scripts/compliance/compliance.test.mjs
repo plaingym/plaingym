@@ -195,6 +195,7 @@ function claFixture(options = {}) {
   const writes = [];
   const comments = options.comments ?? [];
   const commentCalls = { list: 0, create: 0, update: 0, delete: 0 };
+  const agreementReads = [];
   let defaultSha = 'default-sha';
   let refError;
   const agreements = new Map([[defaultSha, text]]);
@@ -221,6 +222,7 @@ function claFixture(options = {}) {
           assert.equal(value.owner, context.repo.owner);
           assert.equal(value.repo, context.repo.repo);
           assert.ok(agreements.has(value.ref), 'agreement read must use a pinned revision');
+          agreementReads.push(value.ref);
           return { data: file(agreements.get(value.ref)) };
         }
         assert.equal(value.path, 'signatures/cla.json');
@@ -286,7 +288,7 @@ function claFixture(options = {}) {
     },
   };
   return {
-    text, hash, statuses, failures, writes, comments, commentCalls, context,
+    text, hash, statuses, failures, writes, comments, commentCalls, agreementReads, context,
     ledger: () => ledger,
     setAgreement: (sha, content) => {
       agreements.set(sha, content);
@@ -314,6 +316,7 @@ function claFixture(options = {}) {
               return api.repos.createCommitStatus(value);
             }),
             getContent: captureAssertion(async (value) => {
+              if (value.path === 'CLA.md') await hooks.beforeAgreementRead?.(value.ref);
               try {
                 return await getContent(value);
               } finally {
@@ -465,10 +468,10 @@ test('an unsigned run cannot overwrite a prompt updated for a newer agreement', 
   } });
 
   assert.deepEqual(fixture.comments.map((comment) => [comment.id, comment.body]), [[id, currentBody]]);
-  assert.deepEqual(fixture.commentCalls, { list: 4, create: 1, update: 1, delete: 0 });
+  assert.deepEqual(fixture.commentCalls, { list: 5, create: 1, update: 1, delete: 0 });
 });
 
-test('an obsolete run leaves the latest final status for the same pull request head', async () => {
+test('an obsolete run publishes the updated agreement status for the same pull request head', async () => {
   const originalAgreement = 'Version 1.0\nPublic fixture contributor agreement.\n';
   for (const olderAgreementSigned of [false, true]) {
     const signedAgreement = olderAgreementSigned ? originalAgreement : revisedAgreement;
@@ -486,13 +489,14 @@ test('an obsolete run leaves the latest final status for the same pull request h
       await fixture.run({ context: { runId: 101 } });
     } });
 
+    const finalState = olderAgreementSigned ? 'failure' : 'success';
     assert.deepEqual(
       fixture.statuses.slice(statusCount).filter((status) => status.target_url.endsWith('/100')).map((status) => status.state),
-      ['pending'],
+      ['pending', finalState],
     );
-    assert.equal(fixture.statuses.at(-1).state, olderAgreementSigned ? 'failure' : 'success');
+    assert.equal(fixture.statuses.at(-1).state, finalState);
     assert.equal(fixture.statuses.at(-1).sha, 'current-head');
-    assert.ok(fixture.statuses.at(-1).target_url.endsWith('/101'));
+    assert.ok(fixture.statuses.at(-1).target_url.endsWith('/100'));
   }
 });
 
@@ -524,54 +528,129 @@ test('an error whose agreement recheck also fails still reports the original err
   ]);
 });
 
-test('an obsolete prompt update re-lists and leaves further writes to a current run', async () => {
+test('an error during the second pass checks the revised agreement before reporting failure', async () => {
+  const fixture = claFixture();
+  let reads = 0;
+  await fixture.run({ afterLedgerRead: () => {
+    if (++reads === 1) fixture.setAgreement('revised-sha', revisedAgreement);
+    if (reads === 2) throw new Error('Ledger unavailable');
+  } });
+
+  assert.equal(reads, 2);
+  assert.deepEqual(fixture.failures, ['Ledger unavailable']);
+  assert.deepEqual(fixture.statuses.map((status) => [status.state, status.description]), [
+    ['pending', 'Checking contributor agreement'],
+    ['failure', 'CLA check needs maintainer attention'],
+  ]);
+});
+
+test('an error reading the second pass agreement leaves the current agreement status in place', async () => {
+  const fixture = claFixture({ ledger: {
+    schemaVersion: 1, signatures: [{ userId: 42, claSha256: sha256(revisedAgreement) }],
+  } });
+  let lists = 0, revisedReads = 0;
+  await fixture.run({
+    afterListComments: async () => {
+      if (++lists > 1) return;
+      fixture.setAgreement('revised-sha', revisedAgreement);
+      await fixture.run({ context: { runId: 101 } });
+    },
+    // The first revised read is the obsolete create's recheck; the second starts pass 2.
+    beforeAgreementRead: (ref) => {
+      if (ref === 'revised-sha' && ++revisedReads === 2) throw Object.assign(new Error('Agreement unavailable'), { status: 502 });
+    },
+  });
+
+  assert.equal(revisedReads, 3);
+  assert.deepEqual(fixture.failures, ['Agreement unavailable']);
+  assert.deepEqual(fixture.statuses.map((status) => [status.state, status.target_url.split('/').at(-1)]), [
+    ['pending', '100'], ['pending', '101'], ['success', '101'],
+  ]);
+});
+
+test('a run repairs its obsolete prompt update in the second pass', async () => {
   const fixture = claFixture();
   await fixture.run();
   const [earliest] = fixture.comments;
-  const olderBody = earliest.body;
   earliest.body = `<!-- plaingym-cla:${fixture.hash} -->`;
   fixture.comments.push({ ...earliest, id: earliest.id + 1 });
   let currentBody;
 
   await fixture.run({ beforeUpdateComment: async () => {
+    if (currentBody) return;
     fixture.setAgreement('revised-sha', revisedAgreement);
     await fixture.run({ context: { runId: 101 } });
     currentBody = earliest.body;
     assert.ok(currentBody.startsWith(`<!-- plaingym-cla:${sha256(revisedAgreement)} -->`));
   } });
 
-  assert.deepEqual(fixture.comments.map((comment) => [comment.id, comment.body]), [[earliest.id, olderBody]]);
-  assert.deepEqual(fixture.commentCalls, { list: 5, create: 1, update: 2, delete: 1 });
-  assert.ok(fixture.statuses.at(-1).target_url.endsWith('/101'));
-
-  await fixture.run({ context: { runId: 102 } });
   assert.deepEqual(fixture.comments.map((comment) => [comment.id, comment.body]), [[earliest.id, currentBody]]);
-  assert.deepEqual(fixture.commentCalls, { list: 6, create: 1, update: 3, delete: 1 });
+  assert.deepEqual(fixture.commentCalls, { list: 5, create: 1, update: 3, delete: 1 });
+  assert.equal(fixture.statuses.at(-1).state, 'failure');
+  assert.ok(fixture.statuses.at(-1).target_url.endsWith('/100'));
 });
 
-test('an obsolete creator keeps the only signing prompt', async () => {
+test('an obsolete creator refreshes the only signing prompt in the second pass', async () => {
   const fixture = claFixture();
   await fixture.run({ afterListComments: () => fixture.setAgreement('revised-sha', revisedAgreement) });
   assert.equal(fixture.comments.length, 1);
-  assert.ok(fixture.comments[0].body.startsWith(`<!-- plaingym-cla:${fixture.hash} -->`));
-  assert.deepEqual(fixture.commentCalls, { list: 2, create: 1, update: 0, delete: 0 });
+  assert.ok(fixture.comments[0].body.startsWith(`<!-- plaingym-cla:${sha256(revisedAgreement)} -->`));
+  assert.ok(fixture.comments[0].body.includes('/blob/revised-sha/CLA.md'));
+  assert.equal(fixture.statuses.at(-1).state, 'failure');
+  assert.equal(fixture.statuses.at(-1).description, 'CLA signature required; see the signing comment');
+  assert.deepEqual(fixture.commentCalls, { list: 3, create: 1, update: 1, delete: 0 });
 });
 
-test('an obsolete creator leaves duplicate cleanup for a current run', async () => {
+test('an obsolete creator deletes its own duplicate and keeps the earlier prompt', async () => {
   const fixture = claFixture();
   await fixture.run({ beforeCreateComment: async () => {
     fixture.setAgreement('revised-sha', revisedAgreement);
     await fixture.run({ context: { runId: 101 } });
   } });
 
-  assert.deepEqual(fixture.comments.map((comment) => comment.id), [5, 6]);
-  assert.ok(fixture.comments[0].body.startsWith(`<!-- plaingym-cla:${sha256(revisedAgreement)} -->`));
-  assert.deepEqual(fixture.commentCalls, { list: 4, create: 2, update: 0, delete: 0 });
-  assert.ok(fixture.statuses.at(-1).target_url.endsWith('/101'));
-
-  await fixture.run({ context: { runId: 102 } });
   assert.deepEqual(fixture.comments.map((comment) => comment.id), [5]);
+  assert.ok(fixture.comments[0].body.startsWith(`<!-- plaingym-cla:${sha256(revisedAgreement)} -->`));
   assert.deepEqual(fixture.commentCalls, { list: 5, create: 2, update: 0, delete: 1 });
+  assert.ok(fixture.statuses.at(-1).target_url.endsWith('/100'));
+});
+
+test('an agreement change during signing keeps the original signature and refreshes the prompt', async () => {
+  const fixture = claFixture();
+  await fixture.run();
+  const statusCount = fixture.statuses.length;
+  let reads = 0;
+
+  await fixture.run({ context: { eventName: 'issue_comment' }, afterLedgerRead: () => {
+    if (++reads === 2) fixture.setAgreement('revised-sha', revisedAgreement);
+  } });
+
+  assert.equal(fixture.writes.length, 1);
+  assert.deepEqual(fixture.ledger().signatures.map((signature) => signature.claSha256), [fixture.hash]);
+  assert.equal(fixture.comments.length, 1);
+  assert.ok(fixture.comments[0].body.startsWith(`<!-- plaingym-cla:${sha256(revisedAgreement)} -->`));
+  assert.ok(fixture.comments[0].body.includes('/blob/revised-sha/CLA.md'));
+  assert.deepEqual(fixture.statuses.slice(statusCount).map((status) => status.state), ['pending', 'failure']);
+});
+
+test('two agreement changes leave the run pending after two passes', async () => {
+  const fixture = claFixture();
+  await fixture.run();
+  const [{ body }] = fixture.comments;
+  const statusCount = fixture.statuses.length;
+  const readCount = fixture.agreementReads.length;
+  let lists = 0;
+
+  await fixture.run({ afterListComments: () => {
+    lists++;
+    if (lists === 1) fixture.setAgreement('revised-sha', revisedAgreement);
+    if (lists === 2) fixture.setAgreement('third-sha', 'Version 3.0\nThird fixture contributor agreement.\n');
+  } });
+
+  assert.deepEqual(fixture.agreementReads.slice(readCount), ['default-sha', 'revised-sha', 'revised-sha', 'third-sha']);
+  assert.deepEqual(fixture.statuses.slice(statusCount).map((status) => status.state), ['pending']);
+  assert.equal(fixture.writes.length, 0);
+  assert.equal(fixture.comments[0].body, body);
+  assert.deepEqual(fixture.commentCalls, { list: 4, create: 1, update: 0, delete: 0 });
 });
 
 test('a move of the default ref with the same agreement still allows a prompt refresh and duplicate removal', async () => {
@@ -687,7 +766,7 @@ test('racing creates refresh the earliest trusted prompt for the current agreeme
   assert.deepEqual(fixture.comments.map((comment) => comment.id), [5]);
   assert.ok(fixture.comments[0].body.startsWith(`<!-- plaingym-cla:${sha256(revisedAgreement)} -->`));
   assert.ok(fixture.comments[0].body.includes('/blob/revised-sha/CLA.md'));
-  assert.deepEqual(fixture.commentCalls, { list: 4, create: 2, update: 1, delete: 1 });
+  assert.deepEqual(fixture.commentCalls, { list: 5, create: 2, update: 1, delete: 1 });
 });
 
 test('concurrent CLA writes merge the latest ledger and preserve both signers', async () => {
