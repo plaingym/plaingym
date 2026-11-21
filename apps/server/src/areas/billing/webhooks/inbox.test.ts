@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHmac } from 'node:crypto';
+import { readdirSync, readFileSync } from 'node:fs';
 import { beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
@@ -18,7 +19,7 @@ import { StripePayments } from '../../../infra/payments/stripe.js';
 import { StripeFixtures } from '../../../infra/payments/stripe-fixtures.js';
 import type { ObjectData } from '../../../infra/payments/transport.js';
 import { PaymentWebhookError } from '../../../infra/payments/webhook-error.js';
-import { createWebhookHealthQuery, createWebhookInbox, testEventSkippedAction, type WebhookInbox } from './inbox.js';
+import { createWebhookHealthQuery, createWebhookInbox, handlerFailureReasons, testEventSkippedAction, type WebhookInbox } from './inbox.js';
 import { stripeTestClearedAction } from '../customers.js';
 import { createWebhookInboxJobs } from './inbox.jobs.js';
 import { createWebhookInboxRoutes } from './inbox.routes.js';
@@ -127,24 +128,41 @@ it('logs a failed handler with its event and only a fixed reason', async () => {
     evt_fixed: new Error('Saved card household is unresolved'),
     evt_provider_text: new Error('No such customer: cus_123'),
     evt_provider_error: new ProviderError('Card declined'),
+    // Letters and spaces only, but not a handler's own text: it could be a person's name.
+    evt_plain_text: new Error('secret and payer details'),
+    evt_fixed_subclass: new ProviderError('Webhook gym mismatch'),
   };
   inbox.register('payment_intent.succeeded', async (value) => { throw failures[value.id]!; });
   for (const id of Object.keys(failures)) await deliver(event(id));
   const lines: string[] = [], previous = setLogSink((line) => lines.push(line));
-  try { for (let n = 0; n < 3; n++) await jobs.runNext(); } finally { setLogSink(previous); }
+  try { for (let n = 0; n < Object.keys(failures).length; n++) await jobs.runNext(); } finally { setLogSink(previous); }
   const logged = lines.map((line) => JSON.parse(line) as Record<string, unknown>)
     .filter((line) => line.event === 'billing.webhooks.handler_failed');
-  expect(logged).toHaveLength(3);
+  expect(logged).toHaveLength(5);
   const byEvent = new Map(logged.map((line) => [line.eventId, line]));
   expect(byEvent.get('evt_fixed')).toMatchObject({ level: 'error', gymId: gymA, type: 'payment_intent.succeeded',
     reason: 'Saved card household is unresolved', error: { name: 'Error' } });
-  for (const id of ['evt_provider_text', 'evt_provider_error']) {
+  for (const id of ['evt_provider_text', 'evt_provider_error', 'evt_plain_text', 'evt_fixed_subclass']) {
     expect(byEvent.get(id)).toMatchObject({ level: 'error', gymId: gymA, eventId: id, type: 'payment_intent.succeeded' });
     expect(byEvent.get(id)).not.toHaveProperty('reason');
   }
   expect(byEvent.get('evt_provider_text')).toMatchObject({ error: { name: 'Error' } });
-  expect(lines.join('\n')).not.toMatch(/cus_123|Card declined/);
-  expect((await rows()).map((row) => row.error)).toEqual(['handler_failed', 'handler_failed', 'handler_failed']);
+  expect(byEvent.get('evt_plain_text')).toMatchObject({ error: { name: 'Error' } });
+  expect(lines.join('\n')).not.toMatch(/cus_123|Card declined|secret and payer details|Webhook gym mismatch/);
+  expect((await rows()).map((row) => row.error)).toEqual(Object.keys(failures).map(() => 'handler_failed'));
+});
+it('lists every fixed failure text the billing handlers throw as a loggable reason', () => {
+  const directory = new URL('./handlers/', import.meta.url);
+  const thrown = readdirSync(directory).filter((file) => file.endsWith('.ts') && !/\.(?:test|spec)\./.test(file))
+    .flatMap((file) => [...readFileSync(new URL(file, directory), 'utf8').matchAll(/throw new Error\((['`])(.*?)\1\)/g)])
+    .flatMap(([, , text]) => {
+      // parentPayment's one template: `${kind} payment is unresolved`, with kind 'Refund' or 'Dispute'.
+      const rest = /^\$\{kind\}( .*)$/.exec(text!)?.[1];
+      return rest ? ['Refund', 'Dispute'].map((kind) => kind + rest) : [text!];
+    });
+  expect(thrown.length).toBeGreaterThan(30);
+  expect(thrown.filter((text) => !handlerFailureReasons.has(text))).toEqual([]);
+  expect(thrown.filter((text) => /\$\{/.test(text))).toEqual([]);
 });
 it('can replay an exhausted handler and retries a failed replay too', async () => {
   let fail = true;

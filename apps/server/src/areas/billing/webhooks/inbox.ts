@@ -29,8 +29,30 @@ const eventSchema = z.strictObject({
 const storedEventSchema = z.object(eventSchema.shape);
 /** Audited when a Stripe test-mode event is finished, unread, for a gym whose key is now live. */
 export const testEventSkippedAction = 'billing.webhook.test_event_skipped';
+/**
+ * The billing handlers' own fixed failure texts. A failed handler's message is logged only when it is one of
+ * these, thrown as a plain `Error`; any other text (a provider's, or one holding an ID or a name) is left out.
+ */
+export const handlerFailureReasons: ReadonlySet<string> = new Set([
+  'Payments are not configured for this gym', 'Billing retry runner is not configured',
+  'Webhook payment object is unresolved', 'Payment success time is unresolved', 'Checkout link gym mismatch',
+  'Checkout link session is unresolved', 'Checkout link session mismatch', 'Checkout link association is unresolved',
+  'Webhook PaymentIntent is unresolved', 'Webhook payment gym mismatch', 'Webhook invoice is unmatched or ambiguous',
+  'Webhook invoice is unresolved', 'Webhook payment customer mismatch', 'Webhook attempt is unresolved',
+  'Webhook payment amount mismatch', 'Webhook bank account mismatch', 'Refund payment is unresolved',
+  'Dispute payment is unresolved', 'Refund payment mismatch', 'Webhook gym mismatch', 'Webhook object kind mismatch',
+  'Expected PaymentIntent', 'Refunded charge has no resolved refunds', 'Refund parent mismatch',
+  'Invoice has another dispute; staff resolution required', 'Checkout gym mismatch', 'Checkout invoice mismatch',
+  'Checkout payment amount mismatch', 'Completed Checkout payment is unresolved',
+  'Collected payment method is unresolved', 'Completed Checkout setup is unresolved',
+  'Payment method creation time is unresolved', 'Saved card household is unresolved', 'Saved card household mismatch',
+  'SetupIntent is unresolved', 'SetupIntent gym mismatch', 'Successful SetupIntent has no payment method',
+]);
+function failureReason(error: unknown) {
+  return error instanceof Error && error.constructor === Error && handlerFailureReasons.has(error.message)
+    ? error.message : undefined;
+}
 // Read from a stored job: unknown keys are ignored for the same reason.
-const fixedReason = /^[A-Za-z][A-Za-z ]{0,99}$/;
 const dispatchSchema = z.object({ eventId: z.string().min(1), replay: z.boolean().optional() });
 
 export function createWebhookInbox(options: {
@@ -125,9 +147,8 @@ export function createWebhookInbox(options: {
         // Provider error messages may contain secrets or personal data. Keep a safe marker only.
         await scope(context.gymId, (tx) => tx.update(stripeEvents).set({ error: 'handler_failed' })
           .where(match(context.gymId, input.eventId)));
-        // Only a handler's own fixed text is logged: a plain Error whose message is letters and spaces.
-        const reason = error instanceof Error && error.constructor === Error && fixedReason.test(error.message)
-          ? error.message : undefined;
+        // Only a handler's own fixed text is logged (handlerFailureReasons); any other message is left out.
+        const reason = failureReason(error);
         logError('billing.webhooks.handler_failed', { gymId: context.gymId, eventId: input.eventId, type: row.type,
           ...(reason ? { reason } : {}) }, error);
         throw error; // The job queue owns retry/backoff and the attempt limit.
