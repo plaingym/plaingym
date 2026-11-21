@@ -100,11 +100,16 @@ it.each([true, false])('archives or restores through the active flag: %s', async
   const api = client(); editor(api, { ...pack, active }); fireEvent.click(screen.getByLabelText('Active')); submit();
   await waitFor(() => expect(api.call).toHaveBeenCalledWith('updateClassPack', expect.objectContaining({ active: !active, revision: 4 }), { packId: pack.id }));
 });
-it.each([{ reasons: [] }, { reasons: ['revision_conflict'] }])('holds the stale revision and prevents saving again until the editor is reopened ($reasons)', async ({ reasons }) => {
-  const api = client(); vi.mocked(api.call).mockRejectedValue(new ApiError(409, 'conflict', reasons)); editor(api, pack); submit();
+it('holds the stale revision and prevents saving again until the editor is reopened', async () => {
+  const api = client(); vi.mocked(api.call).mockRejectedValue(new ApiError(409, 'conflict', ['revision_conflict'])); editor(api, pack); submit();
   expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('changed elsewhere'));
   expect(screen.getByRole('button', { name: 'Save' })).toHaveProperty('disabled', true);
   submit(); expect(api.call).toHaveBeenCalledOnce();
+});
+it('words an unclassified conflict as a refusal and leaves Save available', async () => {
+  const api = client(); vi.mocked(api.call).mockRejectedValue(new ApiError(409, 'conflict', [])); editor(api, pack); submit();
+  expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('The server refused this change.'));
+  expect(screen.getByRole('button', { name: 'Save' })).toHaveProperty('disabled', false);
 });
 it('lists archived packs only when requested', async () => {
   const api = client(); vi.mocked(api.packs).mockResolvedValue([pack, { ...pack, id: id(11), name: 'Old pack', active: false }]);

@@ -132,7 +132,7 @@ export function createMembershipService(options: MembershipOptions = {}) {
   const getRow = async (tx: Transaction, id: string) => catalogMissing((await tx.select().from(memberships).where(eq(memberships.id, id)).for('update'))[0]);
   const getPlan = async (tx: Transaction, id: string, { allowInactive = false }: { allowInactive?: boolean } = {}) => {
     const plan = catalogMissing((await tx.select().from(plans).where(eq(plans.id, id)).for('share'))[0]);
-    if (!plan.active && !allowInactive) conflict('Plan is inactive');
+    if (!plan.active && !allowInactive) refuse('plan_inactive', 'Plan is inactive');
     return plan;
   };
   async function assign(context: MutationContext, request: AssignMembership, alignHousehold = false): Promise<c.Membership> {
@@ -154,11 +154,11 @@ export function createMembershipService(options: MembershipOptions = {}) {
         return present(tx, previous);
       }
       const member = catalogMissing((await tx.select().from(members).where(and(eq(members.id, request.memberId), eq(members.householdId, home.id))).for('update'))[0]);
-      if (member.anonymizedAt) conflict('Erased members cannot receive a membership');
+      if (member.anonymizedAt) refuse('membership_erased', 'Erased members cannot receive a membership');
       const plan = await getPlan(tx, request.planId);
-      if (plan.currency !== gym.currency) conflict('Currency does not match the gym');
+      if (plan.currency !== gym.currency) refuse('currency_mismatch', 'Currency does not match the gym');
       let nextDueOn = request.nextDueOn;
-      if (nextDueOn < request.startsOn) conflict('Billing cannot start before membership starts');
+      if (nextDueOn < request.startsOn) refuse('billing_before_start', 'Billing cannot start before membership starts');
       const trialEndsOn = request.trialEndsOn ?? (plan.trialDays ? trialEnd(request.startsOn, plan.trialDays) : null);
       const status = request.initialStatus ?? (trialEndsOn ? 'trial' : 'pending');
       if (!['pending', 'trial', 'active'].includes(status)) conflict('Invalid initial membership state');
@@ -177,7 +177,10 @@ export function createMembershipService(options: MembershipOptions = {}) {
         const expected = newHousehold ? request.startsOn : live
           .filter(row => row.interval === 'monthly' && (row.status === 'active' || row.status === 'pending'))
           .map(row => row.nextDueOn).sort().find(date => date >= request.startsOn) ?? householdNextDate(request.startsOn, home.billingDay);
-        if (nextDueOn !== expected) conflict(newHousehold ? 'A new household starts billing on its join date' : 'Use the household next billing date');
+        if (nextDueOn !== expected) {
+          if (newHousehold) refuse('household_join_date', 'A new household starts billing on its join date');
+          refuse('household_billing_date', 'Use the household next billing date');
+        }
       }
       // A staff-assigned trial is first due when it ends; off the billing day, the engine bills a stub up to it.
       // Internal callers (imports) keep a later explicit date.
@@ -322,17 +325,17 @@ export function createMembershipService(options: MembershipOptions = {}) {
     async activate(context: MutationContext, request: MembershipEdit & { nextDueOn?: string }) {
       const gym = await settings.get(context.gymId);
       return edit(context, request, 'activated', async (tx, before) => {
-        if (!['pending', 'trial', 'frozen'].includes(before.status)) conflict('Membership cannot be activated');
+        if (!['pending', 'trial', 'frozen'].includes(before.status)) refuse('membership_status', 'Membership cannot be activated');
         // Take the member lock before lead work, matching attendance's member/lead lock order.
         const [member] = await tx.select({ status: members.status }).from(members).where(eq(members.id, before.memberId)).for('update');
         let due = request.nextDueOn ?? before.nextDueOn;
         c.dateSchema.parse(due);
-        if (due < before.startsOn) conflict('Billing cannot start before membership starts');
+        if (due < before.startsOn) refuse('billing_before_start', 'Billing cannot start before membership starts');
         const anniversaryOn = editedAnniversary(before, request.nextDueOn);
         if (before.status === 'frozen') {
           const home = catalogMissing((await tx.select().from(households).where(eq(households.id, before.householdId)))[0]);
           const today = localDate(clock.now(), gym.timezone);
-          if (request.nextDueOn !== undefined && due < before.nextDueOn) conflict('Resume must preserve the skipped cycle');
+          if (request.nextDueOn !== undefined && due < before.nextDueOn) refuse('resume_skips_cycle', 'Resume must preserve the skipped cycle');
           const anchor = before.interval === 'annual' ? Number(due.slice(8)) : home.billingDay;
           // Cycles from a scheduled resume date on are owed, even if this runs late (downtime, a late staff resume).
           const owedFrom = before.resumesOn !== null && before.resumesOn < today ? before.resumesOn : today;
@@ -349,9 +352,9 @@ export function createMembershipService(options: MembershipOptions = {}) {
     async freeze(context: MutationContext, request: MembershipEdit & { resumesOn?: string | null }) {
       const gym = await settings.get(context.gymId);
       return edit(context, request, 'frozen', async (tx, before) => {
-        if (!['active', 'trial'].includes(before.status)) conflict('Membership cannot be frozen');
+        if (!['active', 'trial'].includes(before.status)) refuse('membership_status', 'Membership cannot be frozen');
         const today = localDate(clock.now(), gym.timezone);
-        if (request.resumesOn != null && c.dateSchema.parse(request.resumesOn) <= today) conflict('Resume date must be in the future');
+        if (request.resumesOn != null && c.dateSchema.parse(request.resumesOn) <= today) refuse('resume_not_future', 'Resume date must be in the future');
         const home = catalogMissing((await tx.select().from(households).where(eq(households.id, before.householdId)))[0]);
         const anchor = before.interval === 'annual' ? Number(before.nextDueOn.slice(8)) : home.billingDay;
         let nextDueOn = advanceDue(before.nextDueOn, before.interval as c.BillingInterval, anchor, before.anniversaryOn);
@@ -361,7 +364,7 @@ export function createMembershipService(options: MembershipOptions = {}) {
     },
     cancel(context: MutationContext, request: MembershipEdit) {
       return edit(context, request, 'cancelled', async (tx, before) => {
-        if (before.status === 'cancelled') conflict('Membership is already cancelled');
+        if (before.status === 'cancelled') refuse('membership_cancelled', 'Membership is already cancelled');
         await endDiscount(tx, context, clock, before.id, 'removed');
         return { status: 'cancelled', cancelledAt: clock.now(), frozenAt: null, resumesOn: null, discount: null, ...clearedSwitch(before) };
       });
@@ -461,9 +464,9 @@ export function createMembershipService(options: MembershipOptions = {}) {
         throw new AppError('invalid_request', 'Switch plans to change a membership\'s plan or billing interval');
       const changes = c.updateMembershipRequestSchema.parse(input);
       return edit(context, { membershipId, revision: changes.revision }, 'updated', async (_tx, before) => {
-        if (before.status === 'cancelled') conflict('Cancelled membership cannot be edited');
-        if (changes.price && changes.price.currency !== before.currency) conflict('Currency does not match');
-        if (changes.nextDueOn && changes.nextDueOn < before.startsOn) conflict('Billing cannot start before membership starts');
+        if (before.status === 'cancelled') refuse('membership_cancelled', 'Cancelled membership cannot be edited');
+        if (changes.price && changes.price.currency !== before.currency) refuse('currency_mismatch', 'Currency does not match');
+        if (changes.nextDueOn && changes.nextDueOn < before.startsOn) refuse('billing_before_start', 'Billing cannot start before membership starts');
         const priceOnly = before.scheduledPlanId !== null && before.scheduledPlanId === before.planId;
         if (changes.price && before.scheduledPlanId !== null && !priceOnly)
           refuse('switch_scheduled', 'A plan switch is scheduled; cancel it before changing the price');

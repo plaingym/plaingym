@@ -44,7 +44,8 @@ export function MembershipDiscount({ row, gymId, client, discounts, reload }: {
       <fieldset disabled={busy} className="min-w-0 space-y-3">
         {action === 'remove' ? <p>{text('confirmRemove')}</p> : <>
           <p className="text-sm text-muted-foreground">{text('nextInvoice')}</p>
-          <DiscountSelection key={base.revision} gymId={gymId} planId={base.planId} currency={base.currency} value={selection} onChange={setSelection} client={discounts} live/>
+          <DiscountSelection key={base.revision} gymId={gymId} planId={base.planId} scheduledPlanId={base.scheduledPlanId} currency={base.currency}
+            value={selection} onChange={setSelection} client={discounts} live/>
         </>}
         <div className="flex flex-col gap-2 sm:flex-row"><Button type="submit" disabled={stale || (action === 'edit' && !selection)}>{text(busy ? 'saving' : action === 'remove' ? 'remove' : 'apply')}</Button>
           <Button variant="outline" onClick={() => { setAction(null); if (stale) void reload(); }}>{text(stale ? 'closeReload' : 'cancel')}</Button></div>

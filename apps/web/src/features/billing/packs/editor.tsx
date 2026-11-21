@@ -8,7 +8,7 @@ import { Button } from '../../../components/ui/button.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { CheckboxField } from '../../../components/ui/select.js';
-import { ApiError } from '../../../lib/api.js';
+import { revisionConflict } from '../catalog/format.js';
 import type { PackClient } from './api.js';
 import { failure, text } from './messages.js';
 
@@ -35,7 +35,7 @@ export function PackEditor({ record, currency, taxes, client, close, saved }: {
       else await client.call('createClassPack', input);
       saved();
     } catch (cause) {
-      if (record && cause instanceof ApiError && cause.status === 409 && (cause.reason.length === 0 || cause.reason.includes('revision_conflict'))) { setStale(true); setError(text('stale')); }
+      if (record && revisionConflict(cause)) { setStale(true); setError(text('stale')); }
       else setError(failure(cause));
     } finally { inFlight.current = false; setBusy(false); }
   }

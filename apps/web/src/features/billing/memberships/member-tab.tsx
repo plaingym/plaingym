@@ -24,6 +24,18 @@ import { MembershipDiscount } from './discount.js';
 import { FreezeHistory } from './freeze-history.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('billing/memberships:' + key, values);
+const refusalText: Record<string, string> = {
+  household_billing_date: 'refusal_household_billing_date',
+  household_join_date: 'refusal_household_join_date',
+  billing_before_start: 'refusal_billing_before_start',
+  membership_status: 'refusal_membership_status',
+  membership_cancelled: 'refusal_membership_cancelled',
+  resume_skips_cycle: 'refusal_resume_skips_cycle',
+  resume_not_future: 'refusal_resume_not_future',
+  membership_erased: 'reason_erased',
+  plan_inactive: 'reason_plan_inactive',
+};
+const staleRefusals = new Set(['household_billing_date', 'household_join_date', 'membership_status', 'membership_cancelled']);
 type Action = 'activateMembership' | 'freezeMembership' | 'resumeMembership' | 'cancelMembership' | 'updateMembership' | 'cancelMembershipSwitch';
 export function MembershipPanel({ gymId, memberId, manage, client = billingClient, discounts, now }: {
   gymId: string; memberId: string; manage: boolean; client?: BillingClient; discounts?: DiscountClient | undefined; now?: Date;
@@ -42,15 +54,31 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
   async function reload() {
     await Promise.all([cache.invalidateQueries({ queryKey: key }), cache.invalidateQueries({ queryKey: ['members', gymId] })]);
   }
-  async function mutate(operation: Action | 'assignMembership', input: unknown, membershipId?: string) {
+  async function mutate(operation: Action | 'assignMembership', input: unknown, membershipId?: string, refused?: (reason: string) => void) {
     setBusy(true); setMessage(''); setReminder(false);
     try {
       await client.call(operation, input, membershipId ? { membershipId } : {});
       await reload();
       setMessage(text('saved')); return true;
     } catch (error) {
-      setMessage(error instanceof ApiError && error.reason.includes('switch_scheduled') ? text('reason_switch_scheduled')
-        : error instanceof ApiError && error.reason.some(reason => reason.startsWith('discount_')) ? discountFailure(error) : saveError(error));
+      if (error instanceof ApiError) {
+        if (error.reason.includes('switch_scheduled')) {
+          setMessage(text('reason_switch_scheduled'));
+          return false;
+        }
+        if (error.reason.some(reason => reason.startsWith('discount_'))) {
+          setMessage(discountFailure(error));
+          return false;
+        }
+        const code = error.status === 409 && error.reason.find(reason => Object.hasOwn(refusalText, reason));
+        if (code) {
+          setMessage(text(refusalText[code]!));
+          refused?.(code);
+          if (staleRefusals.has(code)) void reload();
+          return false;
+        }
+      }
+      setMessage(saveError(error));
       return false;
     }
     finally { setBusy(false); }
@@ -69,7 +97,7 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
       {bootstrap.isError && <Alert variant="error" role="alert">{text('error')} <Button variant="outline" onClick={() => void bootstrap.refetch()}>{text('retry')}</Button></Alert>}
       {setup.isError && <Alert variant="error" role="alert">{text('error')} <Button variant="outline" onClick={() => void setup.refetch()}>{text('retry')}</Button></Alert>}
       {setup.data && plans.data && bootstrap.data && <AssignmentForm key={memberId} plans={plans.data.filter(plan => plan.active)}
-        gymId={gymId} discounts={discounts} householdId={setup.data.member.householdId} memberId={memberId} busy={busy} assign={data => mutate('assignMembership', data)}
+        gymId={gymId} discounts={discounts} householdId={setup.data.member.householdId} memberId={memberId} busy={busy} assign={(data, refused) => mutate('assignMembership', data, undefined, refused)}
         today={localDate(now ?? new Date(), bootstrap.data.gym.timezone)}
         billingDate={startsOn => householdBillingDate(startsOn, setup.data.household, setup.data.billingDay)}/>
       }
@@ -78,7 +106,7 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
 }
 function AssignmentForm({ plans, memberId, householdId, today, billingDate, busy, assign, gymId, discounts }: {
   plans: Plan[]; memberId: string; householdId: string; today: string; billingDate: (startsOn: string) => string; busy: boolean;
-  assign: (data: unknown) => Promise<boolean>;
+  assign: (data: unknown, refused: (reason: string) => void) => Promise<boolean>;
   gymId: string; discounts?: DiscountClient | undefined;
 }) {
   const [chosen, setChosen] = useState(''), [formKey, setFormKey] = useState(0);
@@ -91,7 +119,9 @@ function AssignmentForm({ plans, memberId, householdId, today, billingDate, busy
   const setDiscount = (value: MembershipDiscountSelection | undefined) => setPicked(value && { planId, value });
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget);
-    if (await assign({ memberId, householdId, planId, startsOn: form.get('startsOn'), nextDueOn: form.get('nextDueOn'), firstPeriod: form.get('firstPeriod'), ...(discount ? { discount } : {}) })) {
+    // The server takes only the household's billing date, so after a date refusal the field follows the reloaded date again.
+    const dateRefused = (reason: string) => { if (reason === 'household_billing_date' || reason === 'household_join_date') setNextDueOn(null); };
+    if (await assign({ memberId, householdId, planId, startsOn: form.get('startsOn'), nextDueOn: form.get('nextDueOn'), firstPeriod: form.get('firstPeriod'), ...(discount ? { discount } : {}) }, dateRefused)) {
       setFormKey(value => value + 1); setStartsOn(today); setNextDueOn(null); setDiscount(undefined);
     }
   }

@@ -145,6 +145,22 @@ it('shares the catalog query and does not reload on Cancel, but reloads on a sta
   await waitFor(() => expect(api.discounts.list).toHaveBeenCalledTimes(3));
   expect(api.billing.plans).toHaveBeenCalledTimes(1); expect(api.billing.settings).toHaveBeenCalledTimes(1);
 });
+it('reloads the discount list when Cancel closes the editor after a terms-used refusal', async () => {
+  const api = clients();
+  vi.mocked(api.discounts.list).mockResolvedValueOnce([{ ...discount, termsLocked: false, uses: 0 }]);
+  vi.mocked(api.discounts.update).mockRejectedValueOnce(new ApiError(409, 'conflict', ['discount_terms_used']));
+  start(<DiscountCatalog gymId={id(1)} client={api.discounts} billing={api.billing}/>);
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit ' + discount.name }));
+  const dialog = within(screen.getByRole('dialog'));
+  field('Percentage (up to 100)', '15', dialog);
+  save();
+  expect(await dialog.findByText('This discount has been used. Create another discount to change its terms.')).toBeDefined();
+  fireEvent.click(dialog.getByRole('button', { name: 'Cancel' }));
+  expect(api.discounts.list).toHaveBeenCalledTimes(1);
+  fireEvent.click(dialog.getByRole('button', { name: 'Discard changes' }));
+  await waitFor(() => expect(api.discounts.list).toHaveBeenCalledTimes(2));
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
 it('keeps an edited discount draft when Cancel is kept editable, then closes on discard without reloading', async () => {
   const api = clients();
   start(<><CatalogWorkspace gymId={id(1)} client={api.billing}/><DiscountCatalog gymId={id(1)} client={api.discounts} billing={api.billing}/></>);
@@ -210,6 +226,21 @@ it.each([true, false])('replaces or adds the card discount with its revision (ex
   fireEvent.change(form.getByLabelText('Discount code'), { target: { value: 'FAMILY' } });
   fireEvent.submit(form.getByRole('button', { name: 'Apply discount' }).closest('form')!);
   await waitFor(() => expect(api.billing.call).toHaveBeenCalledWith('setMembershipDiscount', { revision: 7, discount: { code: 'FAMILY' } }, { membershipId: row.id }));
+});
+it.each([true, false])('offers named discounts that cover the current and scheduled plan (scheduled: %s)', async scheduled => {
+  const nextPlanId = id(10);
+  const currentOnly = { ...discount, name: 'Current plan only' };
+  const bothPlans = { ...discount, id: id(11), name: 'Both plans', planIds: [plan.id, nextPlanId] };
+  const allPlans = { ...discount, id: id(12), name: 'All plans', planIds: [] };
+  const api = panel('admin', { ...row, scheduledPlanId: scheduled ? nextPlanId : null });
+  vi.mocked(api.discounts.list).mockResolvedValue([currentOnly, bothPlans, allPlans]);
+  fireEvent.click(await screen.findByRole('button', { name: 'Change discount' }));
+  const form = within(screen.getByRole('button', { name: 'Apply discount' }).closest('form')!);
+  field('Discount', 'named', form);
+  await form.findByRole('option', { name: /Both plans/ });
+  expect(form.getByRole('option', { name: /All plans/ })).toBeDefined();
+  if (scheduled) expect(form.queryByRole('option', { name: /Current plan only/ })).toBeNull();
+  else expect(form.getByRole('option', { name: /Current plan only/ })).toBeDefined();
 });
 it('shows cycles left and confirms removal without returning a use', async () => {
   const api = panel(); expect(await screen.findByText('Billing cycles left: 1,200')).toBeDefined();

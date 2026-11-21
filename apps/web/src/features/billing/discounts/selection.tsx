@@ -10,13 +10,14 @@ import { Select } from '../../../components/ui/select.js';
 import { discountClient, type DiscountClient } from './api.js';
 import { benefit, text } from './messages.js';
 
-export function DiscountSelection({ gymId, planId, currency, value, onChange, client = discountClient, live = false }: {
-  gymId: string; planId: string; currency: string; value: MembershipDiscountSelection | undefined;
+export function DiscountSelection({ gymId, planId, scheduledPlanId, currency, value, onChange, client = discountClient, live = false }: {
+  gymId: string; planId: string; scheduledPlanId?: string | null; currency: string; value: MembershipDiscountSelection | undefined;
   onChange(value: MembershipDiscountSelection | undefined): void; client?: DiscountClient | undefined; live?: boolean;
 }) {
   const [mode, setMode] = useState('none');
   const rows = useQuery({ queryKey: ['billing', gymId, 'discounts'], queryFn: () => client.list(), enabled: mode === 'named' });
-  const eligible = rows.data?.filter(row => row.active && row.currency === currency && (!row.planIds.length || row.planIds.includes(planId)) && (!live || row.duration !== null));
+  const eligible = rows.data?.filter(row => row.active && row.currency === currency && (!live || row.duration !== null)
+    && (!row.planIds.length || (row.planIds.includes(planId) && (!scheduledPlanId || row.planIds.includes(scheduledPlanId)))));
   return <div className="min-w-0 space-y-3 sm:col-span-2">
     <Label className="block min-w-0">{text('choose')}<Select value={mode} onChange={event => { setMode(event.target.value); onChange(undefined); }}>
       <option value="none">{text('none')}</option><option value="named">{text('named')}</option><option value="code">{text('byCode')}</option>

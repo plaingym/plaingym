@@ -33,6 +33,8 @@ is a conflict and changes neither the revision nor the audit history.
 Cancelling a membership ends its application as `removed`, without returning a
 use, and the cancelled membership's response has no live discount. Member erasure
 ends the application in the same transaction as the membership cancellation.
+The named discount picker for an existing membership shows only discounts that
+cover both the current and any scheduled plan.
 
 A plan switch keeps the applied discount and remaining cycles when its
 snapshotted plan list is empty or includes the destination plan, and otherwise
@@ -48,6 +50,21 @@ invoice. Fee-only waivers complete at assignment. Full cycle invoices, including
 first period that bills a whole period, consume a `once` or `cycles` allowance,
 while prorations, trials and frozen skipped periods do not. A zero first invoice settles and activates through the normal runner and
 transition jobs. Catalog edits leave existing application terms unchanged.
+
+## Membership refusals
+
+Membership actions return a 409 with `details.reason` for an inactive plan
+(`plan_inactive`), assignment to an erased member (`membership_erased`), a
+currency mismatch (`currency_mismatch`), billing before the membership starts
+(`billing_before_start`), a new household that must bill on the membership start
+date (`household_join_date`), or an existing household that must use its next
+billing date (`household_billing_date`). Other reasons are a status that
+prevents activation or freezing (`membership_status`), an already cancelled
+membership (`membership_cancelled`), resuming before the billing date the
+freeze skipped (`resume_skips_cycle`), and a freeze resume date that isn't in
+the future (`resume_not_future`). The membership tab gives staff a message
+for each reason and reloads membership data after `household_join_date`,
+`household_billing_date`, `membership_status`, or `membership_cancelled`.
 
 ## Member status
 

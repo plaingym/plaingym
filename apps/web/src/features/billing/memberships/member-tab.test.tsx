@@ -263,3 +263,57 @@ it('shows the usual conflict message on a 409', async () => {
   save();
   expect(await screen.findByText(/Reload and review before saving/)).toBeDefined();
 });
+it('refreshes the household billing date after a refused assignment and keeps the draft', async () => {
+  const client = start('admin', { call: async () => { throw new ApiError(409, 'conflict', ['household_billing_date']); } });
+  const assign = await screen.findByRole('button', { name: 'Assign a plan' });
+  const startsOn = screen.getByLabelText<HTMLInputElement>('Starts on');
+  const nextDueOn = screen.getByLabelText<HTMLInputElement>('Next billing date');
+  const firstPeriod = screen.getByLabelText<HTMLSelectElement>('First period');
+  fireEvent.change(startsOn, { target: { value: '2026-10-28' } });
+  fireEvent.change(firstPeriod, { target: { value: 'next_billing_date' } });
+  expect(nextDueOn.value).toBe('2026-11-01');
+  const reads = vi.mocked(client.memberships).mock.calls.length;
+  vi.mocked(client.memberships).mockResolvedValue([{ ...membership, nextDueOn: '2026-11-02' }]);
+  fireEvent.submit(assign.closest('form')!);
+  expect(await screen.findByText("The household's next billing date has changed. The form now shows the new date; check it and assign again.")).toBeDefined();
+  await waitFor(() => expect(nextDueOn.value).toBe('2026-11-02'));
+  expect(vi.mocked(client.memberships).mock.calls.length).toBeGreaterThan(reads);
+  expect(startsOn.value).toBe('2026-10-28');
+  expect(firstPeriod.value).toBe('next_billing_date');
+});
+it('replaces a typed billing date with the reloaded household date after a refused assignment', async () => {
+  const client = start('admin', { call: async () => { throw new ApiError(409, 'conflict', ['household_billing_date']); } });
+  const assign = await screen.findByRole('button', { name: 'Assign a plan' });
+  const startsOn = screen.getByLabelText<HTMLInputElement>('Starts on');
+  const nextDueOn = screen.getByLabelText<HTMLInputElement>('Next billing date');
+  fireEvent.change(startsOn, { target: { value: '2026-10-28' } });
+  fireEvent.change(nextDueOn, { target: { value: '2026-11-15' } });
+  vi.mocked(client.memberships).mockResolvedValue([{ ...membership, nextDueOn: '2026-11-02' }]);
+  fireEvent.submit(assign.closest('form')!);
+  expect(await screen.findByText("The household's next billing date has changed. The form now shows the new date; check it and assign again.")).toBeDefined();
+  await waitFor(() => expect(nextDueOn.value).toBe('2026-11-02'));
+  expect(startsOn.value).toBe('2026-10-28');
+});
+it('keeps a typed billing date after a refusal that is not about the household date', async () => {
+  start('admin', { call: async () => { throw new ApiError(409, 'conflict', ['plan_inactive']); } });
+  const assign = await screen.findByRole('button', { name: 'Assign a plan' });
+  const nextDueOn = screen.getByLabelText<HTMLInputElement>('Next billing date');
+  fireEvent.change(nextDueOn, { target: { value: '2026-11-15' } });
+  fireEvent.submit(assign.closest('form')!);
+  expect(await screen.findByText('That plan is no longer active.')).toBeDefined();
+  expect(nextDueOn.value).toBe('2026-11-15');
+});
+it('explains when a membership has already been cancelled', async () => {
+  const client = start('admin', { call: async () => { throw new ApiError(409, 'conflict', ['membership_cancelled']); } });
+  fireEvent.click(await screen.findByRole('button', { name: 'Cancel membership' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm cancellation' }));
+  expect(await screen.findByText("This membership has been cancelled, so it can't be changed.")).toBeDefined();
+  expect(client.call).toHaveBeenCalledWith('cancelMembership', { revision: membership.revision }, { membershipId: membership.id });
+});
+it('keeps the generic refusal for a conflict without a reason', async () => {
+  start('admin', { call: async () => { throw new ApiError(409, 'conflict', []); } });
+  const form = await openEdit();
+  fireEvent.change(form.price, { target: { value: '50' } });
+  save();
+  expect(await screen.findByText('This change could not be saved. Review your entries and try again.')).toBeDefined();
+});

@@ -2,6 +2,7 @@
 import { useRef, useState, type FormEvent } from 'react';
 import { createDiscountRequestSchema, type Discount, type Plan } from '@plaingym/shared/contracts';
 import { minorUnitsToInput, parseMinorUnits } from '@plaingym/shared/money';
+import { ApiError } from '../../../lib/api.js';
 import { Dialog, DialogCancel } from '../../../components/ui/dialog.js';
 import { Alert } from '../../../components/ui/alert.js';
 import { Button } from '../../../components/ui/button.js';
@@ -18,6 +19,7 @@ export function DiscountEditor({ record, currency, plans, client, close, saved }
   const [kind, setKind] = useState(record?.percentBasisPoints !== null && record?.percentBasisPoints !== undefined ? 'percent' : record?.amountCents ? 'amount' : 'fee');
   const [duration, setDuration] = useState(record?.duration ?? 'once');
   const [busy, setBusy] = useState(false), [stale, setStale] = useState(false), [error, setError] = useState('');
+  const [refused, setRefused] = useState(false);
   const inFlight = useRef(false), locked = record?.termsLocked ?? false;
   const denomination = record?.currency ?? currency;
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -42,11 +44,12 @@ export function DiscountEditor({ record, currency, plans, client, close, saved }
       if (record) await client.update(record.id, input); else await client.create(input);
       saved();
     } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 409) setRefused(true);
       if (record && revisionConflict(cause)) setStale(true);
       setError(failure(cause));
     } finally { inFlight.current = false; setBusy(false); }
   }
-  return <Dialog title={text(record ? 'edit' : 'create')} closeLabel={text('close')} onClose={() => close(stale)} dismissible={!busy}>
+  return <Dialog title={text(record ? 'edit' : 'create')} closeLabel={text('close')} onClose={() => close(stale || refused)} dismissible={!busy}>
     <form onSubmit={event => void submit(event)} className="min-w-0 space-y-4 wrap-anywhere">
       {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
       <fieldset disabled={busy} className="grid min-w-0 gap-4 sm:grid-cols-2">

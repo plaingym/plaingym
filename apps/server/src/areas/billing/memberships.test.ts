@@ -290,8 +290,11 @@ describe('membership lifecycle against PostgreSQL', () => {
   });
   it('requires household alignment for a newly added member and preserves the first-period choice', async () => {
     const f = await fixture('active'), member = await factory('members', f.gymId, { householdId: f.home.id });
-    await expect(f.service.assignFromCatalog(f.context, { memberId: member.id, householdId: f.home.id, planId: f.plan.id, startsOn: '2028-01-20', nextDueOn: '2028-02-01' })).rejects.toMatchObject({ code: 'conflict' });
-    const assigned = await f.service.assignFromCatalog(f.context, { memberId: member.id, householdId: f.home.id, planId: f.plan.id, startsOn: '2028-01-20', nextDueOn: '2028-01-31', firstPeriod: 'next_billing_date' });
+    const input = { memberId: member.id, householdId: f.home.id, planId: f.plan.id, startsOn: '2028-01-20' };
+    await expect(f.service.assignFromCatalog(f.context, { ...input, nextDueOn: '2028-01-30' })).rejects.toMatchObject({
+      code: 'conflict', message: 'Use the household next billing date', details: { reason: ['household_billing_date'] },
+    });
+    const assigned = await f.service.assignFromCatalog(f.context, { ...input, nextDueOn: '2028-01-31', firstPeriod: 'next_billing_date' });
     expect(assigned.nextDueOn).toBe('2028-01-31');
   });
   it('takes the household date from billable monthly memberships, not trial or frozen dates', async () => {
@@ -306,9 +309,22 @@ describe('membership lifecycle against PostgreSQL', () => {
     await f.service.cancel(f.context, { membershipId: f.membership.id, revision: f.membership.revision });
     const trialPlan = await factory('plans', f.gymId, { trialDays: 7 });
     const input = { memberId: f.member.id, householdId: f.home.id, planId: trialPlan.id, startsOn: '2028-01-20' };
-    await expect(f.service.assignFromCatalog(f.context, { ...input, nextDueOn: '2028-01-31' })).rejects.toMatchObject({ code: 'conflict' });
+    await expect(f.service.assignFromCatalog(f.context, { ...input, nextDueOn: '2028-01-31' })).rejects.toMatchObject({
+      code: 'conflict', message: 'A new household starts billing on its join date', details: { reason: ['household_join_date'] },
+    });
     expect(await f.service.assignFromCatalog(f.context, { ...input, nextDueOn: '2028-01-20' })).toMatchObject({ status: 'trial', nextDueOn: '2028-01-27' });
     expect((await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, f.home.id))))[0]?.billingDay).toBe(27);
+  });
+  it('reports inactive plans and billing before the start at assignment', async () => {
+    const f = await fixture();
+    const inactive = await factory('plans', f.gymId, { active: false });
+    const input = { memberId: f.member.id, householdId: f.home.id, planId: f.plan.id, startsOn: '2028-01-31', nextDueOn: '2028-01-31' };
+    await expect(f.service.assignFromCatalog(f.context, { ...input, planId: inactive.id })).rejects.toMatchObject({
+      code: 'conflict', message: 'Plan is inactive', details: { reason: ['plan_inactive'] },
+    });
+    await expect(f.service.assignFromCatalog(f.context, { ...input, nextDueOn: '2028-01-30' })).rejects.toMatchObject({
+      code: 'conflict', message: 'Billing cannot start before membership starts', details: { reason: ['billing_before_start'] },
+    });
   });
   it('rejects foreign plans and mismatched member/household pairs', async () => {
     const f = await fixture(), other = await fixture();
@@ -329,9 +345,34 @@ describe('membership lifecycle against PostgreSQL', () => {
     const f = await fixture('active');
     const cancelled = await f.service.cancel(f.context, { membershipId: f.membership.id, revision: 1 });
     expect(cancelled).toMatchObject({ commitmentEndsOn: '2028-02-29', cancelledAt: f.clock.now().toISOString() });
-    await expect(f.service.activate(f.context, { membershipId: cancelled.id, revision: 2 })).rejects.toMatchObject({ code: 'conflict' });
-    await expect(f.service.update(f.context, { membershipId: cancelled.id, revision: 2, price: { amountCents: 9000, currency: 'CAD' } }))
-      .rejects.toMatchObject({ code: 'conflict' });
+    const edit = { membershipId: cancelled.id, revision: cancelled.revision };
+    await expect(f.service.activate(f.context, edit)).rejects.toMatchObject({
+      code: 'conflict', message: 'Membership cannot be activated', details: { reason: ['membership_status'] },
+    });
+    await expect(f.service.update(f.context, { ...edit, price: { amountCents: 9000, currency: 'CAD' } })).rejects.toMatchObject({
+      code: 'conflict', message: 'Cancelled membership cannot be edited', details: { reason: ['membership_cancelled'] },
+    });
+    await expect(f.service.cancel(f.context, edit)).rejects.toMatchObject({
+      code: 'conflict', message: 'Membership is already cancelled', details: { reason: ['membership_cancelled'] },
+    });
+    expect(await f.service.get(f.gymId, cancelled.id)).toEqual(cancelled);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, cancelled.id)))).toHaveLength(2);
+  });
+  it('reports a freeze refused before activation', async () => {
+    const f = await fixture();
+    await expect(f.service.freeze(f.context, { membershipId: f.membership.id, revision: f.membership.revision })).rejects.toMatchObject({
+      code: 'conflict', message: 'Membership cannot be frozen', details: { reason: ['membership_status'] },
+    });
+  });
+  it('reports a freeze ending today and an activation of an already active membership', async () => {
+    const f = await fixture('active');
+    const edit = { membershipId: f.membership.id, revision: f.membership.revision };
+    await expect(f.service.freeze(f.context, { ...edit, resumesOn: '2028-01-15' })).rejects.toMatchObject({
+      code: 'conflict', message: 'Resume date must be in the future', details: { reason: ['resume_not_future'] },
+    });
+    await expect(f.service.activate(f.context, edit)).rejects.toMatchObject({
+      code: 'conflict', message: 'Membership cannot be activated', details: { reason: ['membership_status'] },
+    });
   });
   it('registers a daily date processor with gym timezone and no payment calls', async () => {
     const f = await fixture('trial'); f.clock.set('2028-02-07T08:00:00Z');

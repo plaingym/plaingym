@@ -25,9 +25,18 @@ code. Codes ignore letter case. Changing the plan clears the selection. Saving
 checks availability on the server and displays ended, used-up and wrong-plan
 refusals without discarding the form.
 
+Membership refusals that carry a reason (see the
+[membership refusals](../../../../../server/src/areas/billing/memberships.README.md#membership-refusals))
+get their own message. After a changed household billing date, a household
+that must bill on its start date, a changed status or a cancelled membership,
+the tab reloads its membership data and keeps the other entries. After either
+billing-date refusal, the assignment form shows the reloaded household date
+in place of a typed one.
+
 Owners and admins see the membership's applied discount snapshot and billing
 cycles left (or an ongoing duration). They can add or replace a price discount,
-or confirm its removal. Signup-fee-only waivers are available at assignment only.
+or confirm its removal. The named list offers only discounts that cover both
+the current plan and any scheduled plan. Signup-fee-only waivers are available at assignment only.
 Changes take effect on the next invoice, without proration or changes to issued
 invoices. Replacing takes a new use; removing does not return the old use. Each
 change sends the membership revision read when its form opened. A revision
