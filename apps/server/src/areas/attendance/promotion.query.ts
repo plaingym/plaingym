@@ -10,6 +10,9 @@ export const promotionAttendanceKey = (request: PromotionAttendanceRequest) => J
 // One program scan first won at 75% of the active roster in the dashboard load fixture. The share is now
 // measured against distinct visitors, and the load fixture's churn case checks the choice, not the cutoff.
 const WHOLE_PROGRAM_CANDIDATE_SHARE = 0.75;
+// The visitor probe costs one attendances lookup per gym member. Past four members per allowed visitor,
+// the per-candidate read is cheaper than probing, so skip it.
+const PROBE_MEMBER_FACTOR = 4;
 
 function programWindows(requests: readonly PromotionAttendanceRequest[]) {
   const byProgram = new Map<string, Map<string, PromotionAttendanceRequest>>();
@@ -27,11 +30,15 @@ function programWindows(requests: readonly PromotionAttendanceRequest[]) {
 function scanChoice(gymId: string, windows: readonly PromotionAttendanceRequest[], filter: SQL | undefined) {
   const candidateCount = new Set(windows.map(window => window.memberId)).size;
   const maxVisitors = Math.floor(candidateCount / WHOLE_PROGRAM_CANDIDATE_SHARE);
+  const probeLimit = maxVisitors * PROBE_MEMBER_FACTOR;
   // The gym membership count is an upper bound on distinct visitors. If it fits, skip the visit probes.
-  // Otherwise look for one matching visit per member and stop once another visitor rules out a scan.
+  // A gym above the probe limit would need more member probes than the per-candidate read costs, so skip
+  // them too. Otherwise look for one matching visit per member and stop once another visitor rules out a scan.
   return sql`select case when not exists (
       select 1 from ${members} where ${members.gymId} = ${gymId} offset ${maxVisitors}
-    ) then true else not exists (
+    ) then true when exists (
+      select 1 from ${members} where ${members.gymId} = ${gymId} offset ${probeLimit}
+    ) then false else not exists (
       select 1 from ${members}
       where ${members.gymId} = ${gymId} and (
         select true from ${attendances}
@@ -81,6 +88,8 @@ export interface PromotionProgramRead {
   choice: SQL;
   /** `select` of `(member_id, program_id, since, total)` that scans every visit of the program's earliest window. */
   wholeProgram: SQL;
+  /** `select` of `(member_id, program_id, since, total)` that counts each candidate's own window. */
+  candidateRead: SQL;
   /** `select` of `(member_id, program_id, since, total)` for this program, using `choice` to pick a read. */
   read: SQL;
 }
@@ -93,19 +102,20 @@ export function promotionAttendanceStatement(tx: Transaction, gymId: string, req
     const candidates = candidateWindows(windows), choice = scanChoice(gymId, windows, filter);
     const wholeProgram = wholeProgramRead(programId, windows, filter);
     // Count inside each indexed candidate window so a large candidate join need not materialize visit rows.
-    const read = sql`(with choice as materialized (${choice})
-      select * from (${wholeProgram}) as whole_program
-      where (select scan_program from choice)
-      union all
-      select c.member_id, c.program_id, c.since, totals.total
+    const candidateRead = sql`select c.member_id, c.program_id, c.since, totals.total
       from ${candidates}
       cross join lateral (
         select count(*)::integer as total from ${attendances}
         where ${candidateVisitFilter(filter)}
-      ) as totals
+      ) as totals`;
+    const read = sql`(with choice as materialized (${choice})
+      select * from (${wholeProgram}) as whole_program
+      where (select scan_program from choice)
+      union all
+      ${candidateRead}
       where not (select scan_program from choice)
     )`;
-    return { programId, candidates, filter, choice, wholeProgram, read };
+    return { programId, candidates, filter, choice, wholeProgram, candidateRead, read };
   });
   const statement = sql`select * from (${sql.join(programs.map(program => program.read), sql` union all `)}) as promotion_counts`;
   return { programs, statement };

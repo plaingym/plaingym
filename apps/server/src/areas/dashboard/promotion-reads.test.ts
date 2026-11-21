@@ -211,3 +211,42 @@ it('chooses a read per program from distinct visitors inside that program window
   expect(counts.size).toBe(windows.length);
   for (const window of windows) expect(counts.get(promotionAttendanceKey(window))).toBe(Number(window.since === since));
 });
+
+// One candidate among ten members is above four members per allowed visitor, so the statement skips the
+// probe even though only the candidate visits the program.
+it('skips the visitor probe when the gym is far larger than its allowed visitors', async () => {
+  const gymId = uuidv7(), until = '2026-04-01T00:00:00Z', since = '2026-01-15T00:00:00Z';
+  await factory('gyms', gymId);
+  const program = await factory('programs', gymId);
+  const roster = await Promise.all(Array.from({ length: 10 }, () => factory('members', gymId, { status: 'active' })));
+  const candidate = roster[0]!;
+  for (const occurredAt of ['2026-01-01T00:00:00Z', '2026-02-01T00:00:00Z', '2026-02-08T00:00:00Z', '2026-02-15T00:00:00Z'])
+    await factory('attendances', gymId, { memberId: candidate.id, programId: program.id, occurredAt: new Date(occurredAt), kind: 'class' });
+  const requests = [{ memberId: candidate.id, programId: program.id, since }];
+  const choices = await database.forGym(gymId, tx =>
+    // eslint-disable-next-line database/system-tables -- Inspect the same plan choice the attendance statement uses.
+    tx.execute<{ scan_program: boolean }>(promotionAttendanceScanChoices(tx, gymId, requests, until, false)));
+  expect(choices.map(row => row.scan_program)).toEqual([false]);
+  const counts = await countPromotionAttendance(database.forGym, gymId, requests, until, false);
+  expect(counts.get(promotionAttendanceKey(requests[0]!))).toBe(3);
+});
+
+// One candidate allows one visitor, so the probe limit is four members: exactly four still probe (and find
+// only the candidate, so the program scan wins), and a fifth member skips the probe.
+it.each([{ memberCount: 4, scan: true }, { memberCount: 5, scan: false }])(
+  'probes only up to four members per allowed visitor ($memberCount members)', async ({ memberCount, scan }) => {
+    const gymId = uuidv7(), until = '2026-04-01T00:00:00Z', since = '2026-01-15T00:00:00Z';
+    await factory('gyms', gymId);
+    const program = await factory('programs', gymId);
+    const roster = await Promise.all(Array.from({ length: memberCount }, () => factory('members', gymId, { status: 'active' })));
+    const candidate = roster[0]!;
+    for (const occurredAt of ['2026-02-01T00:00:00Z', '2026-02-08T00:00:00Z'])
+      await factory('attendances', gymId, { memberId: candidate.id, programId: program.id, occurredAt: new Date(occurredAt), kind: 'class' });
+    const requests = [{ memberId: candidate.id, programId: program.id, since }];
+    const choices = await database.forGym(gymId, tx =>
+      // eslint-disable-next-line database/system-tables -- Inspect the same plan choice the attendance statement uses.
+      tx.execute<{ scan_program: boolean }>(promotionAttendanceScanChoices(tx, gymId, requests, until, false)));
+    expect(choices.map(row => row.scan_program)).toEqual([scan]);
+    const counts = await countPromotionAttendance(database.forGym, gymId, requests, until, false);
+    expect(counts.get(promotionAttendanceKey(requests[0]!))).toBe(2);
+  });

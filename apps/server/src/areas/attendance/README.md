@@ -82,7 +82,9 @@ and exclude `until`; history sorts newest first, then ID ascending.
 exclusive `until`. For each program, it compares the number of distinct
 candidates with the number of distinct members who visited from the earliest
 candidate window, including former and inactive members. The probe stops as
-soon as enough visitors put the candidate share below 75%.
+soon as enough visitors put the candidate share below 75%. When the gym has more
+than four members per allowed visitor, the statement skips the probe and uses
+the per-candidate read.
 At 75% or more it scans the program once and joins the filtered rows to the
 candidate windows. Below 75% it joins each candidate window to an indexed
 attendance count for that member. Both paths use each candidate's own inclusive

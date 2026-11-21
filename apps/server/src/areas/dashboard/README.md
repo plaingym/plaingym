@@ -41,7 +41,8 @@ and each member's latest promotion in four sequential queries. A grouped query
 counts classes since each candidate's promotion (or creation), including linked
 session programs and the gym's open-mat setting. The batch uses each program's
 candidate share of distinct visitors in each program's earliest candidate window
-to choose its attendance read. The probe and count share one scoped statement.
+to choose its attendance read, and skips that probe for a gym with more than
+four members per allowed visitor. The probe and count share one scoped statement.
 The criteria registry still validates configuration, module availability and
 provider results. Time, age and extension criteria use their existing providers
 outside the snapshot transaction. Ready-only staff eligibility uses the same
