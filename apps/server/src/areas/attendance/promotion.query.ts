@@ -24,8 +24,6 @@ function programWindows(requests: readonly PromotionAttendanceRequest[]) {
   });
 }
 
-type ProgramWindows = ReturnType<typeof programWindows>;
-
 function scanChoice(gymId: string, windows: readonly PromotionAttendanceRequest[], filter: SQL | undefined) {
   const candidateCount = new Set(windows.map(window => window.memberId)).size;
   const maxVisitors = Math.floor(candidateCount / WHOLE_PROGRAM_CANDIDATE_SHARE);
@@ -55,38 +53,16 @@ function candidateVisitFilter(filter: SQL | undefined) {
   return sql`${filter} and ${attendances.memberId} = c.member_id and ${attendances.occurredAt} >= c.since`;
 }
 
-/** Candidate windows and one filtered attendance read per program. */
-function promotionAttendanceCtes(tx: Transaction, gymId: string, groups: ProgramWindows,
-  until: string, openMatCountsAsClass: boolean, scanPrograms?: ReadonlySet<string>) {
-  const reads = groups.map(({ programId, windows, since }) => {
-    const filter = predicate(tx, gymId, { programId, since, until, excludeOpenMat: !openMatCountsAsClass });
-    const programRead = sql`
+/** Every visit of one program in its earliest window, counted against each candidate window. */
+function wholeProgramRead(programId: string, windows: readonly PromotionAttendanceRequest[], filter: SQL | undefined): SQL {
+  const programRead = sql`
       select ${attendances.memberId} as member_id,
         ${attendances.occurredAt} as occurred_at, ${programId}::uuid as program_id
       from ${attendances}
     `;
-    if (scanPrograms?.has(programId)) return sql`${programRead} where ${filter}`;
-
-    // Joining each candidate member's earliest window keeps every other member's rows out of the scan,
-    // and the per-member minimum stops a member's second window in the same program from duplicating visits.
-    return sql`${programRead}
-      join (
-        select c.member_id, min(c.since) as since
-        from ${candidateWindows(windows)}
-        where c.program_id = ${programId}::uuid
-        group by c.member_id
-      ) c on c.member_id = ${attendances.memberId} and ${attendances.occurredAt} >= c.since
-      where ${filter}
-    `;
-  });
   return sql`with candidates as materialized (
-    select * from ${candidateWindows(groups.flatMap(group => group.windows))}
-  ), eligible as materialized (${sql.join(reads, sql` union all `)})`;
-}
-
-function attendanceRead(tx: Transaction, gymId: string, groups: ProgramWindows,
-  until: string, openMatCountsAsClass: boolean, scanPrograms?: ReadonlySet<string>): SQL {
-  return sql`${promotionAttendanceCtes(tx, gymId, groups, until, openMatCountsAsClass, scanPrograms)}
+    select * from ${candidateWindows(windows)}
+  ), eligible as materialized (${programRead} where ${filter})
     select c.member_id, c.program_id, c.since, count(e.member_id)::integer as total
     from candidates c
     left join eligible e on e.member_id = c.member_id and e.program_id = c.program_id
@@ -94,59 +70,45 @@ function attendanceRead(tx: Transaction, gymId: string, groups: ProgramWindows,
     group by c.member_id, c.program_id, c.since`;
 }
 
-/** Explicit plan for comparison in the load fixture. */
-export function promotionAttendanceRead(tx: Transaction, gymId: string, requests: readonly PromotionAttendanceRequest[],
-  until: string, openMatCountsAsClass: boolean, scanPrograms?: ReadonlySet<string>): SQL {
-  return attendanceRead(tx, gymId, programWindows(requests), until, openMatCountsAsClass, scanPrograms);
+/** One program's part of the promotion statement: the visitor probe and the two reads it chooses between. */
+export interface PromotionProgramRead {
+  programId: string;
+  /** The candidate windows as `c(member_id, program_id, since)`. */
+  candidates: SQL;
+  /** The attendance predicate for the program's earliest window up to `until`. */
+  filter: SQL | undefined;
+  /** One row, `scan_program`: true when a whole-program scan is the cheaper read. */
+  choice: SQL;
+  /** `select` of `(member_id, program_id, since, total)` that scans every visit of the program's earliest window. */
+  wholeProgram: SQL;
+  /** `select` of `(member_id, program_id, since, total)` for this program, using `choice` to pick a read. */
+  read: SQL;
 }
 
-/** Evaluate one alternative per program, in the same statement as the visitor probe. */
-export function selectPromotionAttendanceRead(tx: Transaction, gymId: string, requests: readonly PromotionAttendanceRequest[],
-  until: string, openMatCountsAsClass: boolean): SQL {
-  const reads = programWindows(requests).map(group => {
-    const { programId, windows, since } = group;
+/** The statement `countPromotionAttendance` runs, with the per-program fragments it is built from. */
+export function promotionAttendanceStatement(tx: Transaction, gymId: string, requests: readonly PromotionAttendanceRequest[],
+  until: string, openMatCountsAsClass: boolean): { programs: PromotionProgramRead[]; statement: SQL } {
+  const programs = programWindows(requests).map(({ programId, windows, since }): PromotionProgramRead => {
     const filter = predicate(tx, gymId, { programId, since, until, excludeOpenMat: !openMatCountsAsClass });
-    const fullScan = attendanceRead(tx, gymId, [group], until, openMatCountsAsClass, new Set([programId]));
+    const candidates = candidateWindows(windows), choice = scanChoice(gymId, windows, filter);
+    const wholeProgram = wholeProgramRead(programId, windows, filter);
     // Count inside each indexed candidate window so a large candidate join need not materialize visit rows.
-    return sql`(with choice as materialized (${scanChoice(gymId, windows, filter)})
-      select * from (${fullScan}) as whole_program
+    const read = sql`(with choice as materialized (${choice})
+      select * from (${wholeProgram}) as whole_program
       where (select scan_program from choice)
       union all
       select c.member_id, c.program_id, c.since, totals.total
-      from ${candidateWindows(windows)}
+      from ${candidates}
       cross join lateral (
         select count(*)::integer as total from ${attendances}
         where ${candidateVisitFilter(filter)}
       ) as totals
       where not (select scan_program from choice)
     )`;
+    return { programId, candidates, filter, choice, wholeProgram, read };
   });
-  return sql`select * from (${sql.join(reads, sql` union all `)}) as promotion_counts`;
-}
-
-/** Visits admitted by the same candidate windows and predicates as the candidate count. */
-export function promotionAttendanceEligibleQuery(tx: Transaction, gymId: string, requests: readonly PromotionAttendanceRequest[],
-  until: string, openMatCountsAsClass: boolean): SQL {
-  const reads = programWindows(requests).map(({ programId, windows, since }) => {
-    const filter = predicate(tx, gymId, { programId, since, until, excludeOpenMat: !openMatCountsAsClass });
-    return sql`select distinct c.member_id, c.program_id, visits.id, visits.occurred_at
-      from ${candidateWindows(windows)}
-      cross join lateral (
-        select ${attendances.id} as id, ${attendances.occurredAt} as occurred_at
-        from ${attendances} where ${candidateVisitFilter(filter)}
-      ) as visits`;
-  });
-  return sql.join(reads, sql` union all `);
-}
-
-/** Test hook for the same per-program decision the attendance statement uses. */
-export function promotionAttendanceScanChoices(tx: Transaction, gymId: string, requests: readonly PromotionAttendanceRequest[],
-  until: string, openMatCountsAsClass: boolean): SQL {
-  const reads = programWindows(requests).map(({ programId, windows, since }) => {
-    const filter = predicate(tx, gymId, { programId, since, until, excludeOpenMat: !openMatCountsAsClass });
-    return sql`select ${programId}::uuid as program_id, scan_program from (${scanChoice(gymId, windows, filter)}) as choice`;
-  });
-  return sql.join(reads, sql` union all `);
+  const statement = sql`select * from (${sql.join(programs.map(program => program.read), sql` union all `)}) as promotion_counts`;
+  return { programs, statement };
 }
 
 /** One count per promotion window. Only member and lower-bound correlation belong to the batch;
@@ -155,7 +117,7 @@ export async function countPromotionAttendance(scope: typeof forGym, gymId: stri
   until: string, openMatCountsAsClass: boolean) {
   if (!requests.length) return new Map<string, number>();
   return scope(gymId, async tx => {
-    const read = selectPromotionAttendanceRead(tx, gymId, requests, until, openMatCountsAsClass);
+    const read = promotionAttendanceStatement(tx, gymId, requests, until, openMatCountsAsClass).statement;
     // eslint-disable-next-line database/system-tables -- Bound batch read through the caller's gym scope.
     const rows = await tx.execute<{ member_id: string; program_id: string; since: Date | string; total: number }>(read);
     return new Map(rows.map(row => [promotionAttendanceKey({ memberId: row.member_id, programId: row.program_id,

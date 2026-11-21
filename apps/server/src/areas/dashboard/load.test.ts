@@ -11,7 +11,8 @@ import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
 import { createMembersService } from '../members/members.js';
 import { createAttendanceQueries } from '../attendance/attendance.js';
-import { promotionAttendanceRead, selectPromotionAttendanceRead, type PromotionAttendanceRequest } from '../attendance/promotion.query.js';
+import { promotionAttendanceStatement, type PromotionAttendanceRequest } from '../attendance/promotion.query.js';
+import { promotionAttendanceForcedRead } from '../attendance/promotion.query.test-helper.js';
 import { createRanksService } from '../ranks/ranks.service.js';
 import { createPromotionCriteria } from '../ranks/criteria.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
@@ -25,13 +26,13 @@ const until = clock.now().toISOString();
 const joinedOn = new Date('2023-01-01Z');
 
 async function explainPromotion(tx: Transaction, size: number, candidateShare: number, former: number, gymId: string,
-  requests: readonly PromotionAttendanceRequest[], programId: string) {
+  requests: readonly PromotionAttendanceRequest[]) {
   const useRosterScan = former === 0 && candidateShare >= 75;
   const variants = [
     { name: former ? 'candidate_join' : 'roster_switch', read: () =>
-      promotionAttendanceRead(tx, gymId, requests, until, false, useRosterScan ? new Set([programId]) : undefined),
+      promotionAttendanceForcedRead(tx, gymId, requests, until, false, useRosterScan ? 'whole_program' : 'candidate_join'),
     samples: [] as { totalMs: number; executionMs: number }[] },
-    { name: 'visitor_switch', read: () => selectPromotionAttendanceRead(tx, gymId, requests, until, false),
+    { name: 'visitor_switch', read: () => promotionAttendanceStatement(tx, gymId, requests, until, false).statement,
       samples: [] as { totalMs: number; executionMs: number }[] },
   ];
   // Warm both plans, then alternate their order. Wall time includes the visitor probe.
@@ -132,7 +133,7 @@ it.each([
       const requests = roster.slice(0, candidateCount).map(member => ({
         memberId: member.id, programId: program.id, since: joinedOn.toISOString(),
       }));
-      await scope(gymId, tx => explainPromotion(tx, size, candidateShare, former, gymId, requests, program.id));
+      await scope(gymId, tx => explainPromotion(tx, size, candidateShare, former, gymId, requests));
     }
   } finally { await connection.close(); }
 }, 120_000);

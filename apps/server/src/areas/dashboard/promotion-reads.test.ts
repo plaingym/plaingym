@@ -6,7 +6,8 @@ import { createFactories } from '@plaingym/db/testing/factories';
 import { targetCriterionSchema } from '../../core/interfaces/extensions.js';
 import { TestClock } from '../../core/clock.js';
 import { createAttendanceQueries } from '../attendance/attendance.js';
-import { countPromotionAttendance, promotionAttendanceEligibleQuery, promotionAttendanceKey, promotionAttendanceScanChoices } from '../attendance/promotion.query.js';
+import { countPromotionAttendance, promotionAttendanceKey } from '../attendance/promotion.query.js';
+import { promotionAttendanceScanChoices } from '../attendance/promotion.query.test-helper.js';
 import { createPromotionCriteria } from '../ranks/criteria.js';
 import { createRanksService } from '../ranks/ranks.service.js';
 
@@ -147,26 +148,33 @@ it.each([false, true])('scopes each promotion window to its own lower bound and 
 });
 
 
-it('reads only the candidate rows from each program arm', async () => {
-  const gymId = uuidv7(), until = '2026-04-01T00:00:00Z';
+// One candidate among two members takes the per-candidate arm; three candidates among four members take the
+// whole-program arm. Either way the real count must leave out the outside member's visits in the same program.
+it.each([
+  { arm: 'per-candidate', candidates: 1, scanProgram: false },
+  { arm: 'whole-program', candidates: 3, scanProgram: true },
+])('counts only the candidates\' visits on the $arm arm with an outside member visiting the program', async ({ candidates: size, scanProgram }) => {
+  const gymId = uuidv7(), until = '2026-04-01T00:00:00Z', since = '2026-01-15T00:00:00Z';
   await factory('gyms', gymId);
   const system = await factory('rankSystems', gymId), program = await factory('programs', gymId, { rankSystemId: system.id });
-  const candidate = await factory('members', gymId), outside = await factory('members', gymId);
-  for (const occurredAt of ['2026-02-01T00:00:00Z', '2026-02-02T00:00:00Z', '2026-03-01T00:00:00Z'])
-    await factory('attendances', gymId, { memberId: candidate.id, programId: program.id, occurredAt: new Date(occurredAt), kind: 'class' });
+  const candidates = await Promise.all(Array.from({ length: size }, () => factory('members', gymId)));
+  const outside = await factory('members', gymId);
+  for (const [index, candidate] of candidates.entries()) {
+    // Candidate n has n + 2 visits after its window opens, and one before it that must not count.
+    for (const occurredAt of ['2026-01-01T00:00:00Z', ...Array.from({ length: index + 2 }, (_, day) => `2026-02-0${day + 1}T00:00:00Z`)])
+      await factory('attendances', gymId, { memberId: candidate.id, programId: program.id, occurredAt: new Date(occurredAt), kind: 'class' });
+  }
   await database.forGym(gymId, tx => tx.insert(attendances).values(Array.from({ length: 2_000 }, (_, index) => ({
     gymId, memberId: outside.id, programId: program.id, kind: 'class', source: 'import',
     occurredAt: new Date(Date.parse('2026-02-10T00:00:00Z') + index * 60_000),
   }))));
-  const requests = [{ memberId: candidate.id, programId: program.id, since: '2026-01-15T00:00:00Z' }];
+  const requests = candidates.map(candidate => ({ memberId: candidate.id, programId: program.id, since }));
+  const choices = await database.forGym(gymId, tx =>
+    // eslint-disable-next-line database/system-tables -- Inspect the same plan choice the attendance statement uses.
+    tx.execute<{ scan_program: boolean }>(promotionAttendanceScanChoices(tx, gymId, requests, until, false)));
+  expect(choices.map(row => row.scan_program)).toEqual([scanProgram]);
   const counts = await countPromotionAttendance(database.forGym, gymId, requests, until, false);
-  expect([...counts.values()]).toEqual([3]);
-  // The candidate path admits three visits. A whole-program scan would admit all 2,003.
-  // eslint-disable-next-line database/system-tables -- Test hook uses the candidate count's membership and window filters.
-  const rows = await database.forGym(gymId, tx => tx.execute<{ member_id: string }>(
-    promotionAttendanceEligibleQuery(tx, gymId, requests, until, false)));
-  expect(rows).toHaveLength(3);
-  expect(rows.every(row => row.member_id === candidate.id)).toBe(true);
+  expect(requests.map(request => counts.get(promotionAttendanceKey(request)))).toEqual(candidates.map((_, index) => index + 2));
 });
 
 it('chooses a read per program from distinct visitors inside that program window', async () => {
