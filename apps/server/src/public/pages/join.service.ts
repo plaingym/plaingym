@@ -66,8 +66,9 @@ const assignmentBillingRead = z.object({ billing: z.object({ description: z.stri
   taxes: z.array(z.object({ id: c.idSchema, name: z.string(), rateMillionths: z.int32().nonnegative(), inclusive: z.boolean() })) }) });
 /** Strict producer schemas for the replayable audit records. */
 export const joinRecordWriteSchemas = { admitted, received, discounted, invoiced };
-/** `closed`: incomplete and unpaid, and staff voided the invoice or revoked the join's link, so it can no longer be paid here. */
 export interface JoinInvoice { amountCents: number; currency: string; lines: { description: string; amountCents: number }[] }
+/** A join is `closed` when every membership from a completed join is cancelled,
+ * or when an invoice that has yet to settle is voided or its join link is revoked. */
 export type JoinState = { status: 'missing' | 'closed' } | { status: 'pending' | 'active' | 'manual'; householdId: string; cardOnly?: boolean; processing?: boolean };
 
 export interface JoinOptions {

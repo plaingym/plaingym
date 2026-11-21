@@ -241,9 +241,9 @@ reuse identical parameters.
 
 A bank debit in processing also starts the membership. The welcome page tells
 the payer how long settlement usually takes. An async success records the payment,
-and a failure on the first invoice makes it past due and starts dunning. The
-completed join still offers sign-in after the failure. The processing notice
-appears only while the invoice is processing.
+and a failure on the first invoice makes it past due and starts dunning. While a
+membership from the join is live, the completed join still offers sign-in after
+the failure. The notice appears only while the invoice is processing.
 For a recorded payment or zero settlement, however the invoice is paid (its own
 Checkout's `checkout.session.completed`, a later pay link, or cash or a check staff
 record), the invoice transitions activate non-trial pending memberships, and their paid-invoice
