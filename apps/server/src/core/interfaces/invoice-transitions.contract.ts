@@ -259,6 +259,25 @@ export function invoiceTransitionsContract(name: string, create: (options?: { pa
       expect(after.refunds.find(row => row.refundId === unsent.refundId)?.status).toBe('failed');
       expect(after.refunds.find(row => row.refundId === report.refundId)?.status).toBe('succeeded');
     });
+    it('releases only the newest missing refund when it alone makes room, preserving a newer unsent reservation', async () => {
+      const h = await create(), older = await missingRow(h);
+      h.advance(1000);
+      const newer = { ...reservation(h, 2000), processorId: 're_missing_newer' };
+      await h.transitions.refund(h.context, newer);
+      h.advance(1000);
+      const unsent = reservation(h, 3000);
+      await h.transitions.refund(h.context, unsent);
+
+      const before = await h.read();
+      const report = { ...processor(h, { amount: 5000 }), missingRefunds: [older.processorId, newer.processorId] };
+      await h.transitions.processorRefund(h.context, report);
+      const after = await h.read();
+      expect(after.refunds.find(row => row.refundId === older.refundId)?.status).toBe('pending');
+      expect(after.refunds.find(row => row.refundId === newer.refundId)?.status).toBe('failed');
+      expect(after.refunds.find(row => row.refundId === unsent.refundId)?.status).toBe('pending');
+      expect(after.refunds.find(row => row.refundId === report.refundId)?.status).toBe('succeeded');
+      expect(count(after.effects, 'staff_notice')).toBe(count(before.effects, 'staff_notice') + 1);
+    });
     it('treats a missing pending refund with a mismatched read as unread', async () => {
       const h = await create(), missing = await missingRow(h);
       const before = await h.read();
