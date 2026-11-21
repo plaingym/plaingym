@@ -17,6 +17,7 @@ import { setupClient, type createSetupClient } from './api.js';
 import { SetupActions, SetupSecondaryActions } from './actions.js';
 import { hostTimezone } from './host-timezone.js';
 import { DraftContext, Field } from './field.js';
+import { SmtpPortHint } from './smtp-port-hint.js';
 import { BackupKeyPanel, ConfirmKeySection, confirmKeyLabels } from './backup-key.js';
 import { GoogleClientFields, GoogleRedirect } from '../settings/auth.js';
 
@@ -224,7 +225,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
             const testTo = text(data, 'testTo');
             const result = await client.call('smtp', { choice: 'configure', revision, host: text(data, 'host'), port: Number(text(data, 'port')),
               secure: data.has('secure'), username: text(data, 'username'), password: text(data, 'smtpPassword'), from: text(data, 'from'), testTo });
-            if (result.test === 'failed') { setError('smtpFailed'); return false; }
+            if (result.test === 'failed') { setError(result.failure ? 'smtpFailed.' + result.failure : 'smtpFailed'); return false; }
             // The settings are saved and the server has moved on; this screen stays until the owner continues.
             setHeld({ kind: 'email', to: testTo }); await refresh();
           }}><Label htmlFor="smtp-preset">{t('setup/setup:preset')}</Label><Select id="smtp-preset" defaultValue="" onChange={(event) => {
@@ -232,8 +233,9 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
             const host = form?.elements.namedItem('host');
             if (host instanceof HTMLInputElement) host.value = event.target.value;
           }}><option value="">{t('setup/setup:custom')}</option>{smtpPresets.map(([value, name]) => <option key={value} value={value}>{name}</option>)}</Select>
-            <Field name="host" /><Field name="port" type="number" value="587" hint={t('setup/setup:portHint')} /><CheckboxField name="secure" label={t('setup/setup:secure')} />
-            <Field name="username" /><Field name="smtpPassword" type="password" /><Field name="from" type="email" /><Field name="testTo" type="email" /></Form>
+            <Field name="host" hint={t('setup/setup:hostHint')} /><Field name="port" type="number" value="587" hint={t('setup/setup:portHint')} /><CheckboxField name="secure" label={t('setup/setup:secure')} />
+            <SmtpPortHint text={(kind) => t('setup/setup:portMismatch.' + kind)} />
+            <Field name="username" /><Field name="smtpPassword" type="password" /><Field name="from" type="email" hint={t('setup/setup:fromHint')} /><Field name="testTo" type="email" /></Form>
           </>)}
         {googlePage && (held?.kind === 'google' ? <><p role="status">{t(held.check === 'unknown' ? 'setup/google-step:unchecked' : 'setup/google-step:saved')}</p>{continueHeld}</>
           : <Form submit="saveGoogle" secondary={<Button type="button" disabled={busy} variant="outline" onClick={() => void run(async () => {

@@ -95,6 +95,11 @@ test('phone-first fresh wizard completes with disabled discovery, reachable acti
   await page.getByRole('radio', { name: 'I already have a website', exact: true }).check();
   await page.getByRole('button', { name: 'Save and continue', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Email delivery', exact: true })).toBeVisible();
+  await expect(page.getByLabel('SMTP hostname', { exact: true })).toHaveAccessibleDescription(/Your sending service's SMTP server/);
+  await expect(page.getByLabel('Sender email address', { exact: true })).toHaveAccessibleDescription(/The From address, on a domain your sending service has verified/);
+  await page.getByLabel('SMTP port', { exact: true }).fill('2525');
+  await page.getByRole('checkbox', { name: /Use implicit TLS/ }).check();
+  await expect(page.getByText(/Implicit TLS is on, but the port isn't 465/)).toBeVisible();
   await checkStep('email', 'Send test email and save');
   await page.getByRole('button', { name: 'Skip email configuration', exact: true }).click();
   // The optional Google page sits between email and payments on an install whose configuration doesn't set Google.

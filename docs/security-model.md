@@ -263,9 +263,9 @@ The public-address check queries A and AAAA outside the shared worker pool and
 cancels unfinished DNS queries after ten seconds; address literals need no lookup.
 Single-gym installs retain system lookup support for hosts-file names.
 This holds for the test message and every real send, under either setting. A
-refused host answers like any other failed test, so an owner can't tell it from a
-name that doesn't resolve. The install's own `SMTP_*` server is the operator's and
-isn't checked; neither is any server on a single-gym install.
+refused host returns the same `connection` test failure as a name that doesn't
+resolve. The public-address check applies only to the gym's own SMTP server in
+multi-gym mode.
 
 `payments.custom` is billing a custom amount; front desk bills catalog charge
 types and existing invoices only.

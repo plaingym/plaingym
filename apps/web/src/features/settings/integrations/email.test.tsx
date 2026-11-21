@@ -74,6 +74,35 @@ describe('Settings → Email', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('nothing was saved');
     expect(screen.getByRole('form', { name: 'Use your own SMTP service' })).toBeDefined();
   });
+  it.each([
+    [2525, true, /Implicit TLS is on, but the port isn't 465/],
+    [465, false, /Port 465 usually needs implicit TLS/],
+    [587, false, null],
+  ] as const)('shows advice for port %i with implicit TLS %s and still sends the test', async (port, secure, hint) => {
+    const user = userEvent.setup(); renderSection();
+    const form = within(await fill(user));
+    for (const [name, text] of [['SMTP host', /Your sending service's SMTP server/], ['Sender address', /The From address, on a domain your sending service has verified/]] as const) {
+      const id = form.getByLabelText(name).getAttribute('aria-describedby');
+      expect(document.getElementById(id ?? '')?.textContent).toMatch(text);
+    }
+    const portInput = form.getByLabelText('Port');
+    const checkbox = form.getByRole('checkbox', { name: /Use TLS from the start/ });
+    await user.clear(portInput);
+    await user.type(portInput, String(port));
+    if (secure) await user.click(checkbox);
+    if (hint) expect(form.getByText(hint).getAttribute('aria-live')).toBe('polite');
+    else expect(form.queryByText(/Implicit TLS is on|Port 465 usually needs implicit TLS/)).toBeNull();
+    if (secure && hint) {
+      await user.click(checkbox);
+      expect(form.queryByText(hint)).toBeNull();
+      await user.click(checkbox);
+    }
+    client.PUT.mockResolvedValue(reply(200, { data: { test: 'failed', failure: 'authentication', integrations } }));
+    await user.click(form.getByRole('checkbox', { name: /I understand/ }));
+    await user.click(form.getByRole('button', { name: 'Send test email and save' }));
+    expect(client.PUT).toHaveBeenCalledWith('/api/settings/integrations/email', expect.objectContaining({ body: expect.objectContaining({ port, secure }) }));
+    expect((await screen.findByRole('alert')).textContent).toBe('The test email failed: the SMTP server refused the username or password. Nothing was saved.');
+  });
   it('names the SMTP ports a multi-gym install accepts', async () => {
     const user = userEvent.setup(); renderSection();
     const form = await fill(user);

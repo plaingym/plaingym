@@ -9,6 +9,7 @@ import { FormMessage } from '../../../components/ui/alert.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { CheckboxField, Select } from '../../../components/ui/select.js';
+import { SmtpPortHint } from '../../setup/smtp-port-hint.js';
 import { failedText, integrationsOf, refusedText, text, type useIntegrations } from './state.js';
 
 const label = (key: string) => text('email.' + key);
@@ -17,11 +18,13 @@ export const methods = (signIn: SignInMethods) =>
 const same = (a: SignInMethods, b: SignInMethods) => a.magicLink === b.magicLink && a.password === b.password;
 type Message = { kind: 'status' | 'alert'; text: string };
 
-function Field({ name, type = 'text', value, required = true, onChange }: { name: string; type?: string; value?: string; required?: boolean; onChange?: (value: string) => void }) {
+function Field({ name, type = 'text', value, required = true, onChange, hint }: { name: string; type?: string; value?: string; required?: boolean; onChange?: (value: string) => void; hint?: string }) {
+  const id = 'integrations-email-' + name, hintId = id + '-hint';
   return <div className="grid min-w-0 gap-2">
-    <Label htmlFor={'integrations-email-' + name}>{label(name)}</Label>
-    <Input id={'integrations-email-' + name} name={name} type={type} required={required} autoComplete={type === 'password' ? 'new-password' : 'off'}
+    <Label htmlFor={id}>{label(name)}</Label>
+    <Input id={id} name={name} type={type} required={required} autoComplete={type === 'password' ? 'new-password' : 'off'} aria-describedby={hint ? hintId : undefined}
       {...(value === undefined ? {} : { value, onChange: (event) => onChange?.(event.target.value) })}/>
+    {hint && <p id={hintId} className="text-sm text-muted-foreground">{hint}</p>}
   </div>;
 }
 /**
@@ -42,10 +45,13 @@ export function EmailIntegrationSection({ email, editable, state }: { email: Ema
         port: Number(field('port')), secure: form.has('secure'), username: field('username'), password: field('password'),
         from: field('from'), testTo: field('testTo') } }), (data) => {
         const parsed = parseResponse(saveEmailIntegrationResponseSchema, data).data;
-        return { integrations: parsed.integrations, result: parsed.test };
+        return { integrations: parsed.integrations, result: { test: parsed.test, failure: parsed.failure } };
       });
-      if (reply.result === 'sent') { setMessage({ kind: 'status', text: label('saved') }); setOpen(false); }
-      else if (reply.result === 'failed') setMessage({ kind: 'alert', text: label('testFailed') });
+      if (reply.result?.test === 'sent') { setMessage({ kind: 'status', text: label('saved') }); setOpen(false); }
+      else if (reply.result?.test === 'failed') {
+        const { failure } = reply.result;
+        setMessage({ kind: 'alert', text: label(failure ? 'testFailed_' + failure : 'testFailed') });
+      }
       else setMessage({ kind: 'alert', text: reply.reason === 'port_not_allowed' ? label('portNotAllowed') : refusedText(reply) });
     } catch (error) { setMessage({ kind: 'alert', text: failedText(error) }); }
     finally { setBusy(null); }
@@ -87,17 +93,19 @@ export function EmailIntegrationSection({ email, editable, state }: { email: Ema
               {smtpPresets.map(([value, name]) => <option key={value} value={value}>{name}</option>)}
             </Select>
           </div>
-          <Field name="host" value={host} onChange={setHost}/>
+          <Field name="host" value={host} onChange={setHost} hint={label('hostHint')}/>
           <div className="grid min-w-0 gap-2">
             <Label htmlFor="integrations-email-port">{label('port')}</Label>
             <Input id="integrations-email-port" name="port" type="number" inputMode="numeric" min={1} max={65535} required defaultValue={email.source === 'gym' ? email.port ?? 587 : 587}/>
           </div>
           <CheckboxField name="secure" label={label('secure')} defaultChecked={email.source === 'gym' && email.security === 'tls'}/>
+          <SmtpPortHint text={(kind) => label('portMismatch_' + kind)}/>
           <Field name="username"/>
           <Field name="password" type="password"/>
           <div className="grid min-w-0 gap-2">
             <Label htmlFor="integrations-email-from">{label('from')}</Label>
-            <Input id="integrations-email-from" name="from" type="email" required defaultValue={email.source === 'gym' ? email.from ?? '' : ''}/>
+            <Input id="integrations-email-from" name="from" type="email" required defaultValue={email.source === 'gym' ? email.from ?? '' : ''} aria-describedby="integrations-email-from-hint"/>
+            <p id="integrations-email-from-hint" className="text-sm text-muted-foreground">{label('fromHint')}</p>
           </div>
           <Field name="testTo" type="email"/>
           {saveChangesSignIn && <>

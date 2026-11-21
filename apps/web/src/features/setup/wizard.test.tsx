@@ -412,18 +412,44 @@ describe('setup wizard confirmations', () => {
     expect(fetcher.mock.calls.filter(([path]) => path === '/api/setup/smtp')).toHaveLength(1);
     expect(JSON.stringify({ ...sessionStorage, ...localStorage })).not.toContain('private-smtp-password');
   });
-  it('keeps the failed email test on the form, with the error', async () => {
+  it.each([
+    [{ failure: 'tls' }, "The test email failed: the secure connection didn't start. Implicit TLS should be on for port 465 and off for ports 587 and 2525. Or skip this step."],
+    [{}, 'The test email failed. Check your SMTP settings and try again, or skip this step.'],
+  ] as const)('keeps the failed email test on the form with the error for %o', async (failure, message) => {
     const { fetcher } = start(5);
     const answer = fetcher.getMockImplementation()!;
     fetcher.mockImplementation((path, options) => String(path).endsWith('/smtp')
-      ? Promise.resolve(Response.json({ data: { configured: false, test: 'failed', revision: 1 } })) : answer(path, options));
+      ? Promise.resolve(Response.json({ data: { configured: false, test: 'failed', ...failure, revision: 1 } })) : answer(path, options));
     await sendTestEmail();
-    expect((await screen.findByRole('alert')).textContent).toContain('The test email failed');
+    expect((await screen.findByRole('alert')).textContent).toBe(message);
     expect(screen.getByRole('button', { name: 'Send test email and save' })).toBeDefined();
   });
   it('mentions the alternative SMTP port in the email hint', async () => {
     start(5);
     expect(await screen.findByText(/block outgoing email on ports 25, 465 and 587.*such as 2525/)).toBeDefined();
+  });
+  it.each([
+    [2525, true, /Implicit TLS is on, but the port isn't 465/],
+    [465, false, /Port 465 usually needs implicit TLS/],
+    [587, false, null],
+  ] as const)('shows advice for port %i with implicit TLS %s and still sends the test', async (port, secure, hint) => {
+    const { fetcher } = start(5);
+    const portInput = await screen.findByLabelText('SMTP port');
+    const checkbox = screen.getByRole('checkbox', { name: /Use implicit TLS/ });
+    await userEvent.clear(portInput);
+    await userEvent.type(portInput, String(port));
+    if (secure) await userEvent.click(checkbox);
+    if (hint) expect(screen.getByText(hint).getAttribute('aria-live')).toBe('polite');
+    else expect(screen.queryByText(/Implicit TLS is on|Port 465 usually needs implicit TLS/)).toBeNull();
+    if (secure && hint) {
+      await userEvent.click(checkbox);
+      expect(screen.queryByText(hint)).toBeNull();
+      await userEvent.click(checkbox);
+    }
+    await sendTestEmail();
+    const call = fetcher.mock.calls.find(([path]) => path === '/api/setup/smtp');
+    expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({ port, secure });
+    await screen.findByText(/Test email sent to/);
   });
   it('says when the Google client was saved unchecked', async () => {
     const { fetcher } = start(6);
@@ -536,7 +562,7 @@ describe('setup wizard field checks', () => {
     expect(screen.queryByText('Looks right')).toBeNull();
     // The result's line is there, empty, before the field is visited, so a result never moves the buttons below it.
     expect(document.getElementById(from.id + '-check')?.textContent).toBe('');
-    expect(from.getAttribute('aria-describedby')).toBeNull();
+    expect(described(from)).toMatch(/The From address, on a domain your sending service has verified/);
     await userEvent.type(from, 'gym@');
     expect(from.getAttribute('aria-invalid')).toBeNull();
     await userEvent.tab();
@@ -547,6 +573,7 @@ describe('setup wizard field checks', () => {
     expect(described(from)).toContain('Looks right');
     // An empty required field says so once visited.
     const host = screen.getByLabelText('SMTP hostname');
+    expect(described(host)).toMatch(/Your sending service's SMTP server/);
     await userEvent.click(host); await userEvent.tab();
     expect(host.getAttribute('aria-invalid')).toBe('true');
     expect(described(host)).toContain('Fill in this field.');

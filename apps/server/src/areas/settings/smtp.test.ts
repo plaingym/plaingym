@@ -4,7 +4,8 @@ import { uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { encryptSecret, parseEncryptionKey } from '../../core/secrets.js';
-import { createSmtpResolver, encryptSmtpConfig, smtpFromEnvironment } from './smtp.js';
+import { DeliveryError } from '../../infra/email/index.js';
+import { createSmtpResolver, encryptSmtpConfig, sendSmtpTest, smtpFromEnvironment, smtpTestFailure } from './smtp.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
 const key = parseEncryptionKey('ab'.repeat(32));
@@ -14,6 +15,42 @@ const gymA = uuidv7(), gymB = uuidv7();
 beforeAll(async () => {
   await factory('gyms', gymA, { smtpConfig: encryptSmtpConfig(key, gymA, own) });
   await factory('gyms', gymB);
+});
+
+describe('SMTP test failures', () => {
+  it.each([
+    [{ code: 'ESOCKET', originalCode: 'ERR_SSL_WRONG_VERSION_NUMBER' }, 'tls'],
+    [{ code: 'ETLS', command: 'STARTTLS' }, 'tls'],
+    [{ code: 'ESOCKET', originalCode: 'CERT_HAS_EXPIRED' }, 'tls'],
+    [{ code: 'EAUTH', responseCode: 535 }, 'authentication'],
+    [{ code: 'EENVELOPE', command: 'MAIL FROM', responseCode: 550 }, 'sender_refused'],
+    [{ code: 'EENVELOPE', command: 'RCPT TO' }, 'sender_refused'],
+    [{ code: 'EMESSAGE' }, 'sender_refused'],
+    [{ code: 'EREQUIRETLS' }, 'sender_refused'],
+    [{ code: 'ECONNECTION', originalCode: 'ECONNREFUSED' }, 'connection'],
+    [{ code: 'EDNS' }, 'connection'],
+    [{ code: 'EPROTOCOL' }, 'connection'],
+  ] as const)('classifies transport error %o as %s', (cause, expected) => {
+    expect(smtpTestFailure(new DeliveryError('unknown', 'SMTP failed', { cause }))).toBe(expected);
+  });
+  it('falls back to connection for unclassified errors and non-objects', () => {
+    expect(smtpTestFailure(new DeliveryError('unknown', 'SMTP failed'))).toBe('connection');
+    expect(smtpTestFailure('x')).toBe('connection');
+  });
+  it('prioritizes TLS, then authentication, and reads at most four objects', () => {
+    const authentication = { code: 'EENVELOPE', cause: { originalCode: 'EAUTH' } };
+    const tls = { cause: { cause: { cause: { code: 'ERR_TLS_CERT_ALTNAME_INVALID' } } } };
+    expect(smtpTestFailure(authentication)).toBe('authentication');
+    expect(smtpTestFailure({ ...tls, code: 'EAUTH' })).toBe('tls');
+    expect(smtpTestFailure({ code: 'EAUTH', cause: tls })).toBe('authentication');
+  });
+  it('returns null on acceptance and returns a safe class on failure', async () => {
+    const message = { to: 'test@example.test', subject: 'Test', text: 'Test', html: '<p>Test</p>' };
+    await expect(sendSmtpTest(own, message, async () => {})).resolves.toBeNull();
+    await expect(sendSmtpTest(own, message, async () => {
+      throw new DeliveryError('not_accepted', 'SMTP failed', { cause: { code: 'EAUTH', response: '535 Authentication rejected' } });
+    })).resolves.toBe('authentication');
+  });
 });
 
 describe('per-gym SMTP with an install-wide fallback', () => {

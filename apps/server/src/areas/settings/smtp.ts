@@ -2,6 +2,7 @@
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { forGym, gyms } from '@plaingym/db';
+import type { SmtpTestFailure } from '@plaingym/shared/contracts';
 import { SmtpEmail, type EmailMessage, type SmtpConfig } from '../../infra/email/index.js';
 import { decryptSecret, encryptSecret } from '../../core/secrets.js';
 import { tenancyMode } from '../../core/tenancy.js';
@@ -29,18 +30,44 @@ export function storedSmtpFromRequest(input: { host: string; port: number; secur
   return { host: input.host, port: input.port, security: input.secure ? 'tls' : 'starttls', username: input.username, password: input.password, from: input.from };
 }
 export type SendSmtpTest = (config: SmtpConfig, message: EmailMessage) => Promise<void>;
+
+const certificateErrorCodes = new Set([
+  'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+]);
+/** Use transport error codes only. Messages and SMTP replies can contain sensitive values. */
+export function smtpTestFailure(error: unknown): SmtpTestFailure {
+  const codes = new Set<string>();
+  for (let depth = 0; depth < 4 && error !== null && typeof error === 'object'; depth++) {
+    try {
+      const { code, originalCode, cause } = error as { code?: unknown; originalCode?: unknown; cause?: unknown };
+      if (typeof code === 'string') codes.add(code);
+      if (typeof originalCode === 'string') codes.add(originalCode);
+      error = cause;
+    } catch {
+      // A thrown value can itself throw on property access.
+      break;
+    }
+  }
+  for (const code of codes) {
+    if (code === 'ETLS' || code.startsWith('ERR_SSL_') || code.startsWith('ERR_TLS_') || certificateErrorCodes.has(code)) return 'tls';
+  }
+  if (codes.has('EAUTH')) return 'authentication';
+  if (codes.has('EENVELOPE') || codes.has('EMESSAGE') || codes.has('EREQUIRETLS')) return 'sender_refused';
+  return 'connection';
+}
+
 /**
- * Sends `message` through these settings, outside any transaction, and answers whether the server accepted it. A
- * failure is never raised or logged: its message can quote the submitted host, user or password. `publicHostOnly` is
- * for a server a tenant named on a multi-gym install (`SmtpConfig`).
+ * Sends `message` outside any transaction. Returns null on acceptance or a safe failure class. The original error
+ * is never raised or logged. `publicHostOnly` is for a server a tenant named on a multi-gym install (`SmtpConfig`).
  */
-export async function sendSmtpTest(config: StoredSmtpConfig, message: EmailMessage, send?: SendSmtpTest, publicHostOnly = false): Promise<boolean> {
+export async function sendSmtpTest(config: StoredSmtpConfig, message: EmailMessage, send?: SendSmtpTest, publicHostOnly = false): Promise<SmtpTestFailure | null> {
   const smtp = fromStored(config, publicHostOnly);
   try {
     if (send) await send(smtp, message);
     else { const email = new SmtpEmail(smtp); try { await email.verifyTestSend(message); } finally { email.close(); } }
-    return true;
-  } catch { return false; }
+    return null;
+  } catch (error) { return smtpTestFailure(error); }
 }
 
 /** Install-wide fallback from `SMTP_*`, used by any gym without its own sending service. */

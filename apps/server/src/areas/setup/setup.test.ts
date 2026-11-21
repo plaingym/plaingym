@@ -21,6 +21,7 @@ import { authConfig, passwordLogin } from '../../infra/auth/config.js';
 import { createAuthService } from '../../infra/auth/service.js';
 import { sessionMiddleware } from '../../infra/auth/middleware.js';
 import { createSmtpResolver } from '../settings/smtp.js';
+import { DeliveryError } from '../../infra/email/index.js';
 import { createContentPackRoutes } from '../ranks/packs.routes.js';
 import { loadBackupConfig } from '../health/restore.config.js';
 import { identityToRecipient, generateIdentity } from '../../infra/age/index.js';
@@ -145,11 +146,22 @@ describe('first-boot setup', () => {
     expect(checkGoogle).not.toHaveBeenCalled();
     const mail = { choice: 'configure', revision, host: 'smtp.example.org', port: 587, secure: false,
       username: 'sender', password: 'private-smtp-password', from: 'gym@example.org', testTo: owner.email };
-    sendTest.mockRejectedValueOnce(new Error('provider leaked secret'));
+    sendTest.mockRejectedValueOnce(new DeliveryError('not_accepted', 'SMTP failed', {
+      cause: { code: 'EAUTH', responseCode: 535, response: '535 rejected ' + mail.password },
+    }));
     const failure = await call('/api/setup/smtp', 'PUT', mail, cookie);
-    expect(await failure.json()).toMatchObject({ data: { test: 'failed', configured: false, revision } });
+    expect(failure.status).toBe(200);
+    const failureBody = await failure.text();
+    expect(JSON.parse(failureBody)).toEqual({ data: { test: 'failed', configured: false, failure: 'authentication', revision } });
+    expect(failureBody).not.toMatch(/535|private-smtp-password/);
+    const [failedGym] = await database.forGym(gymId, (tx) => tx.select({ smtpConfig: gyms.smtpConfig, revision: gyms.revision }).from(gyms));
+    expect(failedGym).toEqual({ smtpConfig: null, revision });
+    const failedAudits = await database.forGym(gymId, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'setup.email_tested')));
+    expect(failedAudits.map((audit) => audit.after)).toEqual([{ test: 'failed', failure: 'authentication' }]);
     expect(await smtp.configured(gymId)).toBe(false);
-    expect((await call('/api/setup/smtp', 'PUT', mail, cookie)).status).toBe(200);
+    const sent = await call('/api/setup/smtp', 'PUT', mail, cookie);
+    expect(sent.status).toBe(200);
+    expect(await sent.json()).toEqual({ data: { configured: true, test: 'sent', revision: revision + 1 } });
     expect(sendTest).toHaveBeenCalledWith(expect.objectContaining({ security: 'starttls' }), expect.objectContaining({ to: owner.email }));
     expect(await smtp.configured(gymId)).toBe(true);
     expect(passwordLogin(config, await smtp.configured(gymId))).toBe(false);
@@ -222,7 +234,7 @@ describe('first-boot setup', () => {
     expect(decryptSecret(key, { secretClass: 's3_config', owner: gymId }, row!.s3Config!)).toContain('private-storage-key');
     const audits = await database.forGym(gymId, (tx) => tx.select().from(auditEvents));
     expect(audits.filter((audit) => audit.action === 'setup.email_tested').map((audit) => audit.after))
-      .toEqual(expect.arrayContaining([{ test: 'failed' }, { test: 'sent' }]));
+      .toEqual(expect.arrayContaining([{ test: 'failed', failure: 'authentication' }, { test: 'sent' }]));
     expect(audits.find((audit) => audit.action === 'setup.step_completed' && (audit.after as { step?: number }).step === 5))
       .toMatchObject({ after: { step: 5, test: 'sent' } });
     expect(JSON.stringify([row, audits], (_key, value: unknown) => typeof value === 'bigint' ? value.toString() : value)).not.toContain(keys.privateKey);

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { EndpointContract } from './definition.js';
 import { revisionSchema } from './common.js';
 import type { RoutePermission } from '../permissions.js';
-import { googleClientCheckSchema, googleClientValueSchema, googleEnvironmentProblemSchema, setupS3CredentialsSchema, setupSmtpRequestSchema, restrictedKeyPattern } from './setup.js';
+import { googleClientCheckSchema, googleClientValueSchema, googleEnvironmentProblemSchema, setupS3CredentialsSchema, setupSmtpRequestSchema, restrictedKeyPattern, smtpTestFailureSchema } from './setup.js';
 
 /** Email, SMS, Stripe and backups after setup: owners only, like the setup steps that first configure them. */
 const own = { kind: 'staff', capability: 'integrations.manage' } as const satisfies RoutePermission;
@@ -105,7 +105,7 @@ export const integrationsResponseSchema = z.strictObject({ data: integrationsSch
 export const saveEmailIntegrationRequestSchema = setupSmtpRequestSchema.options[1].omit({ choice: true });
 /** `failed` saves nothing: the integrations are returned unchanged, with the same revision. */
 export const saveEmailIntegrationResponseSchema = z.strictObject({ data: z.strictObject({
-  test: z.enum(['sent', 'failed']), integrations: integrationsSchema,
+  test: z.enum(['sent', 'failed']), failure: smtpTestFailureSchema.optional(), integrations: integrationsSchema,
 }) });
 /** A failed account check or test keeps the previous stored settings and revision. */
 export const saveSmsIntegrationResponseSchema = z.strictObject({ data: z.strictObject({

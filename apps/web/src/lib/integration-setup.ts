@@ -5,6 +5,13 @@ export const smtpPresets = [
   ['email-smtp.us-east-1.amazonaws.com', 'Amazon SES'], ['smtp.gmail.com', 'Gmail'],
 ] as const;
 
+export function smtpPortMismatch(port: number, secure: boolean): 'tls' | 'starttls' | null {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  if (secure && port !== 465) return 'tls';
+  if (!secure && port === 465) return 'starttls';
+  return null;
+}
+
 export function downloadBackupKey(privateKey: string): void {
   const url = URL.createObjectURL(new Blob([privateKey + '\n'], { type: 'text/plain' }));
   try {

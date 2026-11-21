@@ -146,7 +146,7 @@ They stay off until you do.
 | The certificate isn't issued | Check the firewall (ports 80 and 443) and the DNS record, then on the server run `cd /opt/plaingym` and `sudo docker compose logs caddy`. Don't delete the database volume to retry. |
 | The installer finished but printed no setup link, saying the name answered with an HTTP error | A Cloudflare security setting may be challenging the visitor: see [Cloudflare's proxy](cloudflare.md#if-something-is-wrong). The server is installed; re-run the same command after fixing it. |
 | The installer says the name answers, but not from this server | The DNS record points at another server. Fix the A (and AAAA) record so it points at this server, wait for it to spread, then re-run the same command. The server is installed. |
-| The wizard's test email times out | Many providers (DigitalOcean among them) block outgoing email on ports 25, 465 and 587. Use the alternative port your email service offers (for example 2525), or ask your provider to unblock it. |
+| The wizard's test email fails because the app couldn't connect to the SMTP server | Check the hostname and port first. Many providers (DigitalOcean among them) block outgoing email on ports 25, 465 and 587. Use the alternative port your email service offers (for example 2525), or ask your provider to unblock it. |
 | The wizard says the backup storage address is wrong | Give the storage service's address without the bucket name (for example `https://ACCOUNT.r2.cloudflarestorage.com`); the bucket goes in its own field. |
 
 ## Other ways to install

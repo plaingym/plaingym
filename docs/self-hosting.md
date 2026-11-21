@@ -93,7 +93,7 @@ The wizard's steps:
 6. **Email delivery**: your sending service's SMTP details. The wizard sends a test
    message and saves the settings only if it is accepted, then stays on the step
    to say where it went until you choose **Continue**. Many hosting providers block
-   outgoing mail on ports 25, 465 and 587: if the test times out, use your sending
+   outgoing mail on ports 25, 465 and 587: if the test says the app couldn't connect, use your sending
    service's alternative port, such as 2525. Follow your provider's SPF
    and DKIM instructions. Once email works, sign-in switches to emailed links
    (`AUTH_PASSWORD_LOGIN=auto`).

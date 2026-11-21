@@ -40,8 +40,10 @@ the same redacted logging; login and Google removal then use install SMTP if
 available. Email removal still counts Google for the gym rather than checking the
 owner's linked identity. The Email section states this and asks the owner to try
 Google first. Each submitted Settings test writes `integrations.email_tested`
-without credentials or recipients: `test: 'failed'` when it fails and the saved
-settings stay unchanged, and `test: 'sent'` only with the save that stores them.
+without credentials or recipients. A failed test's audit and response carry
+`test: 'failed'` and `failure` (`connection`, `tls`, `authentication`, or
+`sender_refused`). Neither includes the server's reply. Failed tests leave the
+saved settings unchanged. The audit records `test: 'sent'` only with the save.
 Removing an unreadable stored value is never refused, since it takes no sign-in
 method away; its audit still records `source: 'gym'` for the stored value. Operator-managed refusals reload the
 integrations and show the operator notice in place of the editable forms.

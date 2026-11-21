@@ -17,9 +17,9 @@ const integrations = { email: { source: 'gym', unreadable: false, googleConfigur
   backups: null, sandbox: false, integrationsEditable: true, revision: 3 };
 const rejected = { error: { code: 'invalid_request', message: 'Client refused', details: { reason: ['google_rejected'] } } };
 
-// API fixtures exercise both Google forms in the production bundle without contacting Google or storing credentials.
+// API fixtures exercise settings and setup in the production bundle without contacting providers or storing credentials.
 for (const width of [360, 1280]) {
-  test(`unreadable email settings name the fallback at ${width}px`, async ({ page }, info) => {
+  test(`email settings name the fallback and guide SMTP replacement at ${width}px`, async ({ page }, info) => {
     await page.setViewportSize({ width, height: 800 });
     await page.route('**/api/**', async route => {
       const path = new URL(route.request().url()).pathname;
@@ -40,6 +40,14 @@ for (const width of [360, 1280]) {
     await expect(page.getByText(/The removal check counts Google/)).toHaveCount(0);
     await accessibleLayout(page, info, 'settings-email-unreadable-' + width);
     await page.screenshot({ path: info.outputPath('settings-email-unreadable-' + width + '.png'), fullPage: true });
+    await page.getByRole('button', { name: 'Use your own SMTP service', exact: true }).click();
+    const email = page.getByRole('form', { name: 'Use your own SMTP service', exact: true });
+    await expect(email.getByLabel('SMTP host', { exact: true })).toHaveAccessibleDescription(/Your sending service's SMTP server/);
+    await expect(email.getByLabel('Sender address', { exact: true })).toHaveAccessibleDescription(/The From address, on a domain your sending service has verified/);
+    await email.getByLabel('Port', { exact: true }).fill('465');
+    await expect(email.getByText(/Port 465 usually needs implicit TLS/)).toBeVisible();
+    await accessibleLayout(page, info, 'settings-email-form-' + width);
+    await page.screenshot({ path: info.outputPath('settings-email-form-' + width + '.png'), fullPage: true });
   });
   test(`settings clears Google refusal and reloads operator-managed payments at ${width}px`, async ({ page }, info) => {
     await page.setViewportSize({ width, height: 800 });

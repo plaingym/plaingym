@@ -14,10 +14,12 @@ Pack application and progress share one short transaction. SMTP sends its test
 outside a transaction and saves encrypted settings only after successful delivery.
 Skipping SMTP keeps the existing gym and install configuration.
 Each submitted test records `setup.email_tested` without credentials or the
-recipient: a failed test as `test: 'failed'` on its own, and a delivered one as
-`test: 'sent'` in the transaction that saves the settings, so a delivered test
-whose save loses the revision check records nothing. Step 5 completion records `test: 'sent'`
-or `'not_sent'`, so skipping cannot replace the Health tile's last test time.
+recipient. A failed test's audit and response carry `test: 'failed'` and `failure`
+(`connection`, `tls`, `authentication`, or `sender_refused`). Neither includes
+the server's reply. A delivered test records `test: 'sent'` in the transaction
+that saves the settings. If the save loses the revision check, it records
+nothing. Step 5 completion records `test: 'sent'` or `'not_sent'`, so skipping
+cannot replace the Health tile's last test time.
 Step saves, Google saves and decisions share the locked owner, preceding-step
 and revision checks; Google saves and decisions do not complete a step.
 

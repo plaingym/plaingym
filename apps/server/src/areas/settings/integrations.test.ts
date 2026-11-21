@@ -16,6 +16,7 @@ import { TestClock } from '../../core/clock.js';
 import { decryptSecret, encryptSecret } from '../../core/secrets.js';
 import { setLogSink } from '../../core/log.js';
 import { authConfig } from '../../infra/auth/config.js';
+import { DeliveryError } from '../../infra/email/index.js';
 import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
 import { StripePayments } from '../../infra/payments/stripe.js';
 import { stripeProvisioner } from '../../infra/payments/setup.js';
@@ -148,15 +149,21 @@ describe('Settings → Email', () => {
     const before = await read();
     expect(before.email).toMatchObject({ source: 'none', host: null, signIn: { password: true, magicLink: false },
       signInAfterSave: { password: false, magicLink: true }, signInAfterRemove: null, removeBlocked: false });
-    sendTest.mockRejectedValueOnce(new Error('550 rejected ' + smtpPassword));
+    sendTest.mockRejectedValueOnce(new DeliveryError('not_accepted', 'SMTP failed', {
+      cause: { code: 'EENVELOPE', command: 'MAIL FROM', responseCode: 550, response: '550 rejected ' + smtpPassword },
+    }));
     const failed = await call(server(), 'PUT', '/email', email(before.revision));
     expect(failed.status).toBe(200);
-    expect(saveEmailIntegrationResponseSchema.parse(failed.json).data).toMatchObject({ test: 'failed', integrations: { revision: before.revision, email: { source: 'none' } } });
-    expect((await row()).smtpConfig).toBeNull();
+    expect(saveEmailIntegrationResponseSchema.parse(failed.json).data)
+      .toMatchObject({ test: 'failed', failure: 'sender_refused', integrations: { revision: before.revision, email: { source: 'none' } } });
+    expect(JSON.stringify(failed.json)).not.toContain('550 rejected');
+    expect(JSON.stringify(failed.json)).not.toContain(smtpPassword);
+    expect(await row()).toMatchObject({ smtpConfig: null, revision: before.revision });
     expect(await database.forGym(gymA, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'integrations.email_tested'))))
-      .toEqual([expect.objectContaining({ actorUserId: owner, after: { test: 'failed' } })]);
+      .toEqual([expect.objectContaining({ actorUserId: owner, after: { test: 'failed', failure: 'sender_refused' } })]);
 
     const saved = saveEmailIntegrationResponseSchema.parse((await call(server(), 'PUT', '/email', email(before.revision))).json).data;
+    expect(saved).not.toHaveProperty('failure');
     expect(sendTest).toHaveBeenLastCalledWith(expect.objectContaining({ host: 'smtp.gym.invalid', port: 465, security: 'tls' }),
       expect.objectContaining({ to: 'owner@gym.invalid' }));
     expect(saved).toMatchObject({ test: 'sent', integrations: { revision: before.revision + 1, email: { source: 'gym', host: 'smtp.gym.invalid',
@@ -165,7 +172,7 @@ describe('Settings → Email', () => {
     const [audit] = await database.forGym(gymA, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'integrations.email_saved')));
     expect(audit).toMatchObject({ actorUserId: owner, before: { source: 'none' }, after: { source: 'gym', host: 'smtp.gym.invalid', revision: before.revision + 1 } });
     const tests = await database.forGym(gymA, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'integrations.email_tested')));
-    expect(tests.map((test) => test.after)).toEqual(expect.arrayContaining([{ test: 'sent' }, { test: 'failed' }]));
+    expect(tests.map((test) => test.after)).toEqual(expect.arrayContaining([{ test: 'sent' }, { test: 'failed', failure: 'sender_refused' }]));
   });
   it('refuses a stale revision before sending anything', async () => {
     const { revision } = await read();

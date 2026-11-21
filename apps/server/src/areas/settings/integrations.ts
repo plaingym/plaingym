@@ -7,7 +7,7 @@ import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { gymProjection, presentGym } from './settings.js';
 import { backupDestinationSchema, type BackupsIntegration, type ConfirmBackupKeyRequest, type CreateBackupKeyRequest, type EmailIntegration,
-  type Integrations, type RemoveEmailIntegrationRequest, type SaveEmailIntegrationRequest, type SaveStripeIntegrationRequest, type StripeTestData,
+  type Integrations, type RemoveEmailIntegrationRequest, type SaveEmailIntegrationRequest, type SaveStripeIntegrationRequest, type SmtpTestFailure, type StripeTestData,
   type GoogleLogin, type RemoveGoogleLoginRequest, type SaveGoogleLoginRequest,
   type SaveSmsIntegrationRequest, type RemoveSmsIntegrationRequest, type UpdateSmsDailyCapRequest, updateBankDebitsRequestSchema,
   stripeTestPaymentReference, terminalDisputeStatuses } from '@plaingym/shared/contracts';
@@ -537,7 +537,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     },
 
     /** Sends a test message through the submitted settings and saves them only if it is accepted. */
-    async saveEmail(context: MutationContext, input: SaveEmailIntegrationRequest): Promise<{ test: 'sent' | 'failed'; integrations: Integrations }> {
+    async saveEmail(context: MutationContext, input: SaveEmailIntegrationRequest): Promise<{ test: 'sent' | 'failed'; failure?: SmtpTestFailure; integrations: Integrations }> {
       assertChangeable();
       const userId = userOf(context);
       // On a multi-gym install the test connection is made for a tenant: only SMTP ports and public addresses, so it
@@ -547,12 +547,13 @@ export function createIntegrationsService(options: IntegrationsOptions) {
         throw new AppError('invalid_request', 'Use an SMTP port: ' + smtpPorts.join(', '), { port: ['port_not_allowed'] });
       await assertCurrent(context.gymId, input.revision);
       const stored = storedSmtpFromRequest(input);
-      const sent = await sendSmtpTest(stored, setupTestMessage(input.testTo), options.sendTest, !single);
-      if (!sent) await scope(context.gymId, (tx) => writeAudit(tx, { gymId: context.gymId, actorKind: 'user', actorUserId: userId,
-        action: 'integrations.email_tested', targetType: 'gym', targetId: context.gymId,
-        after: { test: 'failed' }, occurredAt: clock.now() }));
-      if (!sent)
-        return { test: 'failed', integrations: await present(context.gymId, userId) };
+      const failure = await sendSmtpTest(stored, setupTestMessage(input.testTo), options.sendTest, !single);
+      if (failure) {
+        await scope(context.gymId, (tx) => writeAudit(tx, { gymId: context.gymId, actorKind: 'user', actorUserId: userId,
+          action: 'integrations.email_tested', targetType: 'gym', targetId: context.gymId,
+          after: { test: 'failed', failure }, occurredAt: clock.now() }));
+        return { test: 'failed', failure, integrations: await present(context.gymId, userId) };
+      }
       await save(context, input.revision, async (gym) => ({ set: { smtpConfig: encryptSmtpConfig(options.key, context.gymId, stored) },
         action: 'integrations.email_saved', before: emailAudit(gym), after: emailAudit }), { emailTestSent: true });
       return { test: 'sent', integrations: await present(context.gymId, userId) };

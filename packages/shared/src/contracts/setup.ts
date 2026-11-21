@@ -55,8 +55,10 @@ export const setupSmtpRequestSchema = z.discriminatedUnion('choice', [
     username: z.string().min(1), password: z.string().min(1), from: z.email(), testTo: z.email(),
   }),
 ]);
+export const smtpTestFailureSchema = z.enum(['connection', 'tls', 'authentication', 'sender_refused']);
+export type SmtpTestFailure = z.infer<typeof smtpTestFailureSchema>;
 export const setupSmtpResponseSchema = z.strictObject({ data: z.strictObject({
-  configured: z.boolean(), test: z.enum(['not_sent', 'sent', 'failed']), revision: revisionSchema,
+  configured: z.boolean(), test: z.enum(['not_sent', 'sent', 'failed']), failure: smtpTestFailureSchema.optional(), revision: revisionSchema,
 }) });
 /** A Google OAuth client ID or secret as entered: no spaces, at most 512 characters (the rule for `GOOGLE_*` too). */
 export const googleClientValueSchema = z.string().trim().min(1).max(512).regex(/^\S+$/);

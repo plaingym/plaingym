@@ -219,13 +219,14 @@ export function createSetupService(options: {
         return { configured: await createSmtpResolver({ key: options.key, env, scope }).configured(context.gymId), test: 'not_sent' as const, revision: gym.revision };
       }
       const stored = storedSmtpFromRequest(input);
-      const sent = await sendSmtpTest(stored, setupTestMessage(input.testTo), options.sendTest);
-      if (!sent) await scope(context.gymId, (tx) => writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
-        actorUserId: context.actor.kind === 'user' ? context.actor.userId : undefined,
-        action: 'setup.email_tested', targetType: 'gym', targetId: context.gymId,
-        after: { test: 'failed' }, occurredAt: clock.now() }));
-      if (!sent)
-        return { configured: false, test: 'failed' as const, revision: input.revision };
+      const failure = await sendSmtpTest(stored, setupTestMessage(input.testTo), options.sendTest);
+      if (failure) {
+        await scope(context.gymId, (tx) => writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
+          actorUserId: context.actor.kind === 'user' ? context.actor.userId : undefined,
+          action: 'setup.email_tested', targetType: 'gym', targetId: context.gymId,
+          after: { test: 'failed', failure }, occurredAt: clock.now() }));
+        return { configured: false, test: 'failed' as const, failure, revision: input.revision };
+      }
       const gym = await save(context, input.revision, 5, { smtpConfig: encryptSmtpConfig(options.key, context.gymId, stored) }, {},
         { emailTestSent: true, audit: { after: { step: 5, test: 'sent' } } });
       return { configured: true, test: 'sent' as const, revision: gym.revision };
