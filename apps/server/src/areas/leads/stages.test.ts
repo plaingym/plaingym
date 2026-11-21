@@ -42,6 +42,10 @@ async function assign(f: Fixture, initialStatus: 'pending' | 'trial' | 'active' 
 }
 const checkIn = (f: Fixture, sessionId: string | null = null) => f.attendance.record(f.context,
   { memberId: f.member.id, sessionId, programId: null });
+const recordAt = (f: Fixture, occurredAt: Date, origin?: Parameters<Fixture['attendance']['record']>[2]) =>
+  f.attendance.record(f.context, { memberId: f.member.id, sessionId: null, programId: null, occurredAt: occurredAt.toISOString() }, origin);
+const corrections = (f: Fixture) => db.forGym(f.gymId, tx => tx.select().from(auditEvents)
+  .where(eq(auditEvents.action, 'lead.trial_attendance_corrected')));
 
 describe('automatic lead stages in real PostgreSQL transactions', () => {
   it('corrects an attended lead to its earliest visit with a separate record-time audit and no replay audit', async () => {
@@ -59,6 +63,82 @@ describe('automatic lead stages in real PostgreSQL transactions', () => {
     expect(corrections[0]).toMatchObject({ actorKind: 'user', actorUserId: f.context.actor.userId,
       targetId: corrected.id, occurredAt: clock.now(), createdAt: clock.now(),
       before: { trialAttendedAt: first.toISOString(), revision: 2 }, after: { trialAttendedAt: earlier.toISOString(), revision: 3 } });
+  });
+  it('undoing the visit that set a trial time moves it to the earliest remaining visit with its own audit', async () => {
+    const f = await fixture('prospect');
+    const first = new Date('2026-03-10T17:00:00Z'), backdated = new Date('2025-03-01T17:00:00Z');
+    await recordAt(f, first);
+    const wrong = await recordAt(f, backdated);
+    const before = (await f.rows()).leads[0]!;
+    expect(before).toMatchObject({ stage: 'trial_attended', trialAttendedAt: backdated });
+    await f.attendance.undo(f.context, wrong.id);
+    const rows = await f.rows();
+    expect(rows.leads[0]).toMatchObject({ id: before.id, stage: 'trial_attended', trialAttendedAt: first, revision: before.revision + 1 });
+    expect(rows.audits).toHaveLength(1);
+    const written = await corrections(f);
+    expect(written).toHaveLength(2);
+    expect(written.find(row => (row.before as { trialAttendedAt: string }).trialAttendedAt === backdated.toISOString()))
+      .toMatchObject({ actorKind: 'user', actorUserId: f.context.actor.userId, targetId: before.id,
+        occurredAt: clock.now(), createdAt: clock.now(),
+        before: { trialAttendedAt: backdated.toISOString(), revision: before.revision },
+        after: { trialAttendedAt: first.toISOString(), revision: before.revision + 1 } });
+  });
+  it('leaves the lead alone when a later visit is undone', async () => {
+    const f = await fixture(), first = new Date('2026-03-10T17:00:00Z'), later = new Date('2026-03-12T17:00:00Z');
+    await recordAt(f, first);
+    const visit = await recordAt(f, later);
+    const before = (await f.rows()).leads[0]!;
+    await f.attendance.undo(f.context, visit.id);
+    expect((await f.rows()).leads).toEqual([before]);
+    expect(await corrections(f)).toEqual([]);
+  });
+  it('keeps a lead\'s only trial time when its only visit is undone', async () => {
+    const f = await fixture(), occurredAt = new Date('2026-03-10T17:00:00Z');
+    const visit = await recordAt(f, occurredAt);
+    const before = (await f.rows()).leads[0]!;
+    expect(before.trialAttendedAt).toEqual(occurredAt);
+    await f.attendance.undo(f.context, visit.id);
+    expect((await f.rows()).leads).toEqual([before]);
+    expect(await corrections(f)).toEqual([]);
+  });
+  it('skips imports when moving the trial time after an undo', async () => {
+    const f = await fixture(), kiosk = new Date('2026-03-10T17:00:00Z'),
+      imported = new Date('2025-01-01T17:00:00Z'), coach = new Date('2025-03-01T17:00:00Z');
+    await recordAt(f, kiosk, { source: 'kiosk' });
+    await recordAt(f, imported, { source: 'import', sourceKey: 'visit-import' });
+    const undone = await recordAt(f, coach);
+    expect((await f.rows()).leads[0]!.trialAttendedAt).toEqual(coach);
+    await f.attendance.undo(f.context, undone.id);
+    expect((await f.rows()).leads[0]!.trialAttendedAt).toEqual(kiosk);
+  });
+  it('leaves a won lead and a staff-set trial time alone when a visit is undone', async () => {
+    const won = await fixture();
+    const wonBefore = await factory('leads', won.gymId, { memberId: won.member.id, stage: 'won', wonAt: new Date('2026-03-01T17:00:00Z') });
+    await recordAt(won, new Date('2026-03-10T17:00:00Z'));
+    const wonVisit = await recordAt(won, new Date('2026-03-12T17:00:00Z'));
+    await won.attendance.undo(won.context, wonVisit.id);
+    expect((await won.rows()).leads).toEqual([wonBefore]);
+    expect(await corrections(won)).toEqual([]);
+    const staff = await fixture(), staffTime = new Date('2026-02-01T17:00:00Z');
+    const staffBefore = await factory('leads', staff.gymId, { memberId: staff.member.id, stage: 'trial_attended', trialAttendedAt: staffTime });
+    await recordAt(staff, new Date('2026-03-10T17:00:00Z'));
+    const staffVisit = await recordAt(staff, new Date('2026-03-12T17:00:00Z'));
+    await staff.attendance.undo(staff.context, staffVisit.id);
+    expect((await staff.rows()).leads).toEqual([staffBefore]);
+    expect(await corrections(staff)).toEqual([]);
+  });
+  it('never reads or changes another gym\'s lead when undoing a visit', async () => {
+    const a = await fixture(), b = await fixture();
+    const first = new Date('2026-03-10T17:00:00Z'), wrong = new Date('2025-03-01T17:00:00Z');
+    await recordAt(a, first);
+    const undone = await recordAt(a, wrong);
+    await recordAt(b, first);
+    await recordAt(b, wrong);
+    const bBefore = (await b.rows()).leads[0]!, bCorrections = await corrections(b);
+    await a.attendance.undo(a.context, undone.id);
+    expect((await a.rows()).leads[0]!.trialAttendedAt).toEqual(first);
+    expect((await b.rows()).leads).toEqual([bBefore]);
+    expect(await corrections(b)).toHaveLength(bCorrections.length);
   });
   it('keeps the earliest visit when a manually reset lead advances again', async () => {
     const f = await fixture(), first = new Date('2026-10-27T17:00:00Z'), earlier = new Date('2026-10-21T17:00:00Z');

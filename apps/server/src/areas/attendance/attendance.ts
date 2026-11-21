@@ -17,7 +17,7 @@ import { clock as defaultClock } from '../../core/clock.js';
 import type { AttendanceFilter, AttendanceQueries, AttendanceScope } from '../../core/interfaces/attendance.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
-import { advanceLeadOnCheckIn } from '../leads/stages.js';
+import { advanceLeadOnCheckIn, correctLeadAfterUndo } from '../leads/stages.js';
 import { isLeadMember } from '../leads/eligibility.js';
 import { memberWriteScope } from '../members/member-write.js';
 import { drawCredits, hasActiveMembership, isPackHolder, lockMemberCredits, returnCredit } from '../billing/packs/ledger.js';
@@ -251,6 +251,7 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
         if (!row) missing();
         if (row.source === 'import') throw new AppError('conflict', t('attendance/attendance:importUndoBlocked'));
         await tx.delete(attendances).where(where);
+        await correctLeadAfterUndo(tx, { gymId, memberId: row.memberId, undoneAt: row.occurredAt, now, actor: context.actor });
         // A credit the visit spent goes back to its lot, unless the pack was refunded in full since.
         const creditReturned = await returnCredit(tx, { gymId, memberId: row.memberId, attendanceId: id, now });
         await writeAudit(tx, { gymId, createdAt: now, occurredAt: now, ...auditActor(context.actor),

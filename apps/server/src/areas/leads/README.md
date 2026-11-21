@@ -111,8 +111,11 @@ The trial timestamp uses the visit's occurrence time, including backdated staff
 visits; that time is kept as recorded even when it precedes lead creation. An
 earlier visit recorded after a lead reached `trial_attended` corrects the time,
 bumps its revision and writes a `lead.trial_attendance_corrected` audit. Audits
-use the record time. Attendance passes its locked member status
-and skips lead staging for ordinary members without a lead row.
+use the record time. Undoing the visit that set a `trial_attended` lead's trial
+time moves it to the member's earliest remaining non-import visit, bumps the
+revision and writes a `lead.trial_attendance_corrected` audit; the stage stays,
+and with no remaining visit the time stays. Attendance passes its locked member
+status and skips lead staging for ordinary members without a lead row.
 
 `markLeadWon` runs when a pending or trial membership activates (including a
 paid invoice's activation effect), an assignment starts active, a frozen

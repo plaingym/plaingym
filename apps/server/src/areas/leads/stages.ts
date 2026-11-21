@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, eq } from 'drizzle-orm';
-import { leads, members, uuidv7, auditActor, writeAudit, type Transaction } from '@plaingym/db';
+import { and, asc, eq, ne } from 'drizzle-orm';
+import { attendances, leads, members, uuidv7, auditActor, writeAudit, type Transaction } from '@plaingym/db';
 import type { AttendanceMutation } from '../attendance/attendance.js';
 import { isLeadMember } from './eligibility.js';
 
@@ -58,5 +58,28 @@ async function advance(tx: Transaction, input: StageInput, stage: 'trial_attende
     occurredAt: now, createdAt: now });
 }
 
+export interface CorrectLeadAfterUndoInput {
+  gymId: string; memberId: string; undoneAt: Date; now: Date; actor: AttendanceMutation['actor'];
+}
+/** Recompute the trial time after the visit that set it is undone. The caller owns the transaction and already holds the member and attendance locks. */
+export async function correctLeadAfterUndo(tx: Transaction, input: CorrectLeadAfterUndoInput) {
+  const { gymId, memberId, undoneAt, now, actor } = input;
+  const where = and(eq(leads.gymId, gymId), eq(leads.memberId, memberId));
+  const [before] = await tx.select().from(leads).where(where).for('update');
+  if (!before || before.stage !== 'trial_attended') return;
+  const stored = before.trialAttendedAt;
+  if (!stored || stored.getTime() !== undoneAt.getTime()) return;
+  const [earliest] = await tx.select({ occurredAt: attendances.occurredAt }).from(attendances)
+    .where(and(eq(attendances.gymId, gymId), eq(attendances.memberId, memberId), ne(attendances.source, 'import')))
+    .orderBy(asc(attendances.occurredAt)).limit(1);
+  if (!earliest || earliest.occurredAt.getTime() === stored.getTime()) return;
+  const trialAttendedAt = earliest.occurredAt;
+  await tx.update(leads).set({ trialAttendedAt, revision: before.revision + 1 }).where(where);
+  await writeAudit(tx, { gymId, ...auditActor(actor),
+    action: 'lead.trial_attendance_corrected', targetType: 'lead', targetId: before.id,
+    before: { trialAttendedAt: stored.toISOString(), revision: before.revision },
+    after: { trialAttendedAt: trialAttendedAt.toISOString(), revision: before.revision + 1 },
+    occurredAt: now, createdAt: now });
+}
 export function advanceLeadOnCheckIn(tx: Transaction, input: StageInput) { return advance(tx, input, 'trial_attended'); }
 export function markLeadWon(tx: Transaction, input: StageInput, options: StageOptions = {}) { return advance(tx, input, 'won', options); }
