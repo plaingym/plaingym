@@ -16,7 +16,8 @@ after it was created. The read-only showcase has no deletion notice. The product
 page explains the private copy's lifetime without showing a specific deletion time.
 Its ten feature sections include seeded screenshots in both color schemes and
 densities, with native popovers and full-size links. All assets come from the entry
-host; the page runs no JavaScript. To refresh images, see the
+host. A small script closes the phone menu after a visitor follows one of its links.
+To refresh images, see the
 [manual capture guide](../e2e/ux-pass/PRODUCT.md). Gym website roots and ordinary installs
 keep their existing behavior.
 Use a demo to evaluate the software, to train staff before launch, or to
