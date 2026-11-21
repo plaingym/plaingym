@@ -4,6 +4,7 @@ import { forGym, forSystem, stripeEvents, uuidv7, writeAudit } from '@plaingym/d
 import { AppError, type Clock } from '@plaingym/shared';
 import { z } from 'zod';
 import { clock as systemClock } from '../../../core/clock.js';
+import { logError } from '../../../core/log.js';
 import { recentWebhookFailureMs, type WebhookHealthQuery } from '../../../core/interfaces/webhook-health.js';
 import type { JobContext, Jobs, JobRecovery } from '../../../infra/jobs/index.js';
 import type { PaymentEvent, Payments } from '../../../infra/payments/index.js';
@@ -29,6 +30,7 @@ const storedEventSchema = z.object(eventSchema.shape);
 /** Audited when a Stripe test-mode event is finished, unread, for a gym whose key is now live. */
 export const testEventSkippedAction = 'billing.webhook.test_event_skipped';
 // Read from a stored job: unknown keys are ignored for the same reason.
+const fixedReason = /^[A-Za-z][A-Za-z ]{0,99}$/;
 const dispatchSchema = z.object({ eventId: z.string().min(1), replay: z.boolean().optional() });
 
 export function createWebhookInbox(options: {
@@ -123,6 +125,11 @@ export function createWebhookInbox(options: {
         // Provider error messages may contain secrets or personal data. Keep a safe marker only.
         await scope(context.gymId, (tx) => tx.update(stripeEvents).set({ error: 'handler_failed' })
           .where(match(context.gymId, input.eventId)));
+        // Only a handler's own fixed text is logged: a plain Error whose message is letters and spaces.
+        const reason = error instanceof Error && error.constructor === Error && fixedReason.test(error.message)
+          ? error.message : undefined;
+        logError('billing.webhooks.handler_failed', { gymId: context.gymId, eventId: input.eventId, type: row.type,
+          ...(reason ? { reason } : {}) }, error);
         throw error; // The job queue owns retry/backoff and the attempt limit.
       }
     },

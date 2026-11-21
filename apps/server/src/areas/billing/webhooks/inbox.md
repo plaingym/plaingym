@@ -80,7 +80,11 @@ normal write path.
 
 A failed handler records only `handler_failed`, preserves any existing
 `processed_at` (a failed replay cannot erase a prior successful dispatch), and
-rethrows to the queue. Dispatch jobs allow ten attempts with the queue's backoff.
+rethrows to the queue. It is also logged as `billing.webhooks.handler_failed`
+with the gym and event IDs, the event type, and the error's name, code and stack
+frames. A `reason` carries the message only for a handler's own fixed text (a plain
+`Error` whose message is letters and spaces); provider messages are never logged.
+Dispatch jobs allow ten attempts with the queue's backoff.
 `createWebhookHealthQuery` exposes only per-gym timestamps and pending/failed
 counts; it never returns payloads or provider errors.
 

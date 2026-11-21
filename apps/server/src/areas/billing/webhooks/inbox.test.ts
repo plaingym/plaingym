@@ -8,6 +8,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { TestClock } from '../../../core/clock.js';
+import { setLogSink } from '../../../core/log.js';
 import type { Principal, RequestEnvironment } from '../../../core/context.js';
 import { errorHandler } from '../../../core/errors.js';
 import { createServerRegistry } from '../../../core/registry.js';
@@ -119,6 +120,31 @@ it('retries failed handlers with safe diagnostics, and replays completed events 
   expect(await command.run(['--gym', gymA, 'evt_test'], { stdout, stderr })).toBe(0);
   expect(stdout).toHaveBeenCalledWith(expect.stringContaining('queued')); expect(stderr).not.toHaveBeenCalled();
   await jobs.runNext(); expect(calls).toBe(3);
+});
+it('logs a failed handler with its event and only a fixed reason', async () => {
+  class ProviderError extends Error {}
+  const failures: Record<string, Error> = {
+    evt_fixed: new Error('Saved card household is unresolved'),
+    evt_provider_text: new Error('No such customer: cus_123'),
+    evt_provider_error: new ProviderError('Card declined'),
+  };
+  inbox.register('payment_intent.succeeded', async (value) => { throw failures[value.id]!; });
+  for (const id of Object.keys(failures)) await deliver(event(id));
+  const lines: string[] = [], previous = setLogSink((line) => lines.push(line));
+  try { for (let n = 0; n < 3; n++) await jobs.runNext(); } finally { setLogSink(previous); }
+  const logged = lines.map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((line) => line.event === 'billing.webhooks.handler_failed');
+  expect(logged).toHaveLength(3);
+  const byEvent = new Map(logged.map((line) => [line.eventId, line]));
+  expect(byEvent.get('evt_fixed')).toMatchObject({ level: 'error', gymId: gymA, type: 'payment_intent.succeeded',
+    reason: 'Saved card household is unresolved', error: { name: 'Error' } });
+  for (const id of ['evt_provider_text', 'evt_provider_error']) {
+    expect(byEvent.get(id)).toMatchObject({ level: 'error', gymId: gymA, eventId: id, type: 'payment_intent.succeeded' });
+    expect(byEvent.get(id)).not.toHaveProperty('reason');
+  }
+  expect(byEvent.get('evt_provider_text')).toMatchObject({ error: { name: 'Error' } });
+  expect(lines.join('\n')).not.toMatch(/cus_123|Card declined/);
+  expect((await rows()).map((row) => row.error)).toEqual(['handler_failed', 'handler_failed', 'handler_failed']);
 });
 it('can replay an exhausted handler and retries a failed replay too', async () => {
   let fail = true;

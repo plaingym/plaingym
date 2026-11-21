@@ -95,6 +95,14 @@ revoked method. Changes retain ordinary payment-method audits. The campaign
 editor's "Needs a card" filter reads these rows in SQL, so each of these events
 updates it with no Stripe call (`areas/links/campaigns.README.md`).
 
+An update for a customer that matches no household (its household was erased,
+which unlinks the customer and redacts its cards, or a card added in the Stripe
+dashboard on a customer the app never linked) changes, creates and audits
+nothing: it is logged at info as `billing.payment_method.household_unresolved`
+with the gym, method, customer and event IDs, and the event is finished. A
+collection (a completed setup, or a Checkout that saves its method) for such a
+customer still fails, so the inbox retries it.
+
 ## Production composition
 
 `composeBillingWebhooks` passes an optional `disputeAlerts` (the billing alerts
