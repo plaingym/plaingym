@@ -11,13 +11,14 @@ import { ApiError } from '../../lib/api.js';
 import { createSetupClient } from './api.js';
 import { SetupActions } from './actions.js';
 
-const label = (key: string) => t('setup/stripe-step:' + key);
+const label = (key: string, values?: Readonly<Record<string, string | number>>) => t('setup/stripe-step:' + key, values);
 const permissions = ['customers', 'intents', 'checkout', 'setupIntents', 'mandates', 'methods', 'refunds', 'webhooks', 'events', 'disputes'];
 const readPermissions = new Set(['setupIntents', 'mandates', 'events', 'disputes']);
 export function StripeStep({ fetcher = fetch, onComplete }: { fetcher?: typeof fetch; onComplete?: () => void }) {
   const formId = useId();
   const [client] = useState(() => createSetupClient(fetcher));
   const [restrictedKey, setKey] = useState(''), [busy, setBusy] = useState(false), [done, setDone] = useState(false);
+  const [connected, setConnected] = useState<{ mode: 'test' | 'live' | null; webhookRegistered: boolean } | null>(null);
   const [failure, setFailure] = useState<'failed' | 'changed' | 'invalid' | null>(null);
   const queries = useQueryClient();
   async function save(choice: 'configure' | 'skip') {
@@ -26,16 +27,41 @@ export function StripeStep({ fetcher = fetch, onComplete }: { fetcher?: typeof f
     setBusy(true); setFailure(null);
     try {
       const { revision } = await client.call('status');
-      await client.call('stripe', choice === 'skip' ? { choice, revision } : { choice, revision, restrictedKey });
-      setKey(''); setDone(true);
-      await queries.invalidateQueries({ queryKey: ['setup', 'status'] });
-      onComplete?.();
+      const result = await client.call('stripe', choice === 'skip' ? { choice, revision } : { choice, revision, restrictedKey });
+      setKey('');
+      if (choice === 'configure') setConnected({ mode: result.mode, webhookRegistered: result.webhookRegistered });
+      else {
+        setDone(true);
+        await queries.invalidateQueries({ queryKey: ['setup', 'status'] });
+        onComplete?.();
+      }
     } catch (error) {
       setKey(''); setFailure(error instanceof ApiError && error.status === 409 ? 'changed' : 'failed');
     } finally { setBusy(false); }
   }
+  async function continueToBackups() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await queries.invalidateQueries({ queryKey: ['setup', 'status'] });
+      onComplete?.();
+    } finally { setBusy(false); }
+  }
+  const connectedLine = connected && [
+    connected.mode === 'test' || connected.mode === 'live'
+      ? label('connectedMode', { mode: label('mode_' + connected.mode) })
+      : label('connected'),
+    connected.webhookRegistered
+      ? label('webhookRegistered', { url: new URL('/webhooks/stripe', location.origin).href })
+      : label('webhookMissing'),
+  ].join(' ');
   return <section className="min-w-0 space-y-5" aria-label={label('title')}>
-    {done ? <p role="status">{label('done')}</p> : <>
+    {done ? <p role="status">{label('done')}</p>
+    : connected ? <>
+      <p role="status" className="wrap-anywhere">{connectedLine}</p>
+      <SetupActions><Button disabled={busy} onClick={() => void continueToBackups()}>{label('next')}</Button></SetupActions>
+    </>
+    : <>
       <p className="wrap-anywhere">{label('intro')}</p>
       <h3 className="font-semibold">{label('permissions')}</h3>
       <dl className="space-y-2 rounded-md border p-3 text-sm">

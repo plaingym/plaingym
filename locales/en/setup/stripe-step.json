@@ -24,5 +24,11 @@
   "changed": "Setup changed. Your key has been cleared. Try again with the current setup.",
   "invalid": "Enter a restricted key beginning with rk_test_ or rk_live_.",
   "done": "Stripe step saved. Continue to backups.",
+  "connected": "Connected to Stripe.",
+  "connectedMode": "Connected in {mode} mode.",
+  "mode_test": "test",
+  "mode_live": "live",
+  "webhookRegistered": "Webhook registered at {url}.",
+  "webhookMissing": "The webhook isn't registered yet. Check Settings → Integrations → Payments after setup.",
   "next": "Continue to backups"
 }

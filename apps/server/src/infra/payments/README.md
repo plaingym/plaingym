@@ -505,7 +505,10 @@ contract. Replace the old skip-only registration; never mount both.
 adapter or null. No credentials or SDK types cross the interface.
 
 The registered web `StripeStep` is phone-first, masks its key, shows all required
-permissions, and clears the key on success or failure. The wizard shell must
-render `setupSteps.setup.stripe` at step 6 and refresh status when it advances.
+permissions, and clears the key on success or failure. After a successful connect
+it stays on screen with the mode and webhook address and refreshes the setup status
+only when the owner presses **Continue to backups**; **Set up later** refreshes at
+once. The wizard shell must render `setupSteps.setup.stripe` at step 6 and move on
+when that status advances.
 Its feature-local English fallback can move into `locales/en/setup/stripe-step.json`
 at integration without changing the keys.

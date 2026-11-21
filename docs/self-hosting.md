@@ -104,7 +104,9 @@ The wizard's steps:
    Google whether it knows the client: a client Google refuses isn't saved. Google
    checks the redirect address only at sign-in, so after setup sign out and sign in
    with Google once. The wizard skips the page when `.env` already sets Google.
-7. **Payments**: a Stripe restricted key (see [Stripe](#stripe)), or skip.
+7. **Payments**: a Stripe restricted key (see [Stripe](#stripe)), or skip. After
+   **Validate and connect** the page shows the mode and the webhook address; press
+   **Continue to backups** to move on.
 8. **Backups**: the bucket and its credentials. The endpoint is the storage
    service's address without the bucket name. The app checks the bucket, generates a
    backup key pair and shows the private key **once**: copy or download it, keep it
