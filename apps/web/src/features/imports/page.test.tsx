@@ -7,6 +7,7 @@ import type { StaffRole } from '@plaingym/shared';
 import { exportDatasets } from '@plaingym/shared/contracts';
 import type { ShellBootstrap } from '../../app/services.js';
 import { useBootstrap } from '../../app/context.js';
+import { ApiError } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 import { ImportsPage } from './page.js';
 const { request } = vi.hoisted(() => ({ request: vi.fn() }));
@@ -280,6 +281,57 @@ describe('CSV admin workflow', () => {
     expect((screen.getByRole('progressbar') as HTMLProgressElement).max).toBe(1200);
     fireEvent.change(screen.getByLabelText('Import type'), { target: { value: 'mat' } });
     expect((screen.getByRole('button', { name: 'Commit import' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+  it('stops polling and shows the empty-export message for a 409', async () => {
+    const pending = { id: runId, datasets: [...exportDatasets], createdAt, status: 'pending', completedAt: null, downloadUrl: null, expiresAt: null };
+    request.mockImplementation(async (path: string) => {
+      if (path === '/api/exports') return { data: pending };
+      throw new ApiError(409, 'request_failed');
+    });
+    start(); fireEvent.click(screen.getByRole('button', { name: 'Create export' }));
+    expect((await screen.findByRole('alert')).textContent).toBe(t('imports/export:empty'));
+    await new Promise(resolve => setTimeout(resolve, 3200));
+    expect(request.mock.calls.filter(([path]) => path === '/api/exports/' + runId)).toHaveLength(1);
+  });
+  it('stops polling and shows the expired-link message for a 404', async () => {
+    const pending = { id: runId, datasets: [...exportDatasets], createdAt, status: 'pending', completedAt: null, downloadUrl: null, expiresAt: null };
+    request.mockImplementation(async (path: string) => {
+      if (path === '/api/exports') return { data: pending };
+      throw new ApiError(404, 'request_failed');
+    });
+    start(); fireEvent.click(screen.getByRole('button', { name: 'Create export' }));
+    expect((await screen.findByRole('alert')).textContent).toBe(t('imports/export:expired'));
+    expect(screen.queryAllByRole('status').some(node => node.textContent?.includes('Running'))).toBe(false);
+  });
+  it('drops a cached running status after a poll 404 and lets the owner create another export', async () => {
+    const pending = { id: runId, datasets: [...exportDatasets], createdAt, status: 'pending', completedAt: null, downloadUrl: null, expiresAt: null };
+    let polls = 0;
+    request.mockImplementation(async (path: string) => {
+      if (path === '/api/exports') return { data: pending };
+      if (++polls === 1) return { data: { ...pending, status: 'running' } };
+      throw new ApiError(404, 'request_failed');
+    });
+    start(); fireEvent.click(screen.getByRole('button', { name: 'Create export' }));
+    expect((await screen.findByRole('status')).textContent).toContain('Running');
+    expect((await screen.findByRole('alert', {}, { timeout: 4000 })).textContent).toBe(t('imports/export:expired'));
+    expect(screen.queryAllByRole('status').some(node => node.textContent?.includes('Running'))).toBe(false);
+    await new Promise(resolve => setTimeout(resolve, 3200));
+    expect(request.mock.calls.filter(([path]) => path === '/api/exports/' + runId)).toHaveLength(2);
+    const button = screen.getByRole<HTMLButtonElement>('button', { name: 'Create export' });
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
+    await waitFor(() => expect(request.mock.calls.filter(([path]) => path === '/api/exports')).toHaveLength(2));
+  });
+  it('stops polling a 5xx answer and keeps the generic failure message', async () => {
+    const pending = { id: runId, datasets: [...exportDatasets], createdAt, status: 'pending', completedAt: null, downloadUrl: null, expiresAt: null };
+    request.mockImplementation(async (path: string) => {
+      if (path === '/api/exports') return { data: pending };
+      throw new ApiError(500, 'request_failed');
+    });
+    start(); fireEvent.click(screen.getByRole('button', { name: 'Create export' }));
+    expect((await screen.findByRole('alert')).textContent).toBe(t('imports/pipeline:requestFailed'));
+    await new Promise(resolve => setTimeout(resolve, 3200));
+    expect(request.mock.calls.filter(([path]) => path === '/api/exports/' + runId)).toHaveLength(1);
   });
   it('offers the expiring download after the export finishes and hides internal errors', async () => {
     const job = { id: runId, datasets: [...exportDatasets], createdAt, status: 'succeeded', completedAt: createdAt,

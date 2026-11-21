@@ -9,7 +9,7 @@ import { importTargetFieldSchema, importUploadSchema, importPreviewStateSchema, 
   type ImportPlanRequest, type ImportPreviewResponse } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../app/context.js';
 import { useDemoSandbox } from '../demo/notice.js';
-import { createJsonTransport, readApiError, reportApiRefusal } from '../../lib/api.js';
+import { ApiError, createJsonTransport, readApiError, reportApiRefusal } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 import { Button } from '../../components/ui/button.js';
 import { Pager } from '../../components/ui/pager.js';
@@ -163,17 +163,22 @@ function ImportPanel({ gymId }: { gymId: string }) {
     </div>}
   </div></PageSection>;
 }
+function exportFailure(error: unknown): string {
+  if (error instanceof ApiError && error.status === 409) return t('imports/export:empty');
+  if (error instanceof ApiError && error.status === 404) return t('imports/export:expired');
+  return label('requestFailed');
+}
 function ExportPanel({ gymId }: { gymId: string }) {
   const [id, setId] = useState<string>();
   const create = useMutation({ mutationFn: async () => parseResponse(exportJobSchema, (await request<{ data: unknown }>('/api/exports', { format: 'csv' })).data), onSuccess(job) { setId(job.id); } });
   const progress = useQuery({ queryKey: ['exports', gymId, id], enabled: !!id,
     queryFn: async () => parseResponse(exportJobSchema, (await request<{ data: unknown }>('/api/exports/' + id)).data),
-    refetchInterval: (query) => query.state.data && ['succeeded', 'failed'].includes(query.state.data.status) ? false : 1500 });
+    refetchInterval: (query) => query.state.status === 'error' || (query.state.data && ['succeeded', 'failed'].includes(query.state.data.status)) ? false : 1500 });
   return <PageSection title={t('imports/export:title')} description={t('imports/export:description')}><div className={card}>
-    <Button className="w-full sm:w-auto" disabled={create.isPending || progress.data?.status === 'pending' || progress.data?.status === 'running'} onClick={() => create.mutate()}>{t('imports/export:create')}</Button>
-    {(create.isError || progress.isError) && <Alert variant="error" focusOnReveal>{label('requestFailed')}</Alert>}
-    {progress.data && <p role="status" className="text-sm">{label('status.' + progress.data.status)}</p>}
-    {progress.data?.downloadUrl && <a className="inline-flex min-h-11 items-center font-medium underline underline-offset-4" href={progress.data.downloadUrl} rel="noreferrer">{t('imports/export:download')}</a>}
+    <Button className="w-full sm:w-auto" disabled={create.isPending || (!progress.isError && (progress.data?.status === 'pending' || progress.data?.status === 'running'))} onClick={() => create.mutate()}>{t('imports/export:create')}</Button>
+    {(create.isError || progress.isError) && <Alert variant="error" focusOnReveal>{create.isError ? label('requestFailed') : exportFailure(progress.error)}</Alert>}
+    {progress.data && !progress.isError && <p role="status" className="text-sm">{label('status.' + progress.data.status)}</p>}
+    {progress.data?.downloadUrl && !progress.isError && <a className="inline-flex min-h-11 items-center font-medium underline underline-offset-4" href={progress.data.downloadUrl} rel="noreferrer">{t('imports/export:download')}</a>}
   </div></PageSection>;
 }
 export function ImportsPage() {
