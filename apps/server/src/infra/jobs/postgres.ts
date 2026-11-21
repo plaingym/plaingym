@@ -344,9 +344,9 @@ export class PostgresJobs implements Jobs, JobRecovery {
     if (!Number.isFinite(options.through.getTime()) || !Number.isFinite(options.at.getTime())) throw new Error('Invalid job time');
     const update = (tx: Tx) => tx.update(jobs).set({ acknowledgedAt: options.at })
       .where(and(eq(jobs.gymId, options.gymId), eq(jobs.status, 'failed'), isNull(jobs.acknowledgedAt),
-        lte(jobs.runAt, options.through))).returning({ id: jobs.id });
+        lte(jobs.runAt, options.through)));
     const acknowledged = await (transaction ? update(transaction.tx) : this.#database.forGym(options.gymId, update));
-    return acknowledged.length;
+    return acknowledged.count;
   }
   /**
    * Install-wide: fails and acknowledges every running job with one of these names, in every gym and install
@@ -358,8 +358,8 @@ export class PostgresJobs implements Jobs, JobRecovery {
     if (!Number.isFinite(options.at.getTime())) throw new Error('Invalid job time');
     const failed = await this.#database.forSystem(tx => tx.update(jobs).set({ status: 'failed', acknowledgedAt: options.at,
       runAt: options.at, lastError: options.reason, lockToken: null, lockedUntil: null })
-      .where(and(inArray(jobs.name, [...names]), eq(jobs.status, 'running'))).returning({ id: jobs.id }));
-    return failed.length;
+      .where(and(inArray(jobs.name, [...names]), eq(jobs.status, 'running'))));
+    return failed.count;
   }
   /** Only schedules without a cursor inherit the occurrence watermark used by earlier releases. */
   async #seed(gym: Gym, missing: readonly (readonly [string, string])[], existing: ReadonlySet<string>, now: Date): Promise<Map<string, Date>> {
