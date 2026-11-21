@@ -122,22 +122,52 @@ bootstrap as the one command, including the signed manifest and archive checks.
 ## Route 3: Docker Compose by hand
 
 Use this on a server you already manage (Docker and Compose installed, ports 80 and 443
-free). The installer's host changes (firewall, swap, OS updates and the nightly update
-timer) are then yours to make.
+free). Configure the host firewall and automatic OS security updates yourself. This
+route leaves swap as configured on the host, so set it up yourself if your 1 GB server
+has none. You can add the [optional update timer](#adding-the-update-timer) after setup.
 
-1. Copy `compose.yaml`, `Caddyfile`, `postgres/01-roles.sh`, `update.sh`, `rotate-key.sh`,
-   `restore.sh` and `lib.sh` from a release's `deploy/` folder into `/opt/plaingym`,
-   keeping the `postgres/` folder. `update.sh` (which needs `lib.sh` beside it) is how you
-   [update](update-by-hand.md), `rotate-key.sh` (also with `lib.sh`) replaces the
-   encryption key ([self-hosting.md](self-hosting.md#rotating-the-encryption-key)), and
-   `restore.sh` runs a [command-line restore](restoring.md#restore-from-the-command-line).
-2. Copy `deploy/.env.example` to `.env` there, and replace every placeholder:
+Run the following steps as root.
+
+1. Start in the directory containing the release archive. The archive extracts to
+   `deploy/`. Copy the files into `/opt/plaingym`, keeping `01-roles.sh` under
+   `postgres/`.
+
+   ```sh
+   tar -xzf plaingym-deploy-vX.Y.Z.tar.gz
+   mkdir -p /opt/plaingym/postgres
+   cp deploy/compose.yaml deploy/Caddyfile deploy/update.sh deploy/rotate-key.sh \
+     deploy/restore.sh deploy/lib.sh /opt/plaingym/
+   cp deploy/postgres/01-roles.sh /opt/plaingym/postgres/
+   ```
+
+   `update.sh` (which needs `lib.sh` beside it) is how you [update](update-by-hand.md),
+   `rotate-key.sh` (also with `lib.sh`) replaces the encryption key
+   ([self-hosting.md](self-hosting.md#rotating-the-encryption-key)), and `restore.sh`
+   runs a [command-line restore](restoring.md#restore-from-the-command-line).
+2. Copy the example environment file separately and switch to the install directory.
+
+   ```sh
+   install -m 600 deploy/.env.example /opt/plaingym/.env
+   cd /opt/plaingym
+   ```
+
+   Replace every placeholder in `.env`.
+
    * `APP_IMAGE`: the version tag or digest;
    * `GYM_HOSTNAME` and `ACME_EMAIL`;
    * `POSTGRES_PASSWORD`, `APP_PASSWORD`, `MAINTENANCE_PASSWORD`, `AUTH_SECRET` and
      `SETUP_TOKEN`: independent random values (`openssl rand -hex 32` each);
-   * `APP_ENCRYPTION_KEY`: 64 hex characters (`openssl rand -hex 32`).
-3. Protect it with `chmod 600 .env`, then start the stack:
+   * `APP_ENCRYPTION_KEY`: 64 hex characters (`openssl rand -hex 32`);
+   * `PLAINGYM_ORIGIN_NONCE` (uncomment it): any value, such as
+     `openssl rand -hex 16`, for the origin check Caddy serves at
+     `/.well-known/plaingym-origin`.
+
+   If your hostname is proxied by Cloudflare, uncomment `TRUST_CLOUDFLARE=true` in
+   `.env` so rate limits use each visitor's IP address. See the [Cloudflare proxy
+   guide](cloudflare.md#set-it-up) for the DNS, TLS and rate-limiting settings; its
+   installer step doesn't apply here, because you have just made that `.env` change
+   yourself.
+3. Start the stack and print the setup link from `/opt/plaingym`.
 
    ```sh
    docker compose up -d --wait
@@ -153,8 +183,8 @@ described in [`deploy/README.md`](../deploy/README.md) and [configuration.md](co
 This route installs no update timer, so patch releases don't install themselves (the
 Health page's **Automatic updates** tile says no check has run). To add it, copy
 `release-signing.pem` from `deploy/` into `/opt/plaingym` too when your copy of the
-deployment files has one, then, from `deploy/`, install the two units with the install
-directory filled in:
+deployment files has one, then, from the extracted `deploy/` folder (not `/opt/plaingym`,
+which has no `systemd/`), install the two units with the install directory filled in:
 
 ```sh
 for unit in plaingym-update.service plaingym-update.timer; do
