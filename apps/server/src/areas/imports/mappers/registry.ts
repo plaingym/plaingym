@@ -15,10 +15,13 @@ export interface MapperContext extends MutationContext {
   timezone: string;
   /** Complete immutable source for deterministic within-file duplicate detection after a restart. */
   sourceRows: readonly CsvRow[];
+  /** Preview allows no external reads. */
+  preview?: boolean;
   stripePaymentMethods?: {
     currency: string;
     settingsRevision: number;
     banks: ReadonlyMap<string, NonNullable<BankAccountImportRead>>;
+    notConnected: ReadonlySet<string>;
     failedChecks: ReadonlySet<string>;
   };
 }

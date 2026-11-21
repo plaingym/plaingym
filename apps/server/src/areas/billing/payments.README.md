@@ -151,7 +151,7 @@ and row ID descending, in the same transaction under the household lock, with a
 default alone. Removing the only active method leaves no default. The test-to-live
 Stripe switch shares this promotion when it revokes a default and keeps an imported
 active method.
-Customer-card imports also use it after the final page or exhausted cursor restarts.
+Customer-card imports also use it after the final page or exhausted restarts.
 Retrying removal of a revoked method
 does not change the default or repeat these audits. Removal then queues
 a detach retry and attempts detachment outside the transaction. Revoked rows

@@ -27,19 +27,22 @@ method IDs. The read accepts an untagged customer in the configured Stripe
 account, enforces gym tags when present and returns the customer and optional
 household tag for comparison with the CSV row. The ordinary payment-object read
 still requires gym ownership. The import read never changes Stripe metadata.
-The CSV preview marks a row as an error after a denied mandate read or other
-provider failure. Dry runs and both run protocols record the row-specific
-message, and other valid rows remain eligible to commit.
+The CSV preview makes no Stripe reads. Dry runs and both run protocols mark a
+row as an error after a denied mandate read or other provider failure, and when
+the gym has no Stripe connection for a new `pm_` ID. They record the
+row-specific message, and other valid rows remain eligible to commit.
 
 Staff choose **Import cards from Stripe** on household billing or invoice details
 (`payments.record`). The import commits at most 100 cards per background job,
 atomically queues its continuation, deduplicates processor IDs and keeps revoked
 cards revoked. It rechecks the local customer link and test-to-live switch after
 provider reads. Ownership changes finish as stale, cards already stored for another
-household are skipped, and a refused cursor restarts listing at most three times.
-Each request records its completion, refusal or stale outcome in the audit trail,
-including skipped cards and restarts. Exhausting cursor restarts also settles a
-default for cards already imported.
+household are skipped. A refused cursor or a change of the gym's currency
+restarts listing, at most three times in total, without saving the listed page.
+Each request records its restart, completion, refusal or stale outcome in the
+audit trail, including the cards and bank accounts already imported, skipped
+methods and restarts. A refusal at the limit records whether a cursor or the
+currency caused it, and also settles a default for methods already imported.
 
 Imports, card removal and clearing test cards share default promotion. An existing
 default stays selected; otherwise cards are ordered newest first by processor

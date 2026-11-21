@@ -5,11 +5,11 @@ The whole-file index retains shared families and compact per-row flags. A
 customer-keyed family of one is rebuilt from its source row during analysis,
 including when the member has an independent external ID.
 
-`createPeopleMapper` lets the import pipeline resolve new Stripe payment method
-IDs before opening each chunk's database transaction. The mapper analyzes with
-the supplied read-only handle and writes in chunks of at most 100 rows. Preview
-and dry runs do not change domain data. Importing stores processor references for
-later billing.
+`createPeopleMapper` lets the dry run and import resolve new Stripe payment
+method IDs before opening each chunk's database transaction. Preview skips
+Stripe lookups. The mapper analyzes with the supplied read-only handle and
+writes in chunks of at most 100 rows. Preview and dry runs do not change domain
+data. Importing stores processor references for later billing.
 
 Map the source columns to first and last name, optional contact details, birth
 date, status, email opt-out, tags, household references/name/billing day and Stripe
@@ -68,7 +68,8 @@ billing phone and its notices consent, are preserved; updates can change billing
 day or fill a missing customer ID. A customer or payment
 method already owned by another household is rejected. Existing saved methods,
 including revoked methods, are preserved; new methods only become default if
-the household has no default. Stripe IDs remain case-sensitive.
+the household has no default. Stripe IDs remain case-sensitive. A new `pm_` ID
+produces a row error when the gym has no Stripe connection.
 
 For a verified bank account, the type must match the gym's currency (US bank
 account for USD or Canadian bank account for CAD) and the Stripe customer must

@@ -59,21 +59,24 @@ export function createCustomerCardImportJobs(options: CustomerCardImportOptions)
   return [{ id: customerCardImportJob, lane: 'batch', async handler(input, context) {
     const payload = payloadSchema.parse(input), { gymId } = context;
     const actor = { gymId, actor: { kind: 'system' as const } };
+    const committedCounts = { importedCards: payload.importedCards, importedBankAccounts: payload.importedBankAccounts,
+      skippedCards: payload.skippedCards, ...(payload.skippedBankAccounts ? { skippedBankAccounts: payload.skippedBankAccounts } : {}),
+      ...(payload.skippedMandatePermissions ? { skippedMandatePermissions: payload.skippedMandatePermissions } : {}) };
     async function outcome(reason: string, restart = false) {
       await withJobTransaction(scope, gymId, async transaction => {
         const { tx } = transaction;
         const current = await stripeWriteCurrent(tx, gymId, payload.switched)
           && (await loadHousehold(tx, payload.householdId, true)).stripeCustomerId === payload.customerId;
         const restarting = current && restart && payload.restarts < customerCardRestartLimit;
-        // A cursor refusal must still settle the cards already committed when the bounded restart budget ends.
+        // Settle the cards already committed when the bounded restart budget ends.
         if (current && restart && !restarting)
           await promoteDefaultCard(tx, actor, options.clock, payload.householdId, context.timezone, payload.requestId);
+        const restartLimitReason = reason === 'listing_changed' ? 'listing_changed_restart_limit' : 'cursor_restart_limit';
         await catalogAudit(tx, actor, options.clock, restarting ? 'billing.card.import_restarted' : 'billing.card.import_finished',
           'household', payload.householdId, undefined, { requestId: payload.requestId,
             outcome: restarting ? 'restarted' : current && restart ? 'refused' : 'stale',
-            reason: !current ? 'customer_or_configuration_changed' : restart && !restarting ? 'cursor_restart_limit' : reason,
-            skippedCards: payload.skippedCards, ...(payload.skippedBankAccounts ? { skippedBankAccounts: payload.skippedBankAccounts } : {}),
-            restarts: payload.restarts });
+            reason: !current ? 'customer_or_configuration_changed' : restart && !restarting ? restartLimitReason : reason,
+            ...committedCounts, restarts: payload.restarts });
         if (restarting) {
           const next = { ...payload }; delete next.cursor; delete next.skippedCursor; delete next.currency;
           // Start both listings again. Committed methods already counted in this request remain counted.
@@ -116,18 +119,18 @@ export function createCustomerCardImportJobs(options: CustomerCardImportOptions)
       if (error instanceof CardCursorRefused && (payload.cursor || payload.skippedCursor)) { await outcome('cursor_refused', true); return; }
       throw error;
     }
-    await withJobTransaction(scope, gymId, async transaction => {
+    const pageOutcome = await withJobTransaction(scope, gymId, async transaction => {
       const { tx } = transaction;
       const configurationCurrent = await stripeWriteCurrent(tx, gymId, payload.switched);
       const household = await loadHousehold(tx, payload.householdId, true);
       // Customer replacement, erasure and a test-to-live switch must not restore stale card references.
-      if (!configurationCurrent || household.stripeCustomerId !== payload.customerId || (await readGymSettings(tx, gymId)).currency !== currency) {
+      if (!configurationCurrent || household.stripeCustomerId !== payload.customerId) {
         await catalogAudit(tx, actor, options.clock, 'billing.card.import_finished', 'household', household.id, undefined,
           { requestId: payload.requestId, outcome: 'stale', reason: 'customer_or_configuration_changed',
-            skippedCards: payload.skippedCards, ...(payload.skippedBankAccounts ? { skippedBankAccounts: payload.skippedBankAccounts } : {}),
-            restarts: payload.restarts });
+            ...committedCounts, restarts: payload.restarts });
         return;
       }
+      if ((await readGymSettings(tx, gymId)).currency !== currency) return 'listing_changed';
       let skippedCards = payload.skippedCards;
       let skippedBankAccounts = payload.skippedBankAccounts + skippedPage.cards.length;
       let skippedMandatePermissions = payload.skippedMandatePermissions;
@@ -189,5 +192,6 @@ export function createCustomerCardImportJobs(options: CustomerCardImportOptions)
         { gymId, timezone: context.timezone, idempotencyKey: `${payload.requestId}:${payload.restarts}:${page.nextCursor ?? ''}:${skippedPage.nextCursor ?? ''}`,
           maxAttempts: 8 }, transaction);
     });
+    if (pageOutcome === 'listing_changed') await outcome(pageOutcome, true);
   } }];
 }

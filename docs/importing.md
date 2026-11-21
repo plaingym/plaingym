@@ -50,11 +50,11 @@ the Stripe account that holds the payment method so PlainGym can check its type
 and the customer it belongs to, including customers brought over from another
 system. An incompatible bank account is a row error. A Canadian bank account
 also needs an active, reusable mandate from a successful Stripe setup for
-off-session payments. The CSV flags that row if the importer cannot find a
-reusable mandate or if the Stripe key lacks **Mandates** read access. If Stripe
-cannot check a saved payment method, preview marks the affected row as an error.
-The dry run and import results show the reason for each affected row, and the
-import saves the other valid rows.
+off-session payments. A new `pm_` payment method ID requires a connected Stripe
+account. Preview skips Stripe lookups. The dry run and import check the new
+`pm_` IDs with Stripe and report row errors, including missing reusable mandates,
+missing **Mandates** read access, and lookup failures. The import saves the other
+valid rows.
 
 Staff can also import saved cards and compatible bank accounts from the
 household's linked Stripe customer in Billing. A Canadian bank account without a

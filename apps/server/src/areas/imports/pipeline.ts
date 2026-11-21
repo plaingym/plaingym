@@ -206,7 +206,7 @@ export function createImportPipeline(options: PipelineOptions) {
         const { gymId } = context, uploads = await options.uploadsFor(gymId), generation = uuidv7(), startedAt = clock.now();
         const document = await loadSource(gymId, plan.uploadId, signal), written: string[] = [];
         check();
-        const mapperContext: MapperContext = { ...context, clock, runId: uuidv7(), timezone, sourceRows: document.rows };
+        const mapperContext: MapperContext = { ...context, clock, runId: uuidv7(), timezone, sourceRows: document.rows, preview: true };
         const summary: PreviewSummary = { totalRows: document.rows.length, create: 0, update: 0, skip: 0, errors: 0 };
         const put = async (key: string, value: unknown) => { check(); await store.put(gymId, key, value); written.push(key); check(); };
         // The computation's own signal may have aborted already, which would refuse every removal.

@@ -211,6 +211,8 @@ async function analyze(tx: Reader, rows: readonly CsvRow[], plan: ImportPlanRequ
       const stripeCustomer = customer ?? current;
       if (saved && saved.householdId !== householdId)
         issue('stripePaymentMethodId', 'conflict', 'paymentMethodInUse');
+      else if (!saved && context.stripePaymentMethods?.notConnected.has(id))
+        issue('stripePaymentMethodId', 'invalid_value', 'paymentMethodNeedsStripe');
       else if (!saved && context.stripePaymentMethods?.failedChecks.has(id))
         issue('stripePaymentMethodId', 'invalid_value', 'paymentMethodCheckFailed');
       else if (!saved && bank) {
@@ -375,14 +377,23 @@ export function createPeopleMapper(scope: typeof forGym, paymentsFor?: (gymId: s
     });
     const pending = ids.filter(id => id.startsWith('pm_') && !stored.has(id));
     const banks = new Map<string, NonNullable<BankAccountImportRead>>();
+    const notConnected = new Set<string>();
     const failedChecks = new Set<string>();
-    if (pending.length && paymentsFor) {
-      const provider = Promise.resolve().then(() => paymentsFor(context.gymId));
+    let provider: Payments | null | undefined;
+    if (pending.length) {
+      try { provider = await paymentsFor?.(context.gymId) ?? null; }
+      catch (error) {
+        if (error instanceof ImportPreparationChanged) throw error;
+        if (!context.preview) for (const id of pending) failedChecks.add(id);
+      }
+      if (provider === null) for (const id of pending) notConnected.add(id);
+    }
+    if (provider && !context.preview) {
       const concurrency = 4;
       for (let offset = 0; offset < pending.length; offset += concurrency) {
         await Promise.all(pending.slice(offset, offset + concurrency).map(async id => {
-          let result: BankAccountImportRead | undefined;
-          try { result = await (await provider)?.readBankAccountForImport(id, currency === 'CAD'); }
+          let result: BankAccountImportRead;
+          try { result = await provider.readBankAccountForImport(id, currency === 'CAD'); }
           catch (error) {
             if (error instanceof ImportPreparationChanged) throw error;
             failedChecks.add(id);
@@ -393,6 +404,6 @@ export function createPeopleMapper(scope: typeof forGym, paymentsFor?: (gymId: s
         }));
       }
     }
-    return { ...context, stripePaymentMethods: { currency, settingsRevision, banks, failedChecks } };
+    return { ...context, stripePaymentMethods: { currency, settingsRevision, banks, notConnected, failedChecks } };
   } };
 }

@@ -14,7 +14,7 @@ import { FakeUploads } from '../../../infra/storage/index.js';
 import { createSettingsService } from '../../settings/settings.js';
 import { autoMatch, csvLine, parseCsv } from '../pipeline.csv.js';
 import { createImportPipeline } from '../pipeline.js';
-import { peopleMapper } from './people.js';
+import { createPeopleMapper, peopleMapper } from './people.js';
 import { familyExport, minimalExport } from './people.fixtures.js';
 import type { MapperContext } from './registry.js';
 
@@ -43,6 +43,15 @@ function services(paymentsFor?: NonNullable<Parameters<typeof createImportPipeli
       } };
   }
   return { pipeline, load };
+}
+
+async function familyPayments(gymId: string) {
+  const provider = new FakePayments(gymId, clock);
+  for (const customer of ['Stone', 'River']) {
+    provider.recordPaymentMethod({ id: 'pm_' + customer, customerId: 'cus_' + customer, type: 'card',
+      last4: '4242', expiresMonth: 12, expiresYear: 2035 });
+  }
+  return provider;
 }
 
 it.each(['McCASE', 'A_%\\B', 'Émile', 'İpek', 'Σίγμα'])('keeps duplicate matching and isolation for %s', async (lastName) => {
@@ -83,7 +92,7 @@ it.each([
     + csvLine(['First', 'Family', 'cus_Match', 'pm_Match']) + csvLine(['Second', 'Family', 'cus_Other', 'pm_WrongCurrency'])
     + csvLine(['Third', 'Family', 'cus_Foreign', 'pm_WrongCustomer']);
   const input = await load(csv, { duplicatePolicy: 'skip' }, gymId);
-  expect((await input.preview()).data.map(row => row.action)).toEqual(['create', 'error', 'error']);
+  expect((await input.preview()).data.map(row => row.action)).toEqual(['create', 'create', 'create']);
   const wrongCurrency = { column: 'Stripe Payment Method ID', code: 'invalid_value', message: `This bank account can't be charged in ${currency}.` };
   const wrongCustomer = { column: 'Stripe Payment Method ID', code: 'conflict', message: 'This bank account belongs to a different Stripe customer.' };
   expect((await input.run(true)).issues).toMatchObject([wrongCurrency, wrongCustomer]);
@@ -116,7 +125,7 @@ it('reports a Canadian bank account with no mandate and imports the card in its 
     + csvLine(['First', 'Family', 'cus_Family', 'pm_Unmandated']) + csvLine(['Second', 'Family', 'cus_Family', 'pm_Card']);
   const input = await load(csv, {}, gymId);
   const expected = { column: 'Stripe Payment Method ID', code: 'invalid_value', message: 'This Canadian bank account needs a reusable Stripe mandate.' };
-  expect((await input.preview()).data.map(row => row.action)).toEqual(['error', 'create']);
+  expect((await input.preview()).data.map(row => row.action)).toEqual(['create', 'create']);
   expect((await input.run(true)).issues).toMatchObject([expected]);
   expect((await input.run()).issues).toMatchObject([expected]);
   expect((await snapshot(gymId)).methods).toMatchObject([{ type: 'card', processorId: 'pm_Card', isDefault: true }]);
@@ -141,22 +150,24 @@ it.each([{ statusCode: 403 }, { rawType: 'permission_error' }])('reports a denie
   const { load } = services(async () => provider);
   const input = await load(csvLine(['First Name', 'Last Name', 'Stripe Customer ID', 'Stripe Payment Method ID'])
     + csvLine(['First', 'Family', customer, bankId]) + csvLine(['Second', 'Family', customer, 'pm_Card']), {}, gymId);
-  expect((await input.preview()).data.map(row => row.action)).toEqual(['error', 'create']);
+  expect((await input.preview()).data.map(row => row.action)).toEqual(['create', 'create']);
+  const expected = [{ rowNumber: 2, column: 'Stripe Payment Method ID',
+    message: 'Give the Stripe key Mandates read access to import this Canadian bank account.' }];
+  expect((await input.run(true)).issues).toMatchObject(expected);
   const result = await input.run();
   expect(result.job).toMatchObject({ status: 'failed', processedRows: 2, committedRows: 1, errorCount: 1 });
-  expect(result.issues).toMatchObject([{ rowNumber: 2, column: 'Stripe Payment Method ID',
-    message: 'Give the Stripe key Mandates read access to import this Canadian bank account.' }]);
+  expect(result.issues).toMatchObject(expected);
   expect((await snapshot(gymId)).methods).toMatchObject([{ type: 'card', processorId: 'pm_Card', isDefault: true }]);
 });
 
-it('shows a Stripe lookup failure in preview and imports other rows with and without payment methods', async () => {
+it('shows a Stripe lookup failure in the dry run and imports other rows with and without payment methods', async () => {
   const gymId = uuidv7();
   await factory('gyms', gymId, { currency: 'USD' });
   const provider = new FakePayments(gymId, clock);
   provider.seedCustomer({ id: 'cus_Family', email: 'family@example.test', gymId: null });
   provider.recordPaymentMethod({ id: 'pm_Bank', customerId: 'cus_Family', type: 'us_bank_account', last4: '1234' });
   const read = provider.readBankAccountForImport.bind(provider);
-  vi.spyOn(provider, 'readBankAccountForImport').mockImplementation(async (id, includeMandate) => {
+  const lookup = vi.spyOn(provider, 'readBankAccountForImport').mockImplementation(async (id, includeMandate) => {
     if (id === 'pm_Failure') throw new Error('Stripe unavailable');
     return read(id, includeMandate);
   });
@@ -165,17 +176,53 @@ it('shows a Stripe lookup failure in preview and imports other rows with and wit
     + csvLine(['First', 'Family', 'cus_Family', 'pm_Failure']) + csvLine(['Second', 'Family', 'cus_Family', 'pm_Bank'])
     + csvLine(['Third', 'Person', '', '']), {}, gymId);
   const preview = await input.preview();
-  expect(preview.summary).toMatchObject({ errors: 1, create: 2 });
-  expect(preview.data.map(row => row.action)).toEqual(['error', 'create', 'create']);
+  expect(preview.summary).toMatchObject({ errors: 0, create: 3 });
+  expect(preview.data.map(row => row.action)).toEqual(['create', 'create', 'create']);
+  expect(lookup).not.toHaveBeenCalled();
   const expected = [{ rowNumber: 2, column: 'Stripe Payment Method ID',
     message: "Stripe couldn't check this payment method. Try again later." }];
   expect((await input.run(true)).issues).toMatchObject(expected);
+  expect(lookup.mock.calls).toEqual([['pm_Failure', false], ['pm_Bank', false]]);
+  lookup.mockClear();
   const result = await input.run();
+  expect(lookup.mock.calls).toEqual([['pm_Failure', false], ['pm_Bank', false]]);
   expect(result.job).toMatchObject({ status: 'failed', processedRows: 3, committedRows: 2, errorCount: 1 });
   expect(result.issues).toMatchObject(expected);
   const { members, methods } = await snapshot(gymId);
   expect(members.map(member => member.firstName)).toEqual(['Second', 'Third']);
   expect(methods).toMatchObject([{ type: 'us_bank_account', processorId: 'pm_Bank', isDefault: true }]);
+});
+
+it.each([
+  { connection: 'no resolver', paymentsFor: undefined },
+  { connection: 'a resolver with no provider', paymentsFor: async () => null },
+])('rejects a new pm_ ID with $connection and imports the other row', async ({ paymentsFor }) => {
+  const csv = csvLine(['First Name', 'Last Name', 'Stripe Customer ID', 'Stripe Payment Method ID'])
+    + csvLine(['First', 'Family', 'cus_X', 'pm_New']) + csvLine(['Second', 'Person', '', '']);
+  const input = await services(paymentsFor).load(csv);
+  expect((await input.preview()).data).toMatchObject([{ rowNumber: 2, action: 'error' }, { rowNumber: 3, action: 'create' }]);
+  const expected = [{ rowNumber: 2, column: 'Stripe Payment Method ID', code: 'invalid_value',
+    message: 'Connect Stripe before importing this payment method ID, or leave the payment method column unmapped.' }];
+  const mapper = createPeopleMapper(database.forGym, paymentsFor), { rows } = parseCsv(csv);
+  const prepared = await mapper.prepare!(rows, input.plan,
+    { ...input.actor, clock, runId: uuidv7(), timezone: 'UTC', sourceRows: rows, preview: true });
+  const planned = await database.forGym(gymA, tx => mapper.analyze(tx, rows, input.plan, prepared));
+  expect(planned.flatMap(row => row.issues)).toEqual(expected);
+
+  expect((await input.run(true)).issues).toEqual(expected);
+  const result = await input.run();
+  expect(result.issues).toEqual(expected);
+  expect(result.job).toMatchObject({ committedRows: 1, errorCount: 1 });
+  const saved = await snapshot();
+  expect(saved.members).toMatchObject([{ firstName: 'Second' }]);
+  expect(saved.methods).toEqual([]);
+});
+
+it.each(['card_Old', 'ba_Old', 'src_Old'])('imports %s without a Stripe connection', async id => {
+  const input = await services().load(csvLine(['First Name', 'Last Name', 'Stripe Customer ID', 'Stripe Payment Method ID'])
+    + csvLine(['First', 'Family', 'cus_X', id]));
+  expect((await input.run()).job).toMatchObject({ status: 'succeeded', committedRows: 1 });
+  expect((await snapshot()).methods).toMatchObject([{ processorId: id, type: 'card', isDefault: true, last4: null }]);
 });
 
 it('retries preparation when gym settings change and commits the unaffected rows', async () => {
@@ -227,7 +274,7 @@ describe('people mapper through the real import pipeline', () => {
     expect(new Set(saved.households.map(home => home.stripeCustomerId)).size).toBe(103);
   });
   it('imports family exports, frozen status, opt-outs, tags and stored Stripe IDs; reimporting skips duplicates', async () => {
-    const { load } = services(), source = await load(familyExport);
+    const { load } = services(familyPayments), source = await load(familyExport);
     expect((await source.preview()).summary).toEqual({ totalRows: 4, create: 4, update: 0, skip: 0, errors: 0 });
     expect((await source.run()).job).toMatchObject({ status: 'succeeded', committedRows: 4 });
     const data = await snapshot(), ari = data.members.find((member) => member.firstName === 'Ari')!;
@@ -237,7 +284,10 @@ describe('people mapper through the real import pipeline', () => {
     expect(data.members.find((member) => member.firstName === 'Kai')).toMatchObject({ status: 'cancelled', emailOptOut: false });
     expect(data.households.find((home) => home.id === ari.householdId)).toMatchObject({ name: 'Stone household', billingDay: 15, stripeCustomerId: 'cus_Stone', pinHash: null });
     expect(data.methods).toHaveLength(2);
-    expect(data.methods.find((method) => method.householdId === ari.householdId)).toMatchObject({ processorId: 'pm_Stone', isDefault: true, brand: null, last4: null });
+    expect(data.methods).toEqual(expect.arrayContaining([
+      expect.objectContaining({ householdId: ari.householdId, processorId: 'pm_Stone', type: 'card', isDefault: true, brand: null, last4: null }),
+      expect.objectContaining({ processorId: 'pm_River', type: 'card', isDefault: true, brand: null, last4: null }),
+    ]));
     expect(data.tags.map((tag) => tag.name).sort()).toEqual(['Adults', 'Kids', 'Morning']); expect(data.links).toHaveLength(5);
     expect(data.audits.every((audit) => audit.occurredAt.toISOString() === clock.now().toISOString())).toBe(true);
     const auditData = JSON.stringify(data.audits.map((audit) => [audit.before, audit.after]));
@@ -248,7 +298,7 @@ describe('people mapper through the real import pipeline', () => {
     const after = await snapshot(); expect(after.members).toEqual(data.members); expect(after.households).toEqual(data.households); expect(after.methods).toEqual(data.methods);
   });
   it('preview and dry run leave domain rows and audits unchanged', async () => {
-    const source = await services().load(familyExport), before = await snapshot();
+    const source = await services(familyPayments).load(familyExport), before = await snapshot();
     await source.preview(); expect(await snapshot()).toEqual(before);
     expect((await source.run(true)).job).toMatchObject({ status: 'succeeded', committedRows: 0 });
     expect(await snapshot()).toEqual(before);
@@ -371,7 +421,7 @@ describe('people mapper through the real import pipeline', () => {
   it('keeps a family together when its members span chunks and the payer row comes last', async () => {
     const csv = 'Member ID,First Name,Last Name,Household External ID,Stripe Customer ID,Stripe Payment Method ID\n'
       + Array.from({ length: 101 }, (_, i) => `child${i},Child${i},Family,payer,,\n`).join('')
-      + 'payer,Payer,Family,,cus_Family,pm_Family\n';
+      + 'payer,Payer,Family,,cus_Family,card_Family\n';
     const result = await (await services().load(csv)).run();
     expect(result.job).toMatchObject({ status: 'succeeded', committedRows: 102 });
     const data = await snapshot();
@@ -424,7 +474,7 @@ describe('people mapper through the real import pipeline', () => {
     expect(data.members.find((member) => member.firstName === 'Lee')!.householdId).toBe(parent.householdId);
   });
   it('never matches another gym, even when names, emails and processor IDs are identical', async () => {
-    const { load } = services();
+    const { load } = services(familyPayments);
     await (await load(familyExport, {}, gymB)).run(); const before = await snapshot(gymB);
     expect((await (await load(familyExport)).preview()).summary.create).toBe(4);
     expect((await (await load(familyExport)).run()).job).toMatchObject({ status: 'succeeded', committedRows: 4 });
@@ -473,12 +523,12 @@ describe('people mapper through the real import pipeline', () => {
     await factory('paymentMethods', gymA, { householdId: home.id, processorId: 'pm_Default', isDefault: true });
     const revoked = await factory('paymentMethods', gymA, { householdId: home.id, processorId: 'pm_Revoked', revokedAt: clock.now() });
     const { load } = services();
-    const csv = 'First Name,Last Name,Email,Stripe Customer ID,Stripe Payment Method ID\nJo,Fields,jo@example.test,cus_Saved,pm_New\n';
+    const csv = 'First Name,Last Name,Email,Stripe Customer ID,Stripe Payment Method ID\nJo,Fields,jo@example.test,cus_Saved,card_New\n';
     await (await load(csv, { duplicatePolicy: 'update' })).run();
-    await (await load(csv.replace('pm_New', 'pm_Revoked'), { duplicatePolicy: 'update' })).run();
+    await (await load(csv.replace('card_New', 'pm_Revoked'), { duplicatePolicy: 'update' })).run();
     const data = await snapshot(); expect(data.methods).toHaveLength(3);
     expect(data.methods.find((method) => method.processorId === 'pm_Default')!.isDefault).toBe(true);
-    expect(data.methods.find((method) => method.processorId === 'pm_New')!.isDefault).toBe(false);
+    expect(data.methods.find((method) => method.processorId === 'card_New')!.isDefault).toBe(false);
     expect(data.methods.find((method) => method.id === revoked.id)!.revokedAt).toEqual(clock.now());
     expect(data.members[0]!.id).toBe(member.id);
   });
@@ -523,7 +573,7 @@ describe('people mapper through the real import pipeline', () => {
   });
   it('keeps explicit households separate and flags reused payment IDs within the file', async () => {
     const csv = csvLine(['First Name', 'Last Name', 'Household External ID', 'Stripe Customer ID', 'Stripe Payment Method ID'])
-      + csvLine(['One', 'Family', 'one', 'cus_One', 'pm_Same']) + csvLine(['Two', 'Family', 'two', 'cus_Two', 'pm_Same']);
+      + csvLine(['One', 'Family', 'one', 'cus_One', 'card_Same']) + csvLine(['Two', 'Family', 'two', 'cus_Two', 'card_Same']);
     const source = await services().load(csv);
     expect((await source.preview()).summary).toMatchObject({ create: 1, errors: 1 });
     const result = await source.run(); expect(result.job.committedRows).toBe(1);
@@ -536,7 +586,7 @@ describe('people mapper through the real import pipeline', () => {
     const source = await load('First Name,Last Name,Email,Stripe Customer ID\nJo,Fields,jo@example.test,cus_Changed\n', { duplicatePolicy: 'update' });
     expect((await source.preview()).summary.errors).toBe(1);
     expect((await source.run()).job.committedRows).toBe(0);
-    const orphan = await load('First Name,Last Name,Stripe Payment Method ID\nNew,Person,pm_Orphan\n');
+    const orphan = await load('First Name,Last Name,Stripe Payment Method ID\nNew,Person,card_Orphan\n');
     expect((await orphan.run()).issues).toEqual([expect.objectContaining({ code: 'missing_required' })]);
     const data = await snapshot(); expect(data.methods).toHaveLength(0); expect(data.households[0]!.stripeCustomerId).toBe('cus_Original');
   });

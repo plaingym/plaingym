@@ -9,7 +9,7 @@ import { eq } from 'drizzle-orm';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { paymentMethods, uuidv7 } from '@plaingym/db';
-import { importPreviewStateSchema, importUploadSchema } from '@plaingym/shared/contracts';
+import { importJobSchema, importPreviewStateSchema, importUploadSchema } from '@plaingym/shared/contracts';
 import { startRuntime, type Runtime } from '../../core/runtime.js';
 import { clock } from '../../core/clock.js';
 import { createAccountService } from '../../infra/auth/accounts.js';
@@ -18,11 +18,12 @@ import { FakePayments, type Payments } from '../../infra/payments/index.js';
 import type { StripePayments } from '../../infra/payments/stripe.js';
 import { PostgresJobs } from '../../infra/jobs/postgres.js';
 import type { JobHandler } from '../../infra/jobs/index.js';
+import { IMPORT_JOB } from '../imports/pipeline.js';
 import * as stripeStep from '../setup/stripe-step.js';
 import { customerCardImportJob } from './customer-card-import.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
-it('imports household cards and bank accounts on the batch lane and checks CSV bank accounts in preview', async () => {
+it('imports household cards and bank accounts on the batch lane and checks CSV bank accounts in the dry run', async () => {
   const gymId = uuidv7(); await factory('gyms', gymId, { currency: 'USD', billingEnabled: true });
   const household = await factory('households', gymId, { stripeCustomerId: 'cus_fixture' });
   const fake = new FakePayments(gymId, clock, 'synthetic-runtime-secret');
@@ -85,12 +86,13 @@ it('imports household cards and bank accounts on the batch lane and checks CSV b
     }));
     expect(uploaded.status, await uploaded.clone().text()).toBe(200);
     const upload = importUploadSchema.parse((await uploaded.json()).data);
-    const plan = jsonInit({ uploadId: upload.id, mapper: 'people', duplicatePolicy: 'error', mapping: [
+    const input = { uploadId: upload.id, mapper: 'people', duplicatePolicy: 'error', mapping: [
       { sourceColumn: 'First Name', targetField: 'firstName' },
       { sourceColumn: 'Last Name', targetField: 'lastName' },
       { sourceColumn: 'Stripe Customer ID', targetField: 'stripeCustomerId' },
       { sourceColumn: 'Stripe Payment Method ID', targetField: 'stripePaymentMethodId' },
-    ] });
+    ] };
+    const plan = jsonInit(input), lookup = vi.spyOn(fake, 'readBankAccountForImport');
     const requested = await app.request(origin + '/api/imports/preview', {
       ...plan, method: 'POST', headers: { ...headers, cookie, ...plan.headers },
     });
@@ -99,7 +101,23 @@ it('imports household cards and bank accounts on the batch lane and checks CSV b
     if (!('id' in preview)) throw new Error('A new upload should start a new preview');
     const path = '/api/imports/uploads/' + upload.id + '/previews/' + preview.id;
     await expect.poll(async () => (await (await app.request(origin + path, { headers: { ...headers, cookie } })).json()))
-      .toMatchObject({ status: 'ready', preview: { summary: { errors: 1 }, data: [{ rowNumber: 2, action: 'error' }] } });
+      .toMatchObject({ status: 'ready', preview: { summary: { errors: 0 }, data: [{ rowNumber: 2, action: 'create' }] } });
+    expect(lookup).not.toHaveBeenCalled();
+
+    const dryRun = jsonInit({ ...input, dryRun: true });
+    const started = await app.request(origin + '/api/imports', {
+      ...dryRun, method: 'POST', headers: { ...headers, cookie, ...dryRun.headers },
+    });
+    expect(started.status, await started.clone().text()).toBe(200);
+    const job = importJobSchema.parse((await started.json()).data);
+    const handler = handlers.get(IMPORT_JOB);
+    expect(handler).toBeDefined();
+    await handler!.handler({ id: job.id }, { gymId, timezone: 'UTC', jobId: uuidv7(), attempt: 1, clock });
+    const errors = await app.request(origin + '/api/imports/' + job.id + '/errors', { headers: { ...headers, cookie } });
+    expect(errors.status, await errors.clone().text()).toBe(200);
+    expect(await errors.json()).toMatchObject({ data: [{ rowNumber: 2, column: 'Stripe Payment Method ID',
+      code: 'invalid_value', message: "This bank account can't be charged in USD." }] });
+    expect(lookup).toHaveBeenCalledExactlyOnceWith('pm_canadian', false);
   } finally {
     await runtime?.stop();
     vi.restoreAllMocks();

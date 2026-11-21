@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { importRuns, uuidv7 } from '@plaingym/db';
@@ -11,10 +12,12 @@ import { createFactories } from '@plaingym/db/testing/factories';
 import type { ImportPlanRequest, ImportPreviewRow } from '@plaingym/shared/contracts';
 import { TestClock } from '../../core/clock.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
+import { FakePayments } from '../../infra/payments/index.js';
 import { FakeUploads, type Uploads } from '../../infra/storage/index.js';
 import { LocalUploads } from '../../infra/storage/local.js';
 import { createImportPipeline, IMPORT_CHUNK_SIZE, PREVIEW_FILE_ROWS, PREVIEW_LIFETIME } from './pipeline.js';
 import { createImportRetention, UPLOAD_RETENTION_MS } from './retention.js';
+import { autoMatch, parseCsv } from './pipeline.csv.js';
 import { MapperRegistry, type CsvMapper, type PlannedRow } from './mappers/registry.js';
 import { peopleMapper } from './mappers/people.js';
 import { PreviewBudget, PREVIEW_LEASE_MS, PREVIEW_LEASE_INTERVAL_MS } from './pipeline.budget.js';
@@ -85,6 +88,26 @@ const previewPrefix = (gymId: string, uploadId: string) => `${gymId}/imports/upl
 const bucket = (clk = clock) => Math.floor(clk.now().getTime() / PREVIEW_LIFETIME);
 
 describe('stored import previews', () => {
+  it('previews 200 new Stripe payment methods within the deadline without looking them up', async () => {
+    const provider = new FakePayments(gymA, clock), uploads = new FakeUploads(gymA, clock);
+    const lookup = vi.spyOn(provider, 'readBankAccountForImport').mockImplementation(async () => {
+      await delay(100);
+      return null;
+    });
+    const pipeline = createImportPipeline({ uploadsFor: async () => uploads, jobs: new FakeJobs(clock), scope: database.forGym,
+      clock, paymentsFor: async () => provider, previewBudget: new PreviewBudget(1), previewTimeoutMs: 1000 });
+    const source = 'First Name,Last Name,Stripe Customer ID,Stripe Payment Method ID\n'
+      + Array.from({ length: 200 }, (_, i) => `First${i},Family,cus_Preview${i},pm_Preview${i}\n`).join('');
+    const upload = await pipeline.upload(actorA, new File([source], 'people.csv'));
+    const plan = { ...planFor(upload.id), mapping: autoMatch(parseCsv(source).columns) };
+    const page = { limit: 10, offset: 0 };
+    const ticket = await pipeline.requestPreview(actorA, plan, page, 'UTC');
+    if (!('id' in ticket)) throw new Error('A new upload should start a new preview');
+    await expect.poll(() => pipeline.getPreview(gymA, upload.id, ticket.id, page))
+      .toMatchObject({ status: 'ready', preview: { summary: { totalRows: 200, create: 200, errors: 0 } } });
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
   it('starts without waiting, coalesces across pipeline instances, and bounds the shared queue across gyms', async () => {
     const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), calls = { analyze: 0 };
     const base = fixtureMapper(calls), mapper: CsvMapper = { ...base, async analyze(...args) {

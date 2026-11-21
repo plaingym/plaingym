@@ -91,8 +91,8 @@ function app(f: Fixture, principal: Principal, realRegistrations = false) {
 const staff = (f: Fixture, role: StaffRole): Principal => ({ kind: 'staff', gymId: f.gymId, userId: f.user.id, roles: [role] });
 
 describe('staff import of externally attached cards', () => {
-  const rows = (f: Fixture) => db.forGym(f.gymId, tx => tx.select().from(paymentMethods));
-  function attached(f: Fixture, id: string, createdAt = f.clock.now(), customerId = 'cus_fixture') {
+  const rows = (f: Pick<Fixture, 'gymId'>) => db.forGym(f.gymId, tx => tx.select().from(paymentMethods));
+  function attached(f: Pick<Fixture, 'provider' | 'clock'>, id: string, createdAt = f.clock.now(), customerId = 'cus_fixture') {
     f.provider.recordPaymentMethod({ id, customerId, createdAt, brand: 'visa', last4: '4242', expiresMonth: 12, expiresYear: 2035 });
   }
   async function empty(f: Fixture) { await db.forGym(f.gymId, tx => tx.delete(paymentMethods)); }
@@ -353,6 +353,77 @@ describe('staff import of externally attached cards', () => {
     expect(f.jobs.jobs.every(job => job.status === 'completed' && job.attempt === 1)).toBe(true);
     const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.card.import_finished')));
     expect(audits).toMatchObject([{ after: { outcome: 'finished', skippedCards: 1, restarts: 1 } }]);
+  });
+  it('restarts the listing when the gym currency changes during provider I/O', async () => {
+    const gymId = uuidv7(), clock = new TestClock('2026-10-25T12:00:00Z');
+    await factory('gyms', gymId, { currency: 'USD' });
+    const home = await factory('households', gymId, { stripeCustomerId: 'cus_fixture' });
+    const provider = new FakePayments(gymId, clock), jobs = new FakeJobs(clock);
+    provider.seedCustomer({ id: 'cus_fixture', email: 'payer@example.invalid' });
+    attached({ provider, clock }, 'pm_first');
+    createServerRegistry({ jobs: createCustomerCardImportJobs({ scope: db.forGym, clock, jobs, paymentsFor: async () => provider }) })
+      .registerJobs(jobs, new Set());
+    const list = provider.listCustomerCards.bind(provider);
+    vi.spyOn(provider, 'listCustomerCards').mockImplementationOnce(async (...args) => {
+      const page = await list(...args);
+      await db.forGym(gymId, tx => tx.update(gyms).set({ currency: 'CAD' }).where(eq(gyms.id, gymId)));
+      return page;
+    });
+    await jobs.enqueue(customerCardImportJob, { householdId: home.id, customerId: 'cus_fixture', requestId: uuidv7(), switched: null },
+      { gymId, timezone: 'UTC' });
+    await jobs.runNext();
+    expect(await rows({ gymId })).toEqual([]);
+    expect(jobs.jobs).toMatchObject([{ status: 'completed' }, { status: 'queued', payload: { restarts: 1 } }]);
+    const audits = await db.forGym(gymId, tx => tx.select().from(auditEvents));
+    expect(audits.filter(row => row.action === 'billing.card.import_restarted')).toMatchObject([
+      { after: { outcome: 'restarted', reason: 'listing_changed', importedCards: 0, importedBankAccounts: 0 } },
+    ]);
+    expect(audits.some(row => row.action === 'billing.card.import_finished')).toBe(false);
+    await jobs.runNext();
+    expect(await rows({ gymId })).toMatchObject([{ processorId: 'pm_first', isDefault: true }]);
+  });
+  it.each(['before', 'during'] as const)('reports earlier page counts when the customer changes %s the next listing', async timing => {
+    const f = await fixture('CAD'); await empty(f);
+    attached(f, 'pm_first');
+    await f.service.importCustomerCards(f.context, f.home.id);
+    const list = f.provider.listCustomerCards.bind(f.provider);
+    const listing = vi.spyOn(f.provider, 'listCustomerCards').mockImplementationOnce(async (...args) => {
+      const page = await list(...args);
+      return { cards: [...page.cards, { id: 'pm_denied', customerId: 'cus_fixture', type: 'acss_debit',
+        createdAt: f.clock.now(), last4: '1234', mandateReadDenied: true }], nextCursor: 'pm_first' };
+    });
+    await f.jobs.runNext();
+    expect(await rows(f)).toMatchObject([{ processorId: 'pm_first', isDefault: false }]);
+    expect(f.jobs.jobs).toHaveLength(2);
+
+    const replaceCustomer = () => db.forGym(f.gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_replaced' })
+      .where(eq(households.id, f.home.id)));
+    if (timing === 'before') await replaceCustomer();
+    else listing.mockImplementationOnce(async (...args) => {
+      const page = await list(...args);
+      await replaceCustomer();
+      return page;
+    });
+    await f.jobs.runNext();
+    expect(f.jobs.jobs).toMatchObject([{ status: 'completed' }, { status: 'completed' }]);
+    expect(await rows(f)).toMatchObject([{ processorId: 'pm_first', isDefault: false }]);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.card.import_finished')));
+    expect(audits).toMatchObject([{ after: { outcome: 'stale', reason: 'customer_or_configuration_changed',
+      importedCards: 1, importedBankAccounts: 0, skippedBankAccounts: 1, skippedMandatePermissions: 1 } }]);
+  });
+  it('reports a listing change at the restart limit and promotes a default', async () => {
+    const f = await fixture(); await empty(f);
+    await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_partial', isDefault: false });
+    const list = vi.spyOn(f.provider, 'listCustomerCards');
+    await f.jobs.enqueue(customerCardImportJob, { householdId: f.home.id, customerId: 'cus_fixture', requestId: uuidv7(),
+      switched: null, currency: 'CAD', restarts: customerCardRestartLimit, importedCards: 1 }, { gymId: f.gymId, timezone: 'UTC' });
+    await f.jobs.runNext();
+    expect(list).not.toHaveBeenCalled();
+    expect(f.jobs.jobs).toMatchObject([{ status: 'completed' }]);
+    expect(await rows(f)).toMatchObject([{ processorId: 'pm_partial', isDefault: true }]);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.card.import_finished')));
+    expect(audits).toMatchObject([{ after: { outcome: 'refused', reason: 'listing_changed_restart_limit',
+      restarts: customerCardRestartLimit, importedCards: 1, importedBankAccounts: 0 } }]);
   });
   it('bounds cursor restarts and settles partial cards with a default and a refused outcome', async () => {
     const f = await fixture(); await empty(f);
