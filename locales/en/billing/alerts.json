@@ -8,5 +8,6 @@
   "disputeButton": "Review payment dispute",
   "gymNameFallback": "Your gym",
   "footer": "This billing notice was sent by your gym.",
-  "disputesTitle": "Open payment disputes"
+  "disputesTitle": "Open payment disputes",
+  "checkoutDebitsTitle": "Bank payments to check in Stripe"
 }

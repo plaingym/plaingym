@@ -11,6 +11,7 @@ import { createRunnerJobs } from './runner.jobs.js';
 import { createRestoreCheckLease } from '../../health/restore.billing-lease.js';
 import { createPaymentService } from '../payments.js';
 import { useRunnerFixture, gate, type Fixture } from './runner.fixture.test-helper.js';
+import { lateProcessingResolved } from './reconciliation.js';
 
 const { db, factory, fixture, invoice, checkout } = useRunnerFixture();
 
@@ -175,7 +176,7 @@ describe('bank debit reconciliation', () => {
     await expect(job.handler({}, f.context)).rejects.toThrow('Checkout bank debits remain unresolved');
   });
 
-  it('recovers and refunds a Checkout debit that starts processing after cash won the invoice', async () => {
+  async function startLateCheckout() {
     const f = await fixture({ currency: 'USD' }), bill = await invoice(f);
     const session = await f.provider.createCheckout({ mode: 'payment', customerId: 'cus_test', invoiceId: bill.id,
       amount: bill.amountCents, currency: 'usd', bankDebit: { type: 'us_bank_account' },
@@ -197,6 +198,11 @@ describe('bank debit reconciliation', () => {
     for (let count = 0; count < 2; count++) {
       expect(await f.transitions.paymentProcessing(actor(f), request)).toMatchObject({ outcome: 'ignored', invoice: { status: 'paid' } });
     }
+    return { f, bill, cash, paymentIntentId };
+  }
+
+  it('recovers and refunds a Checkout debit that starts processing after cash won the invoice', async () => {
+    const { f, bill, cash, paymentIntentId } = await startLateCheckout();
     const find = vi.spyOn(f.provider, 'findCharge');
     f.clock.advance(9 * day);
     expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 0, issues: [] });
@@ -216,6 +222,65 @@ describe('bank debit reconciliation', () => {
     expect(rows.refunds).toMatchObject([{ reason: 'duplicate_payment', status: 'pending',
       paymentId: rows.payments.find(payment => payment.paymentIntentId === paymentIntentId)?.id }]);
     expect(rows.attempts).toEqual([]);
+  });
+
+  it.each(['canceled', 'provider_error'] as const)('stops reading a late Checkout debit Stripe reports as %s', async code => {
+    const { f, bill, cash, paymentIntentId } = await startLateCheckout();
+    const ref = { kind: 'charge' as const, id: paymentIntentId };
+    const processing = await f.provider.findCharge(ref);
+    if (processing.status !== 'processing') throw new Error('Expected a processing debit');
+    const find = vi.spyOn(f.provider, 'findCharge').mockResolvedValueOnce({ ...processing, status: 'failed', code });
+    const cancel = vi.spyOn(f.provider, 'cancelCharge');
+    f.clock.advance(11 * day);
+
+    expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 1, issues: [] });
+    expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 0, issues: [] });
+    expect(find).toHaveBeenCalledExactlyOnceWith(ref, { includeSuccessTime: true });
+    expect(cancel).not.toHaveBeenCalled();
+    const rows = await f.read();
+    expect(rows.invoices[0]?.status).toBe('paid');
+    expect(rows.payments).toMatchObject([{ id: cash.id, method: 'cash' }]);
+    expect(rows.refunds).toEqual([]);
+    expect(rows.audits.filter(event => event.action === lateProcessingResolved)).toMatchObject([
+      { targetType: 'invoice', targetId: bill.id, after: { paymentIntentId, code } },
+    ]);
+  });
+
+  it('records one resolving audit when two sweeps read the same failed late Checkout debit', async () => {
+    const { f, paymentIntentId } = await startLateCheckout();
+    const ref = { kind: 'charge' as const, id: paymentIntentId };
+    const processing = await f.provider.findCharge(ref);
+    if (processing.status !== 'processing') throw new Error('Expected a processing debit');
+    const bothRead = gate();
+    const find = vi.spyOn(f.provider, 'findCharge').mockImplementation(async () => {
+      if (find.mock.calls.length === 2) bothRead.release();
+      await bothRead.wait;
+      return { ...processing, status: 'failed', code: 'canceled' };
+    });
+    f.clock.advance(11 * day);
+
+    expect(await Promise.all([f.runner.reconcile(f.gymId), f.runner.reconcile(f.gymId)])).toEqual([
+      { inspected: 1, issues: [] }, { inspected: 1, issues: [] },
+    ]);
+    expect((await f.read()).audits.filter(event => event.action === lateProcessingResolved)).toHaveLength(1);
+  });
+
+  it.each(['processing', 'succeeded'] as const)('reads a late Checkout debit Stripe still reports as %s on every sweep', async status => {
+    const { f, paymentIntentId } = await startLateCheckout();
+    const issues = status === 'succeeded' ? [{ kind: 'checkout_debit', id: paymentIntentId, reason: 'customer_mismatch' }] : [];
+    if (status === 'succeeded') {
+      await db.forGym(f.gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_other' }).where(eq(households.id, f.home.id)));
+      f.provider.settleCharge(paymentIntentId, 'succeeded');
+    }
+    f.clock.advance(11 * day);
+    const find = vi.spyOn(f.provider, 'findCharge');
+    const cancel = vi.spyOn(f.provider, 'cancelCharge');
+
+    expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 1, issues });
+    expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 1, issues });
+    expect(find).toHaveBeenCalledTimes(2);
+    expect(cancel).not.toHaveBeenCalled();
+    expect((await f.read()).audits.filter(event => event.action === lateProcessingResolved)).toEqual([]);
   });
 });
 

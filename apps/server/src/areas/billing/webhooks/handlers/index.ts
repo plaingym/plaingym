@@ -164,7 +164,7 @@ export function registerBillingWebhookHandlers(inbox: Pick<WebhookInbox, 'regist
           || (invoice.checkoutSessionId && invoice.checkoutSessionId !== session.id)) throw new Error('Checkout invoice mismatch');
         if (outcome.status === 'unknown' || outcome.amount !== invoice.amountCents || outcome.currency.toUpperCase() !== invoice.currency)
           throw new Error('Checkout payment amount mismatch');
-        if (outcome.status === 'failed' && (outcome.code === 'insufficient_funds' || outcome.code === 'payment_method_unusable')) {
+        if (outcome.status === 'failed') {
           // Delivery can start after the debit has already failed. Establish the intent once so the
           // failure has its processing predecessor; a replay is ignored by both transitions.
           const identity = { invoiceId: invoice.id, paymentIntentId: outcome.id };

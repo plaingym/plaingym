@@ -25,7 +25,8 @@ type CheckoutReview = (typeof checkoutReviewReasons)[number];
 export function checkoutNeedsReview(issue: ReconciliationIssue) {
   return issue.kind === 'checkout_debit' && checkoutReviewReasons.some(reason => reason === issue.reason);
 }
-const checkoutReviewAction = 'billing.runner.checkout_debit_unresolved';
+export const checkoutReviewAction = 'billing.runner.checkout_debit_unresolved';
+export const lateProcessingResolved = 'billing.invoice.late_processing_resolved';
 type Options = Omit<RunnerOptions, 'jobs'> & Required<Pick<RunnerOptions, 'scope' | 'clock'>>;
 type CheckoutDebit = { invoiceId: string; paymentIntentId: string; late: boolean };
 /**
@@ -69,7 +70,13 @@ async function staleLateCheckouts(tx: Transaction, before: Date, switched: strin
       eq(auditEvents.targetType, 'invoice'), eq(auditEvents.action, invoiceLateProcessing)))
     .where(and(inArray(invoices.status, terminalInvoiceStatuses), lt(auditEvents.occurredAt, before),
       switched === null ? isNull(generation) : eq(generation, switched), notExists(paid)));
-  return rows.map(row => ({ ...row, late: true }));
+  if (!rows.length) return [];
+  const invoiceIds = [...new Set(rows.map(row => row.invoiceId))];
+  const resolutions = await tx.select({ invoiceId: auditEvents.targetId, paymentIntentId }).from(auditEvents)
+    .where(and(eq(auditEvents.targetType, 'invoice'), eq(auditEvents.action, lateProcessingResolved),
+      inArray(auditEvents.targetId, invoiceIds)));
+  const resolved = new Set(resolutions.map(row => `${row.invoiceId}:${row.paymentIntentId}`));
+  return rows.filter(row => !resolved.has(`${row.invoiceId}:${row.paymentIntentId}`)).map(row => ({ ...row, late: true }));
 }
 
 export function createReconciliation(options: Options) {
@@ -126,6 +133,14 @@ export function createReconciliation(options: Options) {
         // A newly in-flight attempt belongs to the runner on the next sweep.
         if (attempt.status === 'pending' || attempt.status === 'processing') return undefined;
         return reportCheckout('attempt_resolved');
+      }
+      if (checkout?.late && outcome.status === 'failed') {
+        const [resolved] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
+          eq(auditEvents.targetType, 'invoice'), eq(auditEvents.targetId, invoice.id), eq(auditEvents.action, lateProcessingResolved),
+          eq(sql<string>`${auditEvents.after}->>'paymentIntentId'`, outcome.id))).limit(1);
+        if (!resolved) await audit(tx, context, clock, lateProcessingResolved, 'invoice', invoice.id,
+          { paymentIntentId: outcome.id, code: outcome.code });
+        return undefined;
       }
       // Late success still needs its duplicate refund. Any other outcome on a terminal invoice only closes a still-unresolved
       // attempt; one already resolved is ignored before ID recovery, so it is never rewritten.

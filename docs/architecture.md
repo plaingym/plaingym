@@ -293,8 +293,12 @@ source of truth; Stripe is the processor. In outline:
   records a confirmed settlement or applies a reported failure or cancellation.
   A customer mismatch, a pending intent, or an already resolved runner attempt
   produces one audit per invoice and reason, and the hourly job continues.
-  It also checks late processing audits on terminal invoices. A settled debit
-  on one of those invoices is recorded as a duplicate and reserved for refund.
+  The staff dashboard counts affected invoices while the intent remains
+  unrecorded and the invoice is processing or its late debit is unresolved.
+  The sweep also checks late processing audits on terminal invoices. A settled debit
+  on one of those invoices is recorded as a duplicate and reserved for refund
+  once the customer matches. A late debit Stripe reports as failed gets a
+  resolving audit that removes it from future sweeps.
   A failed bank payment can be retried on the gym's schedule until three bank
   attempts have failed. An unusable bank account is revoked and its invoice's
   automatic retries stop.
