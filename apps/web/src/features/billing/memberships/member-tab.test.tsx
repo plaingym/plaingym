@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
 import { canStaff, type StaffRole } from '@plaingym/shared';
 import type { Membership, Plan, ShellBootstrap } from '@plaingym/shared/contracts';
@@ -294,14 +294,80 @@ it('replaces a typed billing date with the reloaded household date after a refus
   await waitFor(() => expect(nextDueOn.value).toBe('2026-11-02'));
   expect(startsOn.value).toBe('2026-10-28');
 });
-it('keeps a typed billing date after a refusal that is not about the household date', async () => {
-  start('admin', { call: async () => { throw new ApiError(409, 'conflict', ['plan_inactive']); } });
+it('refreshes archived plans and retries with the displayed plan, keeping dates and clearing its old discount', async () => {
+  const client = start('admin', { plans: [plan, premium] });
   const assign = await screen.findByRole('button', { name: 'Assign a plan' });
-  const nextDueOn = screen.getByLabelText<HTMLInputElement>('Next billing date');
+  const form = within(assign.closest('form')!);
+  const picker = form.getByLabelText<HTMLSelectElement>('Plan');
+  const nextDueOn = form.getByLabelText<HTMLInputElement>('Next billing date');
+  fireEvent.change(picker, { target: { value: premium.id } });
   fireEvent.change(nextDueOn, { target: { value: '2026-11-15' } });
-  fireEvent.submit(assign.closest('form')!);
+  fireEvent.change(form.getByLabelText('Discount'), { target: { value: 'code' } });
+  fireEvent.change(form.getByLabelText('Discount code'), { target: { value: 'PREMIUM' } });
+  vi.mocked(client.plans).mockResolvedValue([plan]);
+  vi.mocked(client.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['plan_inactive']));
+  fireEvent.click(assign);
+  expect(client.call).toHaveBeenNthCalledWith(1, 'assignMembership', expect.objectContaining({ planId: premium.id, discount: { code: 'PREMIUM' } }), {});
+  await waitFor(() => expect(form.queryByRole('option', { name: /^Premium/ })).toBeNull());
   expect(await screen.findByText('That plan is no longer active.')).toBeDefined();
+  expect(picker.value).toBe(plan.id);
+  expect(form.getByLabelText('Discount')).toHaveProperty('value', 'none');
+  expect(form.queryByLabelText('Discount code')).toBeNull();
   expect(nextDueOn.value).toBe('2026-11-15');
+  fireEvent.click(await form.findByRole('button', { name: 'Assign a plan' }));
+  await waitFor(() => expect(client.call).toHaveBeenNthCalledWith(2, 'assignMembership', {
+    memberId: membership.memberId, householdId: membership.householdId, planId: plan.id,
+    startsOn: '2026-10-26', nextDueOn: '2026-11-15', firstPeriod: 'prorate_now',
+  }, {}));
+  expect(await screen.findByText('Membership saved.')).toBeDefined();
+});
+it('shows the existing empty state when the last active plan is archived', async () => {
+  const client = start('admin');
+  const assign = await screen.findByRole('button', { name: 'Assign a plan' });
+  const form = assign.closest('form')!;
+  vi.mocked(client.plans).mockResolvedValue([{ ...plan, active: false }]);
+  vi.mocked(client.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['plan_inactive']));
+  fireEvent.click(assign);
+  expect(await screen.findByText('Add an active plan in the billing catalog first.')).toBeDefined();
+  expect(screen.getByText('That plan is no longer active.')).toBeDefined();
+  expect(within(form).queryByLabelText('Plan')).toBeNull();
+  expect(within(form).queryByRole('button', { name: 'Assign a plan' })).toBeNull();
+  fireEvent.submit(form);
+  expect(client.call).toHaveBeenCalledTimes(1);
+});
+it('closes a refused Freeze form and resumes with the refreshed revision and billing date', async () => {
+  const client = start('admin');
+  fireEvent.click(await screen.findByRole('button', { name: 'Freeze' }));
+  fireEvent.change(screen.getByLabelText('Resume date (optional)'), { target: { value: '2026-12-01' } });
+  vi.mocked(client.memberships).mockResolvedValue([{ ...membership, status: 'frozen', revision: 2, nextDueOn: '2026-12-01', frozenAt: createdAt }]);
+  vi.mocked(client.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['membership_status']));
+  save();
+  expect(await screen.findByText("This membership's status has changed. The tab now shows its current status.")).toBeDefined();
+  expect(screen.queryByLabelText('Resume date (optional)')).toBeNull();
+  fireEvent.click(await screen.findByRole('button', { name: 'Resume' }));
+  expect(screen.getByLabelText('Next billing date', { selector: 'input[name="date"]' })).toHaveProperty('value', '2026-12-01');
+  save();
+  await waitFor(() => expect(client.call).toHaveBeenNthCalledWith(2, 'resumeMembership', { revision: 2, nextDueOn: '2026-12-01' }, { membershipId: membership.id }));
+});
+it.each([
+  { button: 'Resume', status: 'frozen', field: 'Next billing date', selector: 'input[name="date"]', value: '2026-12-01', operation: 'resumeMembership' },
+  { button: 'Change price', status: 'active', field: /^Price/, selector: 'input[name="price"]', value: '50', operation: 'updateMembership' },
+] as const)('closes a refused $button form while the cancelled membership reloads', async ({ button, status, field, selector, value, operation }) => {
+  const client = start('admin', { row: { ...membership, status } });
+  fireEvent.click(await screen.findByRole('button', { name: button }));
+  const input = screen.getByLabelText(field, { selector });
+  fireEvent.change(input, { target: { value } });
+  const refreshed = Promise.withResolvers<Membership[]>();
+  vi.mocked(client.memberships).mockReturnValue(refreshed.promise);
+  vi.mocked(client.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['membership_cancelled']));
+  save();
+  expect(await screen.findByText("This membership has been cancelled, so it can't be changed.")).toBeDefined();
+  expect(client.call).toHaveBeenCalledWith(operation, expect.objectContaining({ revision: 1 }), { membershipId: membership.id });
+  expect(screen.queryByLabelText(field, { selector })).toBeNull();
+  expect(screen.getByRole('button', { name: button })).toBeDefined();
+  refreshed.resolve([{ ...membership, status: 'cancelled', cancelledAt: createdAt, revision: 2 }]);
+  expect(await screen.findByText(/^Cancelled/)).toBeDefined();
+  expect(screen.queryByRole('button', { name: button })).toBeNull();
 });
 it('explains when a membership has already been cancelled', async () => {
   const client = start('admin', { call: async () => { throw new ApiError(409, 'conflict', ['membership_cancelled']); } });
@@ -316,4 +382,5 @@ it('keeps the generic refusal for a conflict without a reason', async () => {
   fireEvent.change(form.price, { target: { value: '50' } });
   save();
   expect(await screen.findByText('This change could not be saved. Review your entries and try again.')).toBeDefined();
+  expect(screen.getByLabelText(/^Price/)).toHaveProperty('value', '50');
 });

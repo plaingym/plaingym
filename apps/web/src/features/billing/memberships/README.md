@@ -29,9 +29,13 @@ Membership refusals that carry a reason (see the
 [membership refusals](../../../../../server/src/areas/billing/memberships.README.md#membership-refusals))
 get their own message. After a changed household billing date, a household
 that must bill on its start date, a changed status or a cancelled membership,
-the tab reloads its membership data and keeps the other entries. After either
-billing-date refusal, the assignment form shows the reloaded household date
-in place of a typed one.
+the tab reloads its membership data. After either billing-date refusal, the
+assignment form shows the reloaded household date in place of a typed one and
+keeps the rest of the draft. A changed status or cancellation closes the
+refused Freeze, Resume or Change price form. If an assignment is refused
+because the plan is inactive, the picker reloads. If the selected plan is gone,
+the form selects the first active plan, or shows the empty state when none
+remain. The discount for the removed plan is cleared.
 
 Owners and admins see the membership's applied discount snapshot and billing
 cycles left (or an ongoing duration). They can add or replace a price discount,

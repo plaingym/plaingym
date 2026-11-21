@@ -35,16 +35,18 @@ const refusalText: Record<string, string> = {
   membership_erased: 'reason_erased',
   plan_inactive: 'reason_plan_inactive',
 };
-const staleRefusals = new Set(['household_billing_date', 'household_join_date', 'membership_status', 'membership_cancelled']);
+const staleMembershipRefusals = new Set(['membership_status', 'membership_cancelled']);
+const staleRefusals = new Set(['household_billing_date', 'household_join_date', ...staleMembershipRefusals]);
 type Action = 'activateMembership' | 'freezeMembership' | 'resumeMembership' | 'cancelMembership' | 'updateMembership' | 'cancelMembershipSwitch';
 export function MembershipPanel({ gymId, memberId, manage, client = billingClient, discounts, now }: {
   gymId: string; memberId: string; manage: boolean; client?: BillingClient; discounts?: DiscountClient | undefined; now?: Date;
 }) {
   const bootstrap = useBootstrap();
   const cache = useQueryClient(), key = ['billing', gymId, 'memberships'];
+  const plansKey = ['billing', gymId, 'plans'];
   const [busy, setBusy] = useState(false), [message, setMessage] = useState(''), [reminder, setReminder] = useState(false);
   const rows = useQuery({ queryKey: [...key, memberId], queryFn: () => client.memberships({ memberId }) });
-  const plans = useQuery({ queryKey: ['billing', gymId, 'plans'], queryFn: () => client.plans(),
+  const plans = useQuery({ queryKey: plansKey, queryFn: () => client.plans(),
     enabled: !!bootstrap.data?.session && canStaff(bootstrap.data.session.roles, 'billing.read') });
   const setup = useQuery({ queryKey: [...key, memberId, 'assignment'], enabled: manage, queryFn: async () => {
     const member = await client.member(memberId);
@@ -75,6 +77,7 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
           setMessage(text(refusalText[code]!));
           refused?.(code);
           if (staleRefusals.has(code)) void reload();
+          if (code === 'plan_inactive') await cache.invalidateQueries({ queryKey: plansKey });
           return false;
         }
       }
@@ -113,12 +116,17 @@ function AssignmentForm({ plans, memberId, householdId, today, billingDate, busy
   const [picked, setPicked] = useState<{ planId: string; value: MembershipDiscountSelection }>();
   // The billing date follows the start date until staff edit it.
   const [startsOn, setStartsOn] = useState(today), [nextDueOn, setNextDueOn] = useState<string | null>(null);
-  const planId = chosen || plans[0]?.id || '', plan = plans.find(item => item.id === planId);
-  // A selection belongs to the plan it was made for, including when a reloaded plan list moves the default plan.
+  const selectedPlan = plans.find(item => item.id === chosen);
+  const plan = selectedPlan ?? plans[0], planId = plan?.id ?? '';
+  // Discard choices removed by a refresh, even if those plans later become active again.
+  if (chosen && !selectedPlan) setChosen('');
+  if (picked && !plans.some(item => item.id === picked.planId)) setPicked(undefined);
   const discount = picked?.planId === planId ? picked.value : undefined;
   const setDiscount = (value: MembershipDiscountSelection | undefined) => setPicked(value && { planId, value });
   async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); const form = new FormData(event.currentTarget);
+    event.preventDefault();
+    if (!plan) return;
+    const form = new FormData(event.currentTarget);
     // The server takes only the household's billing date, so after a date refusal the field follows the reloaded date again.
     const dateRefused = (reason: string) => { if (reason === 'household_billing_date' || reason === 'household_join_date') setNextDueOn(null); };
     if (await assign({ memberId, householdId, planId, startsOn: form.get('startsOn'), nextDueOn: form.get('nextDueOn'), firstPeriod: form.get('firstPeriod'), ...(discount ? { discount } : {}) }, dateRefused)) {
@@ -127,9 +135,9 @@ function AssignmentForm({ plans, memberId, householdId, today, billingDate, busy
   }
   return <form key={formKey} onSubmit={event => void submit(event)} className="min-w-0 space-y-4 rounded-lg border p-4">
     <h3 className="font-semibold">{text('assign')}</h3>
-    {!plans.length ? <p>{text('noPlans')}</p> : <fieldset disabled={busy} className="grid min-w-0 gap-4 sm:grid-cols-2">
+    {!plan ? <p>{text('noPlans')}</p> : <fieldset disabled={busy} className="grid min-w-0 gap-4 sm:grid-cols-2">
       <Label className="block min-w-0 sm:col-span-2">{text('plan')}<select className={selectClass} value={planId} onChange={event => { setChosen(event.target.value); setDiscount(undefined); }}>{plans.map(item => <option key={item.id} value={item.id}>{item.name} · {money(item.amountCents, item.currency)}</option>)}</select></Label>
-      {plan && <p className="text-sm text-muted-foreground sm:col-span-2">{text('signupFee')}: {money(plan.signupFeeCents, plan.currency)} · {text('trialDays')}: {plan.trialDays}</p>}
+      <p className="text-sm text-muted-foreground sm:col-span-2">{text('signupFee')}: {money(plan.signupFeeCents, plan.currency)} · {text('trialDays')}: {plan.trialDays}</p>
       <Label className="block min-w-0">{text('startsOn')}<Input name="startsOn" type="date" required value={startsOn}
         onChange={event => { setStartsOn(event.target.value); setNextDueOn(null); }}/></Label>
       <Label className="block min-w-0">{text('nextDueOn')}<Input name="nextDueOn" type="date" required
@@ -137,14 +145,14 @@ function AssignmentForm({ plans, memberId, householdId, today, billingDate, busy
       <p className="text-sm text-muted-foreground sm:col-span-2">{text('alignmentHelp')}</p>
       <Label className="block min-w-0 sm:col-span-2">{text('firstPeriod')}<select className={selectClass} name="firstPeriod" defaultValue="prorate_now"><option value="prorate_now">{text('prorateNow')}</option><option value="next_billing_date">{text('nextBillingDate')}</option></select></Label>
       <p className="text-sm text-muted-foreground sm:col-span-2">{text('assignmentHelp')}</p>
-      {plan && <DiscountSelection key={planId} gymId={gymId} planId={planId} currency={plan.currency} value={discount} onChange={setDiscount} client={discounts}/>}
+      <DiscountSelection key={planId} gymId={gymId} planId={planId} currency={plan.currency} value={discount} onChange={setDiscount} client={discounts}/>
       <Button className="sm:col-span-2" type="submit">{text(busy ? 'saving' : 'assign')}</Button>
     </fieldset>}
   </form>;
 }
 function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, reload, changed, gymId, discounts }: {
   row: Membership; plans: Plan[]; plansReady: boolean; manage: boolean; busy: boolean;
-  mutate: (operation: Action, input: unknown, membershipId: string) => Promise<boolean>;
+  mutate: (operation: Action, input: unknown, membershipId: string, refused?: (reason: string) => void) => Promise<boolean>;
   client: BillingClient; reload: () => Promise<void>; changed: (result: MembershipSwitchResult) => void;
   gymId: string; discounts?: DiscountClient | undefined;
 }) {
@@ -159,6 +167,7 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
     ? { plan: plans.find(item => item.id === row.scheduledPlanId), price: money(row.scheduledAmountCents, row.currency), interval: text(row.scheduledInterval), on: calendarDateLabel(row.scheduledOn) } : null;
   const priceOnly = !!scheduled && row.scheduledPlanId === row.planId;
   const differentPlanPrice = !!plan && plan.currency === row.currency && plan.interval === row.interval && plan.amountCents !== row.amountCents;
+  const closeStaleAction = (reason: string) => { if (staleMembershipRefusals.has(reason)) setAction(null); };
   async function edit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget);
     const entered = String(form.get('price') ?? '').trim();
@@ -169,12 +178,12 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
     // A blank or unchanged price is no change.
     if (amountCents === undefined || amountCents === base.amountCents) { setFormError(text('nothingToChange')); return; }
     setFormError('');
-    if (await mutate('updateMembership', { revision: base.revision, price: { amountCents, currency: base.currency } }, row.id)) setAction(null);
+    if (await mutate('updateMembership', { revision: base.revision, price: { amountCents, currency: base.currency } }, row.id, closeStaleAction)) setAction(null);
   }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget);
     const input = action === 'freeze' ? { resumesOn: form.get('date') || null } : { nextDueOn: form.get('date') };
-    if (await mutate(action === 'freeze' ? 'freezeMembership' : 'resumeMembership', { revision: row.revision, ...input }, row.id)) setAction(null);
+    if (await mutate(action === 'freeze' ? 'freezeMembership' : 'resumeMembership', { revision: row.revision, ...input }, row.id, closeStaleAction)) setAction(null);
   }
   return <li className="min-w-0 space-y-3 rounded-lg border p-4">
     <div><h3 className="font-semibold">{plan?.name ?? text('membership')}</h3><p>{text(row.status)} · {money(row.amountCents, row.currency)} / {text(row.interval)}</p>
