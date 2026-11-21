@@ -759,8 +759,11 @@ Old versions and documents referenced by signatures remain retained after retire
   insert and read audits, never change or delete them), with secrets and
   sensitive fields left out.
 * **Logs.** The app logs one JSON line per event with IDs, never error messages,
-  request bodies or credentials. Caddy's access log is off unless the owner turns
-  it on (`deploy/README.md`, "Access log").
+  request bodies or credentials. The one exception is a failed billing webhook
+  handler: `billing.webhooks.handler_failed` carries the handler's own fixed
+  failure text, and only that (`apps/server/src/areas/billing/webhooks/inbox.md`).
+  Caddy's access log is off unless the owner turns it on (`deploy/README.md`,
+  "Access log").
 
 ## The server
 

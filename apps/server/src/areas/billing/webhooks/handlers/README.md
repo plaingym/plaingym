@@ -95,11 +95,14 @@ revoked method. Changes retain ordinary payment-method audits. The campaign
 editor's "Needs a card" filter reads these rows in SQL, so each of these events
 updates it with no Stripe call (`areas/links/campaigns.README.md`).
 
-An update for a customer that matches no household (its household was erased,
-which unlinks the customer and redacts its cards, or a card added in the Stripe
-dashboard on a customer the app never linked) changes, creates and audits
-nothing: it is logged at info as `billing.payment_method.household_unresolved`
-with the gym, method, customer and event IDs, and the event is finished. If a
+An update whose method resolves and is verified as this gym's, but whose
+customer matches no household (its household was erased, which unlinks the
+customer and redacts its cards, or a card added in the Stripe dashboard on a
+gym-tagged customer the app never linked) changes, creates and audits nothing:
+it is logged at info as `billing.payment_method.household_unresolved` with the
+gym, method, customer and event IDs, and the event is finished. Only such a
+method logs this line: a method Stripe can't resolve, or one whose customer
+isn't tagged for this gym, ends earlier without it. If a
 completed setup or a saving Checkout resolves the method but finds no household,
 the inbox retries the collection. If the bank method lacks usable last four
 digits and the customer has no linked household, collection logs the incomplete

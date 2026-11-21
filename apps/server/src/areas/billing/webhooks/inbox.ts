@@ -4,7 +4,7 @@ import { forGym, forSystem, stripeEvents, uuidv7, writeAudit } from '@plaingym/d
 import { AppError, type Clock } from '@plaingym/shared';
 import { z } from 'zod';
 import { clock as systemClock } from '../../../core/clock.js';
-import { logError } from '../../../core/log.js';
+import { logError, type LogFields } from '../../../core/log.js';
 import { recentWebhookFailureMs, type WebhookHealthQuery } from '../../../core/interfaces/webhook-health.js';
 import type { JobContext, Jobs, JobRecovery } from '../../../infra/jobs/index.js';
 import type { PaymentEvent, Payments } from '../../../infra/payments/index.js';
@@ -48,9 +48,40 @@ export const handlerFailureReasons: ReadonlySet<string> = new Set([
   'Payment method creation time is unresolved', 'Saved card household is unresolved', 'Saved card household mismatch',
   'SetupIntent is unresolved', 'SetupIntent gym mismatch', 'Successful SetupIntent has no payment method',
 ]);
+const fixedReasonText = /^[A-Za-z][A-Za-z ]{0,99}$/;
 function failureReason(error: unknown) {
   return error instanceof Error && error.constructor === Error && handlerFailureReasons.has(error.message)
-    ? error.message : undefined;
+    && fixedReasonText.test(error.message) ? error.message : undefined;
+}
+const errorIdentifier = /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/;
+const errorCode = /^[A-Za-z0-9_]{1,32}$/;
+function errorNameAndCode(error: unknown) {
+  const name = error instanceof Error && errorIdentifier.test(error.name) ? error.name : typeof error;
+  const code = error instanceof Error ? (error as unknown as Record<string, unknown>).code : undefined;
+  return { name, ...(typeof code === 'string' && errorCode.test(code) ? { code } : {}) };
+}
+/**
+ * A failed handler's diagnostics, built here rather than by the shared logger: the error's name and code, its
+ * stack frames, and its cause's name and code. No field is read from message text. Frames are taken only after
+ * the stack's exact `name: message` header, so a multiline message never passes for a frame.
+ */
+export function handlerFailureFields(error: unknown): LogFields {
+  const { name, code } = errorNameAndCode(error);
+  const fields: Record<string, string> = { errorName: name, ...(code ? { errorCode: code } : {}) };
+  if (error instanceof Error && typeof error.stack === 'string') {
+    const header = error.message === '' ? `${error.name}\n` : `${error.name}: ${error.message}\n`;
+    if (error.stack.startsWith(header)) {
+      const frames = error.stack.slice(header.length).split(/\r?\n/).filter((line) => line.startsWith('    at '))
+        .slice(0, 15).map((line) => line.trim());
+      if (frames.length > 0) fields.errorFrames = frames.join('\n');
+    }
+  }
+  if (error instanceof Error && error.cause !== undefined) {
+    const cause = errorNameAndCode(error.cause);
+    fields.causeName = cause.name;
+    if (cause.code) fields.causeCode = cause.code;
+  }
+  return fields;
 }
 // Read from a stored job: unknown keys are ignored for the same reason.
 const dispatchSchema = z.object({ eventId: z.string().min(1), replay: z.boolean().optional() });
@@ -147,10 +178,11 @@ export function createWebhookInbox(options: {
         // Provider error messages may contain secrets or personal data. Keep a safe marker only.
         await scope(context.gymId, (tx) => tx.update(stripeEvents).set({ error: 'handler_failed' })
           .where(match(context.gymId, input.eventId)));
-        // Only a handler's own fixed text is logged (handlerFailureReasons); any other message is left out.
+        // Only a handler's own fixed text is logged (handlerFailureReasons); any other message is left out. The
+        // exception isn't passed to logError: handlerFailureFields builds every diagnostic without message text.
         const reason = failureReason(error);
         logError('billing.webhooks.handler_failed', { gymId: context.gymId, eventId: input.eventId, type: row.type,
-          ...(reason ? { reason } : {}) }, error);
+          ...(reason ? { reason } : {}), ...handlerFailureFields(error) });
         throw error; // The job queue owns retry/backoff and the attempt limit.
       }
     },
