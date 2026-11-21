@@ -64,8 +64,17 @@ describe('acknowledgeFailedThrough', () => {
     expect(byId(foreign.id)).toMatchObject({ status: 'failed', acknowledgedAt: null });
     expect(await queue.acknowledgeFailedThrough({ gymId: gymA, through, at: new Date(at.getTime() + minute) })).toBe(0);
     expect((await rows([before.id as string]))[0]!.acknowledgedAt).toEqual(at);
-    // An acknowledged job stays visible to recovery.
-    expect((await queue.failedJobs('test.ack', [before.idempotencyKey as string], { gymId: gymA })).map(job => job.jobId)).toEqual([before.id]);
+  });
+
+  it('leaves an acknowledged job visible to recovery', async () => {
+    const gymId = uuidv7(), clock = new TestClock('2026-11-01T00:00:00Z');
+    await factory('gyms', gymId);
+    const queue = new PostgresJobs({ database: db, clock }), name = 'test.ack.recovery', key = uuidv7();
+    queue.handle(name, async () => { throw new Error('Job failed'); });
+    const { jobId } = await queue.enqueue(name, {}, { gymId, timezone: 'UTC', idempotencyKey: key, maxAttempts: 1 });
+    await queue.runNext();
+    expect(await queue.acknowledgeFailedThrough({ gymId, through: clock.now(), at: clock.now() })).toBe(1);
+    expect((await queue.failedJobs(name, [key], { gymId })).map(job => job.jobId)).toEqual([jobId]);
   });
 
   it('commits and rolls back with the caller transaction, and checks its gym and times', async () => {
