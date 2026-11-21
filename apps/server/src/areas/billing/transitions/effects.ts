@@ -247,7 +247,8 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       if (await recorded(tx, effectCompleted, effectId) || await recorded(tx, effectDismissed, effectId)) return null;
       const payment = work.paymentId ? (await tx.select().from(payments).where(eq(payments.id, work.paymentId)))[0] : undefined;
       if (payment && payment.invoiceId !== invoice.id) notFound();
-      const refund = (work.notice === 'refund_failed' || work.notice === 'refund_canceled' || work.notice === 'refund_released' || work.notice === 'refund_arrived') && work.refundId
+      const refund = (work.notice === 'refund_failed' || work.notice === 'refund_canceled' || work.notice === 'refund_released'
+        || work.notice === 'refund_missing' || work.notice === 'refund_arrived') && work.refundId
         ? (await tx.select().from(refunds).where(eq(refunds.id, work.refundId)))[0] : undefined;
       if (refund && refund.paymentId !== payment?.id) notFound();
       const refunded = work.notice === 'duplicate_released' && payment
@@ -314,6 +315,9 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
         if (!refund) throw new Error('Late refund notice has no refund');
         // A later processor failure has its own notice; don't send an obsolete success correction after it.
         if (refund.status === 'succeeded') await options.notifications.staffNotice({ ...data, reason: 'refund_arrived', refund });
+      } else if (work.notice === 'refund_missing') {
+        if (!refund) throw new Error('Missing refund notice has no refund');
+        await options.notifications.staffNotice({ ...data, reason: 'refund_missing', refund });
       } else if (work.notice !== 'refund_failed') await options.notifications.staffNotice(data);
       else if (refund) await options.notifications.staffNotice({ ...data, reason: 'refund_failed', refund, reversed,
         ...(reversedCredits > 0 ? { reversedCredits } : {}) });

@@ -69,6 +69,8 @@ export interface ProcessorRefundTransition {
   readonly refundId: Id;
   readonly processorRefund: Refund;
   readonly pendingRefunds: readonly Refund[];
+  /** Processor IDs of pending refund rows the processor reported missing (read, not found); never a failed read. */
+  readonly missingRefunds?: readonly string[];
 }
 export interface InvoiceTransitionResult {
   readonly outcome: 'applied' | 'ignored' | 'duplicate_payment';
@@ -136,6 +138,9 @@ export interface InvoiceRefundFixture {
   /** The original recorded audit was pending with no processor ID. */
   readonly originalPending?: boolean;
 }
+// The fake treats a reservation as a duplicate only when it is seeded with `duplicateReserved`. The real
+// `duplicateReservation` (areas/billing/transitions/store.ts) also counts a `duplicate_payment` reason with no
+// `billing.refund.requested` audit on a payment that wasn't accepted; the fake doesn't model that case.
 interface StoredRefund { gymId: Id; request: RefundTransition; appCreated: boolean; tagged: boolean; duplicate: boolean; createdAt: Date; }
 const terminal = new Set<InvoiceSnapshot['status']>(['paid', 'partially_refunded', 'refunded', 'void']);
 const canceled = (attempt: InvoiceAttemptFixture) => attempt.declineCode === 'intent_canceled' || attempt.declineCode === 'confirm_abandoned';
@@ -357,7 +362,7 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
   async refund(context: MutationContext, request: RefundTransition): Promise<InvoiceTransitionResult> {
     return this.#applyRefund(context, request);
   }
-  #applyRefund(context: MutationContext, request: RefundTransition, appCreated = false): InvoiceTransitionResult {
+  #applyRefund(context: MutationContext, request: RefundTransition, appCreated = false, missing = false): InvoiceTransitionResult {
     const invoice = this.#invoice(context.gymId, request.invoiceId);
     if (invoice.status === 'processing') conflict('Payment is processing');
     const payment = this.#payments.get(scopedKey(context.gymId, request.paymentId)) ?? notFound();
@@ -390,8 +395,13 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
     this.#refunds.set(key, { gymId: context.gymId, request: structuredClone(request), appCreated: createdInApp, tagged,
       duplicate: previous?.duplicate ?? false, createdAt: previous?.createdAt ?? this.clock.now() });
     if (processorKey !== undefined) this.#processorRefunds.set(processorKey, key);
-    // Failed refunds notify once; canceled refunds notify only when the app created them.
-    if (request.status === 'failed' && request.processorId !== undefined || request.status === 'canceled' && appCreated)
+    // In the real rule's order: a released missing row, a failed or app-created canceled processor refund, then a
+    // released duplicate reservation or one the system released past the retry window.
+    if (missing && request.status === 'failed') this.#effect(context.gymId, invoice.id, 'staff_notice', payment.id);
+    else if (request.status === 'failed' && request.processorId !== undefined || request.status === 'canceled' && appCreated)
+      this.#effect(context.gymId, invoice.id, 'staff_notice', payment.id);
+    else if (request.status === 'failed' && request.processorId === undefined && previous && (previous.duplicate
+      || context.actor.kind === 'system' && this.clock.now().getTime() - previous.createdAt.getTime() >= refundRetryWindowMs))
       this.#effect(context.gymId, invoice.id, 'staff_notice', payment.id);
     if (!(request.status === 'succeeded' || (reversed && ['partially_refunded', 'refunded'].includes(invoice.status)))
       || !payment.accepted) return this.#result('applied', invoice);
@@ -445,8 +455,14 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
     }
     if (!refundReleased(value)) {
       let unread = false;
-      for (const { request: row } of rows.filter(row => row.request.processorId !== undefined && row.request.status === 'pending')) {
+      const missing: StoredRefund[] = [];
+      for (const stored of rows.filter(row => row.request.processorId !== undefined && row.request.status === 'pending')) {
+        const row = stored.request;
         const current = input.pendingRefunds.find(refund => refund.id === row.processorId);
+        if (!current && input.missingRefunds?.includes(row.processorId!)) {
+          missing.push(stored);
+          continue;
+        }
         if (!current || current.amount !== row.amountCents || current.currency.toUpperCase() !== row.currency
           || current.metadata.gymId !== context.gymId || ![payment.paymentIntentId, payment.chargeId].includes(current.chargeId)) {
           unread = true;
@@ -456,17 +472,19 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
       }
       rows = read();
       let excess = rows.filter(row => !refundReleased(row.request)).reduce((sum, row) => sum + row.request.amountCents, value.amount - payment.amountCents);
+      const newestFirst = (a: StoredRefund, b: StoredRefund) => b.createdAt.getTime() - a.createdAt.getTime()
+        || b.request.refundId.localeCompare(a.request.refundId);
+      for (const { request: row } of missing.sort(newestFirst)) {
+        if (excess <= 0) break;
+        this.#applyRefund(context, { ...row, status: 'failed' }, false, true);
+        excess -= row.amountCents;
+      }
       if (excess > 0 && unread) conflict('Pending refund must be reconciled before recording an external refund');
-      const outrun = [...reservations].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()
-        || b.request.refundId.localeCompare(a.request.refundId));
+      const outrun = [...reservations].sort(newestFirst);
       if (excess > outrun.reduce((sum, row) => sum + row.request.amountCents, 0)) conflict('Refund exceeds payment');
       for (const { request: row } of outrun) {
         if (excess <= 0) break;
-        const previous = this.#refunds.get(scopedKey(context.gymId, row.refundId));
         this.#applyRefund(context, { ...row, status: 'failed' });
-        if (previous && (previous.duplicate || context.actor.kind === 'system'
-          && this.clock.now().getTime() - previous.createdAt.getTime() >= refundRetryWindowMs))
-          this.#effect(context.gymId, invoice.id, 'staff_notice', payment.id);
         excess -= row.amountCents;
       }
     }

@@ -24,6 +24,8 @@
   "refundArrivedSubject": "Refund for invoice {number} reached Stripe",
   "refundArrivedBody": "The refund of {amount} for invoice {number}, whose reservation was released earlier, did reach Stripe and is now recorded as successful in billing. Check the updated payment before issuing another refund.",
   "refundReleasedBody": "A refund of {amount} for invoice {number} was requested in billing, but the request never reached Stripe, so it was cancelled and the payer hasn't received it from this request. Check the payment in Stripe and in billing, and refund the payer again only if they are still owed.",
+  "refundMissingSubject": "Refund for invoice {number} wasn't found in Stripe",
+  "refundMissingBody": "A pending refund of {amount} for invoice {number} is no longer in Stripe (it was deleted, or the Stripe account changed), so billing stopped waiting for it and recorded it as not refunded. Check the payment in Stripe and in billing, and refund the payer again only if they are still owed.",
   "creditsReversedNote": "The refund also took back {credits} unused class credits from the member's pack. If the payer is still owed the pack, add those credits back on the member's Packs tab.",
   "creditsNotGrantedSubject": "Class pack credits not granted for invoice {number}",
   "creditsNotGrantedBody": "Invoice {number} for a class pack ({amount}) was paid after its member's personal data was erased, so its {credits} credits weren't granted. Refund the payer from the invoice if they are owed it.",

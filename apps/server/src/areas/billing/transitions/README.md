@@ -313,11 +313,18 @@ one invoice lock and transaction, so the notice counts the refund that caused th
 release once it has succeeded. If recording fails, all releases and their notices roll back too.
 Processor-bound pending refunds are read outside the transaction and terminal outcomes
 are reconciled under the lock before deciding which unsent reservations no longer fit.
+A pending row the processor reports missing (the read answers unknown: the object was
+deleted, or isn't this Stripe account's) is released only when the external refund needs
+its room, newest first and before any unsent reservation, and only as far as that need
+goes. Each such release records the row `failed` and queues one `notice: 'refund_missing'`
+staff notice naming the invoice and amount; a replayed webhook finds the row failed and
+queues none. A missing row the external refund fits beside stays `pending`. A read that
+throws fails the whole write, so a network error never releases anything.
 An unread or mismatched pending row still reserves its full amount. It forces a retry
 only when that total would require releasing an unsent reservation; an external refund
 that fits records normally, including when a pending row was linked after those reads.
-The named `InvoiceTransitions.processorRefund` method accepts the processor refund and
-those reads; it first refuses as not found a refund whose gym metadata, charge or
+The named `InvoiceTransitions.processorRefund` method accepts the processor refund,
+those reads and the processor IDs reported missing; it first refuses as not found a refund whose gym metadata, charge or
 currency is not this payment's, then selects an existing processor ID or matching app
 reservation and records the outcome atomically. Plain `refund` handles local reservations and their outcomes;
 processor reports cannot be passed to it. The fake and real transitions run the same
@@ -339,7 +346,8 @@ processor ID (a cash or check refund) never reverses, and a failed or canceled
 refund never moves again. A processor cancels a refund only before it completes,
 so a canceled report for a successful refund is ignored.
 Every processor refund that ends `failed` (recorded failed from the start, moved
-from `pending`, or reversed after success) queues one `staff_notice` effect with
+from `pending`, or reversed after success), apart from a pending row released as
+missing (above), queues one `staff_notice` effect with
 `notice: 'refund_failed'` in the same transaction, which tells the gym's staff
 recipients (owners and admins at runtime) that the payer was not refunded; a
 reversal's email says the refund had been reported successful. For a class pack
@@ -356,8 +364,9 @@ including one on a payment marked as test, and a dashboard refund that outran a 
 refund past its window. A duplicate payment's reservation released this way gets the
 `duplicate_released` notice instead. A staff request that releases one
 is answered directly and queues none, and a reservation a dashboard refund outran inside
-the window queues none either. The fake sends the same `duplicate_released` and
-`refund_released` notices when a processor refund outruns a reservation. The window
+the window queues none either. The fake sends its release notices from plain `refund`,
+as the real transitions do, so a release through `refund` and one a processor refund
+forces notice the same way. The window
 constant lives in `core/interfaces/invoice-transitions.ts` and is re-exported by
 `lapsed-refunds.ts`; the send records that keep a staff retry
 still in flight from being released, and the settling rule, live in `lapsed-refunds.ts`

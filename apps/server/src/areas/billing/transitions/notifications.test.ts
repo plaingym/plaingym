@@ -38,6 +38,7 @@ const senders: [string, number, (notifications: TransitionNotifications, notice:
   ['canceled refund staff notice', 0, (n, notice) => n.staffNotice({ ...notice, reason: 'refund_canceled', refund })],
   ['failed refund staff notice', 0, (n, notice) => n.staffNotice({ ...notice, reason: 'refund_failed', refund })],
   ['reversed refund staff notice', 0, (n, notice) => n.staffNotice({ ...notice, reason: 'refund_failed', refund, reversed: true })],
+  ['missing refund staff notice', 0, (n, notice) => n.staffNotice({ ...notice, reason: 'refund_missing', refund })],
 ];
 
 describe('keyed billing notices', () => {
@@ -50,6 +51,12 @@ describe('keyed billing notices', () => {
     await send(f.notifications, await f.notice(uuidv7()));
     expect(f.fake.messages).toHaveLength(2);
     expect(await f.links()).toHaveLength(minted * 2);
+  });
+  it('tells staff a pending refund was not found in Stripe', async () => {
+    const f = await fixture();
+    await f.notifications.staffNotice({ ...await f.notice(uuidv7()), reason: 'refund_missing', refund });
+    expect(f.fake.messages).toHaveLength(1);
+    expect(f.fake.messages[0]).toMatchObject({ to: 'owner@example.invalid', subject: "Refund for invoice 7 wasn't found in Stripe" });
   });
   it('one failed charge gets one notice even if its attempt turns action-required between retries', async () => {
     const f = await fixture(), notice = await f.notice(uuidv7());

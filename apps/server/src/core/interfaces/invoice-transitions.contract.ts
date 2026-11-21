@@ -194,6 +194,76 @@ export function invoiceTransitionsContract(name: string, create: (options?: { pa
       const { before, after } = await release(await create(), 'tagged', 3600_000);
       expect(count(after.effects, 'staff_notice')).toBe(count(before.effects, 'staff_notice'));
     });
+    it.each([
+      ['notices a lapsed reservation the system releases through plain refund', 'tagged', 24 * 3600_000, true, 1],
+      ['notices a duplicate reservation the system releases through plain refund', 'duplicate', 3600_000, true, 1],
+      ['does not notice a plain system release inside the refund window', 'tagged', 3600_000, true, 0],
+      ['does not notice a lapsed reservation that staff release through plain refund', 'tagged', 24 * 3600_000, false, 0],
+    ] as const)('%s', async (_name, provenance, advance, systemActor, notices) => {
+      const h = await create(); await h.transitions.cardSucceeded(h.context, h.success);
+      const own = reservation(h);
+      await h.seedRefund(own, provenance);
+      h.advance(advance);
+      const before = await h.read();
+      const context: MutationContext = systemActor ? { ...h.context, actor: { kind: 'system' } } : h.context;
+      expect((await h.transitions.refund(context, { ...own, status: 'failed' })).outcome).toBe('applied');
+      const after = await h.read();
+      expect(after.refunds.find(row => row.refundId === own.refundId)?.status).toBe('failed');
+      expect(count(after.effects, 'staff_notice')).toBe(count(before.effects, 'staff_notice') + notices);
+    });
+    const missingRow = async (h: InvoiceTransitionsHarness) => {
+      await h.transitions.cardSucceeded(h.context, h.success);
+      const missing = { ...reservation(h, 2000), processorId: 're_missing' };
+      await h.transitions.refund(h.context, missing);
+      return missing;
+    };
+    it('releases a pending refund the processor reports missing when an external refund needs its room', async () => {
+      const h = await create(), missing = await missingRow(h);
+      const before = await h.read();
+      const report = { ...processor(h, { amount: 9000 }), missingRefunds: ['re_missing'] };
+      expect((await h.transitions.processorRefund(h.context, report)).outcome).toBe('applied');
+      const after = await h.read();
+      expect(after.refunds.find(row => row.refundId === missing.refundId)?.status).toBe('failed');
+      expect(after.refunds.find(row => row.refundId === report.refundId)?.status).toBe('succeeded');
+      expect(after.invoice).toBe('partially_refunded');
+      expect(count(after.effects, 'staff_notice')).toBe(count(before.effects, 'staff_notice') + 1);
+      expect((await h.transitions.processorRefund(h.context, report)).outcome).toBe('ignored');
+      expect(await h.read()).toEqual(after);
+    });
+    it('keeps a missing pending refund that an external refund fits beside', async () => {
+      const h = await create(), missing = await missingRow(h);
+      const before = await h.read();
+      const report = { ...processor(h, { amount: 8000 }), missingRefunds: ['re_missing'] };
+      await h.transitions.processorRefund(h.context, report);
+      const after = await h.read();
+      expect(after.refunds.find(row => row.refundId === missing.refundId)?.status).toBe('pending');
+      expect(after.refunds.find(row => row.refundId === report.refundId)?.status).toBe('succeeded');
+      expect(count(after.effects, 'staff_notice')).toBe(count(before.effects, 'staff_notice'));
+    });
+    it('still refuses an external refund that needs an unread row\'s room when the row is not reported missing', async () => {
+      const h = await create(); await missingRow(h);
+      const before = await h.read();
+      await expect(h.transitions.processorRefund(h.context, processor(h, { amount: 9000 }))).rejects.toMatchObject({ code: 'conflict' });
+      expect(await h.read()).toEqual(before);
+    });
+    it('releases a missing pending refund before an unsent reservation', async () => {
+      const h = await create(), missing = await missingRow(h);
+      const unsent = reservation(h, 3000); await h.transitions.refund(h.context, unsent);
+      const report = { ...processor(h, { amount: 9000 }), missingRefunds: ['re_missing'] };
+      await h.transitions.processorRefund(h.context, report);
+      const after = await h.read();
+      expect(after.refunds.find(row => row.refundId === missing.refundId)?.status).toBe('failed');
+      expect(after.refunds.find(row => row.refundId === unsent.refundId)?.status).toBe('failed');
+      expect(after.refunds.find(row => row.refundId === report.refundId)?.status).toBe('succeeded');
+    });
+    it('treats a missing pending refund with a mismatched read as unread', async () => {
+      const h = await create(), missing = await missingRow(h);
+      const before = await h.read();
+      const read = processor(h, { id: missing.processorId, amount: 1000, status: 'pending' }).processorRefund;
+      const report = { ...processor(h, { amount: 9000 }, [read]), missingRefunds: ['re_missing'] };
+      await expect(h.transitions.processorRefund(h.context, report)).rejects.toMatchObject({ code: 'conflict' });
+      expect(await h.read()).toEqual(before);
+    });
     it('refuses an unresolved attempt, then voids a failed invoice and refunds a late success once', async () => {
       const h = await create(), { invoiceId, attemptId, paymentIntentId } = h.success;
       const request = { invoiceId, reason: 'Invoice issued in error' };

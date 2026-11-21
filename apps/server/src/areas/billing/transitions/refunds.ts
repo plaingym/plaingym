@@ -10,7 +10,7 @@ import { accepted, audit, duplicateReservation, effect, recorded, result, snapsh
 
 /** The caller holds the invoice lock; every reservation, audit and effect commits with the refund. */
 export async function applyRefund(tx: Transaction, context: MutationContext, clock: Clock, invoice: InvoiceRow,
-  request: RefundTransition, appCreated = false): Promise<InvoiceTransitionResult> {
+  request: RefundTransition, appCreated = false, missing = false): Promise<InvoiceTransitionResult> {
   idSchema.parse(request.refundId); moneySchema.parse({ amountCents: request.amountCents, currency: request.currency });
   if (invoice.status === 'processing') conflict('Payment is processing');
   if (request.amountCents <= 0 || !['pending', 'succeeded', 'failed', 'canceled'].includes(request.status)) conflict('Invalid refund');
@@ -50,8 +50,12 @@ export async function applyRefund(tx: Transaction, context: MutationContext, clo
   else await audit(tx, context, clock, 'billing.refund.reversed', 'refund', request.refundId, recordedRefund,
     { status: 'succeeded', resolvedAt: previous?.resolvedAt ?? null });
   // A local reservation or its original audit identifies an app-created refund. External pending rows also have
-  // a previous row when canceled, so their existence alone must never trigger this notice.
-  if (request.status === 'canceled' && (appCreated || previous && await createdInApp(tx, previous)))
+  // a previous row when canceled, so their existence alone must never trigger this notice. A pending row the processor
+  // reported missing is released with its own notice and no other.
+  if (missing && request.status === 'failed')
+    await effect(tx, context, clock, { kind: 'staff_notice', notice: 'refund_missing', invoiceId: invoice.id,
+      paymentId: payment.id, refundId: request.refundId });
+  else if (request.status === 'canceled' && (appCreated || previous && await createdInApp(tx, previous)))
     await effect(tx, context, clock, { kind: 'staff_notice', notice: 'refund_canceled', invoiceId: invoice.id,
       paymentId: payment.id, refundId: request.refundId });
   else if (request.status === 'failed' && values.processorId !== null)
@@ -107,10 +111,16 @@ export async function applyProcessorRefund(tx: Transaction, context: MutationCon
   }
   if (!refundReleased(value)) {
     // Count unread processor rows as pending. They only force a retry when releasing an unsent reservation would
-    // depend on their outcome, including a row linked after the processor reads and before this lock.
+    // depend on their outcome, including a row linked after the processor reads and before this lock. A row the
+    // processor reported missing is released, newest first, only as far as this refund needs its room.
     let unread = false;
+    const missing: (typeof refunds.$inferSelect)[] = [];
     for (const row of rows.filter(row => row.processorId !== null && row.status === 'pending')) {
       const current = input.pendingRefunds.find(refund => refund.id === row.processorId);
+      if (!current && input.missingRefunds?.includes(row.processorId!)) {
+        missing.push(row);
+        continue;
+      }
       if (!current || !sameRefund(current, row, payment, context.gymId)) {
         unread = true;
         continue;
@@ -120,8 +130,16 @@ export async function applyProcessorRefund(tx: Transaction, context: MutationCon
     }
     rows = await tx.select().from(refunds).where(eq(refunds.paymentId, payment.id));
     let excess = rows.filter(row => !refundReleased(row)).reduce((sum, row) => sum + row.amountCents, value.amount - payment.amountCents);
+    const newestFirst = (a: typeof refunds.$inferSelect, b: typeof refunds.$inferSelect) =>
+      b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id);
+    for (const row of missing.sort(newestFirst)) {
+      if (excess <= 0) break;
+      await applyRefund(tx, context, clock, invoice, { invoiceId: invoice.id, paymentId: payment.id, refundId: row.id,
+        processorId: row.processorId!, amountCents: row.amountCents, currency: row.currency, status: 'failed' }, false, true);
+      excess -= row.amountCents;
+    }
     if (excess > 0 && unread) conflict('Pending refund must be reconciled before recording an external refund');
-    const outrun = [...reservations].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id));
+    const outrun = [...reservations].sort(newestFirst);
     if (excess > outrun.reduce((sum, row) => sum + row.amountCents, 0)) conflict('Refund exceeds payment');
     for (const row of outrun) {
       if (excess <= 0) break;

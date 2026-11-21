@@ -673,6 +673,36 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect(rows.refunds.find(row => row.processorId === 're_unreadable')).toMatchObject({ status: 'pending', amountCents: 2000 });
     expect(rows.invoice.status).toBe('partially_refunded');
   });
+  it('releases a pending processor refund the processor reports missing when an external refund needs its room', async () => {
+    const f = await fixture(); await succeed(f); await f.transitions.cardSucceeded(f.context, f.success);
+    const payment = (await f.read()).payments[0]!, missingId = uuidv7();
+    await f.transitions.refund(f.context, { invoiceId: f.invoice.id, paymentId: payment.id, currency: 'CAD', refundId: missingId,
+      amountCents: 2000, status: 'pending', processorId: 're_unreadable' });
+    const external = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount: 9000, idempotencyKey: 'external' });
+    const writer = createDisputeRefundWriter({ ...f.options, transitions: f.transitions });
+    expect(await writer.refund(f.gymId, payment, external, f.provider)).toBe(true);
+    const rows = await f.read();
+    expect(rows.refunds.find(row => row.id === missingId)).toMatchObject({ status: 'failed', processorId: 're_unreadable' });
+    expect(rows.refunds.find(row => row.processorId === external.id)).toMatchObject({ status: 'succeeded', amountCents: 9000 });
+    const notices = rows.audits.filter(row => row.action === effectCreated && (row.after as { notice?: string }).notice === 'refund_missing');
+    expect(notices).toHaveLength(1);
+    expect(notices[0]!.after).toMatchObject({ kind: 'staff_notice', refundId: missingId, paymentId: payment.id });
+  });
+  it('releases nothing when the read of a pending processor refund throws', async () => {
+    const f = await fixture(); await succeed(f); await f.transitions.cardSucceeded(f.context, f.success);
+    const payment = (await f.read()).payments[0]!;
+    await f.transitions.refund(f.context, { invoiceId: f.invoice.id, paymentId: payment.id, currency: 'CAD', refundId: uuidv7(),
+      amountCents: 2000, status: 'pending', processorId: 're_unreadable' });
+    const external = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount: 9000, idempotencyKey: 'external' });
+    const failure = new Error('Processor read failed');
+    const provider: Pick<typeof f.provider, 'readPaymentObject'> = { readPaymentObject: async reference => {
+      if (reference.id === 're_unreadable') throw failure;
+      return f.provider.readPaymentObject(reference);
+    } };
+    const writer = createDisputeRefundWriter({ ...f.options, transitions: f.transitions }), before = await f.read();
+    await expect(writer.refund(f.gymId, payment, external, provider)).rejects.toBe(failure);
+    expect(await f.read()).toEqual(before);
+  });
   it.each([true, false])('rechecks a processor row linked after the reads, with room for the external refund: %s', async fits => {
     const f = await fixture(); await succeed(f); await f.transitions.cardSucceeded(f.context, f.success);
     const payment = (await f.read()).payments[0]!, unsentId = uuidv7();

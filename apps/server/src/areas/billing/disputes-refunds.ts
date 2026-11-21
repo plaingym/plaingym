@@ -77,18 +77,21 @@ export function createDisputeRefundWriter(options: DisputeRefundOptions) {
     if (value.metadata.gymId !== gymId || currency !== payment.currency
       || ![payment.paymentIntentId, payment.chargeId].includes(value.chargeId)) return false;
     // Processor reads stay outside the transaction. The transition rechecks the selected reservation and every
-    // pending amount under the invoice lock, then releases and records atomically. A refund the processor can't
-    // find is left out: only an external refund that must weigh it refuses to record, so the app's own refund and an
-    // already recorded one never wait on another refund.
+    // pending amount under the invoice lock, then releases and records atomically. A refund the processor reports
+    // missing is passed apart from the found ones: the transition releases it only as far as an external refund needs
+    // its room, with a staff notice. A read that throws fails this write, so a network error never releases anything;
+    // the app's own refund and an already recorded one never wait on another refund.
     const pending = refundReleased(value) ? [] : await scope(gymId, tx => tx.select().from(refunds)
       .where(eq(refunds.paymentId, payment.id)));
     const pendingRefunds: Refund[] = [];
+    const missingRefunds: string[] = [];
     for (const row of pending.filter(row => row.status === 'pending' && row.processorId !== null && row.processorId !== value.id)) {
       const found = await provider.readPaymentObject({ kind: 'refund', id: row.processorId! });
-      if (found.status === 'found' && found.value.kind === 'refund') pendingRefunds.push(found.value.object);
+      if (found.status === 'unknown') missingRefunds.push(row.processorId!);
+      else if (found.value.kind === 'refund') pendingRefunds.push(found.value.object);
     }
     const request: ProcessorRefundTransition = { invoiceId: payment.invoiceId, paymentId: payment.id,
-      refundId: processorRefundId(gymId, value.id), processorRefund: value, pendingRefunds };
+      refundId: processorRefundId(gymId, value.id), processorRefund: value, pendingRefunds, missingRefunds };
     await options.transitions.processorRefund(system(gymId), request);
     // A timed-out request may finish after settlement listed Stripe and released its reservation. Its external row
     // records the money; a durable follow-up corrects the earlier release notice, once, including on webhook replay.
