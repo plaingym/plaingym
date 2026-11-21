@@ -241,9 +241,9 @@ reuse identical parameters.
 
 A bank debit in processing also starts the membership. The welcome page tells
 the payer how long settlement usually takes. An async success records the payment,
-and a failure on the first invoice makes it past due and starts dunning. The
-completed join still offers sign-in after the failure. The processing notice
-appears only while the invoice is processing.
+and a failure on the first invoice makes it past due and starts dunning. While a
+membership from the join is live, the completed join still offers sign-in after
+the failure. The notice appears only while the invoice is processing.
 For a recorded payment or zero settlement, however the invoice is paid (its own
 Checkout's `checkout.session.completed`, a later pay link, or cash or a check staff
 record), the invoice transitions activate non-trial pending memberships, and their paid-invoice
@@ -265,7 +265,8 @@ does the same for any recorded Checkout of the joined household once the invoice
 Both lock the household and check `public.join.completed`, so together, retried or
 concurrent, they complete a join once and send one sign-in link. `/join/return` is
 read-only. It shows the welcome page once the join is complete, its invoice
-exists and all its recorded memberships have started. A pending join shows
+exists, all its recorded memberships still exist and none is pending, and at least one is live
+(`trial`, `active` or `frozen`). A pending join shows
 "confirming" with a spinner and `aria-live` text. The page points to **Check again**
 if it does not change. `/join/client.js` (the page's only script, `'self'`, no inline
 script) asks `/join/return` itself with the join cookie about every two seconds and
@@ -282,20 +283,21 @@ voids the join on the seventh local day after submission (**Unpaid joins**, abov
 the cookie is told what happens next and can do nothing more.
 
 When the join cleanup voids the unpaid invoice or staff revoke the join's link, it can no longer be paid
-online: `/join/checkout`, `/join/return` and `/join/cancelled` show a closed page that
+online: `/join/checkout`, `/join/review`, `/join/return` and `/join/cancelled` show a closed page that
 says to contact the gym, without starting Checkout. A paid invoice wins over a revoked
 link, and a Checkout that completed but is still being recorded continues to
-`/join/return`. A completed join whose memberships have started wins over both: it keeps
-the welcome page and its sign-in path whatever its invoice's status, so dunning collects
-a failed first payment.
+`/join/return`. A completed join with a live membership keeps the welcome page and its sign-in
+path even if its invoice is voided or its link is revoked. Dunning can collect a failed first
+payment while the payer can still sign in. Once every recorded membership is cancelled, the
+completed join shows the closed page and sends no sign-in link.
 
 ## Portal login
 
 Passwordless, the portal login proves the address entered: the join's completion issues a
 payer invitation for the household's address and sends the portal's claim-code sign-in link
 to it (auth mail, not subject to the member-email switch); the household login is created on
-its callback only for the signed-in user the code names. `/join/sign-in` sends a new link,
-replacing the previous one, with the same response whatever the address.
+its callback only for the signed-in user the code names. For an active join, `/join/sign-in`
+sends a new link, replacing the previous one, with the same response whatever the address.
 
 Password mode has no mail to prove an address, so a paid join provisions no account and sets
 no password. Its completion marks the household's address as awaiting portal confirmation
