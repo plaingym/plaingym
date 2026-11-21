@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -146,6 +147,107 @@ test('smoke timeout stops an in-flight descendant before project cleanup', async
   assert.equal(readFileSync(started, 'utf8'), 'ready');
   await new Promise(resolve => setTimeout(resolve, 2200));
   assert.throws(() => readFileSync(escaped), { code: 'ENOENT' });
+});
+
+const waitForFile = async (file) => {
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    try { readFileSync(file); return; }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for ${file}`);
+};
+
+for (const [signal, pattern] of [['SIGINT', /interrupted by SIGINT; its process group was stopped/], ['SIGTERM', /interrupted by SIGTERM; its process group was stopped/]]) {
+  test(`${signal} stops the smoke process group and removes its handlers`, { skip: process.platform === 'win32' }, async t => {
+    const directory = mkdtempSync(join(tmpdir(), 'smoke-interrupt-'));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const started = join(directory, 'started'), escaped = join(directory, 'escaped');
+    const descendant = `require('node:fs').writeFileSync(${JSON.stringify(started)}, 'ready'); setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(escaped)}, 'orphan'), 2000);`;
+    const parent = `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: 'inherit' }); setInterval(() => {}, 1000);`;
+    const signals = new EventEmitter();
+    const running = runSmoke(['-e', parent], 30_000, { signals });
+    await waitForFile(started);
+    signals.emit(signal);
+    await assert.rejects(running, pattern);
+    assert.equal(signals.listenerCount('SIGINT'), 0);
+    assert.equal(signals.listenerCount('SIGTERM'), 0);
+    await new Promise(resolve => setTimeout(resolve, 2200));
+    assert.throws(() => readFileSync(escaped), { code: 'ENOENT' });
+  });
+}
+
+test('a failed group kill waits for the smoke to exit before reporting the timeout', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'smoke-kill-wait-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const finished = join(directory, 'finished');
+  const childScript = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(finished)}, 'done'), 800);`;
+  let calls = 0;
+  const stopGroup = () => {
+    calls += 1;
+    throw Object.assign(new Error('denied'), { code: 'EPERM' });
+  };
+  const started = Date.now();
+  await assert.rejects(runSmoke(['-e', childScript], 300, { stopGroup, killWaitMs: 5000 }), (error) => {
+    assert.match(error.message, /timed out; its process group could not be stopped/);
+    assert.equal(error.cause.code, 'EPERM');
+    return true;
+  });
+  assert.equal(calls, 1);
+  assert.ok(Date.now() - started >= 700, 'waited for the smoke to exit');
+  assert.equal(readFileSync(finished, 'utf8'), 'done');
+});
+
+test('a failed group kill still gives up after killWaitMs when the smoke keeps running', { skip: process.platform === 'win32' }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'smoke-kill-limit-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  let child;
+  const stopGroup = (spawned) => {
+    child = spawned;
+    throw Object.assign(new Error('denied'), { code: 'EPERM' });
+  };
+  // Stop the smoke even when an assertion fails, so it can't keep the test runner alive.
+  t.after(() => {
+    if (!child) return;
+    try { process.kill(-child.pid, 'SIGKILL'); }
+    catch (error) { if (error.code !== 'ESRCH') throw error; }
+  });
+  const signals = new EventEmitter();
+  const started = Date.now();
+  await assert.rejects(runSmoke(['-e', 'setInterval(() => {}, 1000)'], 300, { stopGroup, killWaitMs: 500, signals }), (error) => {
+    assert.match(error.message, /timed out; its process group could not be stopped/);
+    assert.equal(error.cause.code, 'EPERM');
+    return true;
+  });
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed >= 700 && elapsed < 2000, `rejected after ${elapsed} ms`);
+  assert.equal(signals.listenerCount('SIGINT'), 0);
+  assert.equal(signals.listenerCount('SIGTERM'), 0);
+  assert.ok(child, 'stopGroup saw the smoke');
+});
+
+test('a group kill that finds no process (ESRCH) reports a stopped group', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'smoke-kill-esrch-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  let calls = 0;
+  const stopGroup = () => {
+    calls += 1;
+    throw Object.assign(new Error('gone'), { code: 'ESRCH' });
+  };
+  await assert.rejects(runSmoke(['-e', 'setTimeout(() => process.exit(0), 500)'], 300, { stopGroup }),
+    /timed out; its process group was stopped/);
+  assert.equal(calls, 1);
+});
+
+test('a normal smoke exit still resolves or reports its code and leaves no signal listeners', async () => {
+  for (const [code, expected] of [[0, null], [3, /Compatibility smoke exited 3/]]) {
+    const signals = new EventEmitter();
+    const running = runSmoke(['-e', `process.exit(${code})`], 3000, { signals });
+    if (expected) await assert.rejects(running, expected);
+    else await running;
+    assert.equal(signals.listenerCount('SIGINT'), 0);
+    assert.equal(signals.listenerCount('SIGTERM'), 0);
+  }
 });
 
 test('hard-timeout cleanup attempts containers, networks and volumes and preserves later cleanup on a failure', () => {
