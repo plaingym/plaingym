@@ -80,8 +80,10 @@ It mirrors email's `send`, `state`, `replay`,
 any issued credential; attempt runs afterwards. An accepted or unknown key never
 sends again. In-flight attempts conflict; after twice the adapter deadline (one
 minute), an unresolved attempt reads as unknown. Only a definite non-send permits
-a new attempt. Outcome writes retry three times without resending, guarded by
-attempt number and state. Builder failures release their reservation. A transport's `SmsDeliveryError`
+a new attempt. Outcome writes are retried without resending only after a
+connection error or a serialization or deadlock failure, up to three attempts
+with 50 ms and 200 ms waits, guarded by attempt number and state; any other
+error fails at once. Builder failures release their reservation. A transport's `SmsDeliveryError`
 reaches the caller with its reason (such as `recipient_opted_out`); any other
 transport error is replaced by a generic `DeliveryError`.
 

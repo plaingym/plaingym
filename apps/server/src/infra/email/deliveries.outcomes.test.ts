@@ -25,7 +25,7 @@ it.each(['refused', 'suppressed', 'accepted', 'unknown'] as const)('retries two 
   let writes = 0;
   const writer = createEmailDeliveries({ clock, scope: (id, fn) => db.forGym(id, async tx => {
     const result = await fn(tx);
-    if (++writes <= 2) throw new Error('Outcome transaction failed');
+    if (++writes <= 2) throw Object.assign(new Error('Outcome transaction failed'), { code: '40001' });
     return result;
   }) });
   const attempt = writer.attempt(reservation, email, message);
@@ -42,7 +42,8 @@ it.each(['refused', 'suppressed', 'accepted', 'unknown'] as const)('retries two 
 
 it.each(['not_accepted', 'unknown'] as const)('bounds failed writes and retains both %s transport and write errors', async acceptance => {
   const key = 'test.exhausted:' + uuidv7(), reservation = await reserve(key), email = new FakeEmail();
-  const transportError = new DeliveryError(acceptance, 'Transport failed'), writeError = new Error('Database unavailable');
+  const transportError = new DeliveryError(acceptance, 'Transport failed');
+  const writeError = Object.assign(new Error('Database unavailable'), { code: 'CONNECTION_CLOSED' });
   email.respondNext(transportError);
   let writes = 0;
   const writer = createEmailDeliveries({ clock, scope: async () => { writes++; throw writeError; } });
@@ -59,7 +60,7 @@ it('retries a lost outcome commit reply without overwriting the committed accept
   let writes = 0;
   const writer = createEmailDeliveries({ clock, scope: async (id, fn) => {
     const result = await db.forGym(id, fn);
-    if (++writes <= 2) throw new Error('Commit reply lost');
+    if (++writes <= 2) throw Object.assign(new Error('Commit reply lost'), { code: 'CONNECTION_CLOSED' });
     return result;
   } });
   await writer.attempt(reservation, email, message);
@@ -70,7 +71,8 @@ it('retries a lost outcome commit reply without overwriting the committed accept
 
 it('retries a failed release and preserves both errors if building and release fail', async () => {
   const key = 'test.builder-release:' + uuidv7(), reservation = await reserve(key);
-  const buildError = new Error('Rendering failed'), writeError = new Error('Database unavailable');
+  const buildError = new Error('Rendering failed');
+  const writeError = Object.assign(new Error('Database unavailable'), { code: 'CONNECTION_CLOSED' });
   let writes = 0;
   const writer = createEmailDeliveries({ clock, scope: async () => { writes++; throw writeError; } });
   await expect(writer.attempt(reservation, new FakeEmail(), () => { throw buildError; })).rejects.toMatchObject({
@@ -79,4 +81,28 @@ it('retries a failed release and preserves both errors if building and release f
   expect(writes).toBe(3);
   await deliveries.release(reservation);
   expect(await deliveries.state(gymId, key)).toBe('not_accepted');
+});
+
+it('tries an outcome write that fails with a non-transient error only once', async () => {
+  const key = 'test.permanent:' + uuidv7(), reservation = await reserve(key), email = new FakeEmail();
+  const writeError = Object.assign(new Error('Duplicate key'), { code: '23505' });
+  let writes = 0;
+  const writer = createEmailDeliveries({ clock, scope: async () => { writes++; throw writeError; } });
+  await expect(writer.attempt(reservation, email, message)).rejects.toMatchObject({ acceptance: 'unknown', cause: writeError });
+  expect(writes).toBe(1);
+  expect(email.messages).toHaveLength(1);
+});
+
+it('waits between retried outcome writes', async () => {
+  const key = 'test.backoff:' + uuidv7(), reservation = await reserve(key), email = new FakeEmail();
+  const starts: number[] = [];
+  const writer = createEmailDeliveries({ clock, scope: (id, fn) => {
+    starts.push(performance.now());
+    if (starts.length <= 2) return Promise.reject(Object.assign(new Error('Serialization failure'), { code: '40001' }));
+    return db.forGym(id, fn);
+  } });
+  await writer.attempt(reservation, email, message);
+  expect(starts).toHaveLength(3);
+  expect(starts[2]! - starts[0]!).toBeGreaterThanOrEqual(240);
+  expect(await deliveries.state(gymId, key)).toBe('accepted');
 });

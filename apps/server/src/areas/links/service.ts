@@ -17,6 +17,7 @@ import { clock as defaultClock } from '../../core/clock.js';
 import type { Principal } from '../../core/context.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { commandDigest, createEmailDeliveries, deliveryAcceptance, type Email } from '../../infra/email/index.js';
+import { releaseUndisclosed } from '../../infra/email/deliveries.js';
 import { createSmsDeliveries, MemberSms } from '../../infra/sms/index.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { deliverSignedLink, householdBoundSmsResolver, signedLinkSmsRecipient, validateSignedLinkDelivery, validateSignedLinkOrigin,
@@ -329,13 +330,9 @@ export function createSignedLinksService(options: {
         return result;
       } };
       let disclosed: boolean;
-      async function cleanup() {
-        // The link was never disclosed. Even if revocation fails, release this definite non-send for a safe retry.
-        const errors: unknown[] = [];
-        try { await revoke(context, created.link.id); } catch (error) { errors.push(error); }
-        try { await sending.release(reservation); } catch (error) { errors.push(error); }
-        if (errors.length) throw new AggregateError(errors, 'Signed link cleanup failed');
-      }
+      // The link was never disclosed. Even if revocation fails, release this definite non-send for a safe retry.
+      const cleanup = () => releaseUndisclosed([() => revoke(context, created.link.id)], () => sending.release(reservation),
+        'Signed link cleanup failed');
       try {
         if (preparedSms && recipient) {
           const sms = new MemberSms({ gymId: context.gymId, memberIds: recipient.memberIds, householdIds: recipient.householdIds,

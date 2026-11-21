@@ -80,8 +80,11 @@ A send command that issues a credential (a one-off signed link, a staff or porta
 
 Persisted billing notices use `reserve(tx, gymId, key)` without a command digest: an accepted or uncertain notice returns no reservation, an in-flight one conflicts, and a definite non-send can try again. Dunning reserves its key, creates both links and remembers their IDs in one transaction, before rendering or calling SMTP. A failure before that transaction commits rolls back both links and the key. A definite non-send revokes the links; a possibly delivered one retains them and never mints another pair for the same notice. The reservation also covers a crash after commit but before SMTP: that attempt ages into uncertain and a retry conservatively keeps its links, since it cannot prove whether the email was delivered.
 
-Outcome writes, including `release`, get up to three attempts in separate scoped
-transactions; these retries never call the transport again. The attempt-count and
+Outcome writes, including `release`, are retried in separate scoped transactions
+only after a connection error or a serialization or deadlock failure (`40001`,
+`40P01`): up to three attempts, waiting 50 ms and then 200 ms
+(`recordRetryDelaysMs`). Any other error fails at once. These retries never call
+the transport again. The attempt-count and
 state guards also make a retry safe after a lost commit acknowledgement. Exhausted
 writes are not swallowed: `release` rejects so the caller can report or retry it.
 `attempt` preserves the transport acceptance classification when recording fails:
@@ -89,12 +92,15 @@ an accepted email with an unrecorded outcome reports `unknown`, and a proven
 non-send still reports `not_accepted`. When both transport and recording fail, the
 `DeliveryError` cause is an `AggregateError` retaining both errors.
 
-Billing and signed-link cleanup attempt every revocation and still release a
-definite non-send if revocation fails: the credential was never disclosed, so a
-fresh attempt cannot duplicate a notice. A possibly delivered link remains usable
-and is never released. Signed-link cleanup failures report `unavailable` to the
-caller. Billing resolves SMTP and validates its origin lazily after the first
-recipient reservation, once per notice, so settled notices need no SMTP settings.
+Billing and signed-link cleanup share `releaseUndisclosed` (`deliveries.ts`): it
+attempts every revocation and still releases a definite non-send if revocation
+fails, since the credential was never disclosed and a fresh attempt cannot
+duplicate a notice. A possibly delivered link remains usable and is never
+released. Signed-link cleanup failures report `unavailable` to the caller.
+Billing skips settled keys and reports in-flight conflicts before resolving
+SMTP. It shares one SMTP lookup across recipients eligible for a send and
+validates the origin before reserving each key. A broken setting or origin
+reserves no key and mints no link.
 The invoice, portal and staff send forms share `useSendGeneration` beside the
 generation helper to settle responses, reset stale warnings and start deliberate
 resends while retaining pending generations across dialog resets.

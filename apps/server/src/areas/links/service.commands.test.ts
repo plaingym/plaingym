@@ -47,7 +47,7 @@ describe('one-off signed link send commands', () => {
     let failures = 0;
     const f = await fixture(undefined, undefined, (gymId, fn) => db.forGym(gymId, async tx => {
       const result = await fn(tx);
-      if (failures > 0) { failures--; throw new Error('Outcome transaction failed'); }
+      if (failures > 0) { failures--; throw Object.assign(new Error('Outcome transaction failed'), { code: '40001' }); }
       return result;
     })), generation = uuidv7();
     f.holder.email = { async sendEmail() { failures = 2; throw new DeliveryError('not_accepted', 'SMTP refused'); } };
@@ -68,7 +68,7 @@ describe('one-off signed link send commands', () => {
         revokeFailures++; throw new Error('Revocation transaction failed');
       }
       if (failCleanup && failure === 'release' && rows.some(row => row.state === 'not_accepted')) {
-        releaseFailures++; throw new Error('Release transaction failed');
+        releaseFailures++; throw Object.assign(new Error('Release transaction failed'), { code: '40001' });
       }
       return result;
     })), generation = uuidv7();

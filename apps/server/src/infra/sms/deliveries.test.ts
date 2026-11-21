@@ -72,16 +72,23 @@ it.each(['accepted', 'refused', 'unknown', 'suppressed'] as const)('retries only
   if (outcome === 'suppressed') sms.respondNext({ status: 'suppressed', reason: 'no_consent' });
   let writes = 0;
   const writer = createSmsDeliveries({ clock, scope: (id, fn) => db.forGym(id, async tx => {
-    const result = await fn(tx); if (++writes < 3) throw new Error('rollback'); return result;
+    const result = await fn(tx); if (++writes < 3) throw Object.assign(new Error('rollback'), { code: '40001' }); return result;
   }) });
   await writer.attempt(reservation, sms, message).catch(() => undefined);
   expect(writes).toBe(3); expect(sms.messages).toHaveLength(outcome === 'accepted' ? 1 : 0);
   expect(await deliveries.state(gymId, key)).toBe(outcome === 'suppressed' || outcome === 'refused' ? 'not_accepted' : outcome);
 });
+it('tries an outcome write that fails without a transient code only once', async () => {
+  const key = 'permanent:' + uuidv7(), reservation = await reserve(key), sms = new FakeSms();
+  let writes = 0;
+  const broken = createSmsDeliveries({ clock, scope: async () => { writes++; throw new Error('rollback'); } });
+  await expect(broken.attempt(reservation, sms, message)).rejects.toMatchObject({ acceptance: 'unknown' });
+  expect(writes).toBe(1); expect(sms.messages).toHaveLength(1);
+});
 it('reports exhausted outcome writes and keeps a possibly sent message unrepeatable', async () => {
   const key = 'lost-write:' + uuidv7(), reservation = await reserve(key), sms = new FakeSms();
   let writes = 0;
-  const broken = createSmsDeliveries({ clock, scope: async () => { writes++; throw new Error(message.to); } });
+  const broken = createSmsDeliveries({ clock, scope: async () => { writes++; throw Object.assign(new Error(message.to), { code: '08006' }); } });
   await expect(broken.attempt(reservation, sms, message)).rejects.toMatchObject({ acceptance: 'unknown' });
   expect(writes).toBe(3); expect(sms.messages).toHaveLength(1);
   clock.advance(smsInFlightMs);
@@ -93,7 +100,7 @@ it('safely retries a lost commit acknowledgement without changing a settled atte
   let writes = 0;
   const writer = createSmsDeliveries({ clock, scope: async (id, fn) => {
     const result = await db.forGym(id, fn);
-    if (++writes === 1) throw new Error('Commit reply lost');
+    if (++writes === 1) throw Object.assign(new Error('Commit reply lost'), { code: 'CONNECTION_CLOSED' });
     return result;
   } });
   await writer.attempt(reservation, sms, message);

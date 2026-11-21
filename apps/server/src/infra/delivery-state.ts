@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq } from 'drizzle-orm';
-import { forGym, uuidv7, type emailDeliveries, type smsDeliveries, type Transaction } from '@plaingym/db';
+import { databaseCode, forGym, isConnectionError, uuidv7, type emailDeliveries, type smsDeliveries, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { clock as systemClock } from '../core/clock.js';
@@ -9,6 +9,13 @@ export type DeliveryState = 'sending' | 'accepted' | 'unknown' | 'not_accepted';
 export interface DeliveryReservation { readonly gymId: string; readonly id: string; readonly attempts: number }
 type Acceptance = 'not_accepted' | 'unknown';
 type Result = { status: 'sent' | 'suppressed' };
+/** Waits before the second and third outcome write. */
+export const recordRetryDelaysMs = [50, 200] as const;
+/** A lost connection, serialization failure or deadlock can succeed on a later try; any other error fails at once. */
+const transient = (error: unknown) => {
+  const code = databaseCode(error);
+  return isConnectionError(error) || code === '40001' || code === '40P01';
+};
 /** Error policies retain email's causes and rethrows while SMS exposes only safe fixed errors. */
 export interface DeliveryErrors {
   acceptance(error: unknown): Acceptance;
@@ -59,14 +66,19 @@ export function createDeliveryState<Message, SendResult extends Result>(config: 
     await tx.update(table).set({ state: 'sending', attempts: row.attempts + 1, updatedAt: now }).where(eq(table.id, row.id));
     return { id: row.id, attempts: row.attempts + 1 };
   }
-  /** Retry only the outcome transaction, never the transport; a lost commit acknowledgement is safe too. */
+  /** Retry only the outcome transaction, never the transport, and only after a transient database error, with a short
+   * backoff; a lost commit acknowledgement is safe too, since the guarded update matches only the reserved attempt. */
   async function record(reservation: DeliveryReservation, next: Exclude<DeliveryState, 'sending'>): Promise<void> {
     for (let attempt = 0; ; attempt++) {
       try {
         await scope(reservation.gymId, tx => tx.update(table).set({ state: next, updatedAt: clock.now() })
           .where(and(eq(table.id, reservation.id), eq(table.attempts, reservation.attempts), eq(table.state, 'sending'))));
         return;
-      } catch (error) { if (attempt === 2) throw errors.record(error); }
+      } catch (error) {
+        if (attempt === 2 || !transient(error)) throw errors.record(error);
+        const ms = recordRetryDelaysMs[attempt as 0 | 1];
+        await new Promise(resolve => setTimeout(resolve, ms));
+      }
     }
   }
   async function attempt(reservation: DeliveryReservation, transport: (message: Message) => Promise<SendResult>,

@@ -36,10 +36,13 @@ its links usable. Later groups remain available on retry. SMS never reuses email
 Dunning notices use the shared card minimum and currency-step check. If an invoice
 cannot be charged, its email and text ask the payer to contact the gym for a manual payment,
 without minting pay or card-update links. Receipts and staff notices keep their usual
-behavior. SMTP preparation and origin validation happen only after a recipient
-gets a reservation, once per notice; already accepted or uncertain recipients
-need no SMTP lookup. Definite non-send cleanup tries both revocations and releases
-the reservation even if a revocation fails, since no credential was disclosed.
+behavior. Billing skips recipients whose key is already accepted or uncertain.
+An in-flight key reports a conflict before SMTP preparation. Billing shares one
+SMTP lookup across recipients eligible for a send and checks the origin before
+reserving each key. A broken SMTP setting or origin reserves no key and mints
+no link. Definite non-send cleanup
+(`releaseUndisclosed` in `infra/email/deliveries.ts`) tries both revocations and
+releases the reservation even if a revocation fails, since no credential was disclosed.
 
 Every notice sends through `createEmailDeliveries`, under the key
 `billing.<purpose>:<object>:<generation>`, and a staff notice under one key per recipient,
@@ -51,9 +54,9 @@ nothing more, each new failure or resend has its own key, and a member's address
 gets no second notice. A member notice's key holds no address, so an erased member's address leaves
 nothing in delivery records (`infra/email/README.md`). A staff notice tries every recipient before it fails, so one refused address
 doesn't hold up the others, and its retry reaches only the staff it provably did not reach. A notice already accepted, or possibly
-accepted, mints no links. Dunning links are revoked when nothing was sent (a refusal, a suppression,
-or another attempt holding the key); a link that may have been delivered stays usable and is never
-sent again.
+accepted, mints no links. A refused or suppressed dunning attempt revokes its links.
+A worker that finds the key in flight leaves the sending worker's links alone.
+A link that may have been delivered stays usable and is never sent again.
 
 `paymentProcessing` records the intent on the invoice's processing audit and timestamps
 its pending attempt when present. On a terminal invoice it updates and audits a matching
@@ -405,7 +408,9 @@ listing it. Late card successes still record and refund duplicates.
 `createTransitionNotifications` sends localized receipts, signed pay/update-card
 links, and staff notices (a duplicate card payment, a failed processor refund, a
 canceled app-created refund, a missing processor refund, a later success for one, a duplicate payment's released reservation, or a staff refund released after its window).
-Runtime must supply a gym SMTP resolver (or demo outbox), trusted canonical origin and staff recipients. Household email respects
+Runtime must supply a gym SMTP resolver (or demo outbox), trusted canonical origin and staff recipients; `prepare` may also
+return the gym's name. A receipt uses the shared email layout (`renderReceipt` in `emails/billing/transitions.ts`)
+headed with that name, or "Your gym" without one; dunning and staff notices stay one plain paragraph. Household email respects
 the gym's email switch and matching member opt-outs/deliverability, through the
 household recipient helper shared with signed-link delivery and billing alerts. Receipts and
 dunning recheck the persisted switch immediately before each send, after preparing

@@ -95,6 +95,17 @@ export function createEmailDeliveries(options: { scope?: typeof forGym; clock?: 
 }
 export type EmailDeliveries = ReturnType<typeof createEmailDeliveries>;
 
+/** Revokes each undisclosed credential, then releases the reservation even if a revocation failed. */
+export async function releaseUndisclosed(revocations: readonly (() => Promise<unknown>)[], release: () => Promise<void>, message: string): Promise<void> {
+  const errors: unknown[] = [];
+  for (const revoke of revocations) {
+    try { await revoke(); } catch (error) { errors.push(error); }
+  }
+  // Nothing was disclosed: a failed revocation must not turn a definite non-send into an uncertain one.
+  try { await release(); } catch (error) { errors.push(error); }
+  if (errors.length) throw new AggregateError(errors, message);
+}
+
 export const emailDeliveryUpkeepJob = 'email.deliveries.upkeep';
 /** Each gym's delivery records get the upkeep once an hour (`upkeep`, above). The runtime registers it. */
 export function createEmailDeliveryJobs(deliveries?: Pick<EmailDeliveries, 'upkeep'>): readonly JobRegistration[] {

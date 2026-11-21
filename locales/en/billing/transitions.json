@@ -8,6 +8,8 @@
   "manualBody": "Invoice {number} for {amount} cannot be paid by card. Contact the gym to arrange a manual payment.",
   "receiptSubject": "Receipt for invoice {number}",
   "receiptBody": "Payment of {amount} received for invoice {number}. Thank you.",
+  "receiptFooter": "Keep this email for your records. If you didn't make this payment, contact your gym.",
+  "receiptGymFallback": "Your gym",
   "failedSubject": "Payment needed for invoice {number}",
   "failedBody": "The payment for invoice {number} could not be collected. Pay this invoice: {payUrl}\nUpdate your saved card: {updateUrl}",
   "actionSubject": "Authentication needed for invoice {number}",

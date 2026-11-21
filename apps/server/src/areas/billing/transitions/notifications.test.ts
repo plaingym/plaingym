@@ -91,7 +91,7 @@ describe('keyed billing notices', () => {
     expect(preparations).toBe(1);
     expect(f.fake.messages).toHaveLength(2);
   });
-  it('releases all reserved staff recipients after one shared preparation failure', async () => {
+  it('reserves no staff recipient after one shared preparation failure', async () => {
     const f = await fixture(), notice = await f.notice(uuidv7());
     let preparations = 0;
     const notifications = createTransitionNotifications({ scope: db.forGym, clock: f.clock,
@@ -99,10 +99,63 @@ describe('keyed billing notices', () => {
       prepare: async () => { preparations++; throw new Error('SMTP settings removed'); } });
     await expect(notifications.staffNotice(notice)).rejects.toThrow('SMTP settings removed');
     expect(preparations).toBe(1);
-    const rows = await db.forGym(f.gymId, tx => tx.select().from(emailDeliveries));
-    expect(rows).toHaveLength(2);
-    expect(rows.every(row => row.state === 'not_accepted')).toBe(true);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(emailDeliveries))).toHaveLength(0);
     expect(f.fake.messages).toHaveLength(0);
+  });
+  it.each([
+    ['broken SMTP settings', async () => { throw new Error('SMTP settings removed'); }, 'SMTP settings removed'],
+    ['an untrusted origin', async () => ({ email: new FakeEmail(), origin: 'https://gym.example.invalid/untrusted' }), 'Invalid billing notification origin'],
+  ] as const)('a dunning notice with %s reserves nothing and mints no link', async (_name, broken, message) => {
+    const f = await fixture(), notice = { ...await f.notice(uuidv7()), actionRequired: false };
+    let prepare: () => Promise<{ email: Email; origin: string }> = broken;
+    const notifications = createTransitionNotifications({ scope: db.forGym, clock: f.clock,
+      settings: createGymSettingsAccessor({ scope: db.forGym }), staffRecipients: async () => [], prepare: () => prepare() });
+    const error = await notifications.dunning(notice).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(AggregateError);
+    expect((error as Error).message).toBe(message);
+    expect(await f.links()).toEqual([]);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(emailDeliveries))).toHaveLength(0);
+    prepare = async () => ({ email: f.fake, origin: 'https://gym.example.invalid' });
+    await notifications.dunning(notice);
+    expect(f.fake.messages).toHaveLength(1);
+    const links = await f.links();
+    expect(links).toHaveLength(2);
+    expect(links.every(link => link.revokedAt === null)).toBe(true);
+  });
+  it('sends the receipt in the shared layout with the gym name, and dunning stays plain', async () => {
+    const f = await fixture();
+    const named = createTransitionNotifications({ scope: db.forGym, clock: f.clock, settings: createGymSettingsAccessor({ scope: db.forGym }),
+      staffRecipients: async () => [], prepare: async () => ({ email: f.fake, origin: 'https://gym.example.invalid', gymName: 'North Gym' }) });
+    await named.receipt(await f.notice(uuidv7()));
+    const [receipt] = f.fake.messages;
+    expect(receipt!.subject).toBe('Receipt for invoice 7');
+    expect(receipt!.html).toContain('<html');
+    expect(receipt!.html).toContain('North Gym');
+    expect(receipt!.text).toContain('Payment of $100.00 received for invoice 7. Thank you.');
+    await f.notifications.receipt(await f.notice(uuidv7()));
+    expect(f.fake.messages[1]!.html).toContain('Your gym');
+    await f.notifications.dunning({ ...await f.notice(uuidv7()), actionRequired: false });
+    expect(f.fake.messages[2]!.html.startsWith('<p>')).toBe(true);
+  });
+  it('releases a receipt without sending if member email is disabled while it renders', async () => {
+    const f = await fixture(), settings = createGymSettingsAccessor({ scope: db.forGym });
+    const notice = await f.notice(uuidv7());
+    let enabled = true;
+    const notifications = createTransitionNotifications({ scope: db.forGym, clock: f.clock,
+      settings: { get: async gymId => ({ ...await settings.get(gymId), memberEmailsEnabled: enabled }) },
+      staffRecipients: async () => [],
+      prepare: async () => ({ email: f.fake, origin: 'https://gym.example.invalid', t: key => {
+        if (key === 'billing/transitions:receiptFooter') enabled = false;
+        return key;
+      } }),
+    });
+    await notifications.receipt(notice);
+    expect(f.fake.messages).toHaveLength(0);
+    const rows = await db.forGym(f.gymId, tx => tx.select().from(emailDeliveries));
+    expect(rows).toMatchObject([{ state: 'not_accepted' }]);
+    await f.notifications.receipt(notice);
+    expect(f.fake.messages).toHaveLength(1);
   });
   it('keeps possibly delivered dunning links usable, and neither sends nor mints again', async () => {
     const f = await fixture(), notice = await f.notice(uuidv7());
@@ -179,10 +232,20 @@ describe('keyed billing notices', () => {
     f.holder.email = { sendEmail: () => { entered(); return new Promise(resolve => { finish = () => resolve({ status: 'sent', messageId: 'mail_1' }); }); } };
     const first = f.notifications.dunning({ ...notice, actionRequired: false });
     await reached;
-    await expect(f.notifications.dunning({ ...notice, actionRequired: false })).rejects.toThrow('still being sent');
-    expect(await f.links()).toHaveLength(2);
-    finish();
-    await first;
+    let preparations = 0;
+    const retry = createTransitionNotifications({ scope: db.forGym, clock: f.clock,
+      settings: createGymSettingsAccessor({ scope: db.forGym }), staffRecipients: async () => [],
+      prepare: async () => { preparations++; throw new Error('SMTP settings removed'); } });
+    try {
+      await expect(retry.dunning({ ...notice, actionRequired: false })).rejects.toMatchObject({
+        code: 'conflict', message: 'This email is still being sent',
+      });
+      expect(preparations).toBe(0);
+      expect(await f.links()).toHaveLength(2);
+    } finally {
+      finish();
+      await first;
+    }
   });
   it('a retried receipt job sends once, and a requested resend, a new job, sends again', async () => {
     const f = await fixture(), paidAt = f.clock.now();
@@ -204,7 +267,7 @@ it('recovers a refused dunning outcome after two rolled-back writes and retries 
   const notifications = createTransitionNotifications({ clock: f.clock,
     scope: (gymId, fn) => db.forGym(gymId, async tx => {
       const result = await fn(tx);
-      if (failures > 0) { failures--; writes++; throw new Error('Outcome transaction failed'); }
+      if (failures > 0) { failures--; writes++; throw Object.assign(new Error('Outcome transaction failed'), { code: '40001' }); }
       return result;
     }), settings: createGymSettingsAccessor({ scope: db.forGym }), staffRecipients: async () => [],
     prepare: async () => ({ email: f.holder.email, origin: 'https://gym.example.invalid' }) });
@@ -230,12 +293,16 @@ it('releases a never-sent dunning reservation even when both link revocations fa
       }
       return result;
     }), settings: createGymSettingsAccessor({ scope: db.forGym }), staffRecipients: async () => [],
-    prepare: async () => { throw new Error('SMTP unavailable'); } });
-  await expect(notifications.dunning(notice)).rejects.toThrow('Billing email and cleanup failed');
+    prepare: async () => ({ email: { async sendEmail() { throw new DeliveryError('not_accepted', 'Refused'); } }, origin: 'https://gym.example.invalid' }) });
+  const error = await notifications.dunning(notice).catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(AggregateError);
+  expect((error as AggregateError).message).toBe('Billing email and cleanup failed');
+  expect((error as AggregateError).errors[1]).toBeInstanceOf(AggregateError);
+  expect((error as AggregateError).errors[1].message).toBe('Billing email cleanup failed');
+  expect((error as AggregateError).cause).toBeUndefined();
   expect(revocations).toBe(2);
   const [row] = await db.forGym(f.gymId, tx => tx.select().from(emailDeliveries));
   expect(row!.state).toBe('not_accepted');
-  expect((await f.links()).every(link => link.revokedAt === null)).toBe(true);
   expect(f.fake.messages).toHaveLength(0);
   await f.notifications.dunning(notice);
   await f.notifications.dunning(notice);

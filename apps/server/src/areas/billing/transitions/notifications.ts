@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { forGym, type payments, type refunds } from '@plaingym/db';
-import { createTranslator, type Clock, type Translator } from '@plaingym/shared';
+import { AppError, createTranslator, type Clock, type Translator } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { cardChargeIssue } from '@plaingym/shared/money';
 import type { BankFailureCode, InvoiceSnapshot } from '../../../core/interfaces/invoice-transitions.js';
 import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
-import { createEmailDeliveries, DeliveryError, deliveryAcceptance, recipientDigest, type Email } from '../../../infra/email/index.js';
+import { createEmailDeliveries, DeliveryError, deliveryAcceptance, recipientDigest, type Email, type EmailMessage } from '../../../infra/email/index.js';
+import { releaseUndisclosed } from '../../../infra/email/deliveries.js';
+import { renderReceipt } from '../../../emails/billing/transitions.js';
 import { clock as defaultClock } from '../../../core/clock.js';
 import { formatMoney } from '../../../core/money.js';
 import { createSignedLinksIn, createSignedLinksService } from '../../links/service.js';
@@ -68,7 +70,7 @@ export function createTransitionNotifications(options: {
   scope?: typeof forGym;
   clock?: Clock;
   settings: GymSettingsAccessor;
-  prepare(gymId: string): Promise<{ email: Email; origin: string; t?: Translator }>;
+  prepare(gymId: string): Promise<{ email: Email; origin: string; t?: Translator; gymName?: string }>;
   staffRecipients(gymId: string): Promise<readonly string[]>;
   sms?: Pick<TransitionNotifications, 'receipt' | 'dunning'>;
 }): TransitionNotifications {
@@ -102,6 +104,11 @@ export function createTransitionNotifications(options: {
         if (!to || /[\r\n\0]/.test(to)) throw new Error('Invalid billing email recipient');
         if (!staff && !(await options.settings.get(gymId)).memberEmailsEnabled) return;
         const key = keyFor(to);
+        // Only fresh keys and proven non-sends need SMTP. Reserve checks again under lock if another worker wins the race.
+        const state = await deliveries.state(gymId, key);
+        if (state === 'accepted' || state === 'unknown') continue;
+        if (state === 'sending') throw new AppError('conflict', 'This email is still being sent');
+        const prepared = await prepare(), origin = trustedBillingOrigin(prepared.origin), t = billingTranslator(prepared.t);
         const pending = await scope(gymId, async tx => {
           const reservation = await deliveries.reserve(tx, gymId, key);
           if (!reservation) return;
@@ -117,16 +124,10 @@ export function createTransitionNotifications(options: {
         let attempted = false, cleaned = false;
         async function cleanup() {
           cleaned = true;
-          const errors: unknown[] = [];
-          for (const item of created) {
-            try { await links.revoke(context, item.link.id); } catch (error) { errors.push(error); }
-          }
-          // No credential was disclosed. A failed revoke must not turn a definite non-send into an uncertain notice.
-          try { await deliveries.release(reservation); } catch (error) { errors.push(error); }
-          if (errors.length) throw new AggregateError(errors, 'Billing email cleanup failed');
+          await releaseUndisclosed(created.map(item => () => links.revoke(context, item.link.id)), () => deliveries.release(reservation),
+            'Billing email cleanup failed');
         }
         try {
-          const prepared = await prepare(), origin = trustedBillingOrigin(prepared.origin), t = billingTranslator(prepared.t);
           const payUrl = pending.created[0] ? new URL(`/l/${pending.created[0].token}`, origin).href : '';
           const updateUrl = pending.created[1] ? new URL(`/l/${pending.created[1].token}`, origin).href : '';
           const values = { number: invoice.number, amount: formatMoney(amountCents ?? notice.payment?.amountCents ?? invoice.amountCents, invoice.currency),
@@ -135,28 +136,38 @@ export function createTransitionNotifications(options: {
           const title = t(`billing/transitions:${message}Subject`, values);
           const creditsNote = credits && (kind === 'refundFailed' || kind === 'refundReversed') ? '\n\n' + t('billing/transitions:creditsReversedNote', values) : '';
           const text = t(`billing/transitions:${message}Body`, values) + creditsNote;
+          // Render before the attempt starts, so a render failure still releases the key as a definite non-send.
+          let outgoing: EmailMessage;
+          if (kind === 'receipt') {
+            const gymName = prepared.gymName?.trim() || t('billing/transitions:receiptGymFallback');
+            outgoing = { to, ...await renderReceipt({ gymName, number: values.number, amount: values.amount }, t) };
+          } else {
+            let html = escape(text).replaceAll('\n', '<br>');
+            if (notice.bankCode) {
+              for (const url of [payUrl, updateUrl].filter(Boolean)) {
+                const href = escape(url);
+                html = html.replaceAll(href, `<a href="${href}" style="word-break:break-all">${href}</a>`);
+              }
+            }
+            outgoing = { to, subject: title, text, html: `<p>${html}</p>` };
+          }
           if (!staff && !(await options.settings.get(gymId)).memberEmailsEnabled) {
             await cleanup();
             return;
           }
           attempted = true;
-          let html = escape(text).replaceAll('\n', '<br>');
-          if (notice.bankCode) {
-            for (const url of [payUrl, updateUrl].filter(Boolean)) {
-              const href = escape(url);
-              html = html.replaceAll(href, `<a href="${href}" style="word-break:break-all">${href}</a>`);
-            }
-          }
-          const sent = await deliveries.attempt(pending.reservation, prepared.email, { to, subject: title, text, html: `<p>${html}</p>` });
+          const sent = await deliveries.attempt(pending.reservation, prepared.email, outgoing);
           if (sent.status === 'suppressed' && (staff || pending.created.length))
             throw new DeliveryError('not_accepted', staff ? 'Staff notice was suppressed' : 'Dunning email was suppressed');
         } catch (error) {
           // A cleanup that already ran (member email turned off) reports its own failure; don't run it twice.
+          // Both errors are in the list; the aggregate needs no separate cause.
+          let failed = error;
           if (!cleaned && (!attempted || deliveryAcceptance(error) === 'not_accepted')) {
             try { await cleanup(); }
-            catch (cause) { throw new AggregateError([error, cause], 'Billing email and cleanup failed', { cause }); }
+            catch (cleanupError) { failed = new AggregateError([error, cleanupError], 'Billing email and cleanup failed'); }
           }
-          throw error;
+          throw failed;
         }
       } catch (error) {
         // A refused staff address must not prevent the other recipients from getting the notice.
