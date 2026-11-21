@@ -119,6 +119,7 @@ export function joinStatusPage(input: JoinPageInput & { state: JoinPageState; pr
   const text = joinText(input.t), state = input.state;
   const action = (path: string, label: string) => h('form', { method: 'post', action: path }, h('button', { type: 'submit', class: button }, text(label)));
   const start = h('a', { href: '/join', class: link }, text('startOver'));
+  const actions = (...items: ReturnType<typeof h>[]) => h('div', { class: 'flex flex-wrap items-center gap-3', 'data-join-actions': true }, ...items);
   // The script polls /join/return and replaces this page once it settles; without it the noscript refresh in the head and this link keep working.
   const progress = h('div', { class: 'flex items-center gap-3', 'data-join-progress': true },
     h('span', { 'aria-hidden': 'true', class: 'inline-block size-6 shrink-0 animate-spin rounded-full border-4 border-border border-t-foreground motion-reduce:animate-none' }),
@@ -134,8 +135,8 @@ export function joinStatusPage(input: JoinPageInput & { state: JoinPageState; pr
     resent: ['welcomeTitle', 'resent', action('/join/sign-in', 'resend')],
     // Password mode: no account and no password until staff confirm the person and issue a printed invitation.
     welcomePassword: ['welcomeTitle', 'welcomePassword', h('a', { href: '/portal', class: link }, text('portal'))],
-    cancelled: ['cancelledTitle', 'cancelledBody', h('a', { href: '/join/checkout', class: button }, text('pay')), start],
-    cancelledCard: ['cancelledCardTitle', 'cancelledCardBody', h('a', { href: '/join/checkout', class: button }, text('saveCard')), start],
+    cancelled: ['cancelledTitle', 'cancelledBody', actions(h('a', { href: '/join/checkout', class: button }, text('pay')), start)],
+    cancelledCard: ['cancelledCardTitle', 'cancelledCardBody', actions(h('a', { href: '/join/checkout', class: button }, text('saveCard')), start)],
     closed: ['closedTitle', 'closedBody', h('a', { href: '/portal', class: link }, text('portal'))],
     missing: ['missingTitle', 'missingBody', start],
     unavailable: ['title', 'unavailable', start],
