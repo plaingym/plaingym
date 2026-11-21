@@ -81,15 +81,18 @@ case "$*" in
     rm "$SNAPSHOTS/$check_name.container" ;;
   'rm -f plaingym-snapshot-check-'*)
     [ "${SNAPSHOT_CLEANUP:-}" != daemon-error ] || { echo 'Cannot connect to the Docker daemon' >&2; exit 1; }
+    [ "${SNAPSHOT_CLEANUP:-}" != first-remove-timeout ] || exit 124
     if [ -f "$SNAPSHOTS/$3.container" ]; then
       case "${SNAPSHOT_CLEANUP:-}" in
         late-remove-error) echo 'Removal failed' >&2; exit 1 ;;
-        late-create|late-removal-finished|late-removal-polls|late-removal-pending)
+        late-create|late-removal-finished|late-removal-polls|late-removal-pending|late-removal-inspect-timeout|late-remove-killed)
           case "$SNAPSHOT_CLEANUP" in
             late-create|late-removal-finished) rm "$SNAPSHOTS/$3.container" ;;
             late-removal-polls) printf '2\n' > "$SNAPSHOTS/$3.polls" ;;
+            late-removal-inspect-timeout) touch "$SNAPSHOTS/$3.removing" ;;
           esac
           echo "Error response from daemon: removal of container $3 is already in progress" >&2
+          [ "$SNAPSHOT_CLEANUP" != late-remove-killed ] || exit 137
           exit 1 ;;
       esac
       rm "$SNAPSHOTS/$3.container"
@@ -109,6 +112,9 @@ case "$*" in
   'container inspect plaingym-snapshot-check-'*)
     case "${SNAPSHOT_CLEANUP:-}" in
       daemon-error) echo 'Cannot connect to the Docker daemon' >&2; exit 1 ;;
+      inspect-timeout) exit 124 ;;
+      inspect-killed) exit 137 ;;
+      late-removal-inspect-timeout) [ ! -f "$SNAPSHOTS/$3.removing" ] || exit 124 ;;
       inspect-warning|inspect-other-name) echo 'WARNING: Docker configuration could not be loaded' >&2 ;;
     esac
     if [ "${SNAPSHOT_CLEANUP:-}" = inspect-other-name ]; then
@@ -713,6 +719,26 @@ cleanup_warnings_are 0
 refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP=inspect-other-name
 snapshot_cleanup_calls_are 'rm -f' 'container inspect' 'sleep 1' 'container inspect'
 cleanup_warnings_are 1
+
+for cleanup_mode in inspect-timeout inspect-killed; do
+  refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP="$cleanup_mode"
+  snapshot_cleanup_calls_are 'rm -f' 'container inspect'
+  cleanup_warnings_are 1
+done
+
+refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP=first-remove-timeout
+snapshot_cleanup_calls_are 'rm -f'
+cleanup_warnings_are 1
+
+refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP=late-remove-killed
+snapshot_cleanup_calls_are 'rm -f' 'container inspect' 'rm -f'
+cleanup_warnings_are 1
+[ -f "$SNAPSHOTS/$snapshot_container.container" ]
+
+refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP=late-removal-inspect-timeout
+snapshot_cleanup_calls_are 'rm -f' 'container inspect' 'rm -f' 'container inspect'
+cleanup_warnings_are 1
+[ -f "$SNAPSHOTS/$snapshot_container.container" ]
 
 # The history fallback still runs the check when there is no compatibility file.
 rm "$case_dir/schema-compatibility.yaml"

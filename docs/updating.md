@@ -89,8 +89,8 @@ immediately and again after one second if the first check did not find it. If it
 finds the container, it retries removal. When Docker reports that removal is
 already in progress, the updater checks for absence up to five times, one second
 apart. Each Docker cleanup command has a ten-second timeout plus a five-second
-kill grace. If cleanup remains uncertain, the updater names the container for
-manual removal.
+kill grace. Cleanup stops at the first Docker command that times out. If cleanup
+remains uncertain, the updater names the container for manual removal.
 Startup refuses incompatible
 code before opening the database and directs you to that check.
 
