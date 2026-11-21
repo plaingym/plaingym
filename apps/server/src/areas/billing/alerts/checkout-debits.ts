@@ -11,9 +11,11 @@ import { checkoutReviewAction, lateProcessingResolved } from '../runner/reconcil
 import { invoiceLateProcessing } from '../transitions/bank.js';
 import { latestTestSwitchId } from '../stripe-writes.js';
 
+const widgetId = 'billing.checkout-debits';
+
 export function createCheckoutDebitReviewProvider(options: { scope?: typeof forGym } = {}): DashboardWidgetProvider<z.infer<typeof extensionDashboardWidgetSchema>> {
   const scope = options.scope ?? forGym;
-  return { id: 'billing.checkout_debits', permission: 'billing.read', order: 41, schema: extensionDashboardWidgetSchema,
+  return { id: widgetId, permission: 'billing.read', order: 41, schema: extensionDashboardWidgetSchema,
     async read(context) {
       if (!canStaff(context.roles, 'billing.read')) throw new AppError('forbidden', 'Access denied');
       const [total] = await scope(context.gymId, async tx => {
@@ -39,7 +41,7 @@ export function createCheckoutDebitReviewProvider(options: { scope?: typeof forG
             or(eq(invoices.status, 'processing'), and(exists(late), notExists(resolved)))));
       });
       if (!total!.count) return null;
-      return { id: 'billing.checkout_debits', titleKey: 'billing/alerts:checkoutDebitsTitle', status: 'ready', kind: 'count', count: total!.count };
+      return { id: widgetId, titleKey: 'billing/alerts:checkoutDebitsTitle', status: 'ready', kind: 'count', count: total!.count };
     },
   };
 }

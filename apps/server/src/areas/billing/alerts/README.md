@@ -113,7 +113,7 @@ returns `null` when the count is zero, so the registry omits the empty alert.
 No new HTTP routes are added. The
 dispute email links to `/admin/billing/invoices/<invoiceId>` on the gym's configured origin.
 
-The `billing.checkout_debits` dashboard count requires `billing.read`. It counts
+The `billing.checkout-debits` dashboard count requires `billing.read`. It counts
 each invoice once when a reconciliation finding names a Checkout intent with no
 recorded payment. Eligible invoices are those in processing and those with a
 late processing audit for the same intent that the sweep has yet to resolve,

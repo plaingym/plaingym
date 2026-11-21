@@ -41,7 +41,7 @@ describe('Checkout debit dashboard widget', () => {
 
     const mismatch = { inspected: 1, issues: [{ kind: 'checkout_debit', id: paymentIntentId, reason: 'customer_mismatch' }] };
     expect(await f.runner.reconcile(f.gymId)).toEqual(mismatch);
-    expect(await read(f)).toEqual({ id: 'billing.checkout_debits', titleKey: 'billing/alerts:checkoutDebitsTitle',
+    expect(await read(f)).toEqual({ id: 'billing.checkout-debits', titleKey: 'billing/alerts:checkoutDebitsTitle',
       status: 'ready', kind: 'count', count: 1 });
     expect(await f.runner.reconcile(f.gymId)).toEqual(mismatch);
     expect(await read(f)).toHaveProperty('count', 1);

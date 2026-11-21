@@ -25,7 +25,7 @@ it('shows a Checkout debit that needs review on the runtime dashboard', async ()
   const dashboard = await app.runtime.app.request(sandbox.origin + '/api/dashboard', { headers });
   expect(dashboard.status, await dashboard.clone().text()).toBe(200);
   expect((await dashboard.json()).data.widgets).toEqual(expect.arrayContaining([
-    expect.objectContaining({ id: 'billing.checkout_debits', kind: 'count', count: 1 }),
+    expect.objectContaining({ id: 'billing.checkout-debits', kind: 'count', count: 1 }),
   ]));
 });
 
