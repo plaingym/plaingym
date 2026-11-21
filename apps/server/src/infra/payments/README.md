@@ -315,14 +315,17 @@ before the detach, so the retry still finds the card attached; a card that is al
 detached keeps what it holds, since it can no longer be updated.
 
 `clearCustomerEmail(id, { householdId, emailDigest, secret, paymentMethodIds })` handles
-erasing a payer while other household members remain. It returns whether an address
-matched and was cleared (false for a no-match, missing or deleted customer). It clears only the customer
+erasing a payer while other household members remain. It returns `{ matched, placeholderMethods }`:
+`matched` says whether an address matched and was cleared (false for a no-match, missing or deleted customer). It clears only the customer
 email and every specified card's billing email that match the digest of the
 trimmed, lowercased erased address. It preserves names and other billing fields,
 and keeps the cards attached. A card Stripe won't leave without an email (a
 pre-authorized debit account) gets the placeholder `erased-member@example.com`
-instead, its name unchanged; the placeholder no longer matches, so a retry writes
-nothing. The digest is a versioned HMAC under a key derived
+instead, its name unchanged. A method already holding that placeholder counts as
+cleared (even when the erased address itself normalizes to it), so a retry writes
+nothing and doesn't count as a match. `placeholderMethods` lists the specified
+methods holding the placeholder when the call ends, whether this call or an earlier
+one wrote it; the caller retires them (the fake always returns none). The digest is a versioned HMAC under a key derived
 from `AUTH_SECRET`; `secret` is supplied only during execution, never in a job or
 audit, and fixture recording redacts it. Legacy jobs with a plain digest and
 `paymentMethodId` still drain. Before any write it refuses customer metadata naming

@@ -193,6 +193,8 @@ export interface PaymentEvent {
   readonly objectKind: PaymentObjectReference['kind'];
 }
 export interface DetachOptions { readonly redactBillingDetails?: boolean }
+/** Result of `clearCustomerEmail`: whether any email matched, and the methods left holding the placeholder email. */
+export interface ClearedCustomerEmail { matched: boolean; placeholderMethods: readonly string[] }
 export class CardImportRefused extends Error {}
 /** The continuation card no longer exists in the customer's attached-card list. */
 export class CardCursorRefused extends Error {}
@@ -256,8 +258,12 @@ export interface Payments {
    * without detaching them. Idempotent; missing and deleted customers succeed; refuses another gym's customer.
    */
   redactCustomer(customerId: string): Promise<void>;
-  /** Clears only matching erased emails on this household's customer and specified cards; returns whether any matched. */
-  clearCustomerEmail(customerId: string, options: ClearCustomerEmail): Promise<boolean>;
+  /**
+   * Clears only matching erased emails on this household's customer and specified cards. `matched` says whether any matched;
+   * `placeholderMethods` lists the specified methods that hold the fixed placeholder email when the call ends (a method that
+   * must keep an email), whether this call or an earlier one wrote it.
+   */
+  clearCustomerEmail(customerId: string, options: ClearCustomerEmail): Promise<ClearedCustomerEmail>;
   parseWebhook(body: Uint8Array, signature: string): Promise<PaymentEvent>;
 }
 
@@ -923,13 +929,13 @@ export class FakePayments implements Payments {
       individualName: customer.individualName ?? null, businessName: customer.businessName ?? null,
       customFields: customer.customFields ?? null, taxIds: customer.taxIds ?? [] };
   }
-  async clearCustomerEmail(customerId: string, options: ClearCustomerEmail): Promise<boolean> {
+  async clearCustomerEmail(customerId: string, options: ClearCustomerEmail): Promise<ClearedCustomerEmail> {
     assertNoTransaction('payments.clearCustomerEmail');
     const methodIds = [...new Set([...(options.paymentMethodIds ?? []), ...(options.paymentMethodId ? [options.paymentMethodId] : [])])];
     if (!/^[A-Za-z0-9_]+$/.test(customerId)
       || methodIds.some(methodId => !/^[A-Za-z0-9_]+$/.test(methodId))) throw new Error('Invalid processor ID');
     const customer = this.#customers.find(item => item.id === customerId);
-    if (!customer || customer.deleted) return false;
+    if (!customer || customer.deleted) return { matched: false, placeholderMethods: [] };
     if (customer.gymId !== this.gymId) throw new Error('Customer belongs to another gym');
     if (customer.householdId !== undefined && customer.householdId !== options.householdId) throw new Error('Customer belongs to another household');
     const methods = methodIds.flatMap(methodId => {
@@ -943,7 +949,7 @@ export class FakePayments implements Payments {
       const details = this.#billing.get(method.id);
       if (details && matchesBillingEmail(details.email, options.emailDigest, options.secret)) { details.email = null; matched = true; }
     }
-    return matched;
+    return { matched, placeholderMethods: [] };
   }
   async redactCustomer(customerId: string): Promise<void> {
     assertNoTransaction('payments.redactCustomer');

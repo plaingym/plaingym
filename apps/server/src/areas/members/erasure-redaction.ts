@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, eq } from 'drizzle-orm';
-import { classCreditEntries, forGym, households, writeAudit, type Transaction } from '@plaingym/db';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { classCreditEntries, forGym, households, paymentMethods, writeAudit, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { z } from 'zod';
-import type { JobRecovery, Jobs } from '../../infra/jobs/index.js';
+import { withJobTransaction, type JobRecovery, type Jobs } from '../../infra/jobs/index.js';
 import type { Uploads } from '../../infra/storage/index.js';
-import type { ClearCustomerEmail } from '../../infra/payments/index.js';
+import type { ClearCustomerEmail, ClearedCustomerEmail } from '../../infra/payments/index.js';
+import { detachJob } from '../billing/payments.mutations.js';
 import { logError, logInfo } from '../../core/log.js';
 import { billingEmailAbandonedAction, billingEmailClearedAction, billingEmailErasuresToRetry, billingEmailMissingAction, billingEmailNoMatchAction, billingEmailQueuedAction, billingEmailResets, billingEmailResetAction, billingEmailSkippedAction, customerRedactedAction, erasuresToRedact, redactionQueuedAction } from './erasure-redaction.query.js';
 
@@ -23,13 +24,19 @@ const billingEmailPayload = z.object({ householdId: z.uuid(), customerId: z.stri
   erasureId: z.uuid().optional(), emailDigest: z.string().regex(/^(?:k1:)?[a-f0-9]{64}$/),
   paymentMethodIds: z.array(z.string().regex(/^(?:pm|card|ba|src)_[A-Za-z0-9_]+$/)).optional(),
   paymentMethodId: z.string().regex(/^(?:pm|card|ba|src)_[A-Za-z0-9_]+$/).optional() }); // Imported cards and already queued jobs keep legacy IDs.
-export type ClearBillingEmail = (gymId: string, customerId: string, options: ClearCustomerEmail) => Promise<boolean>;
+export type ClearBillingEmail = (gymId: string, customerId: string, options: ClearCustomerEmail) => Promise<ClearedCustomerEmail>;
 
-/** Recheck the local customer link before calling out; a reassigned customer is left alone. */
+/**
+ * Recheck the local customer link before calling out; a reassigned customer is left alone. A method the clear leaves
+ * holding the placeholder email (the processor won't leave it blank) has no notice address for the household's debits:
+ * its local row is revoked, audited and queued for a plain detach, so the household is never charged from it again.
+ */
 export async function clearErasedBillingEmail(payload: unknown, gymId: string, clear: ClearBillingEmail,
-  config: { secret: string; clock: Clock; scope?: typeof forGym }): Promise<void> {
+  config: { secret: string; clock: Clock; timezone: string; jobs?: Pick<Jobs, 'enqueue'> | undefined; scope?: typeof forGym }): Promise<void> {
   const { customerId, erasureId, ...options } = billingEmailPayload.parse(payload);
   if (options.emailDigest.startsWith('k1:') && !config.secret) throw new Error('Billing email erasure is not configured');
+  const jobs = config.jobs;
+  if (!jobs) throw new Error('Billing email erasure is not configured');
   const scope = config.scope ?? forGym;
   const linked = await scope(gymId, tx => tx.select({ id: households.id }).from(households)
     .where(eq(households.stripeCustomerId, customerId)));
@@ -40,10 +47,27 @@ export async function clearErasedBillingEmail(payload: unknown, gymId: string, c
       occurredAt: config.clock.now() }));
     return;
   }
-  const matched = await clear(gymId, customerId, { ...options, secret: config.secret });
+  const { matched, placeholderMethods } = await clear(gymId, customerId, { ...options, secret: config.secret });
   await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: matched ? billingEmailClearedAction : billingEmailNoMatchAction,
     targetType: 'household', targetId: options.householdId, after: { stripeCustomerId: customerId, ...(erasureId ? { erasure: erasureId } : {}) },
     occurredAt: config.clock.now() }));
+  if (placeholderMethods.length === 0) return;
+  // Only this household's unrevoked rows: a retry finds them revoked, and the detach key queues no second job.
+  await withJobTransaction(scope, gymId, async transaction => {
+    const { tx } = transaction;
+    const rows = await tx.select({ id: paymentMethods.id }).from(paymentMethods)
+      .where(and(eq(paymentMethods.householdId, options.householdId), inArray(paymentMethods.processorId, [...placeholderMethods]),
+        isNull(paymentMethods.revokedAt))).orderBy(paymentMethods.id).for('update');
+    for (const row of rows) {
+      const now = config.clock.now();
+      await tx.update(paymentMethods).set({ revokedAt: now, isDefault: false }).where(eq(paymentMethods.id, row.id));
+      await writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.card.revoked', targetType: 'payment_method', targetId: row.id,
+        after: { reason: 'notice_email_erased' }, occurredAt: now });
+      // A plain detach, like a staff removal: the method's name may be a surviving payer's.
+      await jobs.enqueue(detachJob, { paymentMethodId: row.id },
+        { gymId, timezone: config.timezone, idempotencyKey: `detach:${row.id}`, maxAttempts: 12 }, transaction);
+    }
+  });
 }
 /** Marks deleted the photo and signature images an erasure released; committed with the erasure, under `release:<member ID>`. */
 export const releaseErasedFilesJob = 'members.erasure.release_files';

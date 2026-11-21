@@ -113,7 +113,17 @@ the call cannot be made atomic with erasure. `configureMembers` accepts the
 gym-scoped `clearBillingEmail(gymId, customerId, options)` callback backed by
 `Payments.clearCustomerEmail`; an absent callback or HMAC secret fails the job so it retries.
 Already queued jobs with an unkeyed digest and one card ID still drain. The callback
-returns whether any address matched. A matching provider clear writes
+returns whether any address matched, and which of the job's methods hold the
+placeholder email `erased-member@example.com` (a pre-authorized debit account Stripe
+won't leave without an email). Those methods have no notice address left for the
+household's debits, so after the audit below the job retires each one in one
+transaction: it revokes the household's unrevoked row (no longer the default), writes
+`billing.card.revoked` with `reason: 'notice_email_erased'`, and queues a plain
+`billing.payments.detach` (no `redactBillingDetails`: the name may be a surviving
+payer's) under `detach:<row ID>`. The household is never charged from it again; the
+next charge skips as `no_saved_card` until a member sets up a new payment method. A
+retry finds the rows revoked and changes nothing. The job needs the erasure job queue
+(`jobs`) and fails without it. A matching provider clear writes
 `members.erasure.billing_email_cleared` with customer and erasure IDs only; a no-match
 run writes `members.erasure.billing_email_no_match` and leaves its marker unresolved.
 The job itself completed, so the sweep never runs it again; the marker resolves as

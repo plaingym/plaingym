@@ -3,7 +3,7 @@ import Stripe from 'stripe';
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { clock as systemClock } from '../../core/clock.js';
-import { CustomerCreationInProgress, CustomerDeleted, ERASED_CUSTOMER_NAME, normalizeChargeOutcome, type DetachOptions, type Payments, type CreateCustomer, type CreateCharge, type CheckoutRequest,
+import { CustomerCreationInProgress, CustomerDeleted, ERASED_CUSTOMER_NAME, normalizeChargeOutcome, type ClearedCustomerEmail, type DetachOptions, type Payments, type CreateCustomer, type CreateCharge, type CheckoutRequest,
   type CheckoutSession, type CheckoutExpiry, type ChargeReference, type ChargeOutcome, type PaymentMetadata,
   type PaymentObjectReference, type PaymentObjectResult, type PaymentObject, type PaymentChange,
   type PaymentEvent, type Refund, type RefundRequest, type CustomerMatch, CardImportRefused, CardCursorRefused,
@@ -540,47 +540,52 @@ export class StripePayments implements Payments {
       if (current.customer) throw error;
     }
   }
-  async clearCustomerEmail(customerId: string, options: ClearCustomerEmail): Promise<boolean> {
+  async clearCustomerEmail(customerId: string, options: ClearCustomerEmail): Promise<ClearedCustomerEmail> {
     assertNoTransaction('payments.clearCustomerEmail');
     const path = this.#path('customers', customerId);
     const methodPaths = [...new Set([...(options.paymentMethodIds ?? []), ...(options.paymentMethodId ? [options.paymentMethodId] : [])])]
-      .map(methodId => this.#path('payment_methods', methodId));
+      .map(methodId => ({ methodId, path: this.#path('payment_methods', methodId) }));
     let customer: ObjectData;
     try { customer = await this.#get(path); }
-    catch (error) { if (absent(error)) return false; throw error; }
-    if (customer.deleted === true) return false;
+    catch (error) { if (absent(error)) return { matched: false, placeholderMethods: [] }; throw error; }
+    if (customer.deleted === true) return { matched: false, placeholderMethods: [] };
     const metadata = data(customer.metadata ?? {});
     if (metadata.gym_id !== undefined && metadata.gym_id !== this.gymId) throw new NotForGym('Customer belongs to another gym');
     if (metadata.household_id !== undefined && metadata.household_id !== options.householdId) throw new Error('Customer belongs to another household');
     // Validate every owner before the first write. Untagged imported customers are checked by the caller's local link.
-    const methods: { path: string; method: ObjectData }[] = [];
-    for (const methodPath of methodPaths) {
+    const methods: { methodId: string; path: string; method: ObjectData }[] = [];
+    for (const { methodId, path: methodPath } of methodPaths) {
       let method: ObjectData | undefined;
       try { method = await this.#get(methodPath); }
       catch (error) { if (!absent(error)) throw error; }
       if (method?.customer) {
         if (data(method.metadata ?? {}).gym_id !== undefined) this.#metadata(method);
         if (id(method.customer) !== customerId) throw new Error('Card belongs to another customer');
-        methods.push({ path: methodPath, method });
+        methods.push({ methodId, path: methodPath, method });
       }
     }
     // No idempotency key: every retry reads current fields and never replays a cached write over a replacement address.
     let matched = false;
+    const placeholderMethods: string[] = [];
     if (matchesBillingEmail(customer.email, options.emailDigest, options.secret)) {
       await this.#post(path, { email: '' }); matched = true;
     }
-    for (const { path: methodPath, method } of methods) {
-      if (matchesBillingEmail(data(method.billing_details ?? {}).email, options.emailDigest, options.secret)) {
+    for (const { methodId, path: methodPath, method } of methods) {
+      const email = data(method.billing_details ?? {}).email;
+      // Already cleared: an earlier call left the placeholder, even if the erased address normalizes to it.
+      if (email === ERASED_METHOD_EMAIL) { placeholderMethods.push(methodId); continue; }
+      if (matchesBillingEmail(email, options.emailDigest, options.secret)) {
         try { await this.#post(methodPath, { billing_details: { email: '' } }); }
         catch (error) {
           // A method that must keep an email gets the placeholder; its name is left as it is.
           if (!detailRequired(error, ['email'])) throw error;
           await this.#post(methodPath, { billing_details: { email: ERASED_METHOD_EMAIL } });
+          placeholderMethods.push(methodId);
         }
         matched = true;
       }
     }
-    return matched;
+    return { matched, placeholderMethods };
   }
   /** Blanks a payment method's billing details, or writes the placeholders when Stripe requires a name or email there. */
   async #redactMethodDetails(path: string): Promise<void> {

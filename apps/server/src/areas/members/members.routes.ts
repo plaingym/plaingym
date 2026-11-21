@@ -70,9 +70,10 @@ export function createErasureJobs(supplied?: Pick<ErasureOptions, 'redactCustome
     await redact(ctx.gymId, customerId);
   } },
   { id: clearBillingEmailJob, async handler(payload, ctx) {
-    const { clearBillingEmail: clear, billingEmailSecret: secret } = (supplied ?? configured) ?? {};
+    const { clearBillingEmail: clear, billingEmailSecret: secret, jobs } = (supplied ?? configured) ?? {};
     if (!clear) throw new Error('Billing email erasure is not configured');
-    await clearErasedBillingEmail(payload, ctx.gymId, clear, { secret: secret ?? '', clock: ctx.clock, ...(supplied?.scope ? { scope: supplied.scope } : {}) });
+    await clearErasedBillingEmail(payload, ctx.gymId, clear, { secret: secret ?? '', clock: ctx.clock, timezone: ctx.timezone, jobs,
+      ...(supplied?.scope ? { scope: supplied.scope } : {}) });
   } },
   { id: releaseErasedFilesJob, async handler(payload, ctx) {
     const uploadsFor = (supplied ?? configured)?.uploadsFor;

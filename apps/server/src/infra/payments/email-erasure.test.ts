@@ -63,15 +63,41 @@ it('retries a partially cleared customer after an outage without clearing a repl
     .toEqual([{ email: '' }, { billing_details: { email: '' } }]);
 });
 
-it('writes the placeholder email to a debit account that must keep one, leaving its name', async () => {
-  const { payments, transport, state } = stripe();
-  Object.assign(transport.objects.get(paymentMethodId)!, { type: 'acss_debit', acss_debit: { last4: '6789' } });
-  expect(await payments.clearCustomerEmail(customerId, options)).toBe(true);
+/** `stripe()` with `pm_email` as a debit account and an extra `card` method `pm_card`, both holding `email`. */
+function debitStripe(email = 'payer@example.invalid') {
+  const provider = stripe({ customerEmail: email, cardEmail: email });
+  Object.assign(provider.transport.objects.get(paymentMethodId)!, { type: 'acss_debit', acss_debit: { last4: '6789' } });
+  provider.transport.objects.set('pm_card', { id: 'pm_card', object: 'payment_method', type: 'card', customer: customerId, metadata: { gym_id: gymId },
+    card: { brand: 'visa', last4: '4242', exp_month: 12, exp_year: 2030 }, billing_details: { email, name: 'Card holder' } });
+  const posts = () => provider.transport.requests.filter(request => request.method === 'POST');
+  const card = () => provider.transport.objects.get('pm_card')!.billing_details;
+  return { ...provider, posts, card, options: { ...options, paymentMethodId: undefined, paymentMethodIds: [paymentMethodId, 'pm_card'],
+    emailDigest: billingEmailDigest(email, secret) } };
+}
+
+it('writes the placeholder email to a debit account that must keep one, leaving its name, and reports it', async () => {
+  const { payments, state, posts, card, options: debitOptions } = debitStripe();
+  expect(await payments.clearCustomerEmail(customerId, debitOptions)).toEqual({ matched: true, placeholderMethods: [paymentMethodId] });
   expect(state()).toMatchObject({ email: null, cardEmail: 'erased-member@example.com', cardName: 'Card holder', attached: true });
-  const posts = () => transport.requests.filter(request => request.method === 'POST');
+  expect(card()).toEqual({ email: null, name: 'Card holder' });
   const before = posts().length;
-  expect(await payments.clearCustomerEmail(customerId, options)).toBe(false);
+  expect(await payments.clearCustomerEmail(customerId, debitOptions)).toEqual({ matched: false, placeholderMethods: [paymentMethodId] });
   expect(posts()).toHaveLength(before);
+});
+
+it('treats the placeholder as cleared when the erased address normalizes to it', async () => {
+  const { payments, state, posts, options: debitOptions } = debitStripe(' Erased-Member@Example.com ');
+  expect(await payments.clearCustomerEmail(customerId, debitOptions)).toEqual({ matched: true, placeholderMethods: [paymentMethodId] });
+  expect(state()).toMatchObject({ email: null, cardEmail: 'erased-member@example.com', cardName: 'Card holder' });
+  const before = posts().length;
+  expect(await payments.clearCustomerEmail(customerId, debitOptions)).toEqual({ matched: false, placeholderMethods: [paymentMethodId] });
+  expect(posts()).toHaveLength(before);
+});
+
+it('reports no placeholder methods from FakePayments', async () => {
+  const payments = new FakePayments(gymId);
+  payments.seedCustomer({ id: customerId, email: 'payer@example.invalid', householdId, gymId });
+  expect(await payments.clearCustomerEmail(customerId, options)).toEqual({ matched: true, placeholderMethods: [] });
 });
 
 it('accepts an untagged customer and leaves an already detached card alone', async () => {

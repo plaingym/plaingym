@@ -625,7 +625,17 @@ Old versions and documents referenced by signatures remain retained after retire
   the job rechecks that only this household links the customer. A replacement local
   email does not prevent clearing the erased address at Stripe. The adapter checks customer gym and household metadata and
   card ownership, then clears only matching customer and specified card emails,
-  preserving replacement addresses, other billing details and the attached card.
+  preserving replacement addresses, the card's name, other billing details and the
+  attached card. A method Stripe won't leave without an email (a pre-authorized
+  debit account) gets the fixed placeholder `erased-member@example.com` instead,
+  and a method already holding it counts as cleared. Such a method has no notice
+  address for the household's debits, so the job then revokes its local row in one
+  transaction (no longer the default), audits `billing.card.revoked` with reason
+  `notice_email_erased` and queues its detach: the household is never charged from
+  it again, and a surviving member sets up a new payment method. It never revokes a
+  method whose own email didn't match, one of another household, or one already
+  revoked. Until the revoke commits (the job's own retry after a crash), a charge can
+  still be created from it.
   Stripe reads and writes cannot be atomic with concurrent external edits.
   A matched provider clear is audited with identifiers only; a no-match run has a
   distinct audit and doesn't resolve its marker, though its completed job is not run
@@ -650,7 +660,11 @@ Old versions and documents referenced by signatures remain retained after retire
   address, shipping details, description, individual and business names and invoice
   custom fields, and deletes its tax IDs. It also lists every attached payment method
   of every type and clears its billing name, email, phone and address, including methods
-  with no active local row, while leaving them attached. Methods tagged for another
+  with no active local row, while leaving them attached. Where Stripe refuses a blank
+  billing name or email (a pre-authorized debit account), both the detach and this
+  clearing write the fixed placeholders instead (name `Erased member`, email
+  `erased-member@example.com`, phone and address blank), and a method holding only
+  them counts as cleared; no member data goes in the write. Methods tagged for another
   gym are skipped with an identifier-only warning. Tax-ID and payment-method cleanup
   are both attempted, and a method error does not block later methods; the first error
   is rethrown for retry after cleanup. Every retry job of an erasure (each
