@@ -265,7 +265,8 @@ does the same for any recorded Checkout of the joined household once the invoice
 Both lock the household and check `public.join.completed`, so together, retried or
 concurrent, they complete a join once and send one sign-in link. `/join/return` is
 read-only. It shows the welcome page once the join is complete, its invoice
-exists and all its recorded memberships have started. A pending join shows
+exists, none of its recorded memberships are pending, and at least one is live
+(`trial`, `active` or `frozen`). A pending join shows
 "confirming" with a spinner and `aria-live` text. The page points to **Check again**
 if it does not change. `/join/client.js` (the page's only script, `'self'`, no inline
 script) asks `/join/return` itself with the join cookie about every two seconds and
@@ -285,17 +286,18 @@ When the join cleanup voids the unpaid invoice or staff revoke the join's link, 
 online: `/join/checkout`, `/join/return` and `/join/cancelled` show a closed page that
 says to contact the gym, without starting Checkout. A paid invoice wins over a revoked
 link, and a Checkout that completed but is still being recorded continues to
-`/join/return`. A completed join whose memberships have started wins over both: it keeps
-the welcome page and its sign-in path whatever its invoice's status, so dunning collects
-a failed first payment.
+`/join/return`. A completed join with a live membership keeps the welcome page and its sign-in
+path even if its invoice is voided or its link is revoked. Dunning can collect a failed first
+payment while the payer can still sign in. Once every recorded membership is cancelled, the
+completed join shows the closed page and sends no sign-in link.
 
 ## Portal login
 
 Passwordless, the portal login proves the address entered: the join's completion issues a
 payer invitation for the household's address and sends the portal's claim-code sign-in link
 to it (auth mail, not subject to the member-email switch); the household login is created on
-its callback only for the signed-in user the code names. `/join/sign-in` sends a new link,
-replacing the previous one, with the same response whatever the address.
+its callback only for the signed-in user the code names. For an active join, `/join/sign-in`
+sends a new link, replacing the previous one, with the same response whatever the address.
 
 Password mode has no mail to prove an address, so a paid join provisions no account and sets
 no password. Its completion marks the household's address as awaiting portal confirmation

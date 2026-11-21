@@ -603,7 +603,7 @@ export function createJoinService(options: JoinOptions) {
     async checkout(gymId: string, linkId: string) {
       return (await options.checkout.start(gymId, linkId, false, joinCheckoutFlow)).session.url;
     },
-    /** Read-only: a completed join stays ready after its first bank debit fails. Trials count as started. */
+    /** Read-only: a completed join with a live membership stays ready after its first bank debit fails. */
     async state(gymId: string, linkId: string): Promise<JoinState> {
       return scope(gymId, async tx => {
         const [link] = await tx.select({ householdId: signedLinks.householdId, revokedAt: signedLinks.revokedAt, purpose: signedLinks.purpose }).from(signedLinks).where(eq(signedLinks.id, linkId));
@@ -617,8 +617,11 @@ export function createJoinService(options: JoinOptions) {
         if (bill && await marked(tx, 'public.join.completed', link.householdId)) {
           const rows = await tx.select({ status: memberships.status }).from(memberships)
             .where(and(eq(memberships.householdId, link.householdId), inArray(memberships.id, record.membershipIds)));
-          if (rows.length === record.membershipIds.length && rows.every(row => row.status !== 'pending'))
-            return { status: 'active', ...view };
+          if (rows.length === record.membershipIds.length && rows.every(row => row.status !== 'pending')) {
+            if (rows.every(row => row.status === 'cancelled')) return { status: 'closed' };
+            if (rows.some(row => row.status === 'trial' || row.status === 'active' || row.status === 'frozen'))
+              return { status: 'active', ...view };
+          }
         }
         if (!bill || !settled.includes(bill.status))
           return bill?.status === 'void' || link.revokedAt ? { status: 'closed' }

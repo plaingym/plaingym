@@ -1185,6 +1185,45 @@ describe('public join pages through the production registrations', () => {
     expect(next).toMatchObject([{ kind: 'cycle', status: 'paid', amountCents: 31500, periodStartsOn: '2026-11-29', periodEndsOn: '2026-12-29' }]);
   });
 
+  it('closes a completed card join and stops resending when all its memberships are cancelled', async () => {
+    const f = await fixture(), { cookie } = await f.submit([adult(), child()]);
+    await f.pay(cookie);
+    const state = await f.rows(), [link] = state.links;
+    const joinedMemberships = state.memberships.filter(row => row.householdId === link!.householdId);
+    expect(joinedMemberships.map(row => row.status)).toEqual(['active', 'active']);
+    const cancel = (id: string) => db.forGym(f.gymId, tx => tx.update(memberships)
+      .set({ status: 'cancelled', cancelledAt: f.clock.now() }).where(eq(memberships.id, id)));
+
+    await cancel(joinedMemberships[0]!.id);
+    expect(await f.join.state(f.gymId, link!.id)).toMatchObject({ status: 'active' });
+    expect(await (await f.get('/join/return', cookie)).text()).toContain('We sent a sign-in link');
+
+    await cancel(joinedMemberships[1]!.id);
+    const sentBeforeResend = f.sent.length;
+    expect(sentBeforeResend).toBe(1);
+    expect(await f.join.state(f.gymId, link!.id)).toEqual({ status: 'closed' });
+    const returned = await f.get('/join/return', cookie);
+    expect(returned.status).toBe(200);
+    const html = await returned.text();
+    expect(html).toContain('The gym has closed this payment');
+    expect(html).toContain('Please contact the gym');
+    expect(html).not.toContain('We sent a sign-in link');
+    const resent = await f.post('/join/sign-in', undefined, cookie);
+    expect(resent.status).toBe(303);
+    expect(resent.headers.get('location')).toBe('/join/return');
+    expect(f.sent).toHaveLength(sentBeforeResend);
+  });
+
+  it('keeps a completed join with live memberships active after its first invoice is voided', async () => {
+    const f = await fixture(), { cookie } = await f.submit();
+    await f.pay(cookie);
+    const state = await f.rows(), [link] = state.links;
+    expect(state.memberships.map(row => row.status)).toEqual(['active']);
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'void' }).where(eq(invoices.id, link!.invoiceId!)));
+    expect(await f.join.state(f.gymId, link!.id)).toMatchObject({ status: 'active' });
+    expect(await (await f.get('/join/return', cookie)).text()).toContain('We sent a sign-in link');
+  });
+
   it('leaves no active membership when Checkout is abandoned, cancelled or expires, and recovers with a new session', async () => {
     const f = await fixture(), { cookie } = await f.submit();
     const quiet = async () => {
@@ -1324,10 +1363,13 @@ describe('public join pages through the production registrations', () => {
     expect((await f.post('/api/public/join', f.body([adult()], images, 'late@example.invalid', f.plan.id))).status).toBe(200);
   });
 
-  it('completes the join when its invoice is paid through another link of the household', async () => {
+  it('completes the join through another household link and keeps it active after revocation while a membership is live', async () => {
     const f = await fixture(), { cookie } = await f.submit();
-    const [home] = await f.joined(), bill = (await f.rows()).invoices.find(i => i.householdId === home!.id)!;
-    const staff = await createSignedLinksService({ scope: db.forGym, clock: f.clock }).create({ gymId: f.gymId, actor: { kind: 'system' } },
+    const [home] = await f.joined(), before = await f.rows();
+    const bill = before.invoices.find(i => i.householdId === home!.id)!, joinLink = before.links.find(l => l.invoiceId === bill.id)!;
+    const links = createSignedLinksService({ scope: db.forGym, clock: f.clock });
+    const system = { gymId: f.gymId, actor: { kind: 'system' as const } };
+    const staff = await links.create(system,
       { purpose: 'pay_invoice', householdId: home!.id, invoiceId: bill.id, expiresAt: '2026-11-05T00:00:00Z' });
     const opened = await f.checkout.start(f.gymId, staff.link.id);
     f.provider.completeCheckout(opened.session.id);
@@ -1338,6 +1380,15 @@ describe('public join pages through the production registrations', () => {
     expect(await (await f.get('/join/return', cookie)).text()).toContain('We sent a sign-in link');
     expect((await f.rows()).audits.filter(a => a.action === 'public.join.completed')).toHaveLength(1);
     expect(f.sent).toHaveLength(1);
+
+    const revoked = await links.revoke(system, joinLink.id);
+    expect(revoked.revokedAt).toBe(f.clock.now().toISOString());
+    expect(await f.join.state(f.gymId, joinLink.id)).toMatchObject({ status: 'active' });
+    expect(await (await f.get('/join/return', cookie)).text()).toContain('We sent a sign-in link');
+
+    await db.forGym(f.gymId, tx => tx.update(memberships).set({ status: 'cancelled', cancelledAt: f.clock.now() })
+      .where(eq(memberships.householdId, home!.id)));
+    expect(await f.join.state(f.gymId, joinLink.id)).toEqual({ status: 'closed' });
   });
 
   it('completes a join paid by cash or check through the paid-invoice effect, once alongside the Checkout hook', async () => {
