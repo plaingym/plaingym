@@ -169,7 +169,9 @@ collection during an outage.
 It returns all current refunds for that intent, including untagged dashboard
 refunds, and refuses a mismatched parent. It never scans events or unrelated
 payment intents/disputes. Refunds can be refreshed individually with
-`readPaymentObject` before applying invoice transitions.
+`readPaymentObject` before applying invoice transitions; its `unknown` answer carries
+`missing: true` only when Stripe answers not found for the refund itself, never for a
+missing charge or parent intent, another gym's metadata or an uncertain read.
 
 `refund` takes an optional `reservationId`, sent as `reservation_id` in the
 refund's metadata and read back from that metadata only, never the parent's. It is

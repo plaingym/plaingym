@@ -4,13 +4,15 @@ import { auditEvents, classPackSales, invoices, payments, refunds, type Transact
 import type { Clock } from '@plaingym/shared';
 import { idSchema, moneySchema, refundReleased } from '@plaingym/shared/contracts';
 import { conflict, notFound, type MutationContext } from '../../../core/interfaces/common.js';
+import { logWarn } from '../../../core/log.js';
 import type { RefundTransition, ProcessorRefundTransition, InvoiceTransitionResult } from '../../../core/interfaces/invoice-transitions.js';
 import { pastRefundWindow, sameRefund } from './lapsed-refunds.js';
-import { accepted, audit, duplicateReservation, effect, recorded, result, snapshot, type InvoiceRow } from './store.js';
+import { accepted, audit, duplicateReservation, effect, effectCreated, recorded, result, snapshot, type InvoiceRow,
+  type TransitionEffect } from './store.js';
 
 /** The caller holds the invoice lock; every reservation, audit and effect commits with the refund. */
 export async function applyRefund(tx: Transaction, context: MutationContext, clock: Clock, invoice: InvoiceRow,
-  request: RefundTransition, appCreated = false): Promise<InvoiceTransitionResult> {
+  request: RefundTransition, appCreated = false, missing = false): Promise<InvoiceTransitionResult> {
   idSchema.parse(request.refundId); moneySchema.parse({ amountCents: request.amountCents, currency: request.currency });
   if (invoice.status === 'processing') conflict('Payment is processing');
   if (request.amountCents <= 0 || !['pending', 'succeeded', 'failed', 'canceled'].includes(request.status)) conflict('Invalid refund');
@@ -25,6 +27,18 @@ export async function applyRefund(tx: Transaction, context: MutationContext, clo
   // Only a failure can reverse a succeeded processor refund; a cancellation never does.
   const reversed = previous?.status === 'succeeded' && request.status === 'failed'
     && previous.processorId !== null && previous.processorId === request.processorId;
+  // A success for a refund released as missing contradicts that release. Staff reconcile it by hand: the row and the
+  // invoice stay as they are, and the first such report is recorded once with a staff notice.
+  if (previous?.status === 'failed' && previous.processorId !== null && previous.processorId === request.processorId
+    && request.status === 'succeeded' && await releasedAsMissing(tx, invoice.id, previous)) {
+    if (await recorded(tx, 'billing.refund.missing_found', previous.id)) return result('ignored', invoice);
+    await audit(tx, context, clock, 'billing.refund.missing_found', 'refund', previous.id,
+      { processorId: previous.processorId, amountCents: previous.amountCents, currency: previous.currency });
+    await effect(tx, context, clock, { kind: 'staff_notice', notice: 'refund_found', invoiceId: invoice.id,
+      paymentId: payment.id, refundId: previous.id });
+    logWarn('billing.refunds.missing_found', { gymId: context.gymId, invoiceId: invoice.id, refundId: previous.id });
+    return result('ignored', invoice);
+  }
   if (previous && !reversed && (previous.status === request.status && (previous.processorId !== null || request.processorId === undefined)
     || previous.status !== 'pending')) return result('ignored', invoice);
   if (request.processorId !== undefined) {
@@ -50,8 +64,12 @@ export async function applyRefund(tx: Transaction, context: MutationContext, clo
   else await audit(tx, context, clock, 'billing.refund.reversed', 'refund', request.refundId, recordedRefund,
     { status: 'succeeded', resolvedAt: previous?.resolvedAt ?? null });
   // A local reservation or its original audit identifies an app-created refund. External pending rows also have
-  // a previous row when canceled, so their existence alone must never trigger this notice.
-  if (request.status === 'canceled' && (appCreated || previous && await createdInApp(tx, previous)))
+  // a previous row when canceled, so their existence alone must never trigger this notice. A pending row the processor
+  // reported missing is released with its own notice and no other.
+  if (missing && request.status === 'failed')
+    await effect(tx, context, clock, { kind: 'staff_notice', notice: 'refund_missing', invoiceId: invoice.id,
+      paymentId: payment.id, refundId: request.refundId });
+  else if (request.status === 'canceled' && (appCreated || previous && await createdInApp(tx, previous)))
     await effect(tx, context, clock, { kind: 'staff_notice', notice: 'refund_canceled', invoiceId: invoice.id,
       paymentId: payment.id, refundId: request.refundId });
   else if (request.status === 'failed' && values.processorId !== null)
@@ -81,7 +99,7 @@ export async function applyRefund(tx: Transaction, context: MutationContext, clo
   return result('applied', next);
 }
 
-/** Select the identity and release only the unsent reservations needed for this external refund, under one lock. */
+/** Select the refund row and make room for an external refund under the invoice lock. */
 export async function applyProcessorRefund(tx: Transaction, context: MutationContext, clock: Clock, invoice: InvoiceRow,
   input: ProcessorRefundTransition): Promise<InvoiceTransitionResult> {
   const value = input.processorRefund;
@@ -106,13 +124,18 @@ export async function applyProcessorRefund(tx: Transaction, context: MutationCon
     return applyRefund(tx, context, clock, invoice, { ...request, refundId: untagged[0]!.id });
   }
   if (!refundReleased(value)) {
-    // Count unread processor rows as pending. They only force a retry when releasing an unsent reservation would
-    // depend on their outcome, including a row linked after the processor reads and before this lock.
-    let unread = false;
+    // Unread processor rows keep their reservations, including rows linked after the processor reads.
+    // Release confirmed missing rows newest first. If the external refund still needs room, an unread row forces a retry.
+    const unread: string[] = [];
+    const missing: (typeof refunds.$inferSelect)[] = [];
     for (const row of rows.filter(row => row.processorId !== null && row.status === 'pending')) {
       const current = input.pendingRefunds.find(refund => refund.id === row.processorId);
+      if (!current && input.missingRefunds?.includes(row.processorId!)) {
+        missing.push(row);
+        continue;
+      }
       if (!current || !sameRefund(current, row, payment, context.gymId)) {
-        unread = true;
+        unread.push(row.id);
         continue;
       }
       if (refundReleased(current)) await applyRefund(tx, context, clock, invoice, { ...request,
@@ -120,8 +143,20 @@ export async function applyProcessorRefund(tx: Transaction, context: MutationCon
     }
     rows = await tx.select().from(refunds).where(eq(refunds.paymentId, payment.id));
     let excess = rows.filter(row => !refundReleased(row)).reduce((sum, row) => sum + row.amountCents, value.amount - payment.amountCents);
-    if (excess > 0 && unread) conflict('Pending refund must be reconciled before recording an external refund');
-    const outrun = [...reservations].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id));
+    const newestFirst = (a: typeof refunds.$inferSelect, b: typeof refunds.$inferSelect) =>
+      b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id);
+    for (const row of missing.sort(newestFirst)) {
+      if (excess <= 0) break;
+      await applyRefund(tx, context, clock, invoice, { invoiceId: invoice.id, paymentId: payment.id, refundId: row.id,
+        processorId: row.processorId!, amountCents: row.amountCents, currency: row.currency, status: 'failed' }, false, true);
+      excess -= row.amountCents;
+    }
+    if (excess > 0 && unread.length) {
+      // An unverified row (an unread, unknown or mismatched read) blocks until the processor confirms it.
+      for (const refundId of unread) logWarn('billing.refunds.unverified', { gymId: context.gymId, invoiceId: invoice.id, refundId });
+      conflict('Pending refund must be reconciled before recording an external refund');
+    }
+    const outrun = [...reservations].sort(newestFirst);
     if (excess > outrun.reduce((sum, row) => sum + row.amountCents, 0)) conflict('Refund exceeds payment');
     for (const row of outrun) {
       if (excess <= 0) break;
@@ -131,6 +166,13 @@ export async function applyProcessorRefund(tx: Transaction, context: MutationCon
     }
   }
   return applyRefund(tx, context, clock, invoice, request, appCreated);
+}
+
+/** The row's own `refund_missing` effect marks a release because the processor couldn't find the refund. */
+async function releasedAsMissing(tx: Transaction, invoiceId: string, row: typeof refunds.$inferSelect): Promise<boolean> {
+  const work: TransitionEffect = { kind: 'staff_notice', notice: 'refund_missing', invoiceId, paymentId: row.paymentId, refundId: row.id };
+  return (await tx.select({ id: auditEvents.id }).from(auditEvents)
+    .where(and(eq(auditEvents.action, effectCreated), eq(auditEvents.after, work))).limit(1)).length > 0;
 }
 
 async function createdInApp(tx: Transaction, row: typeof refunds.$inferSelect): Promise<boolean> {

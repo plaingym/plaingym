@@ -57,6 +57,8 @@ function timestamp(value: Json | undefined): Date {
   return time;
 }
 class NotForGym extends Error {}
+// Used only by readPaymentObject to distinguish a missing refund from a missing parent.
+class RefundMissing extends Error {}
 class IncompleteBankMethod extends NotForGym {
   constructor(readonly customerId: string) { super('Bank account has no usable last four digits'); }
 }
@@ -396,10 +398,12 @@ export class StripePayments implements Payments {
   }
   async readPaymentObject(reference: PaymentObjectReference): Promise<PaymentObjectResult> {
     assertNoTransaction('payments.readPaymentObject');
-    try { return { status: 'found', value: await this.#read(reference) }; }
+    try { return { status: 'found', value: await this.#read(reference, { markMissingRefund: true }) }; }
     catch (error) {
       if (error instanceof IncompleteBankMethod)
         return { status: 'unknown', reference, incompleteBankMethod: { customerId: error.customerId } };
+      // Only a not-found for the refund itself is `missing`; its charge or parent intent missing is unverified.
+      if (error instanceof RefundMissing) return { status: 'unknown', reference, missing: true };
       if (missing(error) || error instanceof NotForGym) return { status: 'unknown', reference };
       throw error;
     }
@@ -457,12 +461,19 @@ export class StripePayments implements Payments {
     return { status: 'found', method: includeMandate && method.type === 'acss_debit' ? await this.#withPadMandate(method) : method,
       ...(typeof metadata.household_id === 'string' ? { householdId: metadata.household_id } : {}) };
   }
-  async #read(reference: PaymentObjectReference): Promise<PaymentObject> {
+  async #read(reference: PaymentObjectReference, options: { markMissingRefund?: boolean } = {}): Promise<PaymentObject> {
     let value: PaymentObject;
     switch (reference.kind) {
       case 'charge': value = { kind: 'charge', object: this.#intent(await this.#ownedIntent(reference.id)) }; break;
       case 'checkout': value = { kind: 'checkout', object: await this.#checkout(await this.#get(this.#path('checkout/sessions', reference.id))) }; break;
-      case 'refund': value = { kind: 'refund', object: await this.#refund(await this.#get(this.#path('refunds', reference.id))) }; break;
+      case 'refund': {
+        const object = await this.#get(this.#path('refunds', reference.id))
+          .catch((error: unknown) => {
+            if (options.markMissingRefund && missing(error)) throw new RefundMissing('Stripe refund not found', { cause: error });
+            throw error;
+          });
+        value = { kind: 'refund', object: await this.#refund(object) }; break;
+      }
       case 'dispute': {
         const object = await this.#get(this.#path('disputes', reference.id)), parent = await this.#parentIntent(object);
         value = { kind: 'dispute', object: { id: id(object.id), chargeId: id(parent.id), amount: Number(object.amount),

@@ -247,9 +247,12 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       if (await recorded(tx, effectCompleted, effectId) || await recorded(tx, effectDismissed, effectId)) return null;
       const payment = work.paymentId ? (await tx.select().from(payments).where(eq(payments.id, work.paymentId)))[0] : undefined;
       if (payment && payment.invoiceId !== invoice.id) notFound();
-      const refund = (work.notice === 'refund_failed' || work.notice === 'refund_canceled' || work.notice === 'refund_released' || work.notice === 'refund_arrived') && work.refundId
+      const refund = (work.notice === 'refund_failed' || work.notice === 'refund_canceled' || work.notice === 'refund_released'
+        || work.notice === 'refund_missing' || work.notice === 'refund_found' || work.notice === 'refund_arrived') && work.refundId
         ? (await tx.select().from(refunds).where(eq(refunds.id, work.refundId)))[0] : undefined;
       if (refund && refund.paymentId !== payment?.id) notFound();
+      const missingRefundFound = work.notice === 'refund_missing' && refund
+        && await recorded(tx, 'billing.refund.missing_found', refund.id);
       const refunded = work.notice === 'duplicate_released' && payment
         ? await tx.select({ amountCents: refunds.amountCents }).from(refunds).where(and(eq(refunds.paymentId, payment.id), eq(refunds.status, 'succeeded'))) : [];
       // A refund that failed after it was reported successful gets its own wording.
@@ -267,7 +270,8 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
         ? (await tx.select({ credits: classCreditEntries.credits }).from(classCreditEntries).where(and(
           eq(classCreditEntries.saleId, sale.id), eq(classCreditEntries.kind, 'reverse')))).reduce((total, row) => total - row.credits, 0) : 0;
       const retryStopped = work.kind === 'retry' && await recorded(tx, retriesStopped, invoice.id);
-      return { event, work, invoice, payment, refund, refunded, reversed, attempt, latestAttempt, lines, sale, reversedCredits, retryStopped };
+      return { event, work, invoice, payment, refund, refunded, reversed, attempt, latestAttempt, lines, sale, reversedCredits, retryStopped,
+        missingRefundFound };
     });
     if (!loaded) return;
     const { work, invoice, payment, refund, refunded, reversed, attempt, latestAttempt, lines, sale, reversedCredits } = loaded;
@@ -314,6 +318,12 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
         if (!refund) throw new Error('Late refund notice has no refund');
         // A later processor failure has its own notice; don't send an obsolete success correction after it.
         if (refund.status === 'succeeded') await options.notifications.staffNotice({ ...data, reason: 'refund_arrived', refund });
+      } else if (work.notice === 'refund_missing') {
+        if (!refund) throw new Error('Missing refund notice has no refund');
+        if (!loaded.missingRefundFound) await options.notifications.staffNotice({ ...data, reason: 'refund_missing', refund });
+      } else if (work.notice === 'refund_found') {
+        if (!refund) throw new Error('Found refund notice has no refund');
+        await options.notifications.staffNotice({ ...data, reason: 'refund_found', refund });
       } else if (work.notice !== 'refund_failed') await options.notifications.staffNotice(data);
       else if (refund) await options.notifications.staffNotice({ ...data, reason: 'refund_failed', refund, reversed,
         ...(reversedCredits > 0 ? { reversedCredits } : {}) });

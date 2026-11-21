@@ -43,9 +43,9 @@ the reservation even if a revocation fails, since no credential was disclosed.
 
 Every notice sends through `createEmailDeliveries`, under the key
 `billing.<purpose>:<object>:<generation>`, and a staff notice under one key per recipient,
-`billing.<purpose>:<object>:<generation>:<recipient hash>`. The purpose is `receipt` or `dunning` (member
-notices), or `duplicate_payment`, `duplicate_released`, `refund_failure` or `credits_not_granted` (staff
-notices), and the object is the invoice, payment or refund it is about. The generation is the persisted
+`billing.<purpose>:<object>:<generation>:<recipient hash>`. Member notices use `receipt` or `dunning`.
+Staff notices use the purpose for that notice, such as `refund_missing` with the missing refund's ID.
+The object is the invoice, payment or refund the notice concerns. The generation is the persisted
 work that asked for it: the effect, or the receipt job for a requested resend. So a repeated job sends
 nothing more, each new failure or resend has its own key, and a member's address changed between retries
 gets no second notice. A member notice's key holds no address, so an erased member's address leaves
@@ -313,11 +313,32 @@ one invoice lock and transaction, so the notice counts the refund that caused th
 release once it has succeeded. If recording fails, all releases and their notices roll back too.
 Processor-bound pending refunds are read outside the transaction and terminal outcomes
 are reconciled under the lock before deciding which unsent reservations no longer fit.
-An unread or mismatched pending row still reserves its full amount. It forces a retry
-only when that total would require releasing an unsent reservation; an external refund
+A pending row the processor reports missing (the read answers unknown with `missing: true`:
+Stripe answered not found for the refund itself, because it was deleted or the Stripe
+account changed) is released only when the external refund needs
+its room, newest first and before any unsent reservation, and only as far as that need
+goes. Each such release records the row `failed` and queues one `notice: 'refund_missing'`
+staff notice naming the invoice and amount; a replayed webhook finds the row failed and
+queues none. A missing row the external refund fits beside stays `pending`. A read that
+throws fails the whole write, so a network error never releases anything.
+The release stands if Stripe later reports that refund `succeeded`: the row stays `failed`
+and the invoice keeps its status and refunded total, even when the two refunds together
+exceed the payment. The first such report writes a `billing.refund.missing_found` audit,
+queues one `notice: 'refund_found'` staff notice naming the invoice and amount, and logs
+`billing.refunds.missing_found` at warn with the gym, invoice and refund row IDs. The report
+counts as handled (the transition answers `ignored`), so the webhook completes, and staff
+reconcile the payment by hand; a replay writes, queues and logs nothing more. A pending
+`refund_missing` notice checks for that success before delivery and skips the obsolete email.
+An unread, unverified or mismatched pending row still reserves its full amount. Unverified
+means any other unknown read: the refund's charge or parent intent is missing, its gym
+metadata isn't this gym's, or the read is uncertain. Such a row forces a retry whenever
+the external refund still needs room after any missing rows are released, whether or not
+an unsent reservation could make that room, and each refusal logs
+`billing.refunds.unverified` at warn with the gym, invoice and refund row IDs; once the
+processor confirms the refund, its outcome is recorded as usual. An external refund
 that fits records normally, including when a pending row was linked after those reads.
-The named `InvoiceTransitions.processorRefund` method accepts the processor refund and
-those reads; it first refuses as not found a refund whose gym metadata, charge or
+The named `InvoiceTransitions.processorRefund` method accepts the processor refund,
+those reads and the processor IDs reported missing; it first refuses as not found a refund whose gym metadata, charge or
 currency is not this payment's, then selects an existing processor ID or matching app
 reservation and records the outcome atomically. Plain `refund` handles local reservations and their outcomes;
 processor reports cannot be passed to it. The fake and real transitions run the same
@@ -339,7 +360,8 @@ processor ID (a cash or check refund) never reverses, and a failed or canceled
 refund never moves again. A processor cancels a refund only before it completes,
 so a canceled report for a successful refund is ignored.
 Every processor refund that ends `failed` (recorded failed from the start, moved
-from `pending`, or reversed after success) queues one `staff_notice` effect with
+from `pending`, or reversed after success), apart from a pending row released as
+missing (above), queues one `staff_notice` effect with
 `notice: 'refund_failed'` in the same transaction, which tells the gym's staff
 recipients (owners and admins at runtime) that the payer was not refunded; a
 reversal's email says the refund had been reported successful. For a class pack
@@ -356,8 +378,9 @@ including one on a payment marked as test, and a dashboard refund that outran a 
 refund past its window. A duplicate payment's reservation released this way gets the
 `duplicate_released` notice instead. A staff request that releases one
 is answered directly and queues none, and a reservation a dashboard refund outran inside
-the window queues none either. The fake sends the same `duplicate_released` and
-`refund_released` notices when a processor refund outruns a reservation. The window
+the window queues none either. The fake sends its release notices from plain `refund`,
+as the real transitions do, so a release through `refund` and one a processor refund
+forces notice the same way. The window
 constant lives in `core/interfaces/invoice-transitions.ts` and is re-exported by
 `lapsed-refunds.ts`; the send records that keep a staff retry
 still in flight from being released, and the settling rule, live in `lapsed-refunds.ts`
@@ -371,7 +394,7 @@ still owed. Stripe does not identify who canceled it. A refund created outside t
 sends no cancellation notice, including one first recorded as pending. A canceled
 automatic duplicate-payment refund completes its effect without retrying the refund.
 
-A refund that names a released tagged reservation and later succeeds is recorded
+A refund that names a tagged reservation released before it had a processor ID and later succeeds is recorded
 as an external refund. `notice: 'refund_arrived'` tells staff it reached Stripe,
 correcting the release notice once; a durable audit marker deduplicates this follow-up.
 A terminal invoice never moves for failed, action-needed and cancellation outcomes.
@@ -381,7 +404,7 @@ listing it. Late card successes still record and refund duplicates.
 
 `createTransitionNotifications` sends localized receipts, signed pay/update-card
 links, and staff notices (a duplicate card payment, a failed processor refund, a
-canceled app-created refund, a duplicate payment's released reservation, or a staff refund released after its window).
+canceled app-created refund, a missing processor refund, a later success for one, a duplicate payment's released reservation, or a staff refund released after its window).
 Runtime must supply a gym SMTP resolver (or demo outbox), trusted canonical origin and staff recipients. Household email respects
 the gym's email switch and matching member opt-outs/deliverability, through the
 household recipient helper shared with signed-link delivery and billing alerts. Receipts and
@@ -399,12 +422,10 @@ keeps them usable and a retry mints no new pair. Outcome-write failures are
 reported rather than swallowed. Ordinary transition/webhook replay creates one
 delivery job.
 
-Runtime wiring: nothing in the runtime calls the transitions yet, so
-`configureTransitionEffects` is not called and the hourly sweep does nothing.
-The first consumer to be wired (charge runner, webhook handlers, manual payments
-and refunds) constructs one transition service with `afterCommit`, injects it
-into every consumer and the effect worker, gives the worker the real membership
-lifecycle, per-gym payment and email resolvers and the runner's retry callback,
-and calls `configureTransitionEffects`. Tests compose the real membership service, notification helper,
+At startup, `composeBillingWebhooks` calls `configureTransitionEffects` and shares the
+transition service with the webhook handlers, charge runner, staff payments and effect worker.
+Its `afterCommit` callback publishes queued work, including missing-refund staff notices.
+The runtime supplies the gym’s mail transport and resolves owner and admin email addresses.
+Tests compose the real membership service, notification helper,
 signed-link service and job registrations with FakePayments/FakeJobs/FakeEmail
 against PostgreSQL, plus recorded synthetic Stripe fixtures through StripePayments.

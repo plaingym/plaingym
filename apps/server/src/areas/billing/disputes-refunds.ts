@@ -70,25 +70,31 @@ export function createDisputeRefundWriter(options: DisputeRefundOptions) {
    * takes that row; an untagged reservation, from before the marker, keeps matching any refund of its payment. Every
    * other refund is external: it gets a deterministic ID, so every path records it as one row, and it leaves
    * reservations to the app's own refund, unless the processor has no room left for them: those never reached it, and
-   * are released (untagged ones too, once a refund naming another reservation leaves them unmatched). False when the
-   * refund does not belong to this payment. */
+   * are released (untagged ones too, once a refund naming another reservation leaves them unmatched). A later success
+   * for a refund billing released as missing changes nothing: the transition records it once for staff and answers
+   * ignored, so it still counts as handled. False when the refund does not belong to this payment. */
   async function refund(gymId: string, payment: Payment, value: Refund, provider: Pick<Payments, 'readPaymentObject'>): Promise<boolean> {
     const currency = value.currency.toUpperCase();
     if (value.metadata.gymId !== gymId || currency !== payment.currency
       || ![payment.paymentIntentId, payment.chargeId].includes(value.chargeId)) return false;
     // Processor reads stay outside the transaction. The transition rechecks the selected reservation and every
-    // pending amount under the invoice lock, then releases and records atomically. A refund the processor can't
-    // find is left out: only an external refund that must weigh it refuses to record, so the app's own refund and an
-    // already recorded one never wait on another refund.
+    // pending amount under the invoice lock, then releases and records atomically. A refund the processor reports
+    // missing (not found for the refund itself) is passed apart from the found ones: the transition releases it only
+    // as far as an external refund needs its room, with a staff notice. Any other unknown read (a missing parent,
+    // another gym's metadata, an uncertain object) goes in neither list, so the row counts as unread and blocks a
+    // release. A read that throws fails this write before the transition runs, even for the app's own refund or a
+    // replay. Once the reads finish, those paths do not need to release other reservations.
     const pending = refundReleased(value) ? [] : await scope(gymId, tx => tx.select().from(refunds)
       .where(eq(refunds.paymentId, payment.id)));
     const pendingRefunds: Refund[] = [];
+    const missingRefunds: string[] = [];
     for (const row of pending.filter(row => row.status === 'pending' && row.processorId !== null && row.processorId !== value.id)) {
       const found = await provider.readPaymentObject({ kind: 'refund', id: row.processorId! });
-      if (found.status === 'found' && found.value.kind === 'refund') pendingRefunds.push(found.value.object);
+      if (found.status === 'unknown' && found.missing === true) missingRefunds.push(row.processorId!);
+      else if (found.status === 'found' && found.value.kind === 'refund') pendingRefunds.push(found.value.object);
     }
     const request: ProcessorRefundTransition = { invoiceId: payment.invoiceId, paymentId: payment.id,
-      refundId: processorRefundId(gymId, value.id), processorRefund: value, pendingRefunds };
+      refundId: processorRefundId(gymId, value.id), processorRefund: value, pendingRefunds, missingRefunds };
     await options.transitions.processorRefund(system(gymId), request);
     // A timed-out request may finish after settlement listed Stripe and released its reservation. Its external row
     // records the money; a durable follow-up corrects the earlier release notice, once, including on webhook replay.

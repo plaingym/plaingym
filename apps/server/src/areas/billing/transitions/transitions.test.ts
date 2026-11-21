@@ -673,6 +673,95 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect(rows.refunds.find(row => row.processorId === 're_unreadable')).toMatchObject({ status: 'pending', amountCents: 2000 });
     expect(rows.invoice.status).toBe('partially_refunded');
   });
+  it('releases a pending processor refund the processor reports missing when an external refund needs its room', async () => {
+    const f = await fixture(); await succeed(f); await f.transitions.cardSucceeded(f.context, f.success);
+    const payment = (await f.read()).payments[0]!, missingId = uuidv7();
+    await f.transitions.refund(f.context, { invoiceId: f.invoice.id, paymentId: payment.id, currency: 'CAD', refundId: missingId,
+      amountCents: 2000, status: 'pending', processorId: 're_unreadable' });
+    const external = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount: 9000, idempotencyKey: 'external' });
+    const writer = createDisputeRefundWriter({ ...f.options, transitions: f.transitions });
+    expect(await writer.refund(f.gymId, payment, external, f.provider)).toBe(true);
+    const rows = await f.read();
+    expect(rows.refunds.find(row => row.id === missingId)).toMatchObject({ status: 'failed', processorId: 're_unreadable' });
+    expect(rows.refunds.find(row => row.processorId === external.id)).toMatchObject({ status: 'succeeded', amountCents: 9000 });
+    const notices = rows.audits.filter(row => row.action === effectCreated && (row.after as { notice?: string }).notice === 'refund_missing');
+    expect(notices).toHaveLength(1);
+    expect(notices[0]!.after).toMatchObject({ kind: 'staff_notice', refundId: missingId, paymentId: payment.id });
+    const job = { gymId: f.gymId, timezone: 'UTC', clock: f.clock, jobId: uuidv7(), attempt: 1 };
+    f.email.respondNext(new DeliveryError('not_accepted', 'SMTP unavailable'));
+    await expect(f.effects.run(notices[0]!.targetId, job)).rejects.toThrow('SMTP unavailable');
+
+    // Stripe later reports that refund succeeded: the release stands, and staff hear about it once.
+    const found = { ...external, id: 're_unreadable', amount: 2000, status: 'succeeded' as const };
+    const lines: string[] = [], previous = setLogSink(line => { lines.push(line); });
+    try {
+      expect(await writer.refund(f.gymId, payment, found, f.provider)).toBe(true);
+      const after = await f.read();
+      expect(after.refunds.find(row => row.id === missingId)).toMatchObject({ status: 'failed', processorId: 're_unreadable',
+        resolvedAt: rows.refunds.find(row => row.id === missingId)!.resolvedAt });
+      expect(after.invoice).toEqual(rows.invoice);
+      expect(after.audits.filter(row => row.action === 'billing.refund.missing_found')).toMatchObject([{ targetId: missingId,
+        after: { processorId: 're_unreadable', amountCents: 2000, currency: 'CAD' } }]);
+      const foundNotices = after.audits.filter(row => row.action === effectCreated && (row.after as { notice?: string }).notice === 'refund_found');
+      expect(foundNotices).toHaveLength(1);
+      expect(foundNotices[0]!.after).toMatchObject({ kind: 'staff_notice', refundId: missingId, paymentId: payment.id });
+      // Identifiers only: no amount, email or other field.
+      expect(lines.map(line => JSON.parse(line) as Record<string, unknown>)).toEqual([{ time: expect.any(String),
+        level: 'warn', event: 'billing.refunds.missing_found', gymId: f.gymId, invoiceId: f.invoice.id, refundId: missingId }]);
+      // A replay adds no audit, effect or log line.
+      expect(await writer.refund(f.gymId, payment, found, f.provider)).toBe(true);
+      expect(await f.read()).toEqual(after);
+      expect(lines).toHaveLength(1);
+      await f.effects.run(foundNotices[0]!.targetId, { ...job, jobId: uuidv7() });
+      await f.effects.run(notices[0]!.targetId, { ...job, attempt: 2 });
+      expect(f.email.messages.map(message => message.subject)).toEqual(['Refund for invoice 1 was found in Stripe']);
+      expect((await f.read()).audits.filter(row => row.action === effectCompleted && row.targetId === notices[0]!.targetId)).toHaveLength(1);
+    } finally { setLogSink(previous); }
+  });
+  it('releases nothing when the read of a pending processor refund throws', async () => {
+    const f = await fixture(); await succeed(f); await f.transitions.cardSucceeded(f.context, f.success);
+    const payment = (await f.read()).payments[0]!;
+    await f.transitions.refund(f.context, { invoiceId: f.invoice.id, paymentId: payment.id, currency: 'CAD', refundId: uuidv7(),
+      amountCents: 2000, status: 'pending', processorId: 're_unreadable' });
+    const external = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount: 9000, idempotencyKey: 'external' });
+    const failure = new Error('Processor read failed');
+    const provider: Pick<typeof f.provider, 'readPaymentObject'> = { readPaymentObject: async reference => {
+      if (reference.id === 're_unreadable') throw failure;
+      return f.provider.readPaymentObject(reference);
+    } };
+    const writer = createDisputeRefundWriter({ ...f.options, transitions: f.transitions }), before = await f.read();
+    await expect(writer.refund(f.gymId, payment, external, provider)).rejects.toBe(failure);
+    expect(await f.read()).toEqual(before);
+  });
+  // A refund whose parent or ownership check failed is unverified, not missing: it keeps blocking, and its later
+  // verified success is still recorded.
+  it('keeps an unverified pending processor refund and records its later success', async () => {
+    const f = await fixture(); await succeed(f); await f.transitions.cardSucceeded(f.context, f.success);
+    const payment = (await f.read()).payments[0]!, unverifiedId = uuidv7(), unsentId = uuidv7();
+    const base = { invoiceId: f.invoice.id, paymentId: payment.id, currency: 'CAD' };
+    await f.transitions.refund(f.context, { ...base, refundId: unverifiedId, amountCents: 2000, status: 'pending', processorId: 're_unverified' });
+    await f.transitions.refund(f.context, { ...base, refundId: unsentId, amountCents: 6000, status: 'pending', tagged: true });
+    const external = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount: 3000, idempotencyKey: 'external' });
+    const provider: Pick<typeof f.provider, 'readPaymentObject'> = { readPaymentObject: async reference =>
+      reference.id === 're_unverified' ? { status: 'unknown', reference } : f.provider.readPaymentObject(reference) };
+    const writer = createDisputeRefundWriter({ ...f.options, transitions: f.transitions }), before = await f.read();
+    const lines: string[] = [], previous = setLogSink(line => { lines.push(line); });
+    try {
+      await expect(writer.refund(f.gymId, payment, external, provider)).rejects.toMatchObject({ code: 'conflict' });
+    } finally { setLogSink(previous); }
+    expect(await f.read()).toEqual(before);
+    // Identifiers only: no amount, email or other field.
+    expect(lines.map(line => JSON.parse(line) as Record<string, unknown>)).toEqual([{ time: expect.any(String),
+      level: 'warn', event: 'billing.refunds.unverified', gymId: f.gymId, invoiceId: f.invoice.id, refundId: unverifiedId }]);
+    const verified = { ...external, id: 're_unverified', amount: 2000, status: 'succeeded' as const };
+    expect(await writer.refund(f.gymId, payment, verified, provider)).toBe(true);
+    expect((await f.read()).refunds.find(row => row.id === unverifiedId)).toMatchObject({ status: 'succeeded', processorId: 're_unverified' });
+    expect(await writer.refund(f.gymId, payment, external, provider)).toBe(true);
+    const rows = await f.read();
+    expect(rows.refunds.find(row => row.processorId === external.id)).toMatchObject({ status: 'succeeded', amountCents: 3000 });
+    expect(rows.refunds.find(row => row.id === unsentId)).toMatchObject({ status: 'failed' });
+    expect(rows.audits.filter(row => row.action === effectCreated && (row.after as { notice?: string }).notice === 'refund_missing')).toEqual([]);
+  });
   it.each([true, false])('rechecks a processor row linked after the reads, with room for the external refund: %s', async fits => {
     const f = await fixture(); await succeed(f); await f.transitions.cardSucceeded(f.context, f.success);
     const payment = (await f.read()).payments[0]!, unsentId = uuidv7();
@@ -1124,6 +1213,10 @@ invoiceTransitionsContract('invoice transitions with real PostgreSQL', async opt
       });
     },
     advance(milliseconds) { f.clock.advance(milliseconds); },
+    async staff() {
+      const user = await factory('authUser', f.gymId);
+      return { ...f.context, actor: { kind: 'user', userId: user.id } };
+    },
     async read() {
       const rows = await f.read(), attempt = rows.attempts.find(row => row.id === f.attempt.id)!;
       return { invoice: rows.invoice.status, attempt: { status: attempt.status, declineCode: attempt.declineCode },
