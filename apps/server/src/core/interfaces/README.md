@@ -42,14 +42,20 @@ are implemented here.
   provenance. Cash and check refunds never reverse. `processorRefund` accepts processor
   reports and pending reads separately from plain `refund`, refuses as not found a report
   whose gym metadata, charge or currency is not the payment's, matches recorded IDs or app
-  reservations and releases outrun reservations atomically. Unread processor rows keep
-  reserving their amount and block only a decision that would release an unsent reservation.
-  The fake's `seedRefund` accepts persisted provenance for fixtures, and the fake's
-  `processorRefund` sends a staff notice for each outrun reservation it releases that is a
-  duplicate, or that a system actor releases past `refundRetryWindowMs` (23 hours, exported
-  here). `invoice-transitions.contract.ts` runs the same cancellation, processor ownership
-  and matching, reservation, release-notice and rollback cases against the fake and the
-  real transitions.
+  reservations and makes room for an external refund atomically. The optional
+  `missingRefunds` lists processor IDs of pending refunds that the processor reported
+  missing. The transition releases them newest first, only as needed, and queues
+  a staff notice for each release. Unread processor rows still reserve their amounts and
+  force a retry if the external refund needs more room after those releases. A later
+  verified success for a refund released as missing keeps the row failed and the invoice
+  unchanged, and queues one staff notice for manual reconciliation.
+  The fake's `seedRefund` accepts persisted provenance for fixtures. Its plain `refund`
+  sends a staff notice when it fails a reservation without a processor ID if the reservation
+  is marked as a duplicate or a system actor releases it past `refundRetryWindowMs` (23 hours,
+  exported here). `processorRefund` uses that same rule when it releases unsent reservations.
+  `invoice-transitions.contract.ts` runs the same cancellation, processor ownership and
+  matching, reservation, release-notice and rollback cases against the fake and the real
+  transitions.
 - `MemberHouseholdContext` accepts authenticated user/gym IDs and a selected
   household, then reloads the link. Payers may see the household; non-payers see
   their linked member. Its context carries IDs only. It does not replace
