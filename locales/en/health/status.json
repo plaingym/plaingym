@@ -148,5 +148,13 @@
   "failures.cancel": "Cancel",
   "failures.close": "Close",
   "failures.working": "Dismissing…",
-  "failures.dismissFailed": "Unable to dismiss. Refresh and try again."
+  "failures.dismissFailed": "Unable to dismiss. Refresh and try again.",
+  "acknowledge": "Acknowledge failed jobs",
+  "acknowledgeTitle": "Acknowledge failed jobs",
+  "acknowledgeHelp": "This clears the failed jobs counted here from Background jobs. It doesn't run them again or undo anything they did. Jobs that fail later show again.",
+  "acknowledgeConfirm": "Acknowledge",
+  "acknowledging": "Acknowledging…",
+  "acknowledgeCancel": "Cancel",
+  "acknowledgeClose": "Close",
+  "acknowledgeFailed": "The failed jobs could not be acknowledged. Try again."
 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { and, asc, eq, inArray, isNull, lt, notInArray, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, lt, lte, notInArray, or, sql } from 'drizzle-orm';
 import { advisoryLockNamespace, advisoryLocks, forGym, forSystem, isConnectionError, jobs, jobScheduleCursors, uuidv7 } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
@@ -335,6 +335,31 @@ export class PostgresJobs implements Jobs, JobRecovery {
       .where(and(eq(jobs.id, jobId), eq(jobs.status, 'failed'), isNull(jobs.acknowledgedAt))).returning({ id: jobs.id });
     const acknowledged = await (transaction ? update(transaction.tx) : this.#database.forGym(options.gymId, update));
     return acknowledged.length === 1;
+  }
+  /** Acknowledges the gym's unacknowledged failed jobs that failed by `through`; later failures stay counted. */
+  async acknowledgeFailedThrough(options: { gymId: string; through: Date; at: Date }, transaction?: JobTransaction): Promise<number> {
+    if (transaction) assertJobTransaction(transaction, options.gymId);
+    else assertNoTransaction('jobs.acknowledgeFailedThrough');
+    idSchema.parse(options.gymId);
+    if (!Number.isFinite(options.through.getTime()) || !Number.isFinite(options.at.getTime())) throw new Error('Invalid job time');
+    const update = (tx: Tx) => tx.update(jobs).set({ acknowledgedAt: options.at })
+      .where(and(eq(jobs.gymId, options.gymId), eq(jobs.status, 'failed'), isNull(jobs.acknowledgedAt),
+        lte(jobs.runAt, options.through))).returning({ id: jobs.id });
+    const acknowledged = await (transaction ? update(transaction.tx) : this.#database.forGym(options.gymId, update));
+    return acknowledged.length;
+  }
+  /**
+   * Install-wide: fails and acknowledges every running job with one of these names, in every gym and install
+   * jobs alike. Only for a restored database, whose running jobs no worker holds.
+   */
+  async failInterrupted(names: readonly string[], options: { at: Date; reason: string }): Promise<number> {
+    assertNoTransaction('jobs.failInterrupted');
+    if (!names.length) throw new Error('No job names to fail');
+    if (!Number.isFinite(options.at.getTime())) throw new Error('Invalid job time');
+    const failed = await this.#database.forSystem(tx => tx.update(jobs).set({ status: 'failed', acknowledgedAt: options.at,
+      runAt: options.at, lastError: options.reason, lockToken: null, lockedUntil: null })
+      .where(and(inArray(jobs.name, [...names]), eq(jobs.status, 'running'))).returning({ id: jobs.id }));
+    return failed.length;
   }
   /** Only schedules without a cursor inherit the occurrence watermark used by earlier releases. */
   async #seed(gym: Gym, missing: readonly (readonly [string, string])[], existing: ReadonlySet<string>, now: Date): Promise<Map<string, Date>> {

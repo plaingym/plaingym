@@ -17,6 +17,12 @@ restorable with their original key, but don't establish the current-key health s
 **Back up now** queues one manual snapshot; a second request is refused until it finishes,
 and requests during a restore or before backup setup are refused.
 
+A snapshot is taken while its own backup is still running. After a restore, the backup run that
+took the restored snapshot counts as a successful backup, and any other run the snapshot caught in
+progress is marked failed. A backup job the snapshot caught running is marked failed and
+acknowledged, so **System health → Background jobs** stays clear. The restore does this
+itself, so it holds for any snapshot, whenever it was taken.
+
 ## When rollback is refused
 
 `update.sh --rollback` prints the snapshot identifier when the previous image is below the

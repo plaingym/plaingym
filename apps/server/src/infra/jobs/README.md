@@ -51,6 +51,17 @@ counts once the next claim marks it failed. Its handler may still be running,
 so a retried job's handler needs the same idempotency as any other.
 `retryFailed` returns false for a job that is missing or has another status.
 
+`PostgresJobs` has two more methods outside `JobRecovery`.
+`acknowledgeFailedThrough({ gymId, through, at }, transaction?)` acknowledges every
+unacknowledged failed job of the gym whose failure time is at or before `through`
+and returns the count; the System health page's **Acknowledge failed jobs** action
+uses it. `failInterrupted(names, { at, reason })` runs in system context across every
+gym and install jobs: it marks every `running` job with one of those names failed and
+acknowledged, records `reason` as its error and clears its lease, and returns the
+count. A restore uses it for the backup jobs its snapshot caught running, which no
+worker holds in the restored database. Neither method changes jobs with any other
+status, and an acknowledged job stays visible to `failedJobs`.
+
 All three methods accept an optional `JobTransaction` as their last argument,
 validated like `enqueue`'s. Invoice effect recovery takes its invoice lock in that
 transaction and uses the same handle for queue reads, resets or acknowledgments,

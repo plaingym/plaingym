@@ -15,6 +15,7 @@ import { Page, PageHeader } from '../../components/ui/page.js';
 import { ChargeFailures } from './charge-failures.js';
 import { EffectFailures } from './effect-failures.js';
 import { BackupActions } from './backups.js';
+import { FailedJobsActions } from './failed-jobs.js';
 
 const label = (key: string) => t('health/status:' + key);
 /** A size in bytes in the largest unit that keeps it at 1 or more (decimal units, as disks are sold). */
@@ -102,6 +103,7 @@ function HealthPanel({ gymId, owner, timezone }: { gymId: string; owner: boolean
     <PageHeader title={label('title')} actions={<Button variant="outline" disabled={query.isFetching} onClick={() => void cache.invalidateQueries({ queryKey: ['health', gymId] })}>{label('refresh')}</Button>}/>
     {query.isPending ? <p role="status" data-loading>{label('loading')}</p> : query.isError ? <Alert variant="error">{label('loadFailed')}</Alert> : <HealthTiles tiles={query.data.tiles} timezone={timezone} extras={{
       last_backup: <BackupActions gymId={gymId} owner={owner}/>,
+      failed_jobs: <FailedJobsActions gymId={gymId} tile={query.data.tiles.find(tile => tile.id === 'failed_jobs')}/>,
       invoice_effects: <EffectFailures gymId={gymId} timezone={timezone} reporting={query.data.tiles.some(tile => tile.id === 'invoice_effects' && tile.status === 'error')}/>,
       last_charge_run: <ChargeFailures gymId={gymId} reporting={query.data.tiles.some((tile) => tile.id === 'last_charge_run' && tile.status === 'error')}/> }}/>}
   </Page>;

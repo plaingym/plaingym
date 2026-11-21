@@ -156,6 +156,13 @@ The tile stays in error while any unacknowledged failed jobs remain, however old
 the failure is. With none, the page leaves out the oldest failure row. A failed
 job whose effect was dismissed by a release that did not yet acknowledge jobs on
 Dismiss has no acknowledgment, so it stays counted until retention deletes it.
+While the tile counts failed jobs, owners and admins (`settings.manage`) see
+**Acknowledge failed jobs**. After a confirmation it posts the tile's `checkedAt`
+as `through` to `POST /api/health/failed-jobs/acknowledge`, which acknowledges the
+gym's failed jobs that failed by the earlier of `through` and now, so a job that
+fails after the page was read stays counted. It doesn't run the jobs again; the
+answer is the number acknowledged, and a non-zero count writes one
+`health.failed_jobs.acknowledged` audit event in the same transaction.
 Disk details report `uploads` and `backupStaging` separately, each with filesystem
 `totalBytes` and `availableBytes`, plus `sameFilesystem`: true only when a backup
 staging directory is configured on the same device as the uploads directory and the

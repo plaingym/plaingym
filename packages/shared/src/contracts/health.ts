@@ -114,6 +114,9 @@ export const exhaustedEffectsResponseSchema = z.strictObject({ data: z.array(exh
 export const effectActionRequestSchema = z.strictObject({ effectId: idSchema });
 export const effectActionResponseSchema = z.strictObject({ data: z.strictObject({ changed: z.boolean() }) });
 export type ExhaustedEffect = z.infer<typeof exhaustedEffectSchema>;
+/** Acknowledges the failed jobs the Background jobs tile counted: those that failed by `through` (the tile's `checkedAt`). */
+export const acknowledgeFailedJobsRequestSchema = z.strictObject({ through: instantSchema });
+export const acknowledgeFailedJobsResponseSchema = z.strictObject({ data: z.strictObject({ acknowledged: count }) });
 /** The most reports one dismissal names: the list holds at most 90 days of reports. */
 export const maxDismissedChargeRuns = 500;
 /**
@@ -173,6 +176,8 @@ export const healthContracts = {
     body: effectActionRequestSchema, response: effectActionResponseSchema },
   dismissEffect: { method: 'post', path: '/api/health/effect-failures/dismiss', permission: manageSettings,
     body: effectActionRequestSchema, response: effectActionResponseSchema },
+  acknowledgeFailedJobs: { method: 'post', path: '/api/health/failed-jobs/acknowledge', permission: manageSettings,
+    body: acknowledgeFailedJobsRequestSchema, response: acknowledgeFailedJobsResponseSchema },
 } as const satisfies Record<string, EndpointContract>;
 
 export type HealthTileId = z.infer<typeof healthTileIdSchema>;
