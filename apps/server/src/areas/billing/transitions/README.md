@@ -43,9 +43,9 @@ the reservation even if a revocation fails, since no credential was disclosed.
 
 Every notice sends through `createEmailDeliveries`, under the key
 `billing.<purpose>:<object>:<generation>`, and a staff notice under one key per recipient,
-`billing.<purpose>:<object>:<generation>:<recipient hash>`. The purpose is `receipt` or `dunning` (member
-notices), or `duplicate_payment`, `duplicate_released`, `refund_failure` or `credits_not_granted` (staff
-notices), and the object is the invoice, payment or refund it is about. The generation is the persisted
+`billing.<purpose>:<object>:<generation>:<recipient hash>`. Member notices use `receipt` or `dunning`.
+Staff notices use the purpose for that notice, such as `refund_missing` with the missing refund's ID.
+The object is the invoice, payment or refund the notice concerns. The generation is the persisted
 work that asked for it: the effect, or the receipt job for a requested resend. So a repeated job sends
 nothing more, each new failure or resend has its own key, and a member's address changed between retries
 gets no second notice. A member notice's key holds no address, so an erased member's address leaves
@@ -380,7 +380,7 @@ still owed. Stripe does not identify who canceled it. A refund created outside t
 sends no cancellation notice, including one first recorded as pending. A canceled
 automatic duplicate-payment refund completes its effect without retrying the refund.
 
-A refund that names a released tagged reservation and later succeeds is recorded
+A refund that names a tagged reservation released before it had a processor ID and later succeeds is recorded
 as an external refund. `notice: 'refund_arrived'` tells staff it reached Stripe,
 correcting the release notice once; a durable audit marker deduplicates this follow-up.
 A terminal invoice never moves for failed, action-needed and cancellation outcomes.
@@ -390,7 +390,7 @@ listing it. Late card successes still record and refund duplicates.
 
 `createTransitionNotifications` sends localized receipts, signed pay/update-card
 links, and staff notices (a duplicate card payment, a failed processor refund, a
-canceled app-created refund, a duplicate payment's released reservation, or a staff refund released after its window).
+canceled app-created refund, a missing processor refund, a duplicate payment's released reservation, or a staff refund released after its window).
 Runtime must supply a gym SMTP resolver (or demo outbox), trusted canonical origin and staff recipients. Household email respects
 the gym's email switch and matching member opt-outs/deliverability, through the
 household recipient helper shared with signed-link delivery and billing alerts. Receipts and
@@ -408,12 +408,10 @@ keeps them usable and a retry mints no new pair. Outcome-write failures are
 reported rather than swallowed. Ordinary transition/webhook replay creates one
 delivery job.
 
-Runtime wiring: nothing in the runtime calls the transitions yet, so
-`configureTransitionEffects` is not called and the hourly sweep does nothing.
-The first consumer to be wired (charge runner, webhook handlers, manual payments
-and refunds) constructs one transition service with `afterCommit`, injects it
-into every consumer and the effect worker, gives the worker the real membership
-lifecycle, per-gym payment and email resolvers and the runner's retry callback,
-and calls `configureTransitionEffects`. Tests compose the real membership service, notification helper,
+At startup, `composeBillingWebhooks` calls `configureTransitionEffects` and shares the
+transition service with the webhook handlers, charge runner, staff payments and effect worker.
+Its `afterCommit` callback publishes queued work, including missing-refund staff notices.
+The runtime supplies the gym’s mail transport and resolves owner and admin email addresses.
+Tests compose the real membership service, notification helper,
 signed-link service and job registrations with FakePayments/FakeJobs/FakeEmail
 against PostgreSQL, plus recorded synthetic Stripe fixtures through StripePayments.

@@ -79,8 +79,8 @@ export function createDisputeRefundWriter(options: DisputeRefundOptions) {
     // Processor reads stay outside the transaction. The transition rechecks the selected reservation and every
     // pending amount under the invoice lock, then releases and records atomically. A refund the processor reports
     // missing is passed apart from the found ones: the transition releases it only as far as an external refund needs
-    // its room, with a staff notice. A read that throws fails this write, so a network error never releases anything;
-    // the app's own refund and an already recorded one never wait on another refund.
+    // its room, with a staff notice. A read that throws fails this write before the transition runs, even for the
+    // app's own refund or a replay. Once the reads finish, those paths do not need to release other reservations.
     const pending = refundReleased(value) ? [] : await scope(gymId, tx => tx.select().from(refunds)
       .where(eq(refunds.paymentId, payment.id)));
     const pendingRefunds: Refund[] = [];
