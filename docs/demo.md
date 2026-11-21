@@ -6,9 +6,9 @@ root is a server-rendered product page. **Try the demo** opens a shared, read-on
 showcase with sample data and one-click owner, coach and student logins. The
 button is disabled while the showcase starts, and a note asks visitors to
 reload. The next link opens the repository configured for the install. Old
-entry-host `/demo` links redirect to the product page. Choose **Make my own copy**
-to edit a private sandbox. If you reach the per-network hourly limit, the
-button shows how many minutes to wait.
+entry-host `/demo` links redirect to the product page. On the showcase, choose
+**Make my own copy** in the demo bar to edit a private sandbox. If you reach
+the per-network hourly limit, that button shows how many minutes to wait.
 Copies expire after two idle hours and at most 24 hours after allocation.
 Each private copy keeps its start page at `/demo`, ending with the current deletion
 time and a reminder that using the copy moves that time later, up to 24 hours
