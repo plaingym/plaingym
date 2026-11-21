@@ -48,16 +48,19 @@ visit, and returns any spent credit to its original lot with a `reverse` entry
 in full since, when the credit stays spent. The lot keeps its expiry.
 `attendance.undone` audits the full deleted row in the same transaction, with
 `after.creditReturned` when the visit had spent a credit. A repeated or cross-gym undo is 404; an import is 409
-and cannot be undone. Attendance is therefore no longer append-only for live
-visits; the credit ledger remains append-only. Undo does not rewind lead stages.
+and cannot be undone. Live attendance can be deleted through undo. The credit
+ledger remains append-only. When the undone visit set a `trial_attended` lead's
+trial time, undo moves the time to the earliest remaining non-import visit and
+audits the correction in the same transaction. With no such visit, it keeps
+the time. Undo preserves the lead's stage.
 The session roster offers a confirmed Undo action on live checked-in rows and
 refreshes session counts after success; imported rows have no Undo action.
 
 After a new non-import visit and its audit are inserted, the same transaction
-advances an eligible lead to `trial_attended`, preserving its first attendance
-time and auditing the caller's actor. Repeated visits leave an already advanced
-lead unchanged; won and lost leads keep their stages. A prospect or trial member
-without a lead gains a null-source lead; other members without one gain none.
+advances an eligible lead to `trial_attended` with the visit's occurrence time
+and audits the caller's actor. A backdated visit earlier than the stored trial
+time moves it back and audits the correction. Won and lost leads keep their
+stages. A prospect or trial member without a lead gains a null-source lead.
 
 Each attendance stores a kind, `class` or `open_mat`, fixed when it is recorded: a
 session check-in copies the session's kind, and a kiosk or coach visit without a

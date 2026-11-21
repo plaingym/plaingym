@@ -212,8 +212,10 @@ admissions can still be removed by admission cleanup. A check-in or a membership
 activation advances a lead's stage in its own transaction (a prospect or trial
 member without a lead gains one with no source); its `lead.stage_changed` audit
 holds only the stage and revision. An earlier visit recorded after the lead
-reached `trial_attended` moves its trial time back, and its
-`lead.trial_attendance_corrected` audit holds only that time and the revision.
+reached `trial_attended` moves its trial time back. Undoing the visit that set
+that time moves it to the earliest remaining non-import visit when one exists.
+Both corrections preserve the stage and write a `lead.trial_attendance_corrected`
+audit holding only the time and revision.
 `GET /api/leads/funnel` returns only counts
 per source, never member details, with `Cache-Control: no-store`.
 The staff list, read, edit, lost and reopen routes also require `leads.manage`
@@ -710,7 +712,8 @@ Old versions and documents referenced by signatures remain retained after retire
   the record unchanged. Portal consent changes preserve unsaved household contact edits.
   Staff can text `pay_invoice` and `update_card` links only to the consenting
   billing phone, or otherwise a consenting member at the billing email, as selected
-  by `householdNoticePhones`. Other members remain visible but disabled with a
+  by `householdNoticePhones`. Both phone types must still normalize to their stored
+  E.164 value for the gym's country. Other members remain visible but disabled with a
   payer-only reason in the invoice delivery list. The server refuses an ineligible
   recipient with `sms_payer_only` before minting and rechecks payer selection before
   delivery. Onboarding and waiver links can still go to any consenting member of
