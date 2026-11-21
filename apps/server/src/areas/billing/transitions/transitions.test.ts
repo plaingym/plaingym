@@ -1154,6 +1154,10 @@ invoiceTransitionsContract('invoice transitions with real PostgreSQL', async opt
       });
     },
     advance(milliseconds) { f.clock.advance(milliseconds); },
+    async staff() {
+      const user = await factory('authUser', f.gymId);
+      return { ...f.context, actor: { kind: 'user', userId: user.id } };
+    },
     async read() {
       const rows = await f.read(), attempt = rows.attempts.find(row => row.id === f.attempt.id)!;
       return { invoice: rows.invoice.status, attempt: { status: attempt.status, declineCode: attempt.declineCode },

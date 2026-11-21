@@ -17,6 +17,8 @@ export interface InvoiceTransitionsHarness {
   seedRefund(request: RefundTransition, provenance: RefundProvenance): Promise<void>;
   /** Moves the harness clock forward, so a release can cross or stay inside the refund window. */
   advance(milliseconds: number): void;
+  /** A staff user's context in the harness gym; without it, a user actor with a fresh ID (enough for the fake). */
+  staff?(): Promise<MutationContext>;
   read(): Promise<{ invoice: string; attempt: { status: string; declineCode: string | null }; effects: InvoiceEffect['kind'][];
     refunds: RefundTransition[] }>;
 }
@@ -205,7 +207,8 @@ export function invoiceTransitionsContract(name: string, create: (options?: { pa
       await h.seedRefund(own, provenance);
       h.advance(advance);
       const before = await h.read();
-      const context: MutationContext = systemActor ? { ...h.context, actor: { kind: 'system' } } : h.context;
+      const context: MutationContext = systemActor ? { ...h.context, actor: { kind: 'system' } }
+        : await h.staff?.() ?? { ...h.context, actor: { kind: 'user', userId: randomUUID() } };
       expect((await h.transitions.refund(context, { ...own, status: 'failed' })).outcome).toBe('applied');
       const after = await h.read();
       expect(after.refunds.find(row => row.refundId === own.refundId)?.status).toBe('failed');
