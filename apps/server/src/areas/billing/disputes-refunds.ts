@@ -88,7 +88,7 @@ export function createDisputeRefundWriter(options: DisputeRefundOptions) {
     for (const row of pending.filter(row => row.status === 'pending' && row.processorId !== null && row.processorId !== value.id)) {
       const found = await provider.readPaymentObject({ kind: 'refund', id: row.processorId! });
       if (found.status === 'unknown') missingRefunds.push(row.processorId!);
-      else if (found.value.kind === 'refund') pendingRefunds.push(found.value.object);
+      else if (found.status === 'found' && found.value.kind === 'refund') pendingRefunds.push(found.value.object);
     }
     const request: ProcessorRefundTransition = { invoiceId: payment.invoiceId, paymentId: payment.id,
       refundId: processorRefundId(gymId, value.id), processorRefund: value, pendingRefunds, missingRefunds };
