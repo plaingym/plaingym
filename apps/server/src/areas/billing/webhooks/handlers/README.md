@@ -72,20 +72,22 @@ Payment Checkout collects only when `session.savesCard` is true. A session
 that needs to save its method remains retryable after its payment commits if
 the method has not attached. When the provider confirms the bank method
 belongs to the Checkout customer but has no usable last four digits, collection
-logs the method ID and skips saving it without failing the event. A payment
-Checkout still uses its pay link and starts a join's memberships. A card-update
-or onboarding link completes only once a method is saved, so it stays unused.
-Replaying a Checkout does not pay twice.
+logs the gym and method IDs and records one skip audit per household and method,
+including the mandate ID when available. A later payment-method update with
+usable digits finishes that household's collection and carries over the recorded
+mandate. A payment Checkout still uses its pay link and starts a join's memberships.
+A card-update or onboarding link stays unused when its collection event skips
+saving the method. Replaying a Checkout does not pay twice.
 
 The method's immutable processor creation time is stored in nullable
 `payment_methods.processor_created_at`. Under the household row lock, a collected
-card becomes default only when its processor time is newer than the current
+method becomes default only when its processor time is newer than the current
 default's; null counts as older, and processor ID breaks equal-time ties. There
 is no collection audit watermark or payment-history lookup. Reverse and concurrent
-deliveries converge on the newer card. `payment_method.updated` and
-`payment_method.automatically_updated` refresh only known cards, including expiry
-and processor time, without changing the selected default. No event re-enables a
-revoked card. Changes retain ordinary payment-method audits. The campaign
+deliveries converge on the newer method. Outside deferred collections,
+`payment_method.updated` and `payment_method.automatically_updated` refresh
+known methods without changing the selected default. No event re-enables a
+revoked method. Changes retain ordinary payment-method audits. The campaign
 editor's "Needs a card" filter reads these rows in SQL, so each of these events
 updates it with no Stripe call (`areas/links/campaigns.README.md`).
 

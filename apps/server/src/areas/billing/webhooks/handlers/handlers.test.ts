@@ -371,15 +371,71 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
     try {
       await f.run('setup_intent.succeeded', { kind: 'setup', id: 'seti_bank' });
     } finally { setLogSink(previous); }
-    expect((await f.read()).methods).toEqual([]);
+    const skipped = await f.read();
+    expect(skipped.methods).toEqual([]);
+    expect(skipped.audits).toMatchObject([{ action: 'billing.payment_method.incomplete_bank_skipped',
+      actorKind: 'system', targetType: 'household', targetId: f.household.id }]);
+    expect(skipped.audits[0]!.after).toEqual({ paymentMethodId: id });
     expect(lines.map(line => JSON.parse(line))).toEqual([
-      { time: expect.any(String), level: 'warn', event: 'billing.payment_method.incomplete_bank', paymentMethodId: id },
+      { time: expect.any(String), level: 'warn', event: 'billing.payment_method.incomplete_bank', gymId: f.gymId, paymentMethodId: id },
     ]);
+    await f.run('setup_intent.succeeded', { kind: 'setup', id: 'seti_bank' });
+    expect(await f.read()).toEqual(skipped);
 
     method.customer = 'cus_other';
     f.transport.objects.set('cus_other', { id: 'cus_other', object: 'customer', metadata: { gym_id: f.gymId } });
     await expect(f.run('setup_intent.succeeded', { kind: 'setup', id: 'seti_bank' })).rejects.toThrow('Collected payment method is unresolved');
-    expect((await f.read()).methods).toEqual([]);
+    expect(await f.read()).toEqual(skipped);
+
+    method.customer = 'cus_fixture';
+    method.us_bank_account = { last4: '6789', bank_name: 'STRIPE TEST BANK' };
+    const update = { kind: 'payment_method' as const, id };
+    await f.run('payment_method.updated', update);
+    const collected = await f.read();
+    expect(collected.methods).toMatchObject([{ householdId: f.household.id, processorId: id,
+      type: 'us_bank_account', last4: '6789', bankName: 'STRIPE TEST BANK', isDefault: true }]);
+    expect(collected.audits.filter(row => row.action === 'billing.payment_method.updated'))
+      .toMatchObject([{ targetType: 'payment_method', targetId: collected.methods[0]!.id }]);
+    await f.run('payment_method.updated', update);
+    expect(await f.read()).toEqual(collected);
+
+    await db.forGym(f.gymId, tx => tx.update(paymentMethods).set({ revokedAt: f.clock.now(), isDefault: false })
+      .where(eq(paymentMethods.id, collected.methods[0]!.id)));
+    const revoked = await f.read();
+    await f.run('payment_method.updated', update);
+    expect(await f.read()).toEqual(revoked);
+  });
+  it('requires the skipped bank method ID and carries its mandate into deferred collection', async () => {
+    const f = await fixture(), id = 'pm_usbank_6789', otherId = 'pm_acss_6789';
+    setup(f, 'seti_other_bank', otherId);
+    f.transport.objects.get(otherId)!.acss_debit = { last4: null };
+    await f.run('setup_intent.succeeded', { kind: 'setup', id: 'seti_other_bank' });
+    const skippedOther = await f.read();
+    expect(skippedOther.audits).toMatchObject([{ action: 'billing.payment_method.incomplete_bank_skipped',
+      targetId: f.household.id, after: { paymentMethodId: otherId } }]);
+
+    const update = { kind: 'payment_method' as const, id };
+    await f.run('payment_method.updated', update);
+    expect(await f.read()).toEqual(skippedOther);
+
+    const setupRef = { kind: 'setup' as const, id: 'seti_bank' };
+    setup(f, setupRef.id, id);
+    f.transport.objects.get(setupRef.id)!.mandate = 'mandate_setup';
+    const method = f.transport.objects.get(id)!;
+    method.us_bank_account = { last4: null };
+    await Promise.all([
+      f.run('setup_intent.succeeded', setupRef), f.run('setup_intent.succeeded', setupRef),
+    ]);
+    const skipped = await f.read();
+    expect(skipped.methods).toEqual([]);
+    expect(skipped.audits.filter(row => row.action === 'billing.payment_method.incomplete_bank_skipped')
+      .map(row => row.after)).toEqual(expect.arrayContaining([
+      { paymentMethodId: otherId }, { paymentMethodId: id, mandateId: 'mandate_setup' },
+    ]));
+    expect(skipped.audits).toHaveLength(2);
+    method.us_bank_account = { last4: '6789' };
+    await f.run('payment_method.updated', update);
+    expect((await f.read()).methods).toMatchObject([{ processorId: id, last4: '6789', mandateId: 'mandate_setup' }]);
   });
   it('keeps the newer collected card on reverse delivery, replay, and concurrent collection', async () => {
     const f = await fixture(); setup(f, 'seti_old', 'pm_4242'); setup(f);

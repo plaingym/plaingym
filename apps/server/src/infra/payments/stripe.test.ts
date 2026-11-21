@@ -161,6 +161,29 @@ it('preserves a rerecorded fake bank method type and clears its old gym tag', as
   expect(await replayPayments(recorder.tape, gymId).readPaymentObject(reference)).toEqual(read);
   expect(await payments.listCustomerCards(customerId, options)).toEqual({ cards: [method], nextCursor: null });
 });
+it('paginates fake changes after filtering bank methods without usable digits', async () => {
+  const clock = new TestClock('2026-10-23T12:00:00Z'), payments = new FakePayments(gymId, clock);
+  const since = clock.now(), customerId = charge.customerId;
+  const incomplete = { id: 'pm_without_digits', customerId, type: 'us_bank_account' as const };
+  payments.recordPaymentMethod({ id: 'pm_3155', customerId, expiresMonth: 12, expiresYear: 2030, last4: '3155' });
+  payments.recordPaymentMethod({ ...incomplete, last4: '' });
+  payments.recordPaymentMethod({ id: 'pm_acss_6789', customerId, type: 'acss_debit', last4: '6789' });
+
+  const card = { kind: 'payment_method', object: { id: 'pm_3155' } };
+  const bank = { kind: 'payment_method', object: { id: 'pm_acss_6789' } };
+  expect(await payments.listChangesSince(since)).toMatchObject({ changes: [card, bank], nextCursor: null });
+  const first = await payments.listChangesSince(since, { limit: 1 });
+  expect(first.changes).toMatchObject([card]);
+  expect(first.nextCursor).not.toBeNull();
+  expect(await payments.listChangesSince(since, { limit: 1, cursor: first.nextCursor! }))
+    .toMatchObject({ changes: [bank], nextCursor: null });
+
+  payments.recordPaymentMethod({ ...incomplete, last4: '6789' });
+  const { changes } = await payments.listChangesSince(since);
+  expect(changes).toContainEqual(expect.objectContaining({
+    kind: 'payment_method', object: expect.objectContaining({ id: incomplete.id, last4: '6789' }),
+  }));
+});
 const recordName = 'StripePayments with synthetic API fixtures', replayName = 'StripePayments with recorded API replay';
 const caseName = () => expect.getState().currentTestName!.replace(recordName, '').replace(replayName, '').trim();
 fullPaymentsContract(recordName, async (card) => {

@@ -215,7 +215,9 @@ are expected and transitions must be idempotent. A genuine missing object (a
 provider 404) blocks the pass with its reference for manual resolution. Existing
 objects without gym metadata after parent resolution, including unrelated
 Dashboard charges and their refunds/disputes, are excluded along with other gyms'
-objects. Provider/network errors still fail the pass. `readPaymentObject` and
+objects. Stripe and the fake also skip bank methods without four usable last
+digits. The fake filters these methods before applying its pagination offset.
+Provider/network errors still fail the pass. `readPaymentObject` and
 `findCharge` return `unknown` for objects that are missing or not this gym's.
 Do not use search to decide whether a charge happened.
 
