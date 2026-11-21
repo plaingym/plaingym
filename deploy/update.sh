@@ -472,12 +472,14 @@ docker_reports() { # STDERR MESSAGE: match a complete Docker error line even whe
 }
 cleanup_snapshot_check() {
   # Docker may still be creating the container when the first removal runs.
-  timeout -k 5 10 docker rm -f "$1" >/dev/null 2>&1 || true
+  timeout -k 5 10 docker rm -f "$1" >/dev/null 2>&1 || case "$?" in 124|137) return 1 ;; esac
   for snapshot_check_attempt in 1 2; do
     [ "$snapshot_check_attempt" -eq 1 ] || sleep 1
     # Capture stderr while discarding stdout, which can include container configuration.
     if snapshot_check_error=$(timeout -k 5 10 docker container inspect "$1" 2>&1 >/dev/null); then
       break
+    else
+      case "$?" in 124|137) return 1 ;; esac
     fi
     if [ "$snapshot_check_attempt" -eq 2 ]; then
       docker_reports "$snapshot_check_error" "No such container: $1"
@@ -485,7 +487,11 @@ cleanup_snapshot_check() {
     fi
   done
 
-  snapshot_check_error=$(timeout -k 5 10 docker rm -f "$1" 2>&1 >/dev/null) && return 0
+  if snapshot_check_error=$(timeout -k 5 10 docker rm -f "$1" 2>&1 >/dev/null); then
+    return 0
+  else
+    case "$?" in 124|137) return 1 ;; esac
+  fi
   if ! docker_reports "$snapshot_check_error" "removal of container $1 is already in progress"; then
     docker_reports "$snapshot_check_error" "No such container: $1"
     return
@@ -493,8 +499,12 @@ cleanup_snapshot_check() {
 
   for snapshot_check_poll in 1 2 3 4 5; do
     [ "$snapshot_check_poll" -eq 1 ] || sleep 1
-    if ! snapshot_check_error=$(timeout -k 5 10 docker container inspect "$1" 2>&1 >/dev/null) &&
-      docker_reports "$snapshot_check_error" "No such container: $1"; then
+    if snapshot_check_error=$(timeout -k 5 10 docker container inspect "$1" 2>&1 >/dev/null); then
+      continue
+    else
+      case "$?" in 124|137) return 1 ;; esac
+    fi
+    if docker_reports "$snapshot_check_error" "No such container: $1"; then
       return 0
     fi
   done

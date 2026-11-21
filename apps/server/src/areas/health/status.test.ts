@@ -16,7 +16,7 @@ import { encryptSmtpConfig } from '../settings/smtp.js';
 import { encryptSmsConfig } from '../settings/sms.js';
 import { encryptGoogleConfig } from '../settings/google-login.js';
 import { PostgresJobStatsQuery } from '../../infra/jobs/postgres.js';
-import { createStatusProviders } from './status.providers.js';
+import { createStatusProviders, type StatusOptions } from './status.providers.js';
 import { setLogSink } from '../../core/log.js';
 import * as secrets from '../../core/secrets.js';
 import { createHealthService, healthProvider } from './status.js';
@@ -256,26 +256,50 @@ describe('built-in providers', () => {
     expect(await tile('disk', gymA, { env: single, device: shared, disk: async () => ({ blocks: 20_000_000, bsize: 1024, bavail: 500_000 }) }))
       .toMatchObject({ status: 'warning', details: { sameFilesystem: true }, message: expect.stringContaining('(one volume)') });
   });
-  it('shows one shared volume only when one device reports the same total capacity', async () => {
+  it('checks a same-device staging quota twice and still shows separate volumes', async () => {
     const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' };
     const shared = vi.fn(async (_path: string) => 7);
-    // A quota or bind mount on the same device reports a smaller total for staging.
-    const quotad = vi.fn(async (path: string) => path === '/staging'
-      ? { blocks: 10_000_000, bsize: 1024, bavail: 5_000_000 }
-      : { blocks: 20_000_000, bsize: 1024, bavail: 10_000_000 });
-    expect(await tile('disk', gymA, { env: single, device: shared, disk: quotad })).toMatchObject({
+    const quota = vi.fn(async (path: string) => path === '/staging'
+      ? { blocks: 1_000_000_000, bsize: 1000, bavail: 500_000_000 }
+      : { blocks: 10_000_000_000, bsize: 1000, bavail: 5_000_000_000 });
+    expect(await tile('disk', gymA, { env: single, device: shared, disk: quota })).toMatchObject({
       status: 'healthy', details: {
         sameFilesystem: false,
-        uploads: { totalBytes: 20_480_000_000, availableBytes: 10_240_000_000 },
-        backupStaging: { totalBytes: 10_240_000_000, availableBytes: 5_120_000_000 },
-      }, message: 'Free space: uploads 10.24 GB; backup staging 5.12 GB.',
+        uploads: { totalBytes: 10_000_000_000_000, availableBytes: 5_000_000_000_000 },
+        backupStaging: { totalBytes: 1_000_000_000_000, availableBytes: 500_000_000_000 },
+      }, message: 'Free space: uploads 5,000 GB; backup staging 500 GB.',
     });
-    expect(quotad.mock.calls.map(([path]) => path).sort()).toEqual(['/staging', '/uploads']);
-    // Equal totals on one device are the one shared volume the page can label once.
-    expect(await tile('disk', gymA, { env: single, device: shared })).toMatchObject({ details: { sameFilesystem: true } });
-    // Two devices stay separate even when their totals happen to match.
-    const separate = vi.fn(async (path: string) => path === '/staging' ? 2 : 1);
-    expect(await tile('disk', gymA, { env: single, device: separate })).toMatchObject({ details: { sameFilesystem: false } });
+    expect(quota.mock.calls.map(([path]) => path)).toEqual(['/uploads', '/staging', '/uploads', '/staging']);
+  });
+  it.each([
+    { stagingDevice: 2, stagingBlocks: 10_000_000, sameFilesystem: false },
+    { stagingDevice: 7, stagingBlocks: 20_000_000, sameFilesystem: true },
+  ])('reads each path once when staging device $stagingDevice reports $stagingBlocks blocks',
+    async ({ stagingDevice, stagingBlocks, sameFilesystem }) => {
+      const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' };
+      const device = async (path: string) => path === '/staging' ? stagingDevice : 7;
+      const disk = vi.fn(async (path: string) => ({
+        blocks: path === '/staging' ? stagingBlocks : 20_000_000, bsize: 1024, bavail: 5_000_000,
+      }));
+      expect(await tile('disk', gymA, { env: single, device, disk })).toMatchObject({ details: { sameFilesystem } });
+      expect(disk.mock.calls.map(([path]) => path)).toEqual(['/uploads', '/staging']);
+    });
+  it('uses the second pair of readings for the whole tile when same-device drift clears', async () => {
+    const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' };
+    const bsize = 4096, uploadsTotal = 10_000_000_000_000;
+    const disk = vi.fn<NonNullable<StatusOptions['disk']>>()
+      .mockResolvedValueOnce({ blocks: uploadsTotal / bsize, bsize, bavail: 0 })
+      .mockResolvedValueOnce({ blocks: (uploadsTotal - 67_112_960) / bsize, bsize, bavail: 100 })
+      .mockResolvedValueOnce({ blocks: uploadsTotal / bsize, bsize, bavail: 1_000_000_000 })
+      .mockResolvedValueOnce({ blocks: uploadsTotal / bsize, bsize, bavail: 500_000_000 });
+    expect(await tile('disk', gymA, { env: single, device: async () => 7, disk })).toMatchObject({
+      status: 'healthy', details: {
+        sameFilesystem: true,
+        uploads: { totalBytes: uploadsTotal, availableBytes: 4_096_000_000_000 },
+        backupStaging: { totalBytes: uploadsTotal, availableBytes: 2_048_000_000_000 },
+      }, message: 'Free space: uploads and backup staging (one volume) 2,048 GB.',
+    });
+    expect(disk.mock.calls.map(([path]) => path)).toEqual(['/uploads', '/staging', '/uploads', '/staging']);
   });
   it('treats totals within both bounds on one device as one shared volume', async () => {
     const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' };
@@ -315,6 +339,18 @@ describe('built-in providers', () => {
         blocks: (path === '/staging' ? uploadsTotal - difference : uploadsTotal) / bsize,
         bsize,
         bavail: 1_000_000_000,
+      });
+      expect(await tile('disk', gymA, { env: single, device: async () => 7, disk }))
+        .toMatchObject({ details: { sameFilesystem } });
+    });
+  it.each([
+    { stagingBlocks: 999_000, sameFilesystem: true },
+    { stagingBlocks: 998_999, sameFilesystem: false },
+  ])('reports sameFilesystem as $sameFilesystem at $stagingBlocks staging blocks on a 1 GB device',
+    async ({ stagingBlocks, sameFilesystem }) => {
+      const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' };
+      const disk = async (path: string) => ({
+        blocks: path === '/staging' ? stagingBlocks : 1_000_000, bsize: 1000, bavail: 500_000,
       });
       expect(await tile('disk', gymA, { env: single, device: async () => 7, disk }))
         .toMatchObject({ details: { sameFilesystem } });

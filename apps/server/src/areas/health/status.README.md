@@ -160,13 +160,15 @@ Disk details report `uploads` and `backupStaging` separately, each with filesyst
 `totalBytes` and `availableBytes`, plus `sameFilesystem`: true only when a backup
 staging directory is configured on the same device as the uploads directory and the
 capacity difference is at most 64 MiB and at most 0.1% relative to the larger total.
-ZFS or btrfs can report totals a few KB apart. A staging quota outside either bound
-keeps its own rows. Free space is excluded from the comparison because two
-`statfs` calls on a busy disk can differ slightly. Each figure describes the
-volume seen at that path. When `sameFilesystem` is true, the message reports the
-lower free figure and the page shows it alongside that path's total, using uploads
-when the free figures tie. The status still checks each path's own free bytes and
-free-space percentage.
+Totals on ZFS or btrfs can drift between reads. If totals on the same device differ
+by more than either bound, the provider reads both paths again once and uses the
+second readings for the comparison, details, status, and message. A staging quota
+that remains outside either bound keeps its own rows. Free space is excluded from
+the comparison because two `statfs` calls on a busy disk can differ slightly. Each
+figure describes the volume seen at that path. When `sameFilesystem` is true,
+the message reports the lower free figure and the page shows it alongside that
+path's total, using uploads when the free figures tie. The status still checks
+each path's own free bytes and free-space percentage.
 `backupStaging` is null when no staging directory is configured, including multi-gym
 mode, which ignores `BACKUP_STAGING_DIR`; `sameFilesystem` is then false and the page
 omits staging rows.

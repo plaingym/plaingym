@@ -35,14 +35,14 @@ const diskVolumeDetailsSchema = z.strictObject({
 }).refine((value) => value.availableBytes <= value.totalBytes, 'Available space exceeds total space');
 /**
  * Filesystem capacity, not directory sizes. `sameFilesystem` is true only when an uploads and a backup staging path are
- * both configured on the same device and the same total capacity (within 0.1%); the page then shows one pair of figures,
- * using the lower free space. Volumes may share a filesystem; never add their figures.
+ * both configured on the same device and their capacity difference is at most 64 MiB and at most 0.1% relative to the larger total.
+ * The page then shows one pair of figures using the lower free space. Volumes may share a filesystem; never add their figures.
  */
 export const diskHealthDetailsSchema = z.strictObject({
   uploads: diskVolumeDetailsSchema,
   /** Null when this install has no backup staging directory configured. */
   backupStaging: diskVolumeDetailsSchema.nullable(),
-  /** True when both paths are on the same device and the same total capacity (within 0.1%); the page shows one pair of rows. */
+  /** True when both paths are on the same device and the capacity difference is at most 64 MiB and at most 0.1% relative to the larger total. */
   sameFilesystem: z.boolean(),
 }).refine((value) => !value.sameFilesystem || value.backupStaging !== null, 'A shared filesystem requires both volumes');
 export const versionHealthDetailsSchema = z.strictObject({ version: z.string().min(1), sourceUrl: z.url({ protocol: /^https?$/ }) });

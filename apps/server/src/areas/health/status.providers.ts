@@ -132,26 +132,31 @@ export function createStatusProviders(options: StatusOptions = {}) {
       // Multi-gym apps hold no restore staging (even if the variable is set by hand), so there the uploads volume alone is checked.
       const paths = [env.UPLOADS_DIR, restoreStagingDirectory(env)].filter((path): path is string => !!path);
       if (!env.UPLOADS_DIR) return { id: 'disk', status: 'not_configured', checkedAt: context.clock.now().toISOString(), details: null, message: statusMessage('diskMissing') };
-      const volumes = await Promise.all(paths.map(async (path) => {
-        const [stats, dev] = await Promise.all([disk(path), device(path)]);
+      const readVolumes = () => Promise.all(paths.map(async (path) => {
+        const stats = await disk(path);
         const totalBytes = stats.blocks * stats.bsize, availableBytes = stats.bavail * stats.bsize;
         if (!Number.isSafeInteger(totalBytes) || !Number.isSafeInteger(availableBytes) || totalBytes <= 0 || availableBytes < 0 || availableBytes > totalBytes) throw new Error('Invalid disk statistics');
-        return { figures: { totalBytes, availableBytes }, dev };
+        return { totalBytes, availableBytes };
       }));
+      const [initialVolumes, devices] = await Promise.all([readVolumes(), Promise.all(paths.map(async (path) => device(path)))]);
+      let volumes = initialVolumes;
       const critical = (bytes: number) => bytes < 128 * 1024 * 1024;
-      const low = (volume: typeof volumes[number]['figures']) => volume.availableBytes / volume.totalBytes < 0.1 || volume.availableBytes < 1024 * 1024 * 1024;
+      const low = (volume: typeof volumes[number]) => volume.availableBytes / volume.totalBytes < 0.1 || volume.availableBytes < 1024 * 1024 * 1024;
       // ZFS and btrfs can report slightly different totals for the same volume. Cap the 0.1% tolerance at 64 MiB
       // so a staging quota on a large device can still have its own rows.
-      const uploads = volumes[0]!.figures, staging = volumes[1]?.figures;
-      const sameFilesystem = volumes.length > 1 && BigInt(volumes[0]!.dev) === BigInt(volumes[1]!.dev) && !!staging
-        && Math.abs(uploads.totalBytes - staging.totalBytes)
+      const totalsMatch = ([uploads, staging]: typeof volumes) =>
+        !!uploads && !!staging && Math.abs(uploads.totalBytes - staging.totalBytes)
           <= Math.min(Math.max(uploads.totalBytes, staging.totalBytes) / 1000, 64 * 1024 * 1024);
+      const sameDevice = devices.length > 1 && BigInt(devices[0]!) === BigInt(devices[1]!);
+      if (sameDevice && !totalsMatch(volumes)) volumes = await readVolumes();
+      const sameFilesystem = sameDevice && totalsMatch(volumes);
+      const uploads = volumes[0]!, staging = volumes[1];
       // A shared volume reports the lower free figure and uses uploads on ties.
       const shared = sameFilesystem && staging && staging.availableBytes < uploads.availableBytes ? staging : uploads;
       // Keep each volume's capacity and free space together, even when both directories share a filesystem.
       const details = { uploads, backupStaging: staging ?? null, sameFilesystem };
       return { id: 'disk', checkedAt: context.clock.now().toISOString(), details,
-        status: volumes.some((v) => critical(v.figures.availableBytes)) ? 'error' : volumes.some((v) => low(v.figures)) ? 'warning' : 'healthy',
+        status: volumes.some((v) => critical(v.availableBytes)) ? 'error' : volumes.some(low) ? 'warning' : 'healthy',
         message: statusMessage(sameFilesystem ? 'diskFreeShared' : staging ? 'diskFree' : 'diskFreeUploads', {
           uploads: gigabytes(shared.availableBytes), staging: gigabytes(staging?.availableBytes ?? 0),
         }) };
