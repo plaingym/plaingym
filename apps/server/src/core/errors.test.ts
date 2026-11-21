@@ -2,12 +2,22 @@
 import { expect, it } from 'vitest';
 import { z } from '@hono/zod-openapi';
 import { HTTPException } from 'hono/http-exception';
+// eslint-disable-next-line database/system-tables -- Only constructs a query error as Drizzle raises it; it builds no SQL and names no table.
+import { DrizzleQueryError } from 'drizzle-orm/errors';
 import { RevisionConflictError } from '@plaingym/db';
 import { AppError } from '@plaingym/shared';
 import { createApp } from './app.js';
 import { sourceUrl } from './source-link.js';
 import { busyReason, isBusy, normalizeError, readJsonBody } from './errors.js';
-import { setLogSink } from './log.js';
+import { logError, setLogSink } from './log.js';
+
+/** Logs `error` through the shared logger and returns the one line it wrote and its parsed `error` field. */
+function logged(error: unknown): { line: string; error: Record<string, unknown> } {
+  const lines: string[] = [], previous = setLogSink((line) => lines.push(line));
+  try { logError('fixture.failed', { gymId: 'gym-1' }, error); } finally { setLogSink(previous); }
+  expect(lines).toHaveLength(1);
+  return { line: lines[0]!, error: JSON.parse(lines[0]!).error };
+}
 
 it('maps only body JSON syntax errors to invalid_request', async () => {
   expect(await readJsonBody(new Request('https://gym.invalid', { method: 'POST', body: '{"revision":1}' }))).toEqual({ revision: 1 });
@@ -84,10 +94,10 @@ it('reads the source override at factory creation', () => {
 it('logs an unexpected error by request ID and route, without bound parameters or the request path', async () => {
   const lines: string[] = [], previous = setLogSink((line) => lines.push(line));
   try {
-    // A query error carries the submitted values after its first line, as Drizzle's do.
-    const failure = new Error('Failed query: insert into members (email) values ($1)\nparams: private@example.test',
-      { cause: Object.assign(new Error('duplicate key value violates unique constraint "members_email_key"'),
-        { code: '23505', table_name: 'members', constraint_name: 'members_email_key', detail: 'Key (email)=(private@example.test) already exists.' }) });
+    // A query error Drizzle raises carries the submitted values after its first line.
+    const failure = new DrizzleQueryError('insert into members (email) values ($1)', ['private@example.test'],
+      Object.assign(new Error('duplicate key value violates unique constraint "members_email_key"'),
+        { code: '23505', table_name: 'members', constraint_name: 'members_email_key', detail: 'Key (email)=(private@example.test) already exists.' }));
     const app = createApp({ resolveGym: async (_context, next) => { await next(); }, session: async (_context, next) => { await next(); },
       authorize: () => async (_context, next) => { await next(); } });
     app.get('/l/:token', () => { throw failure; });
@@ -118,4 +128,46 @@ it('never logs what an error message or its cause says, even on the first line',
     expect(JSON.parse(lines[0]!).error).toMatchObject({ name: 'Error', cause: { code: '22P02', routine: 'string_to_uuid' } });
     for (const secret of ['password', 'hidden', 'private_table', 'private@example.test']) expect(lines.join(' ')).not.toContain(secret);
   } finally { setLogSink(previous); }
+});
+
+it('logs a query only from a query error Drizzle raised, never from a message that starts the same way', () => {
+  const lookalike = () => new Error('Failed query: select secret_column from private_table\nparams: private@example.test');
+  // The lookalike as the root error, its cause, and its cause's cause: every serialized depth.
+  const { line, error } = logged(Object.assign(lookalike(), { cause: Object.assign(lookalike(), { cause: lookalike() }) }));
+  expect(error).toMatchObject({ name: 'Error', cause: { name: 'Error', cause: { name: 'Error' } } });
+  expect(line).not.toContain('"query"');
+  for (const secret of ['Failed query', 'secret_column', 'private_table', 'private@example.test']) expect(line).not.toContain(secret);
+  // A real one keeps its SQL diagnostic at a nested depth too, still without its bound parameters.
+  const nested = logged(new Error('request failed', { cause: new DrizzleQueryError('select id from members where email = $1', ['private@example.test']) }));
+  expect(nested.error).toMatchObject({ cause: { name: 'Error', query: 'select id from members where email = $1' } });
+  expect(nested.line).not.toContain('private@example.test');
+});
+
+it('logs no line of a multiline message as a stack frame, at any depth', () => {
+  const quoting = () => new Error('lookup failed\n    at privateFrame (private@example.test)\n    at hidden-value');
+  const { line, error } = logged(Object.assign(quoting(), { cause: Object.assign(quoting(), { cause: quoting() }) }));
+  const levels = [error, error.cause, (error.cause as Record<string, unknown>).cause] as Array<Record<string, unknown>>;
+  for (const level of levels) {
+    expect((level.frames as string[]).length).toBeGreaterThan(0);
+    for (const frame of level.frames as string[]) expect(frame).toMatch(/^at /);
+  }
+  for (const secret of ['lookup failed', 'privateFrame', 'private@example.test', 'hidden-value']) expect(line).not.toContain(secret);
+});
+
+it('keeps a conventional stack\'s frames and logs none from a stack whose header is not the error\'s own', () => {
+  for (const error of [new Error('boom'), new TypeError('bad value')]) {
+    const frames = logged(error).error.frames as string[];
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames.length).toBeLessThanOrEqual(15);
+    expect(frames.every((frame) => frame.startsWith('at '))).toBe(true);
+  }
+  // Node heads an empty message's stack with the name alone. The test runner's source-map formatter writes
+  // `Error: ` instead, so this stack is the one Node writes, set by hand.
+  const empty = Object.assign(new Error(''), { stack: 'Error\n    at run (/app/server.js:1:1)\n    at main (/app/server.js:2:1)' });
+  expect(logged(empty).error.frames).toEqual(['at run (/app/server.js:1:1)', 'at main (/app/server.js:2:1)']);
+  const rewritten = () => Object.assign(new Error('boom'), { stack: 'Error: private@example.test\n    at privateFrame (private.ts:1:1)' });
+  const { line, error } = logged(Object.assign(rewritten(), { cause: Object.assign(rewritten(), { cause: rewritten() }) }));
+  expect(error).toMatchObject({ frames: [], cause: { frames: [], cause: { frames: [] } } });
+  for (const secret of ['private@example.test', 'privateFrame']) expect(line).not.toContain(secret);
+  expect(logged(Object.assign(new Error('boom'), { stack: undefined })).error.frames).toEqual([]);
 });
