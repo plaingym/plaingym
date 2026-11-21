@@ -4,6 +4,8 @@ import { OpenAPIHono } from '@hono/zod-openapi';
 import { and, eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- The test inspects which jobs its isolated database acknowledged.
 import { auditEvents, jobs, uuidv7 } from '@plaingym/db';
+// eslint-disable-next-line no-restricted-imports -- Use the fixture database for the production registrations.
+import { closeDatabase, initializeDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError, errorResponse, staffRoles, type StaffRole } from '@plaingym/shared';
@@ -11,6 +13,8 @@ import { acknowledgeFailedJobsResponseSchema, healthTileSchema } from '@plaingym
 import type { Principal, RequestEnvironment } from '../../core/context.js';
 import { TestClock } from '../../core/clock.js';
 import { createServerRegistry } from '../../core/registry.js';
+import { areaContributions } from '../../core/registry-areas.js';
+import { createApp } from '../../core/app.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { PostgresJobs, PostgresJobStatsQuery } from '../../infra/jobs/postgres.js';
 import { createFailedJobsAcknowledgement } from './failed-jobs.js';
@@ -48,6 +52,24 @@ const audits = (gymId: string) => database.forGym(gymId, tx => tx.select().from(
   .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.action, 'health.failed_jobs.acknowledged'))));
 
 describe('acknowledging failed jobs', () => {
+  it('acknowledges a job through the production registrations and default service', async () => {
+    const g = await gym(), through = '2000-01-01T00:00:00.000Z';
+    const job = await failedJob(g.gymId, new Date(through));
+    await initializeDatabase(database.appUrl);
+    try {
+      const origin = 'http://localhost';
+      const app = createApp({ origin, authorize, skipSetup: true, contributions: areaContributions,
+        resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId: g.gymId, timezone: 'UTC', enabledModules: new Set() } }); await next(); },
+        session: async (c, next) => { c.set('context', { ...c.get('context'), principal: g.as(['owner']) }); await next(); },
+      });
+      const response = await app.request(origin + path, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ through }) });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ data: { acknowledged: 1 } });
+      expect(await acknowledgedAt(job.id)).toBeInstanceOf(Date);
+      expect(await audits(g.gymId)).toHaveLength(1);
+    } finally { await closeDatabase(); }
+  });
+
   it.each(staffRoles)('lets only settings managers acknowledge: %s', async (role) => {
     const g = await gym(), job = await failedJob(g.gymId);
     const response = await post(server(g.as([role]), g.gymId), { through: clock.now().toISOString() });
