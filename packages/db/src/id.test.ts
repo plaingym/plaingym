@@ -4,14 +4,27 @@ import { uuidv7 } from './id.js';
 import { encryptedFieldFor, encryptedFields } from './encrypted-fields.js';
 import { getTableColumns, getTableName } from 'drizzle-orm';
 import * as schema from './schema/index.js';
-it('encodes the UUIDv7 timestamp, version and random variant', () => {
+const uuidv7Format = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+it('generates distinct UUIDv7 IDs in order within the same millisecond', () => {
   const timestamp = 1770000000000;
   const ids = Array.from({ length: 1000 }, () => uuidv7(timestamp));
+  expect(ids).toEqual([...ids].sort());
   expect(new Set(ids).size).toBe(1000);
   for (const id of ids) {
-    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(id).toMatch(uuidv7Format);
     expect(parseInt(id.replaceAll('-', '').slice(0, 12), 16)).toBe(timestamp);
   }
+});
+it('encodes the requested timestamp when the clock moves forwards and backwards', () => {
+  const timestamp = 1770000000000;
+  for (const now of [timestamp, timestamp + 1, timestamp]) {
+    const id = uuidv7(now);
+    expect(id).toMatch(uuidv7Format);
+    expect(parseInt(id.replaceAll('-', '').slice(0, 12), 16)).toBe(now);
+  }
+});
+it('rejects timestamps outside the UUIDv7 range and non-integers', () => {
   for (const invalid of [-1, NaN, 1.1, 0x1000000000000]) expect(() => uuidv7(invalid)).toThrow();
 });
 it('registers encrypted fields and fails closed for unknown secret classes', () => {

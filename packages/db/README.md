@@ -431,7 +431,12 @@ await forHousehold({ kind: 'user', gymId, householdId, userId }, async (queries)
 Services supply event time from their injected clock to `writeAudit(tx, event)`.
 They must redact secrets and sensitive fields from before/after data.
 Schema timestamp defaults record insertion time; UUIDv7 generation uses the process
-clock and cryptographic randomness. UUIDs are not a total ordering within a millisecond.
+clock and cryptographic randomness. Consecutive calls in one process with the same
+millisecond return IDs in creation order. A call with any other millisecond in
+between (an explicit timestamp, such as a request clock's, from any request in the
+process, or a clock step back) starts a new random sequence, so IDs on either side
+of it have no guaranteed order. IDs from different processes in the same
+millisecond have no guaranteed order either.
 
 ## Table inventory
 

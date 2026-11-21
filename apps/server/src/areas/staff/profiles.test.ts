@@ -90,6 +90,31 @@ it('links, resends and clears a local member link and refuses a cross-gym link o
   expect((await request(app, 'PATCH', path, { revision: 4, memberId: foreign.id })).status).toBe(404);
   expect((await service.getProfile(gymA, profile.id)).data).toMatchObject({ memberId: null, revision: 4 });
 });
+it('keeps or clears an existing erased member link and refuses new erased member links', async () => {
+  const erased = await factory('members', gymA, { anonymizedAt: clock.now() });
+  const otherErased = await factory('members', gymA, { anonymizedAt: clock.now() });
+  const profile = await factory('staffProfiles', gymA, { memberId: erased.id });
+  const app = server(), path = '/api/staff/profiles/' + profile.id;
+
+  const saved = await request(app, 'PATCH', path, { revision: profile.revision, memberId: erased.id, bio: 'New bio' });
+  expect(saved.status).toBe(200);
+  const updated = staffProfileResponseSchema.parse(await saved.json()).data;
+  expect(updated).toMatchObject({ memberId: erased.id, bio: 'New bio', revision: profile.revision + 1 });
+  expect((await service.getProfile(gymA, profile.id)).data).toEqual(updated);
+
+  const rejected = await request(app, 'PATCH', path, { revision: updated.revision, memberId: otherErased.id, bio: 'Rejected bio' });
+  expect(rejected.status).toBe(404);
+  expect(await rejected.json()).toMatchObject({ error: { code: 'not_found', message: 'Member not found' } });
+  expect((await service.getProfile(gymA, profile.id)).data).toEqual(updated);
+
+  const cleared = await request(app, 'PATCH', path, { revision: updated.revision, memberId: null });
+  expect(cleared.status).toBe(200);
+  expect(staffProfileResponseSchema.parse(await cleared.json()).data).toMatchObject({ memberId: null, revision: updated.revision + 1 });
+
+  const created = await request(app, 'POST', '/api/staff/profiles', { displayName: 'New profile', memberId: erased.id });
+  expect(created.status).toBe(404);
+  expect(await created.json()).toMatchObject({ error: { code: 'not_found', message: 'Member not found' } });
+});
 it.each(['erase', 'delete'] as const)('waits for member %s before locking a profile that resends its existing link', async kind => {
   const home = await factory('households', gymA);
   const person = await factory('members', gymA, { householdId: home.id });

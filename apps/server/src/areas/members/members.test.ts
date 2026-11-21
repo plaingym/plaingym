@@ -141,7 +141,7 @@ describe('staff SMS consent', () => {
     expect((await withdraw(changed.revision)).revision).toBe(changed.revision);
     expect(await audits()).toEqual(events);
   });
-  it('audits a clear and a fresh grant when the billing phone has changed', async () => {
+  it.each(Array.from({ length: 20 }, (_, index) => index + 1))('audits a clear and a fresh grant when the billing phone has changed (run %i)', async () => {
     const gymId = uuidv7(); await factory('gyms', gymId, { address: { country: 'US' } });
     const oldConsentAt = new Date('2026-10-21T12:00:00Z');
     const home = await factory('households', gymId, { phone: '(202) 555-0199', phoneE164: '+12025550123',
@@ -165,12 +165,12 @@ describe('staff SMS consent', () => {
     const events = await audits();
     expect(events).toHaveLength(2);
     const emptyConsent = { kind: 'notices', at: null, source: null };
-    expect(events.map(({ targetId, before, after }) => ({ targetId, before, after }))).toEqual(expect.arrayContaining([
+    expect(events.map(({ targetId, before, after }) => ({ targetId, before, after }))).toEqual([
       { targetId: home.id, before: { kind: 'notices', at: oldConsentAt.toISOString(), source: 'join' },
         after: { ...emptyConsent, changeSource: 'portal' } },
       { targetId: home.id, before: emptyConsent,
         after: { kind: 'notices', at: at.toISOString(), source: 'portal', changeSource: 'portal' } },
-    ]));
+    ]);
 
     expect((await grant(granted.revision)).revision).toBe(granted.revision);
     expect(await read()).toEqual(stored);
