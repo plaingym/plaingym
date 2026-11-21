@@ -286,12 +286,36 @@ describe('signed-link pages through production registrations', () => {
     const context = { gym: { gymId: f.gymId, timezone: 'UTC', enabledModules: new Set() }, clock: f.clock,
       principal: { kind: 'signed_link', gymId: f.gymId, linkId: f.link.link.id, link: { purpose: 'onboarding' } } } as unknown as RequestContext;
     await pages.read(context);
-    expect(calls.map(call => call.name)).toEqual(['members', 'waiverTemplates', 'signedTemplates', 'signaturePage', 'paymentMethods']);
+    expect(calls.map(call => call.name)).toEqual(['members', 'waiverTemplates', 'latestSignatures', 'paymentMethods']);
     expect(calls[2]!.args).toEqual([expect.arrayContaining([f.member.id, f.sibling.id]), [current.id]]);
-    expect(calls[3]!.args).toEqual([[f.sibling.id], { limit: 1, offset: 0 }, [current.id]]);
     calls.length = 0;
     await expect(pages.document(context, uuidv7())).rejects.toMatchObject({ code: 'not_found' });
     expect(calls.map(call => call.name)).toEqual(['members', 'waiverTemplates']);
+  });
+  it('reads every member\'s newest signature of every current template in one household read', async () => {
+    const f = await fixture('onboarding');
+    const third = await factory('members', f.gymId, { householdId: f.household.id, firstName: 'Third' });
+    const templates = [f.template];
+    for (const name of ['Second waiver', 'Third waiver', 'Fourth waiver']) templates.push(await factory('waiverTemplates', f.gymId, { name, body: name + ' terms.' }));
+    const newer = new Set<string>();
+    let offset = 0;
+    for (const memberId of [f.member.id, f.sibling.id, third.id]) for (const template of templates) {
+      await factory('waiverSignatures', f.gymId, { memberId, templateId: template.id, signedAt: new Date(f.clock.now().getTime() - 100_000 + offset++) });
+      newer.add((await factory('waiverSignatures', f.gymId, { memberId, templateId: template.id, signedAt: new Date(f.clock.now().getTime() - 50_000 + offset++) })).id);
+    }
+    const calls: string[] = [];
+    const scope: typeof db.forHousehold = (grant, fn) => db.forHousehold(grant, queries => fn(new Proxy(queries, { get(target, key) {
+      const method = target[key as keyof typeof target] as (...args: unknown[]) => Promise<unknown>;
+      return (...args: unknown[]) => { calls.push(String(key)); return method(...args); };
+    } })));
+    const pages = createLinkPageService({ scope, waivers: f.waivers, checkout: f.checkout });
+    const context = { gym: { gymId: f.gymId, timezone: 'UTC', enabledModules: new Set() }, clock: f.clock,
+      principal: { kind: 'signed_link', gymId: f.gymId, linkId: f.link.link.id, link: { purpose: 'onboarding' } } } as unknown as RequestContext;
+    const data = await pages.read(context);
+    expect(calls).toEqual(['members', 'waiverTemplates', 'latestSignatures', 'paymentMethods']);
+    if (data.purpose !== 'onboarding') throw new Error('expected an onboarding answer');
+    expect(data.signatures).toHaveLength(12);
+    expect(new Set(data.signatures.map(signature => signature.id))).toEqual(newer);
   });
   it.each(['onboarding', 'sign_waiver'] as const)('keeps every signed current template visible past 100 repeated signatures (%s)', async purpose => {
     const f = await fixture(purpose);

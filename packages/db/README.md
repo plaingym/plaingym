@@ -370,12 +370,15 @@ non-payers see only their linked member. Signed links cannot use this read.
 
 The portal reads a household's history as pages and single lookups: `bookingPage`,
 `booking`, `sessionBookings`, `attendancePage`, `attendanceCount`, `attendedPrograms`,
-`rankHistory`, `membershipPage`, `signaturePage`, `signature`, `signedTemplates` and
-`invoicePage` filter, order and project in SQL, inside the same grant, and a page answers
-`{ rows, total }`. An ID outside the grant finds nothing. `members()` and `waiverTemplates()`
-stay whole: they are as long as the household and the gym's current documents, not its
-history. No read returns a household's whole history. `signaturePage` takes optional
-template IDs, which signed-link pages pass to read only the current templates' signatures.
+`rankHistory`, `membershipPage`, `signaturePage`, `signature`, `signedTemplates`,
+`latestSignatures` and `invoicePage` filter, order and project in SQL, inside the same grant,
+and a page answers `{ rows, total }`. An ID outside the grant finds nothing. `members()` and
+`waiverTemplates()` stay whole: they are as long as the household and the gym's current
+documents, not its history. No read returns a household's whole history. `signaturePage`
+takes optional template IDs to read only those templates' signatures. `latestSignatures`
+takes member and template IDs and returns, without a count, the newest signature of each
+member and template pair (latest `signedAt`, then the larger ID); signed-link pages use it
+to read the newest signature per member and current template in one statement.
 
 Household attendance reads filter through `attendanceFilterPredicate(tx, gymId, filter)`,
 the same builder the gym's attendance lists and totals use, and add the grant's visible

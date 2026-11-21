@@ -21,8 +21,8 @@ export function createLinkPageService(options: LinkPageOptions) {
   const scope = options.scope ?? forHousehold;
   const announcements = createAnnouncementUnsubscribeService({ scope });
   /**
-   * The link's answer returns the newest signature per member and current template. Distinct pairs bound the reads
-   * independently of repeated signatures. Checks before an action omit signatures and cards they do not use.
+   * The link's answer returns the newest signature per member and current template, all in one read, so repeated
+   * signatures neither hide a signed template nor add reads. Checks before an action omit signatures and cards they do not use.
    */
   async function load(context: RequestContext, withSignatures: boolean): Promise<PortalSignedLinkData> {
     const p = linkPrincipal(context);
@@ -44,15 +44,11 @@ export function createLinkPageService(options: LinkPageOptions) {
         if (p.link.purpose === 'sign_waiver' && people.length !== 1) throw new AppError('not_found', 'Member not found');
         const members = people.map(m => ({ id: m.id, firstName: m.firstName, lastName: m.lastName, dateOfBirth: m.dateOfBirth, revision: m.revision }));
         const templates = (await q.waiverTemplates()).map(t => ({ id: t.id, name: t.name, body: t.body, ...templateDocument(t), kind: t.kind, version: t.version, retiredAt: null, createdAt: t.createdAt.toISOString() }));
-        const signatures: Extract<PortalSignedLinkData, { purpose: 'sign_waiver' }>['signatures'] = [];
-        if (withSignatures) {
-          const pairs = await q.signedTemplates(members.map(m => m.id), templates.map(t => t.id));
-          for (const pair of pairs) {
-            const { rows: [signature] } = await q.signaturePage([pair.memberId], { limit: 1, offset: 0 }, [pair.templateId]);
-            if (signature) signatures.push({ ...signature, signedAt: signature.signedAt.toISOString() });
-          }
-          signatures.sort((a, b) => b.signedAt.localeCompare(a.signedAt) || b.id.localeCompare(a.id));
-        }
+        const signatures: Extract<PortalSignedLinkData, { purpose: 'sign_waiver' }>['signatures'] = withSignatures
+          ? (await q.latestSignatures(members.map(m => m.id), templates.map(t => t.id)))
+            .map(row => ({ ...row, signedAt: row.signedAt.toISOString() }))
+            .sort((a, b) => b.signedAt.localeCompare(a.signedAt) || b.id.localeCompare(a.id))
+          : [];
         return portalSignedLinkDataSchema.parse(p.link.purpose === 'sign_waiver'
           ? { purpose: p.link.purpose, member: members[0], templates, signatures }
           : { purpose: p.link.purpose, members, templates, signatures, paymentMethods: withSignatures ? await q.paymentMethods() : [] });

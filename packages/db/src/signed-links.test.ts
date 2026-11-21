@@ -80,6 +80,9 @@ describe('signed-link household grants', () => {
         const waivers = (await queries.signaturePage([...memberIds, data.outsider.id, data.foreignMember.id], { limit: 10, offset: 0 })).rows;
         expect(waivers.map((row) => row.memberId).sort()).toEqual(memberIds.sort());
         expect(waivers.every((row) => !("ipAddress" in row))).toBe(true);
+        const latest = await queries.latestSignatures([...memberIds, data.outsider.id, data.foreignMember.id], [data.currentTemplate.id, data.agreement.id]);
+        expect(latest.map((row) => row.memberId).sort()).toEqual(memberIds.sort());
+        expect(latest.every((row) => !('ipAddress' in row))).toBe(true);
         expect(await queries.member(data.outsider.id)).toEqual([]);
         expect(await queries.member(data.foreignMember.id)).toEqual([]);
         expect(await queries.member(data.sibling.id)).toHaveLength(purpose === 'onboarding' ? 1 : 0);
@@ -88,7 +91,8 @@ describe('signed-link household grants', () => {
           .toEqual([data.currentTemplate.id, data.agreement.id].sort());
       } else {
         for (const query of [queries.members, () => queries.signaturePage([data.member.id], { limit: 10, offset: 0 }), queries.waiverTemplates,
-          () => queries.member(data.member.id)]) await expect(query()).rejects.toThrow('access denied');
+          () => queries.member(data.member.id), () => queries.latestSignatures([data.member.id], [data.currentTemplate.id])])
+          await expect(query()).rejects.toThrow('access denied');
       }
       if (purpose === 'pay_invoice') {
         expect(await queries.invoice(data.invoice.id)).toHaveLength(1);

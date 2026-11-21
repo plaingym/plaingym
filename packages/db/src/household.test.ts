@@ -110,6 +110,7 @@ it('keeps every bounded read inside the grant, whatever IDs the caller names', a
     expect(await queries.signaturePage([memberId], page)).toEqual(none);
     expect(await queries.signature(row.signature, [memberId])).toEqual([]);
     expect(await queries.signedTemplates([memberId], [template.id])).toEqual([]);
+    expect(await queries.latestSignatures([memberId], [template.id])).toEqual([]);
   }
   await database.forHousehold({ kind: 'user', gymId: gym, householdId: first.id, userId: payer.id }, async (queries) => {
     await nothing(queries, outsider.id);
@@ -160,9 +161,34 @@ it('refuses with a typed code at the grant and at each query', async () => {
     for (const read of [() => queries.bookingPage({ memberId: member.id }, page), () => queries.booking(link.id, member.id), () => queries.sessionBookings([link.id], [member.id]),
       () => queries.attendancePage({}, page), () => queries.attendanceCount({}), () => queries.rankHistory(member.id), () => queries.membershipPage(member.id, page),
       () => queries.signaturePage([member.id], page), () => queries.signature(link.id, [member.id]), () => queries.signedTemplates([member.id], [link.id]),
-      () => queries.attendedPrograms(member.id)])
+      () => queries.latestSignatures([member.id], [link.id]), () => queries.attendedPrograms(member.id)])
       await expect(read()).rejects.toMatchObject({ code: 'household_access_denied' });
     await expect(queries.invoicePage({}, page)).rejects.toMatchObject({ code: 'payer_access_required' });
+  });
+});
+it('reads the newest signature of each member and template pair in one read, ties broken by the larger ID', async () => {
+  const home = await factory('households', gym), payer = await factory('authUser', gym);
+  await factory('householdUsers', gym, { householdId: home.id, userId: payer.id, scope: 'payer' });
+  const m = await factory('members', gym, { householdId: home.id }), n = await factory('members', gym, { householdId: home.id });
+  const a = await factory('waiverTemplates', gym), b = await factory('waiverTemplates', gym), c = await factory('waiverTemplates', gym);
+  const at = (seconds: number) => new Date(Date.parse('2026-03-01T12:00:00Z') + seconds * 1000);
+  await factory('waiverSignatures', gym, { memberId: m.id, templateId: a.id, signedAt: at(0) });
+  await factory('waiverSignatures', gym, { memberId: m.id, templateId: a.id, signedAt: at(1) });
+  const mA = await factory('waiverSignatures', gym, { memberId: m.id, templateId: a.id, signedAt: at(2) });
+  const mB = await factory('waiverSignatures', gym, { memberId: m.id, templateId: b.id, signedAt: at(0) });
+  const nA = await factory('waiverSignatures', gym, { memberId: n.id, templateId: a.id, signedAt: at(0) });
+  // Two signatures of one pair at the same instant: the larger ID wins, whichever was inserted first.
+  const [low, high] = [uuidv7(), uuidv7()].sort();
+  await factory('waiverSignatures', gym, { id: high!, memberId: n.id, templateId: c.id, signedAt: at(5) });
+  await factory('waiverSignatures', gym, { id: low!, memberId: n.id, templateId: c.id, signedAt: at(5) });
+  await database.forHousehold({ kind: 'user', gymId: gym, householdId: home.id, userId: payer.id }, async (queries) => {
+    const rows = await queries.latestSignatures([m.id, n.id], [a.id, b.id]);
+    expect(rows.map((row) => row.id).sort()).toEqual([mA.id, mB.id, nA.id].sort());
+    const keys = ['id', 'memberId', 'templateId', 'snapshot', 'snapshotHash', 'signatureImageKey', 'signatureImageHash', 'signedAt'].sort();
+    for (const row of rows) expect(Object.keys(row).sort()).toEqual(keys);
+    expect((await queries.latestSignatures([n.id], [c.id])).map((row) => row.id)).toEqual([high]);
+    expect(await queries.latestSignatures([m.id], [])).toEqual([]);
+    expect(await queries.latestSignatures([], [a.id])).toEqual([]);
   });
 });
 it('limits successful refund totals to the granted gym, household and invoice, including single-invoice links', async () => {

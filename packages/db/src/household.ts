@@ -337,6 +337,14 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
       return tx.selectDistinct({ memberId: waiverSignatures.memberId, templateId: waiverSignatures.templateId }).from(waiverSignatures)
         .where(and(signaturePredicate(requested), inArray(waiverSignatures.templateId, [...templateIds])));
     },
+    /** The newest signature of each (member, template) pair among these members and templates, in one read and without a count. */
+    latestSignatures: async (requested: readonly string[], templateIds: readonly string[]) => {
+      requireAccess(grant.members.kind !== 'none');
+      if (!requested.length || !templateIds.length) return [];
+      return tx.selectDistinctOn([waiverSignatures.memberId, waiverSignatures.templateId], waiverFields).from(waiverSignatures)
+        .where(signaturePredicate(requested, templateIds))
+        .orderBy(waiverSignatures.memberId, waiverSignatures.templateId, desc(waiverSignatures.signedAt), desc(waiverSignatures.id));
+    },
     waiverTemplates: async () => {
       requireAccess(grant.waiverTemplates);
       // Pick each family's latest version first, then drop retired families, so retiring never resurfaces an older version.

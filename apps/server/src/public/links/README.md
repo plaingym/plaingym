@@ -78,9 +78,9 @@ requests cannot add resource selectors. A used credential displays only the
 friendly completion page; used, revoked and expired credentials cannot call the
 APIs. Pages and responses use `no-store`, no-referrer and noindex headers.
 A waiver or onboarding answer's `signatures` contain the newest signature for each
-member and current template, newest first. A distinct member/template lookup and
-one bounded signature read per signed pair keep repeated signatures from hiding
-another signed template. All reads stay within the link's household or member grant.
+member and current template, newest first. One distinct-on read returns the newest
+signature per member and template, so repeated signatures can't hide another signed
+template. All reads stay within the link's household or member grant.
 Checks before an upload, signature, document or onboarding Checkout read members
 and templates without signatures or payment methods they do not use.
 

@@ -29,7 +29,8 @@ it('grants only the stored member’s announcement preference and preserves sibl
     for (const read of [q.members, () => q.member(f.member.id), () => q.member(f.sibling.id), () => q.member(f.outsider.id),
       () => q.member(f.foreign.id), q.household, () => q.invoicePage({}, page), q.paymentMethods, () => q.signaturePage([f.member.id], page), q.waiverTemplates,
       () => q.bookingPage({ memberId: f.member.id }, page), () => q.attendanceCount({}), () => q.rankHistory(f.member.id),
-      () => q.membershipPage(f.member.id, page), () => q.attendedPrograms(f.member.id)]) await expect(read()).rejects.toThrow();
+      () => q.membershipPage(f.member.id, page), () => q.attendedPrograms(f.member.id),
+      () => q.latestSignatures([f.member.id], [f.member.id])]) await expect(read()).rejects.toThrow();
     expect(q).not.toHaveProperty('execute');
     expect(q).not.toHaveProperty('transaction');
   });
