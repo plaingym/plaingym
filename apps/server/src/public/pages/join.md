@@ -265,7 +265,7 @@ does the same for any recorded Checkout of the joined household once the invoice
 Both lock the household and check `public.join.completed`, so together, retried or
 concurrent, they complete a join once and send one sign-in link. `/join/return` is
 read-only. It shows the welcome page once the join is complete, its invoice
-exists, none of its recorded memberships are pending, and at least one is live
+exists, all its recorded memberships still exist and none is pending, and at least one is live
 (`trial`, `active` or `frozen`). A pending join shows
 "confirming" with a spinner and `aria-live` text. The page points to **Check again**
 if it does not change. `/join/client.js` (the page's only script, `'self'`, no inline
@@ -283,7 +283,7 @@ voids the join on the seventh local day after submission (**Unpaid joins**, abov
 the cookie is told what happens next and can do nothing more.
 
 When the join cleanup voids the unpaid invoice or staff revoke the join's link, it can no longer be paid
-online: `/join/checkout`, `/join/return` and `/join/cancelled` show a closed page that
+online: `/join/checkout`, `/join/review`, `/join/return` and `/join/cancelled` show a closed page that
 says to contact the gym, without starting Checkout. A paid invoice wins over a revoked
 link, and a Checkout that completed but is still being recorded continues to
 `/join/return`. A completed join with a live membership keeps the welcome page and its sign-in
