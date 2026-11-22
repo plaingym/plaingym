@@ -2,8 +2,10 @@
 import { useState, type FormEvent } from 'react';
 import { saveSmsIntegrationResponseSchema, type SmsIntegration } from '@plaingym/shared/contracts';
 import { api } from '../../../lib/api.js';
+import { t } from '../../../lib/i18n.js';
 import { parseResponse } from '../../../lib/response.js';
 import { Button } from '../../../components/ui/button.js';
+import { Dialog, DialogActions, DialogCancel } from '../../../components/ui/dialog.js';
 import { FormMessage } from '../../../components/ui/alert.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
@@ -12,6 +14,7 @@ import { failedText, integrationsOf, refusedText, text, type useIntegrations } f
 import { useGymSettings } from '../gym-settings.js';
 
 const label = (key: string) => text('sms.' + key);
+const removal = (key: string) => t('settings/integration-removal:' + key);
 function Field({ name, type = 'text', value = '', required = true }: { name: string; type?: string; value?: string; required?: boolean }) {
   return <div className="grid min-w-0 gap-2">
     <Label htmlFor={'integrations-sms-' + name}>{label(name)}</Label>
@@ -21,7 +24,7 @@ function Field({ name, type = 'text', value = '', required = true }: { name: str
 }
 export function SmsIntegrationSection({ sms, editable, state }: { sms: SmsIntegration; editable: boolean; state: ReturnType<typeof useIntegrations> }) {
   const gym = useGymSettings();
-  const [busy, setBusy] = useState(false), [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false), [open, setOpen] = useState(false), [confirming, setConfirming] = useState(false);
   const [authKind, setAuthKind] = useState(sms.authKind ?? 'token');
   const [senderKind, setSenderKind] = useState(sms.messagingServiceSid ? 'service' : 'from');
   const [message, setMessage] = useState<{ kind: 'status' | 'alert'; text: string } | null>(null);
@@ -49,6 +52,7 @@ export function SmsIntegrationSection({ sms, editable, state }: { sms: SmsIntegr
     finally { setBusy(false); }
   }
   async function remove() {
+    if (busy) return;
     setBusy(true); setMessage(null);
     try {
       const reply = await state.change((revision, signal) => api.DELETE('/api/settings/integrations/sms', { signal, body: { revision } }), integrationsOf);
@@ -85,10 +89,20 @@ export function SmsIntegrationSection({ sms, editable, state }: { sms: SmsIntegr
       </form>}
     {editable && <>
       <p className="text-sm text-muted-foreground">{label('hint')}</p>
-      <div className="flex flex-col gap-3 sm:flex-row">
+      <div className="flex flex-col items-start gap-3 sm:flex-row">
         {!open && <Button variant="outline" onClick={() => { setOpen(true); setMessage(null); }}>{label(sms.configured ? 'change' : 'connect')}</Button>}
-        {(sms.configured || sms.unreadable) && <Button variant="outline" disabled={busy} onClick={() => void remove()}>{label('remove')}</Button>}
+        {(sms.configured || sms.unreadable) && <Button variant="outline" disabled={busy} onClick={() => { setMessage(null); setConfirming(true); }}>{label('remove')}</Button>}
       </div>
+      {confirming && <Dialog title={removal('sms.title')} closeLabel={removal('close')} onClose={() => setConfirming(false)}>
+        <div className="space-y-4">
+          <p>{removal('sms.body')}</p>
+          <p>{removal('sms.secret')}</p>
+        </div>
+        <DialogActions>
+          <Button variant="destructive" onClick={() => { setConfirming(false); void remove(); }}>{label('remove')}</Button>
+          <DialogCancel variant="outline">{removal('cancel')}</DialogCancel>
+        </DialogActions>
+      </Dialog>}
       {open && <form aria-label={label('form')} onSubmit={event => void save(event)}>
         <fieldset disabled={busy} className="grid min-w-0 gap-4">
           <Field name="accountSid" value={sms.accountSid ?? ''}/>

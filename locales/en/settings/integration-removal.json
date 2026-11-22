@@ -1,0 +1,12 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "close": "Close",
+  "cancel": "Cancel",
+  "sms.title": "Remove the SMS provider?",
+  "sms.body": "Member texts stop: booking and billing notices, announcements and texted links aren't sent until you connect a provider again.",
+  "sms.secret": "The stored credentials are deleted and can't be shown again. To undo this, enter them again.",
+  "email.title": "Remove your gym's email settings?",
+  "email.install": "Emails will be sent with this install's settings instead.",
+  "email.none": "Your gym will send no email until you enter email settings again.",
+  "email.secret": "The stored password is deleted and can't be shown again. To undo this, enter the settings again."
+}

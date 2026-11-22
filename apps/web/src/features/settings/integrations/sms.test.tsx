@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Integrations } from '@plaingym/shared/contracts';
 import { integrations, settings, renderSection, reply, serve } from './fixtures.test-helper.js';
@@ -12,6 +12,11 @@ vi.mock('../../../lib/api.js', async original => ({ ...await original<typeof imp
 const accountSid = 'AC' + '1'.repeat(32), apiKey = 'SK' + '2'.repeat(32), messagingServiceSid = 'MG' + '3'.repeat(32);
 const configured: Integrations = { ...integrations, revision: 4, sms: { ...integrations.sms, configured: true, accountSid,
   authKind: 'token', from: '+14155552671' } };
+const authenticationFailure = 'Twilio denied access. Check the Account SID and copy the live auth token or API key credentials from the Twilio Console. If you use an API key, check that it can list and send messages. A new or upgraded Twilio account is also refused until its Primary Customer Profile is approved in Twilio’s Trust Hub. Nothing was saved.';
+const trialAccountFailure = 'A Twilio trial account can send only Twilio templates to verified numbers. Upgrade a trial account to send this test text. If your account is already upgraded, verify the test number or get your primary compliance profile approved. The account also needs its own SMS-capable number as the sender. Nothing was saved.';
+const setupHint = 'Use your gym’s own upgraded Twilio account and an SMS-capable number it owns. Register your sender with the provider before sending. Each text, including this test, costs your gym.';
+const removalBody = 'Member texts stop: booking and billing notices, announcements and texted links aren\'t sent until you connect a provider again.';
+const removalSecret = 'The stored credentials are deleted and can\'t be shown again. To undo this, enter them again.';
 let current: Integrations;
 beforeEach(() => { for (const fn of Object.values(client)) fn.mockReset(); current = integrations; serve(client.GET, () => current); });
 afterEach(cleanup);
@@ -108,15 +113,26 @@ describe('SMS integration form', () => {
     expect(client.PUT.mock.calls[0]?.[1].body).toMatchObject({ auth: authKind === 'token' ? { token: 'tok' } : { apiKey, secret: 'sec' } });
   });
   it.each([
-    ['authentication', /Twilio Console.*list and send messages/],
     ['unreachable', /No response arrived.*text may have been sent/],
-    ['trial_account', /Twilio trial account.*Twilio templates.*already upgraded, verify the test number/],
     [undefined, /The account check or test text failed\. Check your credentials/],
   ] as const)('names the cause of a failed test: %s', async (failure, shown) => {
     const user = userEvent.setup(); renderSection(); const form = await fill(user);
     client.PUT.mockResolvedValue(reply(200, { data: { test: 'failed', ...(failure ? { failure } : {}), integrations: current } }));
     await user.click(within(form).getByRole('button', { name: 'Send test text and save' }));
     expect((await screen.findByRole('alert')).textContent).toMatch(shown);
+  });
+  it.each([
+    ['authentication', authenticationFailure],
+    ['trial_account', trialAccountFailure],
+  ] as const)('shows the whole %s failure message', async (failure, shown) => {
+    const user = userEvent.setup(); renderSection(); const form = await fill(user);
+    client.PUT.mockResolvedValue(reply(200, { data: { test: 'failed', failure, integrations: current } }));
+    await user.click(within(form).getByRole('button', { name: 'Send test text and save' }));
+    expect((await screen.findByRole('alert')).textContent).toBe(shown);
+  });
+  it('shows the whole setup hint when the section is editable', async () => {
+    renderSection();
+    expect(await screen.findByText(setupHint)).toBeDefined();
   });
   it('directs owners to the submitted custom provider for authentication failures', async () => {
     const user = userEvent.setup(); renderSection(); const form = await fill(user);
@@ -132,13 +148,60 @@ describe('SMS integration form', () => {
     current = configured; const user = userEvent.setup(); renderSection();
     client.DELETE.mockResolvedValue(reply(200, { data: { ...integrations, revision: 5 } }));
     await user.click(await screen.findByRole('button', { name: 'Remove SMS provider' }));
+    const dialog = screen.getByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Remove SMS provider' }));
     expect(client.DELETE).toHaveBeenCalledWith('/api/settings/integrations/sms', { signal: expect.any(AbortSignal), body: { revision: 3 } });
     expect((await screen.findByRole('status')).textContent).toContain('SMS credentials are removed');
   });
-  it('shows unreadable status and offers removal', async () => {
-    current = { ...integrations, sms: { ...integrations.sms, unreadable: true } }; renderSection();
+  it('asks before removing a configured provider and sends nothing until confirmed', async () => {
+    current = configured; const user = userEvent.setup(); renderSection();
+    await user.click(await screen.findByRole('button', { name: 'Remove SMS provider' }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('heading', { name: 'Remove the SMS provider?' })).toBeDefined();
+    expect(within(dialog).getByText(removalBody)).toBeDefined();
+    expect(within(dialog).getByText(removalSecret)).toBeDefined();
+    expect(client.DELETE).not.toHaveBeenCalled();
+  });
+  it('sends nothing when the removal dialog is cancelled or dismissed', async () => {
+    current = configured; const user = userEvent.setup(); renderSection();
+    await user.click(await screen.findByRole('button', { name: 'Remove SMS provider' }));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(client.DELETE).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Remove SMS provider' }));
+    fireEvent(screen.getByRole('dialog'), new Event('cancel', { cancelable: true }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(client.DELETE).not.toHaveBeenCalled();
+  });
+  it('sends one removal after confirmation, even on a double click', async () => {
+    current = configured; const user = userEvent.setup(); renderSection();
+    client.DELETE.mockResolvedValue(reply(200, { data: { ...integrations, revision: 5 } }));
+    await user.click(await screen.findByRole('button', { name: 'Remove SMS provider' }));
+    const confirm = within(screen.getByRole('dialog')).getByRole('button', { name: 'Remove SMS provider' });
+    await user.dblClick(confirm);
+    expect(client.DELETE).toHaveBeenCalledExactlyOnceWith('/api/settings/integrations/sms', { signal: expect.any(AbortSignal), body: { revision: 3 } });
+    expect((await screen.findByRole('status')).textContent).toBe('SMS credentials are removed.');
+  });
+  it('asks before removing unreadable settings too', async () => {
+    current = { ...integrations, sms: { ...integrations.sms, unreadable: true } }; const user = userEvent.setup(); renderSection();
     expect((await screen.findByRole('alert')).textContent).toContain('stored SMS settings could not be read');
-    expect(screen.getByRole('button', { name: 'Remove SMS provider' })).toBeDefined();
+    await user.click(screen.getByRole('button', { name: 'Remove SMS provider' }));
+    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: 'Remove the SMS provider?' })).toBeDefined();
+    client.DELETE.mockResolvedValue(reply(200, { data: { ...integrations, revision: 5 } }));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Remove SMS provider' }));
+    expect(client.DELETE).toHaveBeenCalledExactlyOnceWith('/api/settings/integrations/sms', { signal: expect.any(AbortSignal), body: { revision: 3 } });
+  });
+  it('keeps both removal-row buttons content width on a phone', async () => {
+    current = configured; renderSection();
+    const remove = await screen.findByRole('button', { name: 'Remove SMS provider' });
+    const change = screen.getByRole('button', { name: 'Change SMS settings' });
+    const row = remove.parentElement!;
+    expect(change.parentElement).toBe(row);
+    expect(row.className).toContain('flex-col');
+    expect(row.className).toContain('items-start');
+    expect(row.className).toContain('sm:flex-row');
+    expect(remove.className).not.toContain('w-full');
+    expect(change.className).not.toContain('w-full');
   });
   it.each(['operator', 'sandbox'])('offers no credential form for %s settings', async mode => {
     current = { ...configured, integrationsEditable: mode !== 'operator', sandbox: mode === 'sandbox' };

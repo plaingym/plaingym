@@ -136,8 +136,9 @@ again, and every change is recorded in the audit log without them.
 
 * **Email** shows the SMTP host, port, encryption and sender the gym uses, or that
   it uses the install's `SMTP_*` settings. New settings are saved only after a test
-  email to an address you choose is accepted. **Remove** goes back to the
-  install's settings, or to no email. Either change can switch how people sign in
+  email to an address you choose is accepted. **Remove** asks you to confirm
+  first, then goes back to the install's settings, or to no email; the stored
+  password can't be shown again. Either change can switch how people sign in
   (`AUTH_PASSWORD_LOGIN=auto`: emailed links with email, passwords without); the
   page says how before you save. Removing email is refused while it is your only
   way to sign in (your account has no password and the gym has no Google client).
@@ -145,8 +146,9 @@ again, and every change is recorded in the audit log without them.
   an auth token or an API key SID and secret, plus a From phone number or Messaging
   Service SID. The account is checked without sending a message, then one test
   text goes only to the number you enter. Credentials are saved encrypted only
-  after both succeed, and are never shown again. **Remove SMS provider** clears
-  them. A failed test names the cause when the provider gives one. Before you
+  after both succeed, and are never shown again. **Remove SMS provider** asks you
+  to confirm first and then clears them; the stored credentials can't be shown
+  again. A failed test names the cause when the provider gives one. Before you
   connect Twilio, upgrade a trial account (a trial sends only Twilio's own
   templates, so the test text fails), wait until Twilio approves the account's
   Primary Customer Profile in **Trust Hub**, and buy an SMS-capable phone number

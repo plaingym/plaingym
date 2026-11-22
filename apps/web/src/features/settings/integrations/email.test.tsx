@@ -14,6 +14,10 @@ vi.mock('../../../lib/api.js', async original => ({ ...await original<typeof imp
 const gymEmail: Integrations = { ...integrations, revision: 4, email: { source: 'gym', unreadable: false, googleConfigured: false, host: 'smtp.gym.test', port: 465, security: 'tls', from: 'desk@gym.test',
   signIn: { password: false, magicLink: true }, signInAfterSave: { password: false, magicLink: true },
   signInAfterRemove: { password: true, magicLink: false }, removeBlocked: false } };
+const removalInstall = 'Emails will be sent with this install\'s settings instead.';
+const removalNone = 'Your gym will send no email until you enter email settings again.';
+const removalSecret = 'The stored password is deleted and can\'t be shown again. To undo this, enter the settings again.';
+const installRemoval = 'Remove and use the install’s settings', noEmailRemoval = 'Remove (the gym will have no email)';
 let current: Integrations;
 beforeEach(() => { for (const fn of Object.values(client)) fn.mockReset(); current = integrations; serve(client.GET, () => current); });
 afterEach(cleanup);
@@ -26,6 +30,11 @@ async function fill(user: ReturnType<typeof userEvent.setup>) {
   await user.type(within(form).getByLabelText('Sender address'), 'desk@gym.test');
   await user.type(within(form).getByLabelText('Send the test email to'), 'owner@gym.test');
   return form;
+}
+
+async function confirmRemoval(user: ReturnType<typeof userEvent.setup>, name = noEmailRemoval) {
+  await user.click(await screen.findByRole('button', { name }));
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name }));
 }
 
 describe('Settings → Email', () => {
@@ -127,9 +136,37 @@ describe('Settings → Email', () => {
     const user = userEvent.setup(); renderSection();
     expect(await screen.findByText('Removing changes sign-in to: passwords.')).toBeDefined();
     expect(screen.getByText(/It does not check whether your account can use it/)).toBeDefined();
-    await user.click(screen.getByRole('button', { name: 'Remove (the gym will have no email)' }));
+    await confirmRemoval(user);
     expect(client.DELETE).toHaveBeenCalledWith('/api/settings/integrations/email', { signal: expect.any(AbortSignal), body: { revision: 3 } });
     expect((await screen.findByRole('status')).textContent).toContain('removed');
+  });
+  it('asks before removing the gym’s email settings, and cancel sends nothing', async () => {
+    current = { ...gymEmail, email: { ...gymEmail.email, signInAfterRemove: { password: false, magicLink: true } } };
+    const user = userEvent.setup(); renderSection();
+    await user.click(await screen.findByRole('button', { name: installRemoval }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('heading', { name: 'Remove your gym\'s email settings?' })).toBeDefined();
+    expect(within(dialog).getByText(removalInstall)).toBeDefined();
+    expect(within(dialog).getByText(removalSecret)).toBeDefined();
+    expect(client.DELETE).not.toHaveBeenCalled();
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(client.DELETE).not.toHaveBeenCalled();
+    client.DELETE.mockResolvedValue(reply(200, { data: { ...integrations, revision: 5 } }));
+    await confirmRemoval(user, installRemoval);
+    expect(client.DELETE).toHaveBeenCalledExactlyOnceWith('/api/settings/integrations/email', { signal: expect.any(AbortSignal), body: { revision: 3 } });
+  });
+  it('names the methods left and the destructive button when no email remains', async () => {
+    current = { ...gymEmail, email: { ...gymEmail.email, signIn: { magicLink: true, password: false },
+      signInAfterRemove: { magicLink: false, password: true } } };
+    const user = userEvent.setup(); renderSection();
+    await user.click(await screen.findByRole('button', { name: noEmailRemoval }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText(removalNone)).toBeDefined();
+    expect(within(dialog).getByText('Removing changes sign-in to: passwords.')).toBeDefined();
+    expect(within(dialog).getByText(removalSecret)).toBeDefined();
+    expect(within(dialog).getByRole('button', { name: noEmailRemoval })).toBeDefined();
+    expect(within(dialog).queryByText(removalInstall)).toBeNull();
   });
   it('names only the action in progress, and forgets a removed host', async () => {
     current = gymEmail;
@@ -150,23 +187,25 @@ describe('Settings → Email', () => {
     sent(reply(200, { data: { test: 'failed', integrations: gymEmail } }));
     expect((await screen.findByRole('alert')).textContent).toContain('nothing was saved');
     client.DELETE.mockResolvedValue(reply(200, { data: { ...integrations, revision: 5 } }));
-    await user.click(screen.getByRole('button', { name: 'Remove (the gym will have no email)' }));
+    await confirmRemoval(user);
     expect((await screen.findByRole('status')).textContent).toContain('removed');
     const replace = screen.getByRole('form', { name: 'Use your own SMTP service' });
     expect((within(replace).getByLabelText('SMTP host') as HTMLInputElement).value).toBe('');
   });
   it('won’t remove email while it is the owner’s only way to sign in', async () => {
     current = { ...gymEmail, email: { ...gymEmail.email, removeBlocked: true } };
-    renderSection();
+    const user = userEvent.setup(); renderSection();
     const button = await screen.findByRole('button', { name: 'Remove (the gym will have no email)' }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     expect(screen.getByText(/only way to sign in/)).toBeDefined();
+    await user.click(button);
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
   it('shows the server’s refusal reason, never its message', async () => {
     current = gymEmail;
     client.DELETE.mockResolvedValue(refusal(409, 'email', 'only_sign_in'));
     const user = userEvent.setup(); renderSection();
-    await user.click(await screen.findByRole('button', { name: 'Remove (the gym will have no email)' }));
+    await confirmRemoval(user);
     expect((await screen.findByRole('alert')).textContent).toContain('only way to sign in');
     expect(document.body.textContent).not.toContain('private server text');
   });
@@ -178,6 +217,7 @@ describe('Settings → Email', () => {
     try {
       client.DELETE.mockImplementation(stalled.answer);
       await user.click(remove);
+      await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: noEmailRemoval }));
       await vi.waitFor(() => expect(stalled.signals).toHaveLength(1));
       timers.expire();
       expect(stalled.signals[0]!.aborted).toBe(true);
@@ -189,13 +229,13 @@ describe('Settings → Email', () => {
     current = gymEmail;
     const user = userEvent.setup(); renderSection();
     client.DELETE.mockResolvedValue(reply(409));
-    await user.click(await screen.findByRole('button', { name: 'Remove (the gym will have no email)' }));
+    await confirmRemoval(user);
     // The gym revision didn't move: what the section shows stays.
     expect((await screen.findByRole('alert')).textContent).toContain('so this change wasn’t saved');
     // Another tab saved: the reload brings the latest settings.
     const read = client.GET.getMockImplementation()!;
     client.GET.mockImplementation(async (path: string) => path === '/api/settings' ? reply(200, { data: { ...settings, revision: 4 } }) : read(path));
-    await user.click(screen.getByRole('button', { name: 'Remove (the gym will have no email)' }));
+    await confirmRemoval(user);
     await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toContain('The latest saved settings are shown'));
   });
 });

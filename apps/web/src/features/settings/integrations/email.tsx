@@ -4,7 +4,9 @@ import { parseResponse } from '../../../lib/response.js';
 import { useState, type FormEvent } from 'react';
 import { saveEmailIntegrationResponseSchema, type EmailIntegration, type SignInMethods } from '@plaingym/shared/contracts';
 import { api } from '../../../lib/api.js';
+import { t } from '../../../lib/i18n.js';
 import { Button } from '../../../components/ui/button.js';
+import { Dialog, DialogActions, DialogCancel } from '../../../components/ui/dialog.js';
 import { FormMessage } from '../../../components/ui/alert.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
@@ -13,6 +15,7 @@ import { SmtpPortHint } from '../../setup/smtp-port-hint.js';
 import { failedText, integrationsOf, refusedText, text, type useIntegrations } from './state.js';
 
 const label = (key: string) => text('email.' + key);
+const removal = (key: string) => t('settings/integration-removal:' + key);
 export const methods = (signIn: SignInMethods) =>
   label('methods_' + (signIn.magicLink && signIn.password ? 'both' : signIn.magicLink ? 'magicLink' : signIn.password ? 'password' : 'none'));
 const same = (a: SignInMethods, b: SignInMethods) => a.magicLink === b.magicLink && a.password === b.password;
@@ -34,6 +37,7 @@ function Field({ name, type = 'text', value, required = true, onChange, hint }: 
 export function EmailIntegrationSection({ email, editable, state }: { email: EmailIntegration; editable: boolean; state: ReturnType<typeof useIntegrations> }) {
   const [busy, setBusy] = useState<'save' | 'remove' | null>(null), [message, setMessage] = useState<Message | null>(null);
   const [host, setHost] = useState(email.source === 'gym' ? email.host ?? '' : ''), [open, setOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const saveChangesSignIn = !same(email.signIn, email.signInAfterSave);
   const removeChangesSignIn = email.signInAfterRemove !== null && !same(email.signIn, email.signInAfterRemove);
   async function save(event: FormEvent<HTMLFormElement>) {
@@ -57,6 +61,7 @@ export function EmailIntegrationSection({ email, editable, state }: { email: Ema
     finally { setBusy(null); }
   }
   async function remove() {
+    if (busy !== null) return;
     setMessage(null); setBusy('remove');
     try {
       const reply = await state.change((revision, signal) => api.DELETE('/api/settings/integrations/email', { signal, body: { revision } }), integrationsOf);
@@ -79,9 +84,21 @@ export function EmailIntegrationSection({ email, editable, state }: { email: Ema
       {(email.source === 'gym' || email.unreadable) && <div className="grid min-w-0 gap-2">
         {email.removeBlocked ? <p className="text-sm text-muted-foreground">{label('onlySignIn')}</p>
           : removeChangesSignIn && <p className="text-sm">{text('email.signInChangesOnRemove', { methods: methods(email.signInAfterRemove!) })}</p>}
-        <div><Button type="button" variant="outline" disabled={busy !== null || email.removeBlocked} onClick={() => void remove()}>
+        <div><Button type="button" variant="outline" disabled={busy !== null || email.removeBlocked} onClick={() => { setMessage(null); setConfirming(true); }}>
           {label(busy === 'remove' ? 'removing' : email.signInAfterRemove?.magicLink ? 'remove' : 'removeNone')}</Button></div>
       </div>}
+      {confirming && !email.removeBlocked && <Dialog title={removal('email.title')} closeLabel={removal('close')} onClose={() => setConfirming(false)}>
+        <div className="space-y-4">
+          <p>{removal(email.signInAfterRemove?.magicLink ? 'email.install' : 'email.none')}</p>
+          {removeChangesSignIn && <p>{text('email.signInChangesOnRemove', { methods: methods(email.signInAfterRemove!) })}</p>}
+          <p>{removal('email.secret')}</p>
+        </div>
+        <DialogActions>
+          <Button variant="destructive" onClick={() => { setConfirming(false); void remove(); }}>
+            {label(busy === 'remove' ? 'removing' : email.signInAfterRemove?.magicLink ? 'remove' : 'removeNone')}</Button>
+          <DialogCancel variant="outline">{removal('cancel')}</DialogCancel>
+        </DialogActions>
+      </Dialog>}
       {!open ? <div><Button type="button" variant="outline" onClick={() => { setMessage(null); setOpen(true); }}>{label(email.source === 'gym' ? 'change' : 'replace')}</Button></div>
       : <form onSubmit={(event) => void save(event)} aria-label={label(email.source === 'gym' ? 'change' : 'replace')}>
         <fieldset disabled={busy !== null} className="grid min-w-0 gap-4">

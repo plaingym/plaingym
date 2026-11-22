@@ -77,6 +77,11 @@ for (const width of [360, 1280]) {
     await page.screenshot({ path: info.outputPath('sms-api-key-form-' + width + '.png'), fullPage: true });
     await form.getByRole('button', { name: 'Cancel', exact: true }).click();
     await page.getByRole('button', { name: 'Remove SMS provider' }).click();
+    const removal = page.getByRole('dialog', { name: 'Remove the SMS provider?' });
+    await expect(removal).toContainText('Member texts stop');
+    await expect(removal).toContainText('The stored credentials are deleted');
+    await accessibleLayout(page, info, 'sms-remove-dialog-' + width);
+    await removal.getByRole('button', { name: 'Remove SMS provider' }).click();
     await expect(section.getByRole('status')).toContainText('SMS credentials are removed');
     expect(requests[1]).toEqual({ revision: 4 });
   });
