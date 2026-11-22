@@ -141,9 +141,10 @@ export interface InvoiceRefundFixture {
 // The fake treats a reservation as a duplicate only when it is seeded with `duplicateReserved`. The real
 // `duplicateReservation` (areas/billing/transitions/store.ts) also counts a `duplicate_payment` reason with no
 // `billing.refund.requested` audit on a payment that wasn't accepted; the fake doesn't model that case.
-// `missing`: released because the processor reported the refund missing; `found`: a later success for it was recorded.
+// `missing` marks a release on a missing report. `found` records the later success; `foundFailed` records the first
+// failure reported after that success (a failure with no earlier success never sets it).
 interface StoredRefund { gymId: Id; request: RefundTransition; appCreated: boolean; tagged: boolean; duplicate: boolean; createdAt: Date;
-  missing?: true; found?: true; }
+  missing?: true; found?: true; foundFailed?: true; }
 const terminal = new Set<InvoiceSnapshot['status']>(['paid', 'partially_refunded', 'refunded', 'void']);
 const canceled = (attempt: InvoiceAttemptFixture) => attempt.declineCode === 'intent_canceled' || attempt.declineCode === 'confirm_abandoned';
 
@@ -373,18 +374,21 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
     if (request.amountCents <= 0 || request.currency !== payment.currency) conflict('Invalid refund money');
     if (request.status === 'canceled' && request.processorId === undefined) conflict('Only a processor refund can be canceled');
     const key = scopedKey(context.gymId, request.refundId);
-    const existing = this.#refunds.get(key)?.request;
+    const previous = this.#refunds.get(key);
+    const existing = previous?.request;
     if (existing && (existing.paymentId !== request.paymentId || existing.amountCents !== request.amountCents
       || existing.currency !== request.currency || (existing.processorId !== undefined && existing.processorId !== request.processorId)))
       conflict('Refund ID reused with different parameters');
     const reversed = existing?.status === 'succeeded' && request.status === 'failed'
       && existing.processorId !== undefined && existing.processorId === request.processorId;
-    // A success for a refund released as missing is recorded once for staff; the row and the invoice stay as they are.
-    const stored = this.#refunds.get(key);
-    if (stored?.missing && existing?.status === 'failed' && existing.processorId !== undefined
-      && existing.processorId === request.processorId && request.status === 'succeeded') {
-      if (!stored.found) {
-        this.#refunds.set(key, { ...stored, found: true });
+    // Record the first success and its later failure for staff, keeping the released refund and invoice as they are.
+    if (previous?.missing && existing?.status === 'failed' && existing.processorId !== undefined
+      && existing.processorId === request.processorId) {
+      if (request.status === 'succeeded' && !previous.found) {
+        this.#refunds.set(key, { ...previous, found: true });
+        this.#effect(context.gymId, invoice.id, 'staff_notice', payment.id);
+      } else if (request.status === 'failed' && previous.found && !previous.foundFailed) {
+        this.#refunds.set(key, { ...previous, foundFailed: true });
         this.#effect(context.gymId, invoice.id, 'staff_notice', payment.id);
       }
       return this.#result('ignored', invoice);
@@ -400,7 +404,6 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
       && gymId === context.gymId && other.paymentId === payment.id && !refundReleased(other))
       .reduce((sum, [, { request: other }]) => sum + other.amountCents, 0);
     if (!refundReleased(request) && reserved + request.amountCents > payment.amountCents) conflict('Refund exceeds payment');
-    const previous = this.#refunds.get(key);
     const tagged = previous?.tagged ?? (request.tagged === true && request.status === 'pending');
     const createdInApp = previous?.appCreated ?? (request.processorId === undefined || tagged);
     appCreated ||= createdInApp;

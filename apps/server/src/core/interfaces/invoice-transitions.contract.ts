@@ -235,7 +235,7 @@ export function invoiceTransitionsContract(name: string, create: (options?: { pa
     });
     const succeeded = (rows: readonly RefundTransition[]) =>
       rows.filter(row => row.status === 'succeeded').reduce((sum, row) => sum + row.amountCents, 0);
-    it('records a later success for a refund released as missing once, without changing the refund or the invoice', async () => {
+    it('notifies staff once for a later success and once for a subsequent failure on a refund released as missing', async () => {
       const h = await create(), missing = await missingRow(h);
       await h.transitions.processorRefund(h.context, { ...processor(h, { amount: 9000 }), missingRefunds: ['re_missing'] });
       const before = await h.read();
@@ -248,7 +248,26 @@ export function invoiceTransitionsContract(name: string, create: (options?: { pa
       expect(count(after.effects, 'staff_notice')).toBe(count(before.effects, 'staff_notice') + 1);
       expect((await h.transitions.processorRefund(h.context, found)).outcome).toBe('ignored');
       expect(await h.read()).toEqual(after);
+
+      const failed = { ...found, processorRefund: { ...found.processorRefund, status: 'failed' as const } };
+      expect((await h.transitions.processorRefund(h.context, failed)).outcome).toBe('ignored');
+      const afterFailure = await h.read();
+      expect(afterFailure).toEqual({ ...after, effects: [...after.effects, 'staff_notice'].sort() });
+      expect((await h.transitions.processorRefund(h.context, failed)).outcome).toBe('ignored');
+      expect(await h.read()).toEqual(afterFailure);
     });
+    // `failed` is reported before any success; `canceled` is reported after a success.
+    it.each(['failed', 'canceled'] as const)(
+      'adds no staff follow-up for a %s report on a refund released as missing (failure before success, cancellation after success)', async status => {
+        const h = await create(), missing = await missingRow(h);
+        await h.transitions.processorRefund(h.context, { ...processor(h, { amount: 9000 }), missingRefunds: [missing.processorId] });
+        const found = processor(h, { id: missing.processorId, amount: missing.amountCents });
+        if (status === 'canceled') expect((await h.transitions.processorRefund(h.context, found)).outcome).toBe('ignored');
+        const before = await h.read();
+        const report = { ...found, processorRefund: { ...found.processorRefund, status } };
+        expect((await h.transitions.processorRefund(h.context, report)).outcome).toBe('ignored');
+        expect(await h.read()).toEqual(before);
+      });
     it('records a later success for a refund released as missing once after the external refund that released it is canceled', async () => {
       const h = await create(), missing = await missingRow(h);
       const report = { ...processor(h, { amount: 9000, status: 'pending' }), missingRefunds: ['re_missing'] };

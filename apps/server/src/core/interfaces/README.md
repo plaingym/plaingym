@@ -48,10 +48,10 @@ are implemented here.
   a staff notice for each release. Unread processor rows still reserve their amounts and
   force a retry if the external refund needs more room after those releases. A later
   verified success for a refund released as missing keeps the row failed and the invoice
-  unchanged, and queues one staff notice for manual reconciliation. If the processor
-  subsequently reports that same refund failed, the real transition records the
-  report once, skips any found notice still queued and queues a follow-up asking
-  staff to recheck the payment. The invoice and refund records stay as they were.
+  unchanged, and queues one staff notice for manual reconciliation. The real transition
+  and fake each queue one staff follow-up on the first matching failure after that success,
+  keeping the refund and invoice unchanged. The real transition records the report once,
+  skips any found notice still queued and asks staff to recheck the payment.
   The fake's `seedRefund` accepts persisted provenance for fixtures. Its plain `refund`
   sends a staff notice when it fails a reservation without a processor ID if the reservation
   is marked as a duplicate or a system actor releases it past `refundRetryWindowMs` (23 hours,
