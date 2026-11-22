@@ -2,7 +2,7 @@
 import { and, eq, inArray, or } from 'drizzle-orm';
 import { auditEvents, classSessions, emailDeliveries, forGym, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
-import { idSchema } from '@plaingym/shared/contracts';
+import { cancellationNoticeChannelsSchema, idSchema } from '@plaingym/shared/contracts';
 import { z } from 'zod';
 import { clock as systemClock } from '../../core/clock.js';
 import { createEmailDeliveries, DeliveryError, deliveryAcceptance, type Email } from '../../infra/email/index.js';
@@ -18,11 +18,25 @@ import { createCancellationSms } from './cancellation.sms.js';
 import type { ClassNoticeSmsOptions } from '../bookings/bookings.sms.js';
 
 export const cancellationNoticeJob = 'announcements.cancellation';
-// Stored payloads tolerate additional keys when a release rolls back.
-export const cancellationNoticePayload = z.object({
-  sessionId: idSchema, memberIds: z.array(idSchema), note: z.string().max(1_000),
-});
+const noticeFields = { sessionId: idSchema, memberIds: z.array(idSchema), note: z.string().max(1_000) };
+/** One session's notice. Without `channels` it goes by email and text, as it did before staff could choose. */
+export const cancellationNoticePayload = z.object({ ...noticeFields, channels: cancellationNoticeChannelsSchema.optional() });
 type Notice = z.infer<typeof cancellationNoticePayload>;
+// Stored payloads tolerate additional keys when a release rolls back. A notice for both channels keeps the flat
+// shape that every release sends by both. A notice for one channel nests its fields under `notice`: a previous
+// release requires a top-level `sessionId`, so it refuses that job before reserving anything instead of dropping
+// `channels` and sending both. The job fails there, and announcement recovery retries it on a release that reads it.
+const storedNotice = z.union([
+  z.object({ channels: cancellationNoticeChannelsSchema, notice: z.object(noticeFields) })
+    .transform(({ channels, notice }) => ({ ...notice, channels })),
+  cancellationNoticePayload,
+]);
+/** The job payload stored for a notice. */
+export function cancellationNoticeJobPayload(notice: Notice) {
+  const { channels, ...fields } = cancellationNoticePayload.parse(notice);
+  return channels?.length === 1 ? { channels, notice: fields } : fields;
+}
+const sends = (notice: Notice, channel: 'email' | 'sms') => !notice.channels || notice.channels.includes(channel);
 export interface CancellationNoticeOptions {
   scope?: typeof forGym; clock?: Clock; jobs: Jobs;
   /** The gym's SMTP resolver, or the demo outbox when demo mode is enabled. */
@@ -139,8 +153,11 @@ export function createCancellationNotice(options: CancellationNoticeOptions) {
               logEmailSuppression({ event: 'email.suppressed', gymId, memberId: reservation.current[0]!.id, reason: 'opt_out' });
               return { status: 'suppressed', reason: 'opt_out' };
             }
+            // A member at their own address isn't told their own name; a household address still lists who it covers.
+            const showMembers = current.length !== 1 || !current[0]!.email;
             latest = await renderCancellationNotice({ gymName, name: session.name, startsAt: session.startsAt, timezone: gym.timezone,
-              memberNames: current.map(row => `${row.firstName} ${row.lastName}`), note: notice.note, scheduleUrl: new URL('/portal/schedule', origin).href });
+              memberNames: current.map(row => `${row.firstName} ${row.lastName}`), showMembers, note: notice.note,
+              scheduleUrl: new URL('/portal/schedule', origin).href });
           } catch (cause) { throw new DeliveryError('not_accepted', 'Cancellation notice could not be prepared', { cause }); }
           // The group guard also authorizes billing addresses for members with no email of their own.
           return email.sendEmail({ to: address, ...latest });
@@ -159,16 +176,17 @@ export function createCancellationNotice(options: CancellationNoticeOptions) {
   return {
     async enqueue(transaction: JobTransaction, payload: Notice, timezone: string) {
       const notice = cancellationNoticePayload.parse(payload);
-      await options.jobs.enqueue(cancellationNoticeJob, notice, { gymId: transaction.gymId, timezone,
+      await options.jobs.enqueue(cancellationNoticeJob, cancellationNoticeJobPayload(notice), { gymId: transaction.gymId, timezone,
         idempotencyKey: `schedule-cancel-notice:${notice.sessionId}`, maxAttempts: 12 }, transaction);
     },
     async run(payload: unknown, gymId: string) {
-      const notice = cancellationNoticePayload.parse(payload);
+      const notice = storedNotice.parse(payload);
       // An email's failure, suppression or earlier acceptance cannot prevent the independent SMS attempt.
       // When both channels fail, the email's error is reported; the text's never hides it.
+      // A channel staff didn't choose is never reserved or attempted.
       let failure: unknown;
-      try { await sendEmail(notice, gymId); } catch (error) { failure = error; }
-      try { await sms.run(notice, gymId); } catch (error) { failure ??= error; }
+      if (sends(notice, 'email')) try { await sendEmail(notice, gymId); } catch (error) { failure = error; }
+      if (sends(notice, 'sms')) try { await sms.run(notice, gymId); } catch (error) { failure ??= error; }
       if (failure) throw failure;
     },
   };

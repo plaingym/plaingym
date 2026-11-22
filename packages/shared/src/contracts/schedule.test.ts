@@ -32,6 +32,13 @@ describe('weekly templates and materialized sessions', () => {
       expect(schema.safeParse({ revision: 1, ...extra }).success).toBe(false);
     expect(scheduleRevisionRequestSchema.safeParse({ revision: 1, notify: true }).success).toBe(false);
   });
+  it('accepts one or both notice channels, each at most once', () => {
+    const schema = scheduleContracts.cancelSession.body;
+    for (const channels of [['email'], ['sms'], ['email', 'sms'], ['sms', 'email']])
+      expect(schema.parse({ revision: 1, notify: true, channels })).toMatchObject({ notify: true, channels });
+    for (const channels of [[], ['email', 'email'], ['fax'], ['email', 'sms', 'email'], 'email', null])
+      expect(schema.safeParse({ revision: 1, notify: true, channels }).success).toBe(false);
+  });
   it('preserves local wall time and accepts the repeated DST hour as a positive duration', () => {
     // Kind defaults to a class on create.
     expect(createClassTemplateRequestSchema.parse(template)).toEqual({ ...template, kind: 'class' });

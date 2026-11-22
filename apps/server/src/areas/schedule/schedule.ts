@@ -261,6 +261,8 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
     async changeSession(context: MutationContext, id: string, kind: 'cancel' | 'coach' | 'notes' | 'capacity', input: CancelSessionRequest | SwapSessionCoachRequest | UpdateSessionNotesRequest | UpdateSessionCapacityRequest) {
       if (kind === 'cancel') {
         const value = cancelSessionRequestSchema.parse(input);
+        if (value.channels && !value.notify)
+          throw new AppError('invalid_request', 'Notice channels need notify', { reason: ['channels_without_notify'] });
         const gym = value.notify ? await settings.get(context.gymId) : undefined;
         return safe(() => withJobTransaction(scope, context.gymId, async transaction => {
           const { tx } = transaction;
@@ -281,7 +283,10 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
             .where(and(eq(classSessions.id, id), guard.matches)).returning());
           if (value.notify) {
             const memberIds = await readCancellationRecipients(tx, id);
-            await (options.cancellation ?? cancellationNotice()).enqueue(transaction, { sessionId: id, memberIds, note: value.note ?? '' }, gym!.timezone);
+            // Without a choice, both channels go, as they did before staff could pick.
+            const channels = value.channels ?? ['email', 'sms'];
+            await (options.cancellation ?? cancellationNotice()).enqueue(transaction,
+              { sessionId: id, memberIds, note: value.note ?? '', channels }, gym!.timezone);
           }
           const cancelled = await tx.update(classBookings).set({ status: 'cancelled', cancelledAt: now, waitlistPosition: null })
             .where(and(eq(classBookings.sessionId, id), inArray(classBookings.status, ['booked', 'waitlisted']))).returning();

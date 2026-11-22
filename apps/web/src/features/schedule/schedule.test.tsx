@@ -54,7 +54,58 @@ describe('schedule calendar and session detail', () => {
     fireEvent.change(note, { target: { value: '<b>Closed</b>\nTomorrow' } });
     fireEvent.click(screen.getByRole('button', { name: 'Cancel session' }));
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
-    expect(api.POST).toHaveBeenCalledWith('/api/schedule/sessions/{id}/cancel', { params: { path: { id } }, body: { revision: 4, notify: true, note: '<b>Closed</b>\nTomorrow' } });
+    expect(api.POST).toHaveBeenCalledWith('/api/schedule/sessions/{id}/cancel', { params: { path: { id } }, body: { revision: 4, notify: true, channels: ['email'], note: '<b>Closed</b>\nTomorrow' } });
+  });
+  it.each([
+    [['email'], ['email']],
+    [['sms'], ['sms']],
+    [['email', 'sms'], ['email', 'sms']],
+    [['sms', 'email'], ['email', 'sms']],
+  ] as const)('ticking %j sends channels %j, both boxes starting unticked', async (ticked, channels) => {
+    vi.mocked(api.POST).mockResolvedValue({ response: new Response(), data: { data: { ...session, revision: 5, status: 'cancelled' } } } as Awaited<ReturnType<typeof api.POST>>);
+    const onSaved = vi.fn();
+    render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={onSaved} registries={noticeRegistries()}/>);
+    const boxes = { email: screen.getByRole('checkbox', { name: 'Email the 3 booked and waitlisted members' }) as HTMLInputElement,
+      sms: screen.getByRole('checkbox', { name: 'Text the 3 booked and waitlisted members' }) as HTMLInputElement };
+    expect([boxes.email.checked, boxes.sms.checked]).toEqual([false, false]);
+    expect(boxes.sms.getAttribute('aria-describedby')).toBeTruthy();
+    expect(document.getElementById(boxes.sms.getAttribute('aria-describedby')!)?.textContent)
+      .toBe('Texts go only to members who agreed to notices texts, and only while Member texts is on in Settings → Go-live.');
+    expect(screen.queryByLabelText(/Optional cancellation note/)).toBeNull();
+    for (const channel of ticked) fireEvent.click(boxes[channel]);
+    fireEvent.change(screen.getByLabelText(/Optional cancellation note \(email only/), { target: { value: 'Closed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel session' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(api.POST).toHaveBeenCalledWith('/api/schedule/sessions/{id}/cancel', { params: { path: { id } }, body: { revision: 4, notify: true, channels, note: 'Closed' } });
+  });
+  it.each(['email', 'sms'] as const)('shows the note with only %s ticked, and hides it once that box is cleared', channel => {
+    render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={vi.fn()} registries={noticeRegistries()}/>);
+    const box = screen.getByRole('checkbox', { name: channel === 'email' ? /Email the 3/ : /Text the 3/ });
+    fireEvent.click(box); expect(screen.getByLabelText(/Optional cancellation note/)).toBeTruthy();
+    fireEvent.click(box); expect(screen.queryByLabelText(/Optional cancellation note/)).toBeNull();
+  });
+  it('locks both boxes with their none texts when nobody is booked or waitlisted', async () => {
+    const counts = { booked: 0, waitlisted: 0, checkedIn: 0 };
+    const Panel = () => { usePublishSessionCounts(counts); return null; };
+    const registries = createRegistries([{ sessionPanels: [{ id: 'test.empty-notice', labelKey: 'schedule/schedule:bookings', enabled: true,
+      permission: { kind: 'staff', capability: 'schedule.manage' }, component: Panel }] }]);
+    vi.mocked(api.POST).mockResolvedValue({ response: new Response(), data: { data: { ...session, revision: 5, status: 'cancelled' } } } as Awaited<ReturnType<typeof api.POST>>);
+    render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={vi.fn()} registries={registries}/>);
+    for (const name of ['No booked or waitlisted members to email', 'No booked or waitlisted members to text']) {
+      const box = screen.getByRole('checkbox', { name }) as HTMLInputElement;
+      expect(box.disabled).toBe(true); expect(box.checked).toBe(false);
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel session' }));
+    await waitFor(() => expect(api.POST).toHaveBeenCalledWith('/api/schedule/sessions/{id}/cancel', { params: { path: { id } }, body: { revision: 4 } }));
+  });
+  it('names one member in the text option too', () => {
+    const counts = { booked: 1, waitlisted: 0, checkedIn: 0 };
+    const Panel = () => { usePublishSessionCounts(counts); return null; };
+    const registries = createRegistries([{ sessionPanels: [{ id: 'test.one-notice', labelKey: 'schedule/schedule:bookings', enabled: true,
+      permission: { kind: 'staff', capability: 'schedule.manage' }, component: Panel }] }]);
+    render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={vi.fn()} registries={registries}/>);
+    expect(screen.getByRole('checkbox', { name: 'Text the 1 booked or waitlisted member' })).toBeTruthy();
+    expect(screen.getByRole('checkbox', { name: 'Email the 1 booked or waitlisted member' })).toBeTruthy();
   });
   it('explains an already-cancelled response and refreshes the stale session', async () => {
     vi.mocked(api.POST).mockResolvedValue({ response: new Response(null, { status: 409 }),
@@ -73,7 +124,7 @@ describe('schedule calendar and session detail', () => {
     vi.setSystemTime(new Date(now));
     render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={vi.fn()} registries={noticeRegistries()}/>);
     expect(screen.queryByRole('button', { name: 'Cancel session' })).toBeNull();
-    expect(screen.queryByRole('checkbox', { name: /Email the/ })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: /(Email|Text) the/ })).toBeNull();
   });
   it.each([
     [false, 'This session has started and cannot be cancelled.'],
@@ -85,7 +136,7 @@ describe('schedule calendar and session detail', () => {
     vi.mocked(api.POST).mockResolvedValue({ response, error } as Awaited<ReturnType<typeof api.POST>>);
     const registries = noticeRegistries();
     const view = render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={onSaved} registries={registries}/>);
-    if (notify) fireEvent.click(screen.getByRole('checkbox', { name: 'Email the 3 booked and waitlisted members' }));
+    if (notify) fireEvent.click(screen.getByRole('checkbox', { name: 'Text the 3 booked and waitlisted members' }));
     fireEvent.click(screen.getByRole('button', { name: 'Cancel session' }));
     await waitFor(() => expect(screen.getByRole('status').textContent).toBe(expected));
     // The browser is still eight hours behind the server's start decision.
@@ -177,7 +228,7 @@ describe('schedule calendar and session detail', () => {
     const role = kind === 'front_desk' ? 'front_desk' : 'coach';
     bootstrap([role], id, kind === 'other_coach' ? id : null);
     render(<SessionDetail session={{ ...session, coachId: programId }} options={options} roles={[role]} enabledModules={[]} onSaved={vi.fn()} registries={noticeRegistries()}/>);
-    expect(screen.queryByRole('checkbox', { name: /Email the/ })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: /(Email|Text) the/ })).toBeNull();
   });
   it('keeps cancellation without email available and hides the option on an already cancelled session', async () => {
     vi.mocked(api.POST).mockResolvedValue({ response: new Response(), data: { data: { ...session, revision: 5, status: 'cancelled' } } } as Awaited<ReturnType<typeof api.POST>>);
@@ -185,7 +236,7 @@ describe('schedule calendar and session detail', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel session' }));
     await waitFor(() => expect(api.POST).toHaveBeenCalledWith('/api/schedule/sessions/{id}/cancel', { params: { path: { id } }, body: { revision: 4 } }));
     view.rerender(<SessionDetail session={{ ...session, status: 'cancelled' }} options={options} roles={['owner']} enabledModules={[]} onSaved={vi.fn()} registries={noticeRegistries()}/>);
-    expect(screen.queryByRole('checkbox', { name: /Email the/ })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: /(Email|Text) the/ })).toBeNull();
     expect((screen.getByRole('button', { name: 'Cancel session' }) as HTMLButtonElement).disabled).toBe(true);
   });
   it('retains a selected email option while stale counts require a roster refresh', () => {

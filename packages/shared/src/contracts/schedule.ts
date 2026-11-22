@@ -12,9 +12,16 @@ const nameSchema = z.string().trim().min(1);
 const relatedIdsSchema = z.array(idSchema).refine((ids) => new Set(ids).size === ids.length, 'IDs must be unique');
 export const scheduleIdParamsSchema = z.strictObject({ id: idSchema });
 export const scheduleRevisionRequestSchema = z.strictObject({ revision: revisionSchema });
+/** A cancellation notice goes by email, text, or both. */
+export const cancellationNoticeChannelSchema = z.enum(['email', 'sms']);
+export const cancellationNoticeChannelsSchema = z.array(cancellationNoticeChannelSchema).min(1).max(2)
+  .refine((channels) => new Set(channels).size === channels.length, 'Channels must be unique');
 export const cancelSessionRequestSchema = z.strictObject({
   revision: revisionSchema,
   notify: z.boolean().optional(),
+  channels: cancellationNoticeChannelsSchema.optional().describe(
+    'Choose each channel at most once. Requires notify to be true. Omitting channels with notify set to true sends both email and SMS.',
+  ),
   note: z.string().max(1_000).optional(),
 });
 export { classKindSchema, classSessionStatusSchema } from './states.js';

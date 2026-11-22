@@ -40,7 +40,9 @@ All other endpoints use the shared schedule contracts. Every session response in
 instant, derived from the gym's current cancellation cutoff using the booking
 rules, read once per transaction. Audit snapshots contain stored session fields
 and mappings only; they exclude this derived cutoff. Create and update requests cannot set it. The cancel request accepts
-optional `notify: true` and a plain text `note` of at most 1,000 characters.
+optional `notify: true`, `channels` (`["email"]`, `["sms"]` or both, each at most once) and a plain text `note` of
+at most 1,000 characters. `notify: true` without `channels` sends both channels. `channels` without `notify: true`
+is a 400 `invalid_request` with reason `channels_without_notify`, before any write.
 Once its start time is reached, a session cannot be cancelled, with or without a
 notice. The service checks the injected clock after acquiring the session row
 lock and returns a conflict with reason `session_started` before any writes.
@@ -59,15 +61,23 @@ and linked staff profile under the session row lock: only an owner, admin or
 that session's assigned coach may proceed. A refusal rolls back the entire
 cancellation. Without notification, the existing cancellation permission applies.
 The cancellation, audit and notice job commit together. The payload snapshots only
-that session's booked and waitlisted member IDs and the note before cancelling
+that session's booked and waitlisted member IDs, the note and the chosen channels before cancelling
 those bookings, setting their cancellation time, clearing queue positions and
 writing one `booking.cancelled` audit per booking. Every repeated cancellation returns a conflict
 without changing the revision or queuing another notice.
 
-The session dialog offers an unchecked email option with the booked-plus-waitlisted
-count when fresh panel counts are available and the actor may notify. Selecting it
-reveals the optional note. A failed roster refresh keeps a selected option and
-note, and waits for fresh counts before sending. Coach visibility compares the bootstrap's gym-scoped
+The session dialog offers two unchecked options, Email and Text, each with the
+booked-plus-waitlisted count, when fresh panel counts are available and the actor may
+notify. Staff can tick either or both; no text is sent unless Text is ticked. A hint under
+Text says texts go only to members who agreed to notices texts, and only while Member
+texts is on in Settings → Go-live. With nobody booked or waitlisted, both are locked.
+Ticking either reveals the optional note, which appears in email only. The request sends `notify: true` with the
+ticked `channels`; with neither ticked it sends neither field. A failed roster refresh
+keeps the selected options and note, and waits for fresh counts before sending.
+Each notice lists the booked or waitlisted members its destination covers, except when
+one member receives it at their own email or consented phone. A household fallback
+lists the members it covers even when only one is booked or waitlisted.
+Coach visibility compares the bootstrap's gym-scoped
 `staffProfileId` with the session's `coachId`; API authorization is independent.
 
 The existing area route/job barrels load `schedule.routes.ts` and

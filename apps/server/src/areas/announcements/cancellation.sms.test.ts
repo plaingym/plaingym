@@ -2,7 +2,7 @@
 import { expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Isolated fixtures exercise the persisted independent member SMS switch.
-import { gyms, households, members, smsDeliveries, uuidv7 } from '@plaingym/db';
+import { emailDeliveries, gyms, households, members, smsDeliveries, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { isInTransaction } from '@plaingym/shared/transaction';
@@ -14,12 +14,16 @@ import { createSmsPhoneDigest, DeliveryError, FakeSms } from '../../infra/sms/in
 import { smsInFlightMs } from '../../infra/sms/deliveries.js';
 import { createScheduleService } from '../schedule/schedule.js';
 import { createMembersService } from '../members/members.js';
-import { createCancellationNotice } from './cancellation.js';
+import { idSchema } from '@plaingym/shared/contracts';
+import { z } from 'zod';
+import { cancellationNoticeJob, cancellationNoticeJobPayload, createCancellationNotice } from './cancellation.js';
 import { createAnnouncementJobs } from './jobs.js';
+import { announcementRecoveryJob, createAnnouncementRecoveryJobs } from './recovery.js';
 
 const db = useTestDatabase(), factory = createFactories(db), phone = '+12025550123';
 const digest = createSmsPhoneDigest('class-notice-test');
-async function fixture(recurring = false) {
+const selfText = 'Cedar Gym: Evening practice on 2026-11-10 at 7:30 PM EST has been cancelled.';
+async function fixture(recurring = false, channels?: ('email' | 'sms')[]) {
   const gymId = uuidv7(), clock = new TestClock('2026-11-10T12:00:00Z');
   await factory('gyms', gymId, { name: 'Cedar Gym', settings: { address: { country: 'US' } }, timezone: 'America/New_York', memberEmailsEnabled: true, memberSmsEnabled: true });
   const user = await factory('authUser', gymId);
@@ -40,8 +44,8 @@ async function fixture(recurring = false) {
     demoMode: false, sms: { resolver, phoneDigest: digest } };
   const notice = createCancellationNotice(options), schedule = createScheduleService({ scope: db.forGym, clock, cancellation: notice });
   createServerRegistry({ jobs: createAnnouncementJobs(undefined, () => notice) }).registerJobs(jobs, new Set());
-  await schedule.changeSession({ gymId, actor: { kind: 'user', userId: user.id } }, session.id, 'cancel', { revision: 1, notify: true });
-  const payload = { sessionId: session.id, memberIds: children.map(child => child.id), note: '' };
+  await schedule.changeSession({ gymId, actor: { kind: 'user', userId: user.id } }, session.id, 'cancel', { revision: 1, notify: true, ...(channels ? { channels } : {}) });
+  const payload ={ sessionId: session.id, memberIds: children.map(child => child.id), note: '' };
   return { gymId, clock, home, children, session, email, sms, jobs, resolver, options, notice, payload,
     run: () => notice.run(payload, gymId) };
 }
@@ -79,9 +83,107 @@ it('prefers a member consented phone and own email, and names only the other chi
   await db.forGym(f.gymId, tx => tx.update(members).set({ phone: own, phoneE164: own, email: 'mia@example.test',
     smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }).where(eq(members.id, child.id)));
   await f.run(); expect(f.sms.messages).toHaveLength(2); expect(f.email.messages).toHaveLength(2);
-  expect(f.sms.messages.find(message => message.to === own)!.body).toContain('Mia');
+  // Her own phone covers only her, so her text leaves the names out.
+  expect(f.sms.messages.find(message => message.to === own)!.body).toBe(selfText);
   expect(f.sms.messages.find(message => message.to === phone)!.body).not.toContain('Mia');
   expect(f.email.messages.find(message => message.to === 'parent@example.test')!.text).not.toContain('Mia');
+});
+
+it('texts and emails nobody on a channel staff didn’t choose', async () => {
+  const f = await fixture();
+  await f.notice.run(cancellationNoticeJobPayload({ ...f.payload, channels: ['email'] }), f.gymId);
+  expect(f.email.messages).toHaveLength(1); expect(f.sms.messages).toHaveLength(0);
+  expect(f.resolver.resolve).not.toHaveBeenCalled();
+  expect(await db.forGym(f.gymId, tx => tx.$count(smsDeliveries))).toBe(0);
+  const g = await fixture();
+  await g.notice.run(cancellationNoticeJobPayload({ ...g.payload, channels: ['sms'] }), g.gymId);
+  expect(g.sms.messages).toHaveLength(1); expect(g.email.messages).toHaveLength(0);
+  expect(await db.forGym(g.gymId, tx => tx.$count(emailDeliveries))).toBe(0);
+});
+
+it.each(['email', 'sms'] as const)('a previous release refuses a %s-only notice, and recovery sends only that channel after the upgrade', async channel => {
+  const f = await fixture(false, [channel]);
+  const queued = f.jobs.jobs.find(job => job.name === cancellationNoticeJob)!;
+  expect(queued.payload).toMatchObject({ channels: [channel], notice: { sessionId: f.session.id, note: '' } });
+  expect(queued.payload).not.toHaveProperty('sessionId');
+  expect(new Set((queued.payload as { notice: { memberIds: string[] } }).notice.memberIds)).toEqual(new Set(f.payload.memberIds));
+  // The previous release's handler: its parser drops keys it doesn't know, and it then sends both channels.
+  const previous = z.object({ sessionId: idSchema, memberIds: z.array(idSchema), note: z.string().max(1_000) });
+  const current = createAnnouncementJobs(undefined, () => f.notice).find(job => job.id === cancellationNoticeJob)!;
+  let release: 'previous' | 'current' = 'previous';
+  const jobs = new FakeJobs(f.clock);
+  jobs.handle(cancellationNoticeJob, async (payload, context) => release === 'previous'
+    ? f.notice.run(previous.parse(payload), context.gymId) : current.handler(payload, context));
+  createServerRegistry({ jobs: createAnnouncementRecoveryJobs({ scope: db.forGym, clock: f.clock, jobs }) }).registerJobs(jobs, new Set());
+  await jobs.enqueue(cancellationNoticeJob, queued.payload, queued.options);
+  const job = () => jobs.jobs.find(item => item.name === cancellationNoticeJob)!;
+  for (let attempt = 1; attempt <= 12; attempt++) {
+    expect(await jobs.runNext()).toBe(true);
+    expect(job().attempt).toBe(attempt); f.clock.set(job().runAt);
+  }
+  expect(job().status).toBe('failed');
+  expect(f.email.messages).toHaveLength(0); expect(f.sms.messages).toHaveLength(0);
+  expect(await db.forGym(f.gymId, tx => tx.$count(emailDeliveries))).toBe(0);
+  expect(await db.forGym(f.gymId, tx => tx.$count(smsDeliveries))).toBe(0);
+  // After the upgrade, recovery retries the original job with its original payload.
+  release = 'current'; f.clock.advance(15 * 60_000);
+  await jobs.triggerSchedule(announcementRecoveryJob, [{ gymId: f.gymId, timezone: 'UTC' }], 'recover-1');
+  expect(await jobs.runNext()).toBe(true);
+  expect(job()).toMatchObject({ status: 'queued', attempt: 0, payload: queued.payload });
+  expect(await jobs.runNext()).toBe(true);
+  expect(job().status).toBe('completed');
+  expect(f.email.messages).toHaveLength(channel === 'email' ? 1 : 0);
+  expect(f.sms.messages).toHaveLength(channel === 'sms' ? 1 : 0);
+  if (channel === 'email') expect(await db.forGym(f.gymId, tx => tx.$count(smsDeliveries))).toBe(0);
+  else expect(await db.forGym(f.gymId, tx => tx.$count(emailDeliveries))).toBe(0);
+});
+
+it('stores a notice for both channels in the flat shape a previous release sends by both', async () => {
+  const f = await fixture(false, ['email', 'sms']);
+  const queued = f.jobs.jobs.find(job => job.name === cancellationNoticeJob)!;
+  expect(queued.payload).toMatchObject({ sessionId: f.session.id, note: '' });
+  expect(queued.payload).not.toHaveProperty('channels');
+  await f.notice.run(queued.payload, f.gymId);
+  expect(f.email.messages).toHaveLength(1); expect(f.sms.messages).toHaveLength(1);
+});
+
+it.each([[['email', 'sms']], [['sms', 'email']], [undefined]] as const)('sends both channels for channels %j', async channels => {
+  const f = await fixture();
+  await f.notice.run({ ...f.payload, ...(channels ? { channels } : {}) }, f.gymId);
+  expect(f.email.messages).toHaveLength(1); expect(f.sms.messages).toHaveLength(1);
+});
+
+it('leaves the names out for one member at their own email and own consented phone', async () => {
+  const f = await fixture(), own = '+12025550177';
+  const home = await factory('households', f.gymId, { email: 'solo-home@example.test' });
+  const solo = await factory('members', f.gymId, { householdId: home.id, firstName: 'Solo', lastName: 'Member',
+    email: 'solo@example.test', phone: own, phoneE164: own, smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' });
+  await f.notice.run({ ...f.payload, memberIds: [solo.id] }, f.gymId);
+  expect(f.email.messages).toHaveLength(1); expect(f.email.messages[0]!.to).toBe('solo@example.test');
+  expect(f.email.messages[0]!.text).not.toContain('Booked or waitlisted members');
+  expect(f.email.messages[0]!.text).not.toContain('Solo');
+  expect(f.sms.messages).toHaveLength(1); expect(f.sms.messages[0]!.to).toBe(own);
+  expect(f.sms.messages[0]!.body).toBe(selfText);
+});
+
+it('names both children on the parent’s household address and billing phone', async () => {
+  const f = await fixture(), [mia, noa] = f.children;
+  await f.notice.run({ ...f.payload, memberIds: [mia!.id, noa!.id] }, f.gymId);
+  expect(f.email.messages).toHaveLength(1); expect(f.sms.messages).toHaveLength(1);
+  const line = f.email.messages[0]!.text.match(/^Booked or waitlisted members: (.+)$/m)?.[1];
+  const names = f.sms.messages[0]!.body.match(/ Members: (.+)\.$/)?.[1];
+  for (const listed of [line, names]) {
+    for (const name of ['Mia', 'Noa']) expect(listed).toContain(name);
+    expect(listed).not.toContain('Ari');
+  }
+});
+
+it('names the one child a parent’s billing phone and address cover', async () => {
+  const f = await fixture(), [mia] = f.children;
+  await f.notice.run({ ...f.payload, memberIds: [mia!.id] }, f.gymId);
+  expect(f.email.messages[0]!.to).toBe('parent@example.test');
+  expect(f.email.messages[0]!.text).toMatch(/^Booked or waitlisted members: .*Mia/m);
+  expect(f.sms.messages[0]!.to).toBe(phone); expect(f.sms.messages[0]!.body).toMatch(/Members: .*Mia/);
 });
 
 it.each(['roster read', 'reservation'] as const)('leaves a member out after they withdraw notices consent after the %s', async phase => {

@@ -161,8 +161,17 @@ opt-out or suppress transactional mail.
 ## Class-cancellation notices
 
 The schedule service enqueues `announcements.cancellation` in the cancellation's
-transaction with a snapshot of booked and waitlisted member IDs, the session ID
-and an optional plain text note. Its job key is `schedule-cancel-notice:<sessionId>`.
+transaction with a snapshot of booked and waitlisted member IDs, the session ID,
+an optional plain text note and the chosen `channels` (`email`, `sms`, or both).
+Its job key is `schedule-cancel-notice:<sessionId>`. A payload without `channels`
+(queued before staff could choose) sends both. The job runs only the chosen
+channels: a channel not listed is never reserved or attempted.
+A notice for both channels is stored in that flat shape, with no `channels`. A
+notice for one channel is stored as `{ channels, notice: { sessionId, memberIds, note } }`.
+A previous release requires a top-level `sessionId`, so after a rollback it fails
+that job before reserving anything, instead of dropping `channels` and sending
+both. Recovery (above) retries the failed job, with its original payload, once a
+release that reads it is running and the session hasn't started.
 This is a notice about the member's own booking: it ignores `announcement_opt_outs`
 and carries no unsubscribe link. It honors the member-email go-live switch,
 `members.email_opt_out`, email deliverability and erasure. Any globally opted-out
@@ -176,7 +185,10 @@ email under `householdRecipients` suppression rules. The email pass groups the
 snapshot by normalized address once per job. Each reservation and the final
 send guard recheck only that address's original candidates for inclusion in the
 message. Each email names the booked and waitlisted candidates still at that
-address. A member who moves between address groups is omitted. Each message
+address, in a "Booked or waitlisted members" line. The line is left out when the
+only candidate there is a member at their own email, so nobody is told their own
+name; a household billing address always lists who it covers. A member who moves
+between address groups is omitted. Each message
 identifies the gym and class, the date and time in the gym's timezone, the escaped
 plain text note, and the portal schedule link. The group is checked again at the
 send boundary, including the member-email switch and household billing preferences.
@@ -200,15 +212,18 @@ not_accepted. Recovery uses the member ID in each original delivery key even if
 the address group's first member has since changed. It checks for existing
 decisions with one member-filtered SQL lookup for the matching reservations.
 
-After the email pass, the job independently attempts notices texts through
-`createCancellationSms`. Email failure, missing SMTP or an email switch being off
-does not skip the text pass. `memberNoticePhones` selects each member's consented
+After the email pass, when texts were chosen, the job independently attempts notices
+texts through `createCancellationSms`. Email failure, missing SMTP or an email switch
+being off does not skip the text pass. When both channels fail, the email's error is
+the one the job reports. `memberNoticePhones` selects each member's consented
 phone, falling back to the consented household billing phone. The text pass groups
 the snapshot once per job and rechecks only that phone's original candidates at
 reservation and the remaining candidates at send. One text per phone names
-the candidates still covered, prefixed with the gym name and
+the candidates still covered ("Members: …"), prefixed with the gym name and
 including the class's date and time in the timezone read at the start of the text
-pass. Announcement consent
+pass. When the phone is one member's own consented phone covering only them, the
+text (`sms_self`) leaves the names out; a household billing phone (its group's
+`consentHouseholdIds`) always lists who it covers. Announcement consent
 alone never authorizes these texts. `MemberSms` rechecks notices consent, current
 phones and household membership, the independent member-SMS switch and daily cap.
 

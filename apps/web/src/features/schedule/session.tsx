@@ -2,7 +2,7 @@
 import { formatCount } from '../../lib/count.js';
 import { dateFormatter, timeLabel } from '../../lib/instant.js';
 import { parseResponse } from '../../lib/response.js';
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { canStaff, type StaffRole } from '@plaingym/shared';
 import { classSessionResponseSchema, updateClassSessionRequestSchema, type ClassSession, type ClassTag } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
@@ -33,6 +33,14 @@ function countsSummary(counts: SessionCounts, capacity: number | null) {
   const booked = capacity === null ? text('bookedOnly', { booked: formatCount(counts.booked) }) : text('bookedOf', { booked: formatCount(counts.booked), capacity: formatCount(capacity) });
   return [booked, text('waitlistedCount', { count: formatCount(counts.waitlisted) }), text('checkedInCount', { count: formatCount(counts.checkedIn) })].join(' · ');
 }
+const noticeKeys = {
+  email: ['cancelNotifyNone', 'cancelNotifyOne', 'cancelNotify'],
+  sms: ['cancelTextNone', 'cancelTextOne', 'cancelText'],
+} as const;
+/** "Email the 3 booked and waitlisted members", or its one or none variant. */
+function noticeLabel(channel: keyof typeof noticeKeys, count: number) {
+  return t('schedule/schedule:' + noticeKeys[channel][Math.min(count, 2)], { count: count.toLocaleString() });
+}
 export function SessionPanels({ sessionId, roles, enabledModules = [], registries = createRegistries() }:
   { sessionId: string; roles: readonly StaffRole[]; enabledModules?: readonly string[]; registries?: ReturnType<typeof createRegistries> }) {
   return <>{registries.sessionPanels.forModules(new Set(enabledModules)).filter((entry) => entry.enabled && entry.permission.kind === 'staff' && canStaff(roles, entry.permission.capability)).map((entry) => {
@@ -51,7 +59,8 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
   { session: ClassSession; options: ScheduleOptions; roles: readonly StaffRole[]; enabledModules: readonly string[]; onSaved: (session: ClassSession) => void;
     tags?: readonly ClassTag[]; siblings?: readonly ClassSession[]; registries?: ReturnType<typeof createRegistries> }) {
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState(''), [editing, setEditing] = useState(false);
-  const [emailMembers, setEmailMembers] = useState(false);
+  const [emailMembers, setEmailMembers] = useState(false), [textMembers, setTextMembers] = useState(false);
+  const textHintId = useId();
   const [now, setNow] = useState(Date.now);
   // The start the server refused a cancel for; a session moved since then (here or elsewhere) is judged afresh.
   const [serverStartedAt, setServerStartedAt] = useState<string | null>(null);
@@ -67,10 +76,12 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
   const mayNotify = roles.some(role => role === 'owner' || role === 'admin')
     || (roles.includes('coach') && !!staffProfileId && staffProfileId === session.coachId);
   const offerNotice = mayNotify && !started && session.status !== 'cancelled' && counts !== null;
-  // With nobody left to email the box is off and locked, whatever was ticked before the counts changed.
-  const notifying = offerNotice && emailMembers && counts.booked + counts.waitlisted > 0;
+  // With nobody left to notify both boxes are off and locked, whatever was ticked before the counts changed.
+  const reachable = offerNotice && counts.booked + counts.waitlisted > 0;
+  const emailing = reachable && emailMembers, texting = reachable && textMembers, notifying = emailing || texting;
+  const channels: ('email' | 'sms')[] = [...(emailing ? ['email' as const] : []), ...(texting ? ['sms' as const] : [])];
   // Only someone who could see the cancel form is told why it went away. Read through a ref so ticking
-  // the email box doesn't re-arm the start timer.
+  // a notice box doesn't re-arm the start timer.
   const startNotice = useRef('');
   useEffect(() => { startNotice.current = manage ? text(notifying ? 'sessionStartedNoteLost' : 'sessionStarted') : ''; }, [manage, notifying]);
   useEffect(() => {
@@ -111,7 +122,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
     try {
       const params = { path: { id } };
       const result = kind === 'cancel' ? await api.POST('/api/schedule/sessions/{id}/cancel', { params,
-        body: { revision, ...(notifying ? { notify: true, note: String(form?.get('note') ?? '') } : {}) } })
+        body: { revision, ...(notifying ? { notify: true, channels, note: String(form?.get('note') ?? '') } : {}) } })
         : kind === 'coach' ? await api.POST('/api/schedule/sessions/{id}/coach', { params, body: { revision, coachId: String(form?.get('coachId') ?? '') || null } })
         : kind === 'capacity' ? await api.PATCH('/api/schedule/sessions/{id}/capacity', { params, body: { revision, capacity: form?.get('capacity') ? Number(form.get('capacity')) : null } })
         : await api.PATCH('/api/schedule/sessions/{id}/notes', { params, body: { revision, notes: String(form?.get('notes') ?? '') || null } });
@@ -164,12 +175,17 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
         <Button type="submit" disabled={busy}>{text('saveCapacity')}</Button></form>
       {!started && <form onSubmit={(event) => void change('cancel', event)} className="space-y-3">
         {offerNotice && <>
-          <CheckboxField name="notify" checked={notifying} disabled={busy || counts.stale || counts.booked + counts.waitlisted === 0} onChange={event => setEmailMembers(event.target.checked)}
-            label={t('schedule/schedule:' + (counts.booked + counts.waitlisted === 0 ? 'cancelNotifyNone' : counts.booked + counts.waitlisted === 1 ? 'cancelNotifyOne' : 'cancelNotify'), { count: (counts.booked + counts.waitlisted).toLocaleString() })}/>
+          <CheckboxField name="notifyEmail" checked={emailing} disabled={busy || counts.stale || !reachable} onChange={event => setEmailMembers(event.target.checked)}
+            label={noticeLabel('email', counts.booked + counts.waitlisted)}/>
+          <div>
+            <CheckboxField name="notifyText" checked={texting} disabled={busy || counts.stale || !reachable} onChange={event => setTextMembers(event.target.checked)}
+              aria-describedby={textHintId} label={noticeLabel('sms', counts.booked + counts.waitlisted)}/>
+            <p id={textHintId} className="text-sm text-muted-foreground">{text('cancelTextHint')}</p>
+          </div>
           {notifying && <Field label={text('cancelNote')}><Textarea name="note" maxLength={1_000} disabled={busy}/></Field>}
         </>}
         <Button type="submit" variant="outline" className="w-full border-destructive text-destructive sm:w-auto"
-          disabled={busy || session.status === 'cancelled' || (emailMembers && mayNotify && (!counts || counts.stale))}>{text('cancelSession')}</Button>
+          disabled={busy || session.status === 'cancelled' || ((emailMembers || textMembers) && mayNotify && (!counts || counts.stale))}>{text('cancelSession')}</Button>
       </form>}
     </div>}
     {notes && <form key={'notes-' + session.revision} onSubmit={(event) => void change('notes', event)} className="space-y-2">

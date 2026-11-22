@@ -74,9 +74,13 @@ export function createCancellationSms(options: ClassNoticeDeliveryOptions) {
                   ? (await readNoticePhones(tx, gymId, reservation.memberIds)).find(row => row.phoneE164 === group.phoneE164) : undefined;
               });
               if (!current) return { status: 'suppressed', reason: 'no_consent' };
+              // A member's own consented phone covering only them isn't told their own name. A household billing
+              // phone is marked by its consent household, and always lists who it covers.
+              const self = current.memberIds.length === 1 && !current.consentHouseholdIds.length
+                && current.consentMemberIds.length === 1 && current.consentMemberIds[0] === current.memberIds[0];
               // Format all texts in the job's timezone. MemberSms still reloads the send settings.
               return noticeSender(options, gymId, current).sendSms({ to: current.phoneE164,
-                body: t('announcements/cancellation:sms', { name: reservation.session.name,
+                body: t(self ? 'announcements/cancellation:sms_self' : 'announcements/cancellation:sms', { name: reservation.session.name,
                   ...noticeWhen(reservation.session.startsAt, timezone), names: current.memberNames.join(', ') }) });
             },
           };

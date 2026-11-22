@@ -184,13 +184,16 @@ Removing a provider leaves the switch on and Health warns that texts cannot be s
 Go-live marks text delivery not applicable when the switch is off with no provider.
 It reports unreadable saved settings and failed status reads as needing attention
 regardless of the switch.
-Class-cancellation and waitlist-promotion
-notice handlers accept an optional gym SMS resolver and keyed phone digest. When
-supplied by the application composition, each handler attempts its text after and
-independently of email, using notices consent and durable delivery keys. They
-prefer each member's consented phone, then the household billing phone, grouping
-cancellation texts by destination and naming all covered participants. Email also
-falls back to the household billing address when the member has none. See the
+Class-cancellation and waitlist-promotion notice handlers accept an optional gym
+SMS resolver and keyed phone digest. Both use notices consent and durable delivery
+keys. Staff can choose email, text or both for a class cancellation. When both
+channels are used, each handler attempts text after email, even if email fails.
+Texts prefer each member's consented phone, then the household billing phone.
+Email uses the member's own address, then the household billing address.
+Cancellation notices group booked and waitlisted members by destination. They
+list the members covered unless the only recipient is one member reached at
+their own email or consented phone. A household fallback always lists the
+members it covers. See the
 [announcements](../apps/server/src/areas/announcements/README.md#class-cancellation-notices)
 and [bookings](../apps/server/src/areas/bookings/README.md#promotion-notices) module notes.
 Billing's optional SMS services use

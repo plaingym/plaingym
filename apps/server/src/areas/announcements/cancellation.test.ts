@@ -23,7 +23,8 @@ import { authorize } from '../staff/auth.permissions.js';
 import { createScheduleService } from '../schedule/schedule.js';
 import { createScheduleRoutes } from '../schedule/schedule.routes.js';
 import { createGoLiveService } from '../settings/go-live.js';
-import { cancellationNoticeJob, configureCancellationNotice, createCancellationNotice } from './cancellation.js';
+import { cancellationNoticeJob, cancellationNoticeJobPayload, cancellationNoticePayload, configureCancellationNotice,
+  createCancellationNotice } from './cancellation.js';
 import { createAnnouncementJobs } from './jobs.js';
 import * as audience from './audience.js';
 import * as template from '../../emails/announcements/cancellation.js';
@@ -110,7 +111,7 @@ async function fixture(role: StaffRole = 'owner', assigned = true) {
   }
   const request = (id = session.id) => app().request(`/api/schedule/sessions/${id}/cancel`, { method: 'POST',
     headers: { 'content-type': 'application/json' }, body: JSON.stringify({ revision: 1, notify: true }) });
-  return { gymId, user, coach, session, email, jobs, clock, options, notice, service, actor, principal, booked, cancel, payload, run, emailSwitch, request };
+  return { gymId, user, coach, session, email, jobs, clock, options, notice, service, actor, principal, booked, cancel, payload, run, emailSwitch, request, app };
 }
 
 it.each([false, true])('refuses started and ended sessions without side effects (notify=%s)', async notify => {
@@ -239,6 +240,53 @@ it('mails only the snapshot’s booked and waitlisted members, combines a househ
     .from(classBookings).where(eq(classBookings.memberId, first.id))))
     .toEqual([{ status: 'cancelled', cancelledAt: f.clock.now(), position: null }]);
 });
+it('queues both channels for notify without channels, and only the chosen one otherwise', async () => {
+  const f = await fixture(), member = await f.booked(); await f.cancel();
+  // Both channels keep the flat payload that every release sends by both.
+  expect(f.payload()).toEqual({ sessionId: f.session.id, memberIds: [member.id], note: '<b>Closed</b>\nSee you tomorrow.' });
+  for (const channels of [['email'], ['sms'], ['email', 'sms']] as const) {
+    const g = await fixture(), booked = await g.booked();
+    await g.service.changeSession(g.actor, g.session.id, 'cancel', { revision: 1, notify: true, channels: [...channels] });
+    const notice = { sessionId: g.session.id, memberIds: [booked.id], note: '' };
+    // One channel nests the notice, so a previous release can't read it and send both.
+    expect(g.payload()).toEqual(channels.length === 1 ? { channels, notice } : notice);
+  }
+});
+it('refuses channels without notify before cancelling or queuing anything', async () => {
+  const f = await fixture(); await f.booked();
+  const response = await f.app().request(`/api/schedule/sessions/${f.session.id}/cancel`, { method: 'POST',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ revision: 1, channels: ['email'] }) });
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({ error: { code: 'invalid_request', details: { reason: ['channels_without_notify'] } } });
+  await expect(f.service.changeSession(f.actor, f.session.id, 'cancel', { revision: 1, notify: false, channels: ['sms'] }))
+    .rejects.toMatchObject({ code: 'invalid_request', details: { reason: ['channels_without_notify'] } });
+  expect(f.jobs.jobs).toHaveLength(0);
+  expect(await f.service.getSession(f.gymId, f.session.id)).toMatchObject({ status: 'scheduled', revision: 1 });
+});
+it.each([[['email', 'sms']], [undefined]] as const)('sends the email for channels %j', async channels => {
+  const f = await fixture(); await f.booked(); await f.cancel();
+  await f.notice.run({ ...(f.payload() as object), channels }, f.gymId);
+  expect(f.email.messages).toHaveLength(1);
+});
+it('never reserves or attempts an email when only a text was chosen', async () => {
+  const f = await fixture(); await f.booked(); await f.cancel();
+  await f.notice.run(cancellationNoticeJobPayload({ ...cancellationNoticePayload.parse(f.payload()), channels: ['sms'] }), f.gymId);
+  expect(f.email.messages).toHaveLength(0); expect(f.options.mailer).not.toHaveBeenCalled();
+  expect(await db.forGym(f.gymId, tx => tx.$count(emailDeliveries))).toBe(0);
+});
+it('leaves the members line out for a member at their own address, and keeps it for a billing address', async () => {
+  const f = await fixture();
+  await f.booked({ firstName: 'Solo', lastName: 'Member', email: 'solo@example.test' });
+  const home = await factory('households', f.gymId, { email: 'parent@example.test' });
+  for (const firstName of ['Mia', 'Noa']) await f.booked({ householdId: home.id, firstName, lastName: 'Child', email: null });
+  await f.cancel(); await f.run();
+  expect(f.email.messages).toHaveLength(2);
+  const solo = f.email.messages.find(message => message.to === 'solo@example.test')!;
+  expect(solo.text).toContain('has been cancelled.');
+  for (const body of [solo.text, solo.html]) { expect(body).not.toContain('Booked or waitlisted members'); expect(body).not.toContain('Solo Member'); }
+  expect(f.email.messages.find(message => message.to === 'parent@example.test')!.text)
+    .toMatch(/^Booked or waitlisted members: (Mia Child, Noa Child|Noa Child, Mia Child)$/m);
+});
 it.each(['disabled', 'opt_out', 'undeliverable', 'erased', 'missing_email'] as const)('suppresses %s at delivery time', async reason => {
   const f = await fixture(), member = await f.booked(); await f.cancel();
   if (reason === 'disabled') await f.emailSwitch(false);
@@ -266,7 +314,9 @@ it.each(['billing', 'direct'] as const)('drops a member whose %s address moves b
   const oldAddress = 'old@example.test', newAddress = 'new@example.test';
   const home = await factory('households', f.gymId, { email: oldAddress });
   const moving = await f.booked({ householdId: home.id, firstName: 'Moving', email: kind === 'billing' ? null : oldAddress });
+  // Two stay at the old address so its notice lists names; Current is alone at their own address, so theirs lists none.
   await f.booked({ firstName: 'Staying', email: oldAddress });
+  await f.booked({ firstName: 'Remaining', email: oldAddress });
   await f.booked({ firstName: 'Current', email: newAddress });
   await f.cancel();
 
@@ -285,8 +335,10 @@ it.each(['billing', 'direct'] as const)('drops a member whose %s address moves b
   await createCancellationNotice({ ...f.options, scope }).run(f.payload(), f.gymId);
   expect(changed).toBe(true);
   expect(f.email.messages).toHaveLength(2);
-  expect(f.email.messages.find(message => message.to === oldAddress)?.text).toContain('Staying');
-  expect(f.email.messages.find(message => message.to === newAddress)?.text).toContain('Current');
+  expect(f.email.messages.find(message => message.to === oldAddress)?.text)
+    .toMatch(/^Booked or waitlisted members: (?=.*Staying)(?=.*Remaining).+$/m);
+  // A moved member joining the new address would bring the names line back.
+  expect(f.email.messages.find(message => message.to === newAddress)?.text).not.toContain('Booked or waitlisted members');
   for (const message of f.email.messages) expect(message.text).not.toContain('Moving');
 });
 
