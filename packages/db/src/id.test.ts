@@ -24,6 +24,24 @@ it('encodes the requested timestamp when the clock moves forwards and backwards'
     expect(parseInt(id.replaceAll('-', '').slice(0, 12), 16)).toBe(now);
   }
 });
+it('keeps a timestamp in order when another timestamp comes in between', () => {
+  for (let i = 0; i < 1000; i++) {
+    const timestamp = 1780000000000 + i * 10;
+    const first = uuidv7(timestamp);
+    uuidv7(timestamp - 5);
+    const second = uuidv7(timestamp);
+    expect(second > first).toBe(true);
+  }
+});
+it('keeps order for the least recently used of eight retained timestamps', () => {
+  for (let i = 0; i < 100; i++) {
+    const timestamps = Array.from({ length: 8 }, (_, index) => 1790000000000 + i * 100 + index);
+    const firsts = timestamps.map((timestamp) => uuidv7(timestamp));
+    const revisit = uuidv7(timestamps[0]!);
+    expect(revisit > firsts[0]!).toBe(true);
+    expect(parseInt(revisit.replaceAll('-', '').slice(0, 12), 16)).toBe(timestamps[0]);
+  }
+});
 it('rejects timestamps outside the UUIDv7 range and non-integers', () => {
   for (const invalid of [-1, NaN, 1.1, 0x1000000000000]) expect(() => uuidv7(invalid)).toThrow();
 });
