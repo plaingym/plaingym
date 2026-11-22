@@ -153,3 +153,68 @@ it('cancels sibling reads when computation fails before its deadline', async () 
   })).rejects.toThrow('metadata failed');
   await cancelled.promise;
 });
+
+it('rejects an already-aborted preview without claiming a place', async () => {
+  const budget = new PreviewBudget(1, 0), work = vi.fn(async () => 'ready');
+  await expect(budget.run('a', 1, 1, work, AbortSignal.abort())).rejects.toMatchObject({ code: 'unavailable' });
+  expect(work).not.toHaveBeenCalled();
+  await expect(budget.run('a', 1, 1, work)).resolves.toBe('ready');
+});
+
+it('removes only the cancelled entry from a gym queue', async () => {
+  const budget = new PreviewBudget(1, 2), stop = new AbortController();
+  const release = Promise.withResolvers<void>(), order: string[] = [];
+  const active = budget.run('a', 1, 1, () => release.promise);
+  const cancelledWork = vi.fn(async () => undefined);
+  const cancelled = budget.run('a', 1, 1, cancelledWork, stop.signal);
+  const next = budget.run('a', 1, 1, async () => { order.push('next'); });
+  stop.abort();
+  await expect(cancelled).rejects.toMatchObject({ code: 'unavailable', message: expect.stringContaining('took too long') });
+  const last = budget.run('a', 1, 1, async () => { order.push('last'); });
+  expect(order).toEqual([]);
+  release.resolve();
+  await Promise.all([active, next, last]);
+  expect(cancelledWork).not.toHaveBeenCalled();
+  expect(order).toEqual(['next', 'last']);
+});
+
+it('keeps the reservation after an external stop until the running work settles', async () => {
+  const budget = new PreviewBudget(1), stop = new AbortController();
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const active = budget.run('a', 1, 1, () => previewDeadline(60_000, async (_signal, check) => {
+    entered.resolve();
+    await release.promise;
+    check();
+  }, stop.signal), stop.signal);
+  const failure = expect(active).rejects.toMatchObject({ code: 'unavailable', message: expect.stringContaining('took too long') });
+  await entered.promise;
+  const work = vi.fn(async () => 'ready');
+  const next = budget.run('a', 1, 1, work);
+  stop.abort();
+  await Promise.resolve();
+  expect(work).not.toHaveBeenCalled();
+  release.resolve();
+  await failure;
+  await expect(next).resolves.toBe('ready');
+});
+
+it('skips other waiting work with the same signal while draining on abort', async () => {
+  const mib = 1024 * 1024, budget = new PreviewBudget(12 * mib), stop = new AbortController();
+  const release = Promise.withResolvers<void>(), work = vi.fn(async () => undefined);
+  const active = budget.run('a', 1, 1, () => release.promise);
+  const blocked = budget.run('a', 8 * mib, 1, work, stop.signal);
+  const alsoStopped = budget.run('a', 1, 1, work, stop.signal);
+  const next = budget.run('a', 1, 1, async () => 'ready');
+  stop.abort();
+  await Promise.all([blocked, alsoStopped].map(result => expect(result).rejects.toMatchObject({ code: 'unavailable' })));
+  await expect(next).resolves.toBe('ready');
+  expect(work).not.toHaveBeenCalled();
+  release.resolve();
+  await active;
+});
+
+it('checks an already-aborted external deadline before starting work', async () => {
+  const work = vi.fn(async () => undefined);
+  await expect(previewDeadline(60_000, work, AbortSignal.abort())).rejects.toMatchObject({ code: 'unavailable' });
+  expect(work).not.toHaveBeenCalled();
+});

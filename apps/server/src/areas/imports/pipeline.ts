@@ -18,7 +18,7 @@ import { createPeopleMapper } from './mappers/people.js';
 import { matMapper } from './mappers/mat.js';
 import { membershipsMapper } from './mappers/memberships.js';
 import { previewBudget, previewDeadline, PREVIEW_CLEANUP_MS, PREVIEW_TIMEOUT_MS, PREVIEW_LEASE_INTERVAL_MS,
-  type PreviewBudget, type PreviewSummary, type StoredPreview } from './pipeline.budget.js';
+  type PendingPreview, type PreviewBudget, type PreviewSummary, type StoredPreview } from './pipeline.budget.js';
 
 export const IMPORT_JOB = 'imports.pipeline';
 export const IMPORT_CHUNK_SIZE = 100;
@@ -199,7 +199,7 @@ export function createImportPipeline(options: PipelineOptions) {
    * with the upload, so the bucket costs one pass per process.
    */
   function computePreview(context: MutationContext, plan: ImportPlanRequest, timezone: string, prefix: string, meta: StoredUpload,
-    onStart = async () => {}): Promise<StoredPreview> {
+    onStart: () => Promise<void>, ceiling: AbortSignal): Promise<StoredPreview> {
     // Uploads from earlier releases have no byte size: reserve conservatively until they expire.
     return budget.run(context.gymId, meta.byteSize ?? MAX_CSV_BYTES, meta.rowCount, async () => {
       await onStart();
@@ -228,12 +228,14 @@ export function createImportPipeline(options: PipelineOptions) {
           // Its age counts from here, so a slow computation still leaves a preview that is served for the full lifetime.
           const finished = clock.now();
           stored = { ...summary, generation, files, startedAt: startedAt.toISOString(), createdAt: finished.toISOString() };
-          // No check after this write: once the summary is stored the preview exists, and readers may already be using it.
+          // The computation deadline does not undo a published summary that readers may already be using.
           try { check(); await store.put(gymId, summaryKey(prefix, bucketOf(finished)), stored); }
           catch (error) {
             if (!immutable(error)) throw error;
+            ceiling.throwIfAborted();
             // Another process finished this preview, so it is an answer even if this pass's deadline ended during the write.
             const other = await readJson<StoredPreview>(uploads, summaryKey(prefix, bucketOf(finished)), AbortSignal.timeout(PREVIEW_CLEANUP_MS));
+            ceiling.throwIfAborted();
             if (!other) { remember(prefix, stored); return stored; }
             await removeWritten();
             remember(prefix, other);
@@ -245,11 +247,14 @@ export function createImportPipeline(options: PipelineOptions) {
           throw error;
         }
         remember(prefix, stored);
+        // An uncancellable write may publish after the ticket stops. Keep its rows for readers,
+        // but settle the stopped ticket as timed out. Later cleanup cannot change this outcome.
+        ceiling.throwIfAborted();
         // Best effort once the preview is stored: retention removes whatever this leaves with the upload.
         await removePrevious(uploads, prefix, bucketOf(new Date(stored.createdAt)), signal).catch(() => undefined);
         return stored;
-      });
-    });
+      }, ceiling);
+    }, ceiling);
   }
   const previewResponse = (stored: { summary: PreviewSummary; data: ImportPreviewRow[] }, page: Pagination) =>
     ({ data: stored.data, pagination: { ...page, total: stored.summary.totalRows }, summary: stored.summary });
@@ -259,33 +264,51 @@ export function createImportPipeline(options: PipelineOptions) {
     const revision = await importRevision(context.gymId), prefix = planPrefix(context.gymId, plan, timezone, revision);
     const found = await readPreview(context.gymId, prefix, page);
     if (found) return { preview: previewResponse(found, page) };
+    const startedAt = clock.now().getTime();
     let entry = pending.get(prefix);
-    if (entry && entry.leaseUntil !== 0 && entry.leaseUntil <= clock.now().getTime()) entry = undefined;
+    if (entry && (entry.stopped || (entry.leaseUntil === 0
+      ? startedAt - entry.startedAt >= PREVIEW_LEASE_INTERVAL_MS
+      : entry.leaseUntil <= startedAt))) {
+      entry.stop();
+      entry = undefined;
+    }
     if (!entry) {
-      const startedAt = clock.now().getTime();
       const id = uuidv7(), saved = Promise.withResolvers<void>(), finished = Promise.withResolvers<StoredPreview>();
-      entry = { id, gymId: context.gymId, uploadId: plan.uploadId, expiresAt: meta.expiresAt, leaseUntil: 0,
-        status: 'queued', admitted: saved.promise, finished: finished.promise };
+      const ceiling = new AbortController();
+      let heartbeat: ReturnType<typeof setTimeout> | undefined, stopped = false;
+      const stop = () => {
+        if (stopped) return;
+        stopped = current.stopped = true;
+        clearTimeout(heartbeat);
+        if (pending.get(prefix) === current) pending.delete(prefix);
+        const error = new AppError('unavailable', t('imports/pipeline:previewTimedOut'));
+        ceiling.abort(error);
+        saved.reject(error);
+      };
+      const current: PendingPreview = { id, gymId: context.gymId, uploadId: plan.uploadId, expiresAt: meta.expiresAt, leaseUntil: 0,
+        startedAt, stopped, stop, status: 'queued', admitted: saved.promise, finished: finished.promise };
+      entry = current;
       // An HTTP caller only waits for admission; its background completion must still have a rejection handler.
       void finished.promise.catch(() => undefined);
       pending.set(prefix, entry);
-      const current = entry, ticket: PreviewTicket = { prefix, revision, leased: true };
+      const ticket: PreviewTicket = { prefix, revision, leased: true };
       const requestPrefix = ticketPrefix(context.gymId, plan.uploadId, id);
-      const leases = new Set<string>();
-      let renewing: Promise<void> | undefined;
-      let heartbeat: ReturnType<typeof setTimeout> | undefined, stopped = false;
-      const renew = async (): Promise<void> => {
+      const leases = new Map<string, { at: number; write: Promise<number> }>();
+      const renew = async (first = false): Promise<void> => {
         const now = clock.now().getTime();
-        if (now - startedAt >= leaseCeiling) {
-          stopped = true;
-          return;
-        }
-        leases.add(store.leaseKey(requestPrefix, now));
-        try { current.leaseUntil = await store.renewLease(context.gymId, requestPrefix, now); }
-        finally {
-          if (!stopped && clock.now().getTime() - startedAt + PREVIEW_LEASE_INTERVAL_MS < leaseCeiling) heartbeat = setTimeout(() => {
-            renewing = renew();
-            void renewing.catch(() => undefined);
+        if (stopped) return;
+        if (now - startedAt >= leaseCeiling) { stop(); return; }
+        const write = store.renewLease(context.gymId, requestPrefix, now);
+        leases.set(store.leaseKey(requestPrefix, now), { at: now, write });
+        try {
+          const leaseUntil = await write;
+          if (stopped) return;
+          if (first) await store.put(context.gymId, ticketKey(context.gymId, plan.uploadId, id, 'meta'), ticket);
+          // Until both writes finish, a later Preview can replace this ticket after one interval.
+          if (!stopped) current.leaseUntil = leaseUntil;
+        } finally {
+          if (!stopped && current.leaseUntil !== 0 && clock.now().getTime() - startedAt + PREVIEW_LEASE_INTERVAL_MS < leaseCeiling) heartbeat = setTimeout(() => {
+            void renew().catch(() => undefined);
           }, PREVIEW_LEASE_INTERVAL_MS);
         }
       };
@@ -293,24 +316,26 @@ export function createImportPipeline(options: PipelineOptions) {
       try {
         computation = computePreview(context, plan, timezone, prefix, meta, async () => {
           await saved.promise;
+          ceiling.signal.throwIfAborted();
           await store.put(context.gymId, ticketKey(context.gymId, plan.uploadId, id, 'computing'), {});
           current.status = 'computing';
-        });
+        }, ceiling.signal);
       } catch (error) {
         if (pending.get(prefix) === current) pending.delete(prefix);
         saved.reject(error);
+        finished.reject(error);
         // No duplicate caller can have observed the entry before this synchronous rejection.
         void saved.promise.catch(() => undefined);
         throw error;
       }
       void computation.catch(() => undefined);
+      const ceilingTimer = setTimeout(stop, leaseCeiling);
+      // The storage write itself cannot be cancelled. Stopping the ticket rejects saved independently.
+      void renew(true).then(saved.resolve, saved.reject);
       // Every background failure is observed, and only safe application explanations are persisted.
       void (async () => {
         try {
-          renewing = renew();
-          await renewing;
-          await store.put(context.gymId, ticketKey(context.gymId, plan.uploadId, id, 'meta'), ticket);
-          saved.resolve();
+          await saved.promise;
           const stored = await computation;
           await store.put(context.gymId, ticketKey(context.gymId, plan.uploadId, id, 'result'), { status: 'ready', stored });
           finished.resolve(stored);
@@ -324,12 +349,26 @@ export function createImportPipeline(options: PipelineOptions) {
         } finally {
           stopped = true;
           clearTimeout(heartbeat);
+          clearTimeout(ceilingTimer);
           if (pending.get(prefix) === current) pending.delete(prefix);
         }
-        // A saved result ends the lease. Wait for any write already in progress before marking its key.
-        await renewing?.catch(() => undefined);
-        const uploads = await options.uploadsFor(context.gymId);
-        for (const key of leases) await uploads.markDeleted(key).catch(() => undefined);
+        // A saved result ends the lease. Even readers whose clocks lag can only reach the eight newest buckets.
+        const signal = AbortSignal.timeout(PREVIEW_CLEANUP_MS);
+        const timeLimit = Promise.withResolvers<void>();
+        const cleanupExpired = () => timeLimit.resolve();
+        signal.addEventListener('abort', cleanupExpired, { once: true });
+        const cleanup = async () => {
+          const uploads = await options.uploadsFor(context.gymId);
+          const newest = [...leases].sort(([, a], [, b]) => b.at - a.at).slice(0, 8);
+          await Promise.allSettled(newest.map(async ([key, lease]) => {
+            await lease.write.catch(() => undefined);
+            signal.throwIfAborted();
+            await uploads.markDeleted(key, { signal });
+          }));
+        };
+        // A renewal or storage write that cannot be cancelled may finish after the cleanup deadline.
+        try { await Promise.race([cleanup(), timeLimit.promise]); }
+        finally { signal.removeEventListener('abort', cleanupExpired); }
       })().catch(() => undefined);
     }
     await entry.admitted;
@@ -376,8 +415,8 @@ export function createImportPipeline(options: PipelineOptions) {
     const alive = ticket.leased
       ? await store.hasLease(gymId, requestPrefix, now)
         // A reader up to 20 seconds behind can miss the first renewal in its own buckets.
-        || await store.exists(gymId, store.leaseKey(requestPrefix, now + 2 * PREVIEW_LEASE_INTERVAL_MS))
-        || await store.exists(gymId, store.leaseKey(requestPrefix, now + PREVIEW_LEASE_INTERVAL_MS))
+        || (await Promise.all([2, 1].map(ahead =>
+          store.exists(gymId, store.leaseKey(requestPrefix, now + ahead * PREVIEW_LEASE_INTERVAL_MS))))).some(Boolean)
       : !!ticket.expiresAt && Date.parse(ticket.expiresAt) > now;
     if (!alive) {
       const saved = ticket.leased ? await readJson<PreviewResult>(uploads, resultKey) : undefined;

@@ -59,13 +59,15 @@ for the maximum upload size. This does not change the upload response.
 Each admitted computation has a two-minute deadline. It passes an abort signal
 through storage metadata and object reads, including body consumption, and checks
 the deadline between mapper chunks and writes. The budget is released only when
-the computation settles; a timeout does not race a still-running read. Work already
-in a database transaction or write finishes before the next check. Queue waiting
-and the ticket's computing-marker write do not consume the computation's deadline.
-A cancellation caused by the deadline
-answers `unavailable`; unrelated storage or mapper failures retain their cause,
-even after the deadline. A computation whose summary is already stored keeps its result, even
-if removing the previous preview's files runs past the deadline.
+the computation settles, including work already in a write or mapper chunk.
+Queue waiting and the ticket's computing-marker write do not consume the
+computation's deadline. Cancellation at a deadline check answers
+`unavailable` with the preview timeout message. Unrelated storage or mapper
+failures retain their cause. A computation whose summary is already stored
+keeps its result, even if removing the previous preview's files runs past the
+deadline. If its summary write finishes after the ticket stops, the stopped
+ticket answers the timeout message and the published summary stays available
+for a new Preview.
 
 `POST /api/imports/preview` validates the upload and plan, then answers a ready
 preview page or a `queued`/`computing` ticket without awaiting computation or
@@ -87,15 +89,19 @@ Pending work renews a 60-second lease every ten seconds while queued,
 computing, cleaning up, or saving its terminal result. Each renewal writes an
 immutable `lease/<ten-second-bucket>.json` key valid from the bucket's start.
 Readers check their current and five preceding buckets newest first and stop
-at the first hit. After a miss they check up to two buckets ahead to allow
-for a reader clock that is behind the writer's.
-Renewals stop when the time since the ticket started reaches
+at the first hit. After a miss they check the two buckets ahead in parallel to
+allow for a reader clock that is behind the writer's.
+The ticket stops when the time since it started reaches
 `(queueLimit + 1) × (previewTimeoutMs + PREVIEW_CLEANUP_MS)` (about 37 minutes
-by default). When a result is saved, the process stops renewing and marks the
-lease files it wrote deleted. A process that exits or fails to save its result
+by default). A new Preview also stops and replaces a lapsed ticket, including
+one whose first lease or ticket metadata write is still pending after ten
+seconds. Stopping a ticket removes queued work from the memory queue and
+cancels running work at its next deadline check.
+When a result is saved, the process stops renewing and marks only the newest
+eight lease keys deleted in parallel with a shared ten-second timeout. Older
+keys expire with the upload. A process that exits or fails to save its result
 leaves the last lease to lapse. A lapsed ticket still returns its stored
-result if available. A new Preview skips a lapsed entry and creates a new
-ticket if a fresh preview is needed.
+result if available.
 Tickets written by earlier releases at `preview-requests/<id>/` remain readable
 and retain their original expiry behavior.
 The internal `preview` helper joins the same ticket and awaits its computation;
