@@ -247,13 +247,15 @@ ownership, table and column privileges, tenant keys and foreign keys. It refuses
 direct or indirect membership of `app` in a role with `SUPERUSER`, `BYPASSRLS`,
 `CREATEROLE`, `REPLICATION` or `CREATEDB`. It also refuses membership in
 `maintenance`, `pg_execute_server_program`, `pg_write_server_files`,
-`pg_read_server_files`, `pg_maintain`, `pg_signal_backend`,
+`pg_read_server_files`, `pg_maintain`, `pg_signal_backend`, `pg_signal_autovacuum_worker`,
 `pg_create_subscription`, `pg_checkpoint`, `pg_read_all_data`,
-`pg_write_all_data`, `pg_read_all_stats`, `pg_monitor` or
+`pg_write_all_data`, `pg_read_all_settings`, `pg_read_all_stats`, `pg_stat_scan_tables`, `pg_monitor` or
 `pg_use_reserved_connections`. It counts membership with any options and names
 each privileged role. In both tenancy modes, `initializeDatabase` repeats the
 membership check, so a privileged membership granted after migrations blocks
 the next app start and every `gym-app` command that opens the app database.
+`initializeDatabase` also refuses to start when `app` itself has `SUPERUSER`, `BYPASSRLS`,
+`CREATEDB`, `CREATEROLE` or `REPLICATION`.
 The restore CLI calls `initializeDatabase` for `snapshot` and `snapshot-check`.
 A view outside `app`'s reach passes whatever its invoker option.
 When `app` holds any privilege,

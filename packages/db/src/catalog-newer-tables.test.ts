@@ -104,11 +104,14 @@ describe('app role memberships at startup', () => {
     ['pg_read_server_files', null, false],
     ['pg_maintain', null, false],
     ['pg_signal_backend', null, false],
+    ['pg_signal_autovacuum_worker', null, false],
     ['pg_create_subscription', null, false],
     ['pg_checkpoint', null, false],
     ['pg_read_all_data', null, false],
     ['pg_write_all_data', null, false],
+    ['pg_read_all_settings', null, false],
     ['pg_read_all_stats', null, false],
+    ['pg_stat_scan_tables', null, false],
     ['pg_monitor', null, false],
     ['pg_use_reserved_connections', null, false],
     ['maintenance', null, false],
@@ -119,13 +122,14 @@ describe('app role memberships at startup', () => {
     try {
       // Keep cluster-wide memberships invisible to other test databases.
       await sql`begin`;
-      if (role === 'pg_maintain') {
+      if (role === 'pg_maintain' || role === 'pg_signal_autovacuum_worker') {
+        const minimumMajor = role === 'pg_maintain' ? 17 : 18;
         const [server] = await sql`select current_setting('server_version_num')::int as version`;
         assert(server);
-        if (server.version < 170000) {
+        if (server.version < minimumMajor * 10_000) {
           const test = TestRunner.getCurrentTest();
           assert(test);
-          test.context.skip('pg_maintain requires PostgreSQL 17 or later');
+          test.context.skip(`${role} requires PostgreSQL ${minimumMajor} or later`);
         }
       }
       if (attributes !== null) await sql`create role ${sql(role)} nologin ${sql.unsafe(attributes)}`;

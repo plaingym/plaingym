@@ -364,8 +364,9 @@ key rotation. The post-migration catalog check refuses direct or indirect
 membership of `app` in a role with `SUPERUSER`, `BYPASSRLS`, `CREATEROLE`,
 `REPLICATION` or `CREATEDB`. It also refuses membership in `maintenance`,
 `pg_execute_server_program`, `pg_write_server_files`, `pg_read_server_files`,
-`pg_maintain`, `pg_signal_backend`, `pg_create_subscription`, `pg_checkpoint`,
-`pg_read_all_data`, `pg_write_all_data`, `pg_read_all_stats`, `pg_monitor` or
+`pg_maintain`, `pg_signal_backend`, `pg_signal_autovacuum_worker`,
+`pg_create_subscription`, `pg_checkpoint`, `pg_read_all_data`, `pg_write_all_data`,
+`pg_read_all_settings`, `pg_read_all_stats`, `pg_stat_scan_tables`, `pg_monitor` or
 `pg_use_reserved_connections`. It counts membership with any options and names
 each privileged role. The app repeats the membership check at every start in
 both tenancy modes, and so does every `gym-app` command that opens the app

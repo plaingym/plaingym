@@ -14,7 +14,8 @@ export async function privilegedMemberships(sql: Sql): Promise<string[]> {
     where r.rolsuper or r.rolbypassrls or r.rolcreaterole or r.rolreplication or r.rolcreatedb
       or r.rolname in ('maintenance', 'pg_execute_server_program', 'pg_write_server_files', 'pg_read_server_files',
         'pg_maintain', 'pg_signal_backend', 'pg_create_subscription', 'pg_checkpoint', 'pg_read_all_data',
-        'pg_write_all_data', 'pg_read_all_stats', 'pg_monitor', 'pg_use_reserved_connections')
+        'pg_write_all_data', 'pg_read_all_settings', 'pg_read_all_stats', 'pg_stat_scan_tables', 'pg_monitor',
+        'pg_signal_autovacuum_worker', 'pg_use_reserved_connections')
     order by r.rolname
   `;
   return roles.map(role => role.rolname);

@@ -124,6 +124,17 @@ export const connectionBudget = {
 let application: ReturnType<typeof scopedDatabase> | undefined;
 let applicationConnection: Connection | undefined;
 let systemConnection: Connection | undefined;
+export async function assertRestrictedAppRole(sql: Sql): Promise<void> {
+  const [role] = await sql`
+    select current_user as name, rolsuper, rolbypassrls, rolcreatedb, rolcreaterole, rolreplication,
+      pg_has_role(current_user, 'maintenance', 'MEMBER') as maintenance_member
+    from pg_roles where rolname = current_user
+  `;
+  if (!role || role.name !== 'app' || role.rolsuper || role.rolbypassrls || role.rolcreatedb ||
+      role.rolcreaterole || role.rolreplication || role.maintenance_member) {
+    throw new Error('Application requires the restricted app database role');
+  }
+}
 export async function initializeDatabase(url: string, max: number = connectionBudget.application,
   systemMax: number = connectionBudget.authentication) {
   assertSchemaCompatibility();
@@ -132,14 +143,7 @@ export async function initializeDatabase(url: string, max: number = connectionBu
   const connection = openConnection(url, max);
   const system = openConnection(url, systemMax, 'system');
   try {
-    const [role] = await connection.sql`
-      select current_user as name, rolsuper, rolbypassrls, rolcreatedb, rolcreaterole,
-        pg_has_role(current_user, 'maintenance', 'MEMBER') as maintenance_member
-      from pg_roles where rolname = current_user
-    `;
-    if (!role || role.name !== 'app' || role.rolsuper || role.rolbypassrls || role.rolcreatedb || role.rolcreaterole || role.maintenance_member) {
-      throw new Error('Application requires the restricted app database role');
-    }
+    await assertRestrictedAppRole(connection.sql);
     const names = await privilegedMemberships(connection.sql);
     if (names.length) {
       throw new Error('Database catalog check failed:\n' + names.map(name => 'app is a member of privileged role ' + name).join('\n'));

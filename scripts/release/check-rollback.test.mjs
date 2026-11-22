@@ -379,7 +379,45 @@ test('applies ALTER TABLE rules inside SQL and PL/pgSQL bodies', () => {
   }
 });
 
-test('applies ALTER SEQUENCE rules after a reviewed inner statement', () => {
+test('applies ALTER rules inside nested procedural bodies', () => {
+  const sql = 'DO $o$ BEGIN CREATE FUNCTION g() RETURNS void AS $i$ BEGIN ALTER TABLE m ALTER COLUMN s DROP NOT NULL; END $i$ LANGUAGE plpgsql; END $o$;';
+  const rule = 'DROP NOT NULL: older readers may reject null stored values';
+  assert.deepEqual(rollbackFindings(sql), [{ line: 1, rule }]);
+  assert.deepEqual(rollbackFindings(`-- rollback-reviewed: reason\n${sql}`), []);
+
+  const deeper = `-- heading
+DO $outer$ BEGIN
+  CREATE FUNCTION f() RETURNS void AS $middle$ BEGIN
+    CREATE FUNCTION g() RETURNS void LANGUAGE 'plpgsql' AS $inner$ BEGIN
+      ALTER TABLE m ALTER COLUMN s DROP NOT NULL;
+    END $inner$;
+  END $middle$ LANGUAGE plpgsql;
+END $outer$;`;
+  assert.deepEqual(rollbackFindings(deeper), [{ line: 2, rule }]);
+});
+
+test('applies ALTER rules inside nested bodies after a control-flow prefix', () => {
+  const rule = 'DROP NOT NULL: older readers may reject null stored values';
+  const inner = 'ALTER TABLE m ALTER COLUMN s DROP NOT NULL;';
+  for (const sql of [
+    `DO $o$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'g') THEN CREATE FUNCTION g() RETURNS void AS $i$ BEGIN ${inner} END $i$ LANGUAGE plpgsql; END IF; END $o$;`,
+    `DO $o$ BEGIN PERFORM 1; EXCEPTION WHEN others THEN CREATE OR REPLACE FUNCTION g() RETURNS void AS $i$ BEGIN ${inner} END $i$ LANGUAGE plpgsql; END $o$;`,
+    `DO $o$ BEGIN IF current_setting('app.flag') = 'on' THEN DO $i$ BEGIN ${inner} END $i$; END IF; END $o$;`,
+  ]) {
+    assert.deepEqual(rollbackFindings(sql), [{ line: 1, rule }], sql);
+  }
+});
+
+test('ignores a review comment immediately after BEGIN', () => {
+  const sql = `DO $$ BEGIN
+  -- rollback-reviewed: fine
+  ALTER TABLE members ALTER COLUMN status DROP NOT NULL; END $$;`;
+  assert.deepEqual(rollbackFindings(sql), [
+    { line: 1, rule: 'DROP NOT NULL: older readers may reject null stored values' },
+  ]);
+});
+
+test('ignores inner review comments and applies both ALTER TABLE and ALTER SEQUENCE rules', () => {
   const sql = `DO $$ BEGIN
   NULL;
   -- rollback-reviewed: old readers tolerate missing values
@@ -387,6 +425,7 @@ test('applies ALTER SEQUENCE rules after a reviewed inner statement', () => {
   ALTER SEQUENCE s RESTART;
   END $$;`;
   assert.deepEqual(rollbackFindings(sql), [
+    { line: 1, rule: 'DROP NOT NULL: older readers may reject null stored values' },
     { line: 1, rule: 'ALTER SEQUENCE RESTART on s: older inserts may exhaust the sequence or receive conflicting values' },
   ]);
 });
@@ -408,6 +447,14 @@ test('applies an outer review to its whole procedural body', () => {
 
 test('reports a body tokenization error with its outer statement line', () => {
   assert.throws(() => rollbackFindings("DO $$ BEGIN SELECT 'x; END $$;"), /In the body of the statement at line 1: Unterminated SQL quote/);
+});
+
+test('reports a nested body tokenization error with its outer statement line', () => {
+  const sql = `-- heading
+DO $outer$ BEGIN
+  CREATE FUNCTION f() RETURNS void AS $inner$ BEGIN SELECT 'x; END $inner$ LANGUAGE plpgsql;
+END $outer$;`;
+  assert.throws(() => rollbackFindings(sql), /In the body of the statement at line 2: Unterminated SQL quote/);
 });
 
 test('flags a NULL default set on an existing column, which acts like a dropped default', () => {

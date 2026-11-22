@@ -35,8 +35,9 @@ Isolation is enforced in the database, not only in application code.
   `BYPASSRLS`, `CREATEROLE`, `REPLICATION` or `CREATEDB`. It also refuses
   membership in `maintenance`, `pg_execute_server_program`,
   `pg_write_server_files`, `pg_read_server_files`, `pg_maintain`,
-  `pg_signal_backend`, `pg_create_subscription`, `pg_checkpoint`,
-  `pg_read_all_data`, `pg_write_all_data`, `pg_read_all_stats`, `pg_monitor` or
+  `pg_signal_backend`, `pg_signal_autovacuum_worker`, `pg_create_subscription`,
+  `pg_checkpoint`, `pg_read_all_data`, `pg_write_all_data`, `pg_read_all_settings`,
+  `pg_read_all_stats`, `pg_stat_scan_tables`, `pg_monitor` or
   `pg_use_reserved_connections`. It counts membership with any options and names
   each privileged role. In both tenancy modes, the app repeats the membership
   check at startup. A privileged membership granted after migrations blocks

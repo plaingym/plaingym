@@ -254,11 +254,11 @@ function alterFindings(tokens, line) {
 const setvalInBody = /\bsetval"?\s*\(/i;
 
 /** @param {ReturnType<typeof statements>[number]} statement */
-function bodyFindings({ tokens, literals, dollarBodies, line }) {
-  const isDo = tokens[0] === 'DO';
-  const kind = tokens[1] === 'OR' && tokens[2] === 'REPLACE' ? tokens[3] : tokens[1];
-  if (!isDo && (tokens[0] !== 'CREATE' || !['FUNCTION', 'PROCEDURE'].includes(kind))) return [];
-  const bodyIndex = tokens.findIndex((token, index) => token === '?' &&
+function bodyFindings({ tokens, literals, dollarBodies, line }, start = 0) {
+  const isDo = tokens[start] === 'DO';
+  const kind = tokens[start + 1] === 'OR' && tokens[start + 2] === 'REPLACE' ? tokens[start + 3] : tokens[start + 1];
+  if (!isDo && (tokens[start] !== 'CREATE' || !['FUNCTION', 'PROCEDURE'].includes(kind))) return [];
+  const bodyIndex = tokens.findIndex((token, index) => index > start && token === '?' &&
     (isDo ? tokens[index - 1] !== 'LANGUAGE' : tokens[index - 1] === 'AS'));
   const body = literals.get(bodyIndex);
   if (body === undefined) return [];
@@ -271,6 +271,7 @@ function bodyFindings({ tokens, literals, dollarBodies, line }) {
   // A routine's argument list can contain identifiers named LANGUAGE.
   let depth = 0;
   const sqlLanguage = tokens.some((token, index) => {
+    if (index < start) return false;
     if (token === '(') depth++;
     else if (token === ')') depth--;
     if (depth !== 0 || token !== 'LANGUAGE') return false;
@@ -278,7 +279,7 @@ function bodyFindings({ tokens, literals, dollarBodies, line }) {
     const language = name === '?' ? literals.get(index + 1)?.toUpperCase() : name;
     return ['PLPGSQL', 'SQL', '"plpgsql"', '"sql"'].includes(language);
   });
-  if (!sqlLanguage && !(isDo && !tokens.includes('LANGUAGE'))) return findings;
+  if (!sqlLanguage && !(isDo && !tokens.slice(start).includes('LANGUAGE'))) return findings;
 
   let inner;
   try {
@@ -287,13 +288,17 @@ function bodyFindings({ tokens, literals, dollarBodies, line }) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error('In the body of the statement at line ' + line + ': ' + message, { cause: error });
   }
-  for (const { tokens, reviewed } of inner) {
-    if (reviewed) continue;
+  const blockOpeners = ['BEGIN', 'THEN', 'ELSE', 'LOOP'];
+  for (const statement of inner) {
+    const { tokens } = statement;
     for (let i = 0; i < tokens.length; i++) {
-      if (tokens[i] === 'ALTER' && ['TABLE', 'SEQUENCE'].includes(tokens[i + 1]) &&
-          (i === 0 || ['BEGIN', 'THEN', 'ELSE', 'LOOP'].includes(tokens[i - 1]))) {
+      if (i !== 0 && !blockOpeners.includes(tokens[i - 1])) continue;
+      if (tokens[i] === 'ALTER' && ['TABLE', 'SEQUENCE'].includes(tokens[i + 1])) {
         findings.push(...alterFindings(tokens.slice(i), line));
       }
+      // A nested body may follow a control-flow prefix such as `IF ... THEN`. Pass an offset
+      // rather than a slice to keep literal and dollar-body indexes intact.
+      if (['DO', 'CREATE'].includes(tokens[i])) findings.push(...bodyFindings({ ...statement, line }, i));
     }
   }
   return findings;

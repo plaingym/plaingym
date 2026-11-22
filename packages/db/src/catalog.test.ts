@@ -22,7 +22,9 @@ it('lists direct and transitive privileged memberships from the app role', async
     await sql`begin`;
     await sql`grant pg_monitor to app`;
     await sql`set local role app`;
-    await expect(privilegedMemberships(sql)).resolves.toEqual(['pg_monitor', 'pg_read_all_stats']);
+    await expect(privilegedMemberships(sql)).resolves.toEqual([
+      'pg_monitor', 'pg_read_all_settings', 'pg_read_all_stats', 'pg_stat_scan_tables',
+    ]);
   } finally {
     try { await sql`rollback`; } finally { await admin.close(); }
   }

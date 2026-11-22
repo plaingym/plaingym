@@ -87,7 +87,7 @@ function or procedure body as `setval in a single-quoted body`. To name a
 sequence from an `E'...'` literal it decodes `\\` and `\'` and drops the
 backslash of any other escape. It applies the `ALTER TABLE` and `ALTER SEQUENCE`
 rules, including multiple ALTER actions, to statements inside SQL and PL/pgSQL
-`DO`, function and procedure bodies, but not to a body nested inside another.
+`DO`, function and procedure bodies, including bodies nested inside other bodies.
 The findings report the outer statement's line. The lint reads SQL statically. Review dynamic SQL and confirm reader
 compatibility separately.
 Keep migration changes declarative and review the data readers as well.
@@ -97,8 +97,8 @@ statement: `-- rollback-reviewed: <reason>`. State the major boundary and upgrad
 name the default and the previous release's tolerant reader (including when that
 reader shipped). For a non-CHECK constraint, state its kind and why the change
 preserves rollback. The comment exempts only that statement, not the file; a blank
-reason does not exempt it. For a finding inside a `DO`, function or procedure
-body, put the comment before the outer statement, which exempts its whole body.
+reason does not exempt it. A review comment inside a `DO`, function or procedure
+body has no effect. Put the comment before the outer statement to exempt its whole body.
 Reviewers verify the rationale against the release's
 rollback floor and application code. Existing migrations remain immutable.
 
