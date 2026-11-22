@@ -16,8 +16,10 @@ available until a replacement is ready if capacity delays the swap. Use the
 one-click role logins; magic-link requests are refused on the shared showcase.
 The showcase's `/login` page offers those role sign-ins in place of the email
 form. Every `/login` page waits for the demo check (`GET /api/demo`) before it
-offers any sign-in; if the check fails, it offers none until **Try again** in
-the demo error succeeds. When the per-network hourly limit refuses a new copy, **Make my own copy**
+offers sign-in. If the check fails, sign-in becomes available when a later
+check succeeds. The page checks again every five minutes while active, and
+**Try again** in the demo error repeats the check immediately. When the
+per-network hourly limit refuses a new copy, **Make my own copy**
 in the showcase's demo bar shows how many minutes to wait before trying again.
 
 Optional settings accepted by the installer and saved in its protected `.env`:
