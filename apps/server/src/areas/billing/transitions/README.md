@@ -337,16 +337,15 @@ due. Billing still leaves the row `failed` and the invoice, its refunded total, 
 and credits as they are; the first such report writes a `billing.refund.missing_found_failed`
 audit, queues one `notice: 'refund_found_failed'` staff notice in the same transaction, and
 logs `billing.refunds.missing_found_failed` at warn with the gym, invoice and refund row IDs.
-That audit is the guard: a replay writes, queues and logs nothing more, and a failure or
-cancellation report for a released row with no `billing.refund.missing_found` audit queues
-no follow-up. So staff hear about such a refund in this order: `refund_missing` (when it
-is released), `refund_found` (Stripe reports success) and `refund_found_failed` (Stripe then
-reports failure). A queued `refund_found` notice checks under the invoice lock for the
+The audit prevents duplicate follow-ups on replay. A failure needs a `billing.refund.missing_found`
+audit to create the follow-up, and a cancellation never creates it. The reports can queue
+`refund_missing` on release, `refund_found` on verified success and `refund_found_failed`
+on subsequent verified failure. A queued `refund_found` notice checks under the invoice lock for the
 failure audit and skips its email; one already past that check may still reach staff, so
 the follow-up stands on its own: it names the invoice and amount, says Stripe now reports
-the refund failed and billing never changed the invoice, and asks staff who corrected the
-payment after the found email to recheck it in Stripe and billing. Each staff recipient
-gets it once, under the usual per-recipient delivery key.
+the refund failed and billing never changed the invoice, and asks every recipient to check
+the payment in Stripe and billing and recheck any earlier manual correction. Each staff
+recipient gets it once, under the usual per-recipient delivery key.
 An unread, unverified or mismatched pending row still reserves its full amount. Unverified
 means any other unknown read: the refund's charge or parent intent is missing, its gym
 metadata isn't this gym's, or the read is uncertain. Such a row forces a retry whenever
