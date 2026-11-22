@@ -70,7 +70,8 @@ async function openWeeklyClass(page: Page, sandbox: Sandbox) {
   const owner = await demoClient(sandbox, 'owner');
   await owner.browser(page.context());
   await page.goto(sandbox.origin + '/admin/schedule');
-  await page.getByRole('button', { name: 'New weekly class', exact: true }).click();
+  // The empty week can also offer this action below the page header.
+  await page.getByRole('button', { name: 'New weekly class', exact: true }).first().click();
   const dialog = page.getByRole('dialog', { name: 'New weekly class' });
   await expect(dialog).toBeVisible();
   return dialog;
