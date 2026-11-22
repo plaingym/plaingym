@@ -324,7 +324,10 @@ export const portalHouseholdSelectionRequestSchema = z.strictObject({ householdI
 export const portalAccessContracts = {
   logins: { method: 'get', path: '/api/households/{householdId}/portal-logins', permission: { kind: 'staff', capability: 'portal_access.manage' }, params: householdParamsSchema, query: paginationSchema, response: listResponseSchema(z.discriminatedUnion('scope', [householdUserSchema.options[0].extend({ email: z.email().optional() }), householdUserSchema.options[1].extend({ email: z.email().optional() })]))
     // Present while a password-mode join's address awaits staff confirmation: check the person, then issue a printed payer invitation.
-    .extend({ awaitingConfirmation: z.strictObject({ email: z.string().max(254).nullable() }).optional() }) },
+    .extend({
+      awaitingConfirmation: z.strictObject({ email: z.string().max(254).nullable() }).optional(),
+      inviteRefused: z.strictObject({ reason: z.literal('staff_identity') }).optional(),
+    }) },
   resetPassword: { method: 'post', path: '/api/households/{householdId}/users/{householdUserId}/password', permission: { kind: 'staff', capability: 'portal_access.manage' }, params: householdUserParamsSchema, body: z.strictObject({ newPassword: z.string().min(12).max(128) }), response: z.strictObject({ data: z.null() }) },
   invite: { method: 'post', path: '/api/households/{householdId}/portal-invitations', permission: { kind: 'staff', capability: 'portal_access.manage' }, params: householdParamsSchema, body: portalInvitationRequestSchema, response: portalInvitationResponseSchema },
   invitations: { method: 'get', path: '/api/households/{householdId}/portal-invitations', permission: { kind: 'staff', capability: 'portal_access.manage' }, params: householdParamsSchema, response: z.strictObject({ data: z.array(portalOutstandingInvitationSchema).max(100) }) },

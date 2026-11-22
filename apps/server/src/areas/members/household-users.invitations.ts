@@ -30,8 +30,10 @@ export interface PortalInvitationOptions {
 }
 /** A claim code outlives the login link it rides on, but never the onboarding link or invitation it names. */
 const claimLifetime = 60 * 60 * 1000;
-async function refuseStaff(tx: Transaction, userId: string) {
-  if ((await tx.select({ id: staffRoles.id }).from(staffRoles).where(eq(staffRoles.userId, userId)))[0]) throw new AppError('forbidden', 'Protected account');
+async function refuseStaff(tx: Transaction, userId: string, reason?: 'staff_account') {
+  if ((await tx.select({ id: staffRoles.id }).from(staffRoles).where(eq(staffRoles.userId, userId)))[0]) {
+    throw new AppError('forbidden', 'Protected account', reason ? { reason: [reason] } : undefined);
+  }
 }
 /** Creates the household login an invitation or onboarding claim grants, once its address is proven. */
 async function grant(tx: Transaction, gymId: string, binding: PortalInvitationBinding, clock: Clock) {
@@ -96,12 +98,12 @@ export function createPortalInvitationService(options: PortalInvitationOptions) 
       await accounts.provisionUser(actor.gymId, input.email, input.email, actor.clock, async (tx, userId) => {
         await assertManager(tx);
         const reservation = command && await deliveries.reserve(tx, actor.gymId, command.key, command.digest);
-        await refuseStaff(tx, userId);
-        await assertPortalLoginTarget(tx, householdId, input.memberId ?? null, input.scope, actor.clock, actor.timezone);
+        await refuseStaff(tx, userId, 'staff_account');
+        await assertPortalLoginTarget(tx, householdId, input.memberId ?? null, input.scope, actor.clock, actor.timezone, { includeRefusalReason: true });
         if ((await tx.select({ id: householdUsers.id }).from(householdUsers).where(and(eq(householdUsers.householdId, householdId), eq(householdUsers.userId, userId))))[0])
-          throw new AppError('conflict', 'Portal login already linked');
+          throw new AppError('conflict', 'Portal login already linked', { reason: ['already_linked_household'] });
         if (input.memberId && (await tx.select({ id: householdUsers.id }).from(householdUsers).where(eq(householdUsers.memberId, input.memberId)))[0])
-          throw new AppError('conflict', 'Portal login already linked');
+          throw new AppError('conflict', 'Portal login already linked', { reason: ['member_has_login'] });
         const binding = { userId, householdId, scope: input.scope, memberId: input.memberId ?? null };
         const issued = await store.issue(tx, actor.gymId, binding, actor.clock);
         await writeAudit(tx, { gymId: actor.gymId, actorKind: 'user', actorUserId: actor.userId, action: 'household_user.invited', targetType: 'household', targetId: householdId,

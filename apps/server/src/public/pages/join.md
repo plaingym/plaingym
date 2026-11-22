@@ -297,7 +297,10 @@ Passwordless, the portal login proves the address entered: the join's completion
 payer invitation for the household's address and sends the portal's claim-code sign-in link
 to it (auth mail, not subject to the member-email switch); the household login is created on
 its callback only for the signed-in user the code names. For an active join, `/join/sign-in`
-sends a new link, replacing the previous one, with the same response whatever the address.
+can send a new link, replacing the previous one. If the address belongs to a staff login,
+completion and resend leave it without a portal invitation or login. Both public pages use
+the same text for every address. Staff see the refusal in the household's **Portal access**
+tab and can invite the member using another address.
 
 Password mode has no mail to prove an address, so a paid join provisions no account and sets
 no password. Its completion marks the household's address as awaiting portal confirmation

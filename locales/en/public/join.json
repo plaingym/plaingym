@@ -86,7 +86,7 @@
   "confirmingStalled": "This is taking longer than usual. Select Check again, or contact the gym if it does not move on.",
   "checkAgain": "Check again",
   "welcomeTitle": "Welcome",
-  "welcomeEmail": "Your membership is active. We sent a sign-in link to the email address you entered. Open it to set up your member portal login.",
+  "welcomeEmail": "Your membership is active. If this address can receive a portal login, a sign-in link is on its way. Open it to set up your member portal login. If nothing arrives, contact the gym.",
   "resend": "Send the sign-in link again",
   "resent": "If your membership email can receive a portal login, a new sign-in link is on its way. Use the newest email.",
   "welcomePassword": "Your membership is active. The gym confirms your member portal login: staff check your details, then give you a private link to set your password. If you already have a login with this email address, you will enter its current password instead.",

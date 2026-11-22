@@ -14,13 +14,14 @@ const { createPortalPwaRoutes } = await import(pathToFileURL(resolve('apps/serve
 const output = resolve('coverage/portal/browser'), dist = resolve('apps/web/dist'); await mkdir(output, { recursive: true });
 const gym = '00000000-0000-7000-8000-000000000001', household = '00000000-0000-7000-8000-000000000002', member = '00000000-0000-7000-8000-000000000003', userId = '00000000-0000-7000-8000-000000000004';
 const bootstrap = { gym: { id: gym, name: 'A long gym name that must fit on a phone', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId, displayName: 'A person with a very long display name that must truncate', roles: [], member: true }, login: { password: true, magicLink: false } };
-const person = { id: member, householdId: household, firstName: 'Alex', lastName: 'Example', email: 'alex@example.test', phone: null, photoKey: null, dateOfBirth: '1990-01-01', status: 'active', emergencyContacts: [], emailOptOut: false, emailDeliverable: true, anonymizedAt: null, revision: 1, createdAt: '2026-10-28T12:00:00Z' };
+const person = { id: member, householdId: household, firstName: 'Alex', lastName: 'Example', email: 'alex@example.test', phone: null, photoKey: null, dateOfBirth: '1990-01-01', status: 'active', emergencyContacts: [], emailOptOut: false, emailDeliverable: true, anonymizedAt: null, revision: 1, createdAt: '2026-10-28T12:00:00Z',
+  sms: { phoneValid: false, phoneE164: null, notices: null, announcements: null } };
 const login = { id: gym, householdId: household, userId, scope: 'member', memberId: member, createdAt: person.createdAt, email: person.email };
 const second = '00000000-0000-7000-8000-000000000005';
 const choices = [{ householdId: household, name: 'A household with a long name that wraps on a phone', role: 'payer' }, { householdId: second, name: 'Second household', role: 'member' }];
 const invitation = { id: '00000000-0000-7000-8000-000000000006', scope: 'member', memberId: member, memberName: 'Alex Example', email: 'a-long-invited-address-that-wraps-on-a-phone@example.test', expiresAt: '2026-11-04T12:00:00.000Z' };
 const waiting = { id: 'members.portal-confirmations', kind: 'count', titleKey: 'portal/access:waitingTitle', status: 'ready', count: 22, items: [{ label: 'A household with a long name that must wrap on a phone', href: '/admin/members/' + member + '#memberTabs.portal-access' }, { label: 'Second household', href: '/admin/members/' + second + '#memberTabs.portal-access' }] };
-let revoked = false, awaiting = false, pending = false, staff = false, current: string | null = null;
+let revoked = false, awaiting = false, inviteRefused = false, pending = false, staff = false, current: string | null = null;
 const bundle = await build({ stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client'; import {QueryClient,QueryClientProvider} from '@tanstack/react-query'; import {ShellServicesContext} from './src/app/context.tsx'; import {PortalAccessTab} from './src/features/portal/access/tab.tsx'; const services={loadBootstrap:async()=>(${JSON.stringify({ ...bootstrap, session: { userId, roles: ['front_desk'], member: false } })})}; createRoot(document.getElementById('root')).render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><ShellServicesContext.Provider value={services}><main className="mx-auto max-w-4xl p-4"><h1 className="text-2xl font-semibold">Alex Example</h1><PortalAccessTab memberId="${member}"/></main></ShellServicesContext.Provider></QueryClientProvider>);`, resolveDir: resolve('apps/web'), sourcefile: 'portal-access-browser.tsx', loader: 'tsx' }, bundle: true, write: false, format: 'esm', platform: 'browser', jsx: 'automatic' });
 await writeFile(resolve(output, 'access.js'), bundle.outputFiles[0]!.text);
 const dashboardBundle = await build({ stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client'; import {DashboardWidgets} from './src/features/dashboard/widgets.tsx'; createRoot(document.getElementById('root')).render(<main className="mx-auto max-w-4xl p-4"><h1 className="text-2xl font-semibold">Dashboard</h1><DashboardWidgets timezone="UTC" roles={['front_desk']} widgets={[${JSON.stringify(waiting)}, ${JSON.stringify({ ...waiting, id: 'members.hidden', count: 0, items: [] })}]}/></main>);`, resolveDir: resolve('apps/web'), sourcefile: 'dashboard-browser.tsx', loader: 'tsx' }, bundle: true, write: false, format: 'esm', platform: 'browser', jsx: 'automatic' });
@@ -45,7 +46,8 @@ const server = createServer(async (req, res) => {
     if (path === '/api/portal/invitations/accept') { res.end(JSON.stringify({ data: { status: 'claimed' } })); return; }
     if (path === '/api/members/' + member) { res.end(JSON.stringify({ data: person })); return; }
     if (path.endsWith('/portal-logins')) { res.end(JSON.stringify({ data: revoked ? [] : [login], pagination: { limit: 20, offset: 0, total: revoked ? 0 : 1 },
-      ...(awaiting ? { awaitingConfirmation: { email: 'a-long-joining-address-that-wraps@example.test' } } : {}) })); return; }
+      ...(awaiting ? { awaitingConfirmation: { email: 'a-long-joining-address-that-wraps@example.test' } } : {}),
+      ...(inviteRefused ? { inviteRefused: { reason: 'staff_identity' } } : {}) })); return; }
     if (path.includes('/portal-invitations/') && req.method === 'DELETE') { pending = false; res.end(JSON.stringify({ data: null })); return; }
     if (path.endsWith('/portal-invitations') && req.method === 'GET') { res.end(JSON.stringify({ data: pending ? [invitation] : [] })); return; }
     if (path.endsWith('/portal-invitations')) { res.end(JSON.stringify({ data: { delivery: 'print', invitation: { userId, scope: 'member', memberId: member, expiresAt: '2026-11-04T12:00:00.000Z' }, invitationUrl: 'http://localhost/portal/claim#' + 'a'.repeat(64) } })); return; }
@@ -112,6 +114,12 @@ try {
     pending = true; await page.goto(origin + '/access-fixture'); await expect(page.getByText('Invitations not yet accepted')).toBeVisible(); await expect(page.getByText(invitation.email)).toBeVisible(); await check('pending');
     await page.getByRole('button', { name: 'Revoke invitation', exact: true }).click(); await check('withdraw');
     await page.getByRole('dialog').getByRole('button', { name: 'Revoke invitation', exact: true }).click(); await expect(page.getByText('Invitations not yet accepted')).toHaveCount(0);
+    pending = true; await page.goto(origin + '/access-fixture');
+    await expect(page.getByText("Not the member's current email (" + person.email + ').')).toBeVisible();
+    await page.getByRole('button', { name: 'Resend to current email' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Revoke invitation', exact: true }).click();
+    await expect(page.getByLabel('Login email')).toHaveValue(person.email);
+    await expect(page.getByLabel('Access')).toHaveValue('member'); await check('resend-current');
     // The dashboard shortlist of households awaiting confirmation; an empty one is hidden.
     await page.goto(origin + '/dashboard-fixture'); await expect(page.getByRole('heading', { name: 'Households awaiting portal confirmation' })).toBeVisible(); await expect(page.getByRole('link', { name: 'Second household' })).toBeVisible();
     await expect(page.getByRole('heading')).toHaveCount(2); await expect(page.getByText('Showing 2 of 22.')).toBeVisible(); await check('dashboard');
@@ -122,6 +130,12 @@ try {
     await expect(page.getByLabel('Access')).toHaveValue('payer'); await expect(page.getByLabel('Invitation delivery')).toHaveValue('print'); await check('confirm');
     await page.getByRole('dialog').getByRole('button', { name: 'Invite', exact: true }).click(); await expect(page.getByText('Private invitation link')).toBeVisible();
     awaiting = false;
+    inviteRefused = true; await page.goto(origin + '/access-fixture');
+    const refusal = page.getByText("The join couldn't set up a portal login for this address because it belongs to a staff login. Invite the member with another address.");
+    await expect(refusal).toBeVisible(); await check('invite-refused');
+    await refusal.locator('..').getByRole('button', { name: 'Invite', exact: true }).click();
+    await expect(page.getByLabel('Login email')).toHaveValue(person.email); await check('invite-after-refusal');
+    inviteRefused = false;
   }
-  expect(errors).toEqual([]); console.log('Passed: household picker and header switcher, portal shell, claim, access, invite/print/reset/revoke, outstanding invitations, the dashboard shortlist and join confirmation at 360 and 1280 px; no overflow; 44 px controls; axe A/AA; Chromium PWA installability; no offline caches.');
+  expect(errors).toEqual([]); console.log('Passed: household picker and header switcher, portal shell, claim, access, invite/print/reset/revoke, outstanding invitations, replacement invitations, the dashboard shortlist, join confirmation and refusal at 360 and 1280 px; no overflow; 44 px controls; axe A/AA; Chromium PWA installability; no offline caches.');
 } finally { await browser.close(); await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done())); await rm(profile, { recursive: true, force: true }); }

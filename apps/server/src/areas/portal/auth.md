@@ -69,10 +69,13 @@ they grant, and placed in URL fragments. A deliberate resend (a new send generat
 old token, and a retry with the same `sendGeneration` returns the first result, sends no second email and leaves the emailed token working; its delivery key is `portal.invitation:<household>:<generation>` (`infra/email/README.md`). An invitation grants nothing by itself: the household login is created
 only when the invitation is accepted. An address that already has a login for the
 household, or a member who already has one, is a conflict. Staff identities cannot
-be claimed through a member invitation.
+be claimed through a member invitation. The staff invitation endpoint includes a
+reason for these refusals and for a missing adult birth date on a member-only invitation.
 
 The household's Portal access tab lists its outstanding invitations: the invitee's
 address, the access granted (whole household or one member) and the expiry.
+The tab flags member-only access at an older address. Replacing an outstanding
+invitation first revokes it, then opens Invite with the member's current email.
 `GET /api/households/{householdId}/portal-invitations` reads them through the auth
 module, scoped to the gym and to the household in the route. An invitation that has
 expired or been accepted is no longer listed, and neither a token nor its hash is

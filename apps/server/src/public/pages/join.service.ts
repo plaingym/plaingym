@@ -13,7 +13,7 @@ import { localDate } from '@plaingym/shared/time';
 import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
 import { readPublicBranding } from './service.js';
-import { logError } from '../../core/log.js';
+import { logError, logWarn } from '../../core/log.js';
 import { createGymSettingsAccessor, readGymSettings } from '../../areas/settings/settings.js';
 import { addsTaxOnTop } from '../../areas/billing/invoicing/adds-tax-on-top.js';
 import { signedLinkWaiversComplete, type WaiversService } from '../../areas/waivers/waivers.js';
@@ -327,7 +327,11 @@ export function createJoinService(options: JoinOptions) {
     let result = { status: 'refused' } as { status: 'invited'; token: string } | { status: 'linked' | 'refused' };
     await options.accounts.provisionUser(gymId, email, name, clock, async (tx, userId) => {
       // Staff identities are never claimed through a member invitation.
-      if ((await tx.select({ id: staffRoles.id }).from(staffRoles).where(eq(staffRoles.userId, userId)).limit(1)).length) return;
+      if ((await tx.select({ id: staffRoles.id }).from(staffRoles).where(eq(staffRoles.userId, userId)).limit(1)).length) {
+        await audit(tx, gymId, 'household_user.invite_refused', 'household', householdId, { reason: 'staff_identity' });
+        result = { status: 'refused' };
+        return;
+      }
       await assertPortalLoginTarget(tx, householdId, null, 'payer', clock);
       if ((await tx.select({ id: householdUsers.id }).from(householdUsers).where(and(eq(householdUsers.householdId, householdId),
         eq(householdUsers.userId, userId)))).length) { result = { status: 'linked' }; return; }
@@ -345,6 +349,7 @@ export function createJoinService(options: JoinOptions) {
   async function signIn(gymId: string, householdId: string) {
     const home = await household(gymId, householdId), invitation = await invite(gymId, householdId, home.email, home.name);
     if (invitation.status === 'invited') await options.invitations.accept(gymId, { token: invitation.token }, clock);
+    if (invitation.status === 'refused') logWarn('public.join.sign_in_refused', { gymId, householdId });
   }
   /** Once the join's invoice is paid, the joined prospects become trial or active members and the join completes, once.
    * Passwordless, the payer's sign-in link goes out with it; in password mode the address awaits staff confirmation. */

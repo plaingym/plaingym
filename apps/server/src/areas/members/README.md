@@ -299,3 +299,13 @@ failure after the writes and the no-customer case, with the fake and PostgreSQL 
 The gate is `pnpm check-types`, `pnpm lint`, `pnpm test` and `pnpm compliance`.
 
 An emailed portal invitation replay with an uncertain delivery returns `data.outcome: "unknown"`, without issuing another invitation or sending email. The access form keeps the pending generation across reloads and offers a deliberate Send again action when the earlier email may have arrived.
+
+When a passwordless online join or sign-in link resend encounters a staff address,
+it records `household_user.invite_refused` on the household with `after: { reason: "staff_identity" }`.
+The refusal audit has no address or account identity. The gym-scoped `inviteRefused`
+read feeds the staff Portal access tab when the household has no payer login and its
+latest refusal or successful invitation audit, ordered by timestamp then ID, is a refusal.
+
+The staff invitation endpoint reports the reason under `error.details.reason` for
+`already_linked_household`, `member_has_login`, `staff_account` and
+`adult_birth_date_required`. The Portal access dialog explains each reason.

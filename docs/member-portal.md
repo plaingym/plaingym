@@ -38,6 +38,14 @@ from the member's profile, on its **Portal access** tab:
    expires after seven days, and **Revoke invitation** stops its link working.
    Nobody has access until they accept it.
 
+**Invite** starts with the member's current email. The tab flags older addresses
+on their member-only invitations and logins. **Resend to current email** asks you
+to revoke the old invitation, then opens **Invite** with the current address.
+If the gym rejects an invitation, the dialog explains when the address is already
+linked to the household, the member already has a login, the address belongs to staff,
+or the member needs an adult date of birth. To change an existing login's access,
+revoke it and invite the person again with the intended access.
+
 What the member sees when they accept depends on your email setup:
 
 * **Gym has email:** accepting emails a sign-in link to the invited address; every
@@ -56,6 +64,10 @@ listed on the dashboard under **Households awaiting portal confirmation**, and i
 **Portal access** tab shows **Awaiting portal confirmation**. A password login can't
 prove who owns an email address, so check the person, then **Confirm and print
 invitation**; they set their password from it.
+
+When the gym signs in by email, online joiners see the same conditional sign-in link
+message. If the address belongs to a staff login, the household's **Portal access** tab
+shows the refusal so staff can invite the member with another address.
 
 Revoking a login (**Revoke access**) removes access at once, including an open
 session. A person with logins to several households picks one when they sign in and

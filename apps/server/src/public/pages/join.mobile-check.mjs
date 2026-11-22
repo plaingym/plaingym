@@ -117,7 +117,7 @@ try {
     // The page has no Refresh header (only a noscript meta), so only polling moves it to Welcome once the join settles.
     const loads = []; page.on('request', request => { if (request.isNavigationRequest() && new URL(request.url()).pathname === '/join/return') loads.push(request.url()); });
     await page.goto(base + '/join/return'); await expect(page.locator('[data-join-confirming]')).toBeVisible(); await page.waitForTimeout(6500); expect(loads).toHaveLength(1);
-    state = 'active'; await expect(page.locator('main')).toContainText('We sent a sign-in link', { timeout: 6000 });
+    state = 'active'; await expect(page.locator('main')).toContainText('If this address can receive a portal login, a sign-in link is on its way.', { timeout: 6000 });
     expect(await page.locator('[data-join-confirming]').count()).toBe(0);
     // It gives up after its limit (about 90 s on the page's clock) and leaves Check again.
     state = 'pending'; const slow = await context.newPage();

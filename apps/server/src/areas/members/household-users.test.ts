@@ -10,7 +10,7 @@ import { portalAccessContracts } from '@plaingym/shared/contracts';
 import { FakeMemberHouseholdContext } from '../../core/interfaces/member-household.js';
 import { createMemberHouseholdContext, createPortalPrincipalLoader } from './household-users.context.js';
 import { createHouseholdUsersService, requestPortalConfirmation } from './household-users.js';
-import { createPortalAccessRoutes } from '../portal/access.routes.js';
+import { createPortalAccessRoutes, createPortalInvitationRoutes } from '../portal/access.routes.js';
 import { createPortalAuthRoutes } from '../portal/auth.routes.js';
 import { createPortalAuthorization } from '../portal/auth.permissions.js';
 import { createServerRegistry } from '../../core/registry.js';
@@ -19,6 +19,8 @@ import { TestClock } from '../../core/clock.js';
 import type { Principal, RequestEnvironment } from '../../core/context.js';
 import { householdContextContract } from './household-users.contract.js';
 import { createPortalInvitationStore } from '../../infra/auth/portal-invitations.js';
+import { authConfig } from '../../infra/auth/config.js';
+import { createPortalInvitationService } from './household-users.invitations.js';
 
 const db = useTestDatabase(), factory = createFactories(db), clock = new TestClock('2026-10-28T12:00:00Z');
 const gym = uuidv7(), otherGym = uuidv7(), context = createMemberHouseholdContext(db.forGym), service = createHouseholdUsersService({ scope: db.forGym, clock, loginEmails: createPortalInvitationStore(() => db.system.db).loginEmails });
@@ -45,12 +47,12 @@ householdContextContract('fake household context', async () => {
   const fake = new FakeMemberHouseholdContext([{ gymId: gym, householdId, id: member }, { gymId: gym, householdId, id: sibling }, { gymId: gym, householdId: otherHousehold, id: foreign }, { gymId: gym, householdId, id: erased, anonymizedAt: clock.now() }], [payer, adult, erasedAdult]);
   return { context: fake, payer, adult, erased, erasedAdult, member, sibling, foreign, otherGym, otherHousehold, revoke: async () => fake.revoke(payer) };
 });
-function app(principal: Principal, gymId = gym) {
+function app(principal: Principal, gymId = gym, extraRoutes: ReturnType<typeof createPortalInvitationRoutes> = []) {
   const app = new OpenAPIHono<RequestEnvironment>({ defaultHook: (result, ctx) => { if (!result.success) return respondError(ctx, result.error); } });
   app.use('*', async (ctx, next) => { ctx.set('context', { principal, gym: { gymId, timezone: 'UTC', enabledModules: new Set() }, clock, requestId: 'household-test' }); await next(); });
-  app.onError(errorHandler); createServerRegistry({ routes: [...createPortalAccessRoutes(service), ...createPortalAuthRoutes(context)] }).mount(app, createPortalAuthorization(context), new Set()); return app;
+  app.onError(errorHandler); createServerRegistry({ routes: [...createPortalAccessRoutes(service), ...createPortalAuthRoutes(context), ...extraRoutes] }).mount(app, createPortalAuthorization(context), new Set()); return app;
 }
-const staff = (role: StaffRole, gymId = gym): Principal => ({ kind: 'staff', userId: staffUser, gymId, roles: [role] });
+const staff = (role: StaffRole, gymId = gym): Extract<Principal, { kind: 'staff' }> => ({ kind: 'staff', userId: staffUser, gymId, roles: [role] });
 const send = (server: ReturnType<typeof app>, path: string, method = 'GET', body?: unknown) => server.request(path, { method, ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}) });
 describe('household login routes', () => {
   it('requires an adult birth date before granting a member-only login', async () => {
@@ -104,6 +106,82 @@ describe('household login routes', () => {
     const erased = await factory('households', gym, { email: null });
     await db.forGym(gym, tx => requestPortalConfirmation(tx, gym, erased.id, clock));
     expect(await logins(erased.id)).not.toHaveProperty('awaitingConfirmation');
+  });
+  it('shows the latest household invitation refusal until a successful invitation or payer login', async () => {
+    const household = await factory('households', gym), householdId = household.id;
+    const path = `/api/households/${householdId}/portal-logins`;
+    const frontDesk = staff('front_desk'), server = app(frontDesk);
+    const hint = { reason: 'staff_identity' };
+    const refused = 'household_user.invite_refused', invited = 'household_user.invited';
+    const record = (gymId: string, action: string, occurredAt: Date, id = uuidv7(), targetType = 'household') =>
+      db.forGym(gymId, tx => writeAudit(tx, { id, gymId, actorKind: 'system', action, targetType, targetId: householdId, occurredAt }));
+    const logins = async () => {
+      const response = await send(server, path);
+      expect(response.status).toBe(200);
+      return portalAccessContracts.logins.response.parse(await response.json());
+    };
+    const first = clock.now();
+    const later = new Date(first.getTime() + 1000);
+    const latest = new Date(later.getTime() + 1000);
+
+    expect(await service.inviteRefused(gym, householdId)).toBeNull();
+    expect(await logins()).not.toHaveProperty('inviteRefused');
+    await record(otherGym, refused, latest);
+    await record(gym, refused, latest, uuidv7(), 'member');
+    expect(await service.inviteRefused(gym, householdId)).toBeNull();
+    await record(gym, refused, first);
+    expect(await service.inviteRefused(gym, householdId)).toEqual(hint);
+    expect(await logins()).toHaveProperty('inviteRefused', hint);
+    expect((await send(app({ ...frontDesk, roles: [] }), path)).status).toBe(403);
+    expect((await send(app(staff('coach')), path)).status).toBe(403);
+    expect((await send(app(staff('owner', otherGym), otherGym), path)).status).toBe(404);
+
+    await record(gym, invited, later);
+    expect(await service.inviteRefused(gym, householdId)).toBeNull();
+    expect(await logins()).not.toHaveProperty('inviteRefused');
+    const [lowerId, higherId] = [uuidv7(), uuidv7()].sort() as [string, string];
+    await record(gym, refused, latest, higherId);
+    await record(gym, invited, latest, lowerId);
+    expect(await service.inviteRefused(gym, householdId)).toEqual(hint);
+    await factory('householdUsers', gym, { householdId, scope: 'payer', memberId: null });
+    expect(await service.inviteRefused(gym, householdId)).toBeNull();
+    expect(await logins()).not.toHaveProperty('inviteRefused');
+  });
+  it('returns staff-only invitation refusal details and preserves the claim response', async () => {
+    const manager = await factory('staffRoles', gym, { role: 'owner' });
+    const household = await factory('households', gym), householdId = household.id;
+    const adult = await factory('members', gym, { householdId, dateOfBirth: '1990-01-01' });
+    const linked = await factory('authUser', gym);
+    await factory('householdUsers', gym, { householdId, scope: 'member', memberId: adult.id, userId: linked.id });
+    const child = await factory('members', gym, { householdId, dateOfBirth: '2015-01-01' });
+    const config = authConfig({ AUTH_SECRET: 'portal-test-secret-at-least-32-characters', AUTH_PASSWORD_LOGIN: 'on' }, false);
+    const invitations = createPortalInvitationService({ config, database: () => db.system.db, scope: db.forGym,
+      smtpConfigured: async () => false, mailer: async () => null, loginLink: async () => {} });
+    const extraRoutes = createPortalInvitationRoutes({ service: invitations, origin: () => 'https://gym.example.test' });
+    const server = app({ ...staff('owner'), userId: manager.userId }, gym, extraRoutes);
+    const path = `/api/households/${householdId}/portal-invitations`;
+    const promotedEmail = 'promoted-to-staff@example.invalid';
+    const issued = await send(server, path, 'POST', { email: promotedEmail, scope: 'payer', delivery: 'print' });
+    expect(issued.status).toBe(200);
+    const printed = portalAccessContracts.invite.response.parse(await issued.json()).data;
+    if (printed.delivery !== 'print') throw new Error('Expected a printed invitation');
+    await factory('staffRoles', gym, { userId: printed.invitation.userId, role: 'coach' });
+
+    for (const [status, code, message, reason, request] of [
+      [409, 'conflict', 'Portal login already linked', 'already_linked_household', { email: linked.email, scope: 'payer' }],
+      [409, 'conflict', 'Portal login already linked', 'member_has_login', { email: 'new-adult@example.invalid', scope: 'member', memberId: adult.id }],
+      [403, 'forbidden', 'Protected account', 'staff_account', { email: promotedEmail, scope: 'payer' }],
+      [400, 'invalid_request', 'An adult date of birth is required for a member login', 'adult_birth_date_required', { email: 'child@example.invalid', scope: 'member', memberId: child.id }],
+    ] as const) {
+      const response = await send(server, path, 'POST', { ...request, delivery: 'print' });
+      expect(response.status).toBe(status);
+      expect(await response.json()).toEqual({ requestId: 'household-test', error: { code, message, details: { reason: [reason] } } });
+    }
+    const claim = await send(app({ kind: 'anonymous' }, gym, extraRoutes), '/api/portal/invitations/accept', 'POST', {
+      token: new URL(printed.invitationUrl).hash.slice(1), password: 'portal-member-password-123',
+    });
+    expect(claim.status).toBe(403);
+    expect(await claim.json()).toEqual({ requestId: 'household-test', error: { code: 'forbidden', message: 'Protected account' } });
   });
   it('separates staff and member routes, reloads scope and immediately denies revoked logins', async () => {
     const f = await fixture(), loader = createPortalPrincipalLoader(db.forGym), principal = await loader(gym, f.adult.userId), server = app(principal);

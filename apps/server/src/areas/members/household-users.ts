@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, exists, isNotNull, isNull, notExists } from 'drizzle-orm';
+import { and, asc, desc, eq, exists, inArray, isNotNull, isNull, notExists } from 'drizzle-orm';
 import { auditEvents, databaseCode, forGym, householdUsers, households, members, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { createHouseholdUserRequestSchema, householdUserSchema, type CreateHouseholdUserRequest, type Pagination } from '@plaingym/shared/contracts';
@@ -8,14 +8,18 @@ import { notFound, type MutationContext } from '../../core/interfaces/common.js'
 import { createPortalInvitationStore } from '../../infra/auth/portal-invitations.js';
 import { needsGuardian } from '../waivers/snapshot.js';
 
-export async function assertPortalLoginTarget(tx: Transaction, householdId: string, memberId: string | null, scope: 'payer' | 'member', clock: Clock, timezone = 'UTC') {
+export async function assertPortalLoginTarget(tx: Transaction, householdId: string, memberId: string | null, scope: 'payer' | 'member', clock: Clock,
+  timezone = 'UTC', { includeRefusalReason = false } = {}) {
   if (!(await tx.select({ id: households.id }).from(households).where(eq(households.id, householdId)).for('update'))[0]) notFound();
   if (scope === 'payer' && !(await tx.select({ id: households.id }).from(households).where(and(eq(households.id, householdId),
     exists(tx.select({ id: members.id }).from(members).where(and(eq(members.householdId, households.id), isNull(members.anonymizedAt)))))))[0]) notFound();
   if (memberId) {
     const [member] = await tx.select({ dateOfBirth: members.dateOfBirth }).from(members).where(and(eq(members.id, memberId), eq(members.householdId, householdId), isNull(members.anonymizedAt)));
     if (!member) notFound();
-    if (scope === 'member' && needsGuardian(member.dateOfBirth, clock.now(), timezone)) throw new AppError('invalid_request', 'An adult date of birth is required for a member login');
+    if (scope === 'member' && needsGuardian(member.dateOfBirth, clock.now(), timezone)) {
+      throw new AppError('invalid_request', 'An adult date of birth is required for a member login',
+        includeRefusalReason ? { reason: ['adult_birth_date_required'] } : undefined);
+    }
   }
 }
 
@@ -63,6 +67,17 @@ export function createHouseholdUsersService(options: { scope?: typeof forGym; cl
         if (!home.email) return null;
         const [waiting] = await tx.select({ id: households.id }).from(households).where(and(eq(households.id, householdId), awaitingConfirmationCondition(tx, gymId)));
         return waiting ? { email: home.email } : null;
+      });
+    },
+    async inviteRefused(gymId: string, householdId: string): Promise<{ reason: 'staff_identity' } | null> {
+      return scope(gymId, async tx => {
+        const [latest] = await tx.select({ action: auditEvents.action }).from(auditEvents)
+          .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.targetType, 'household'), eq(auditEvents.targetId, householdId),
+            inArray(auditEvents.action, ['household_user.invite_refused', 'household_user.invited']),
+            notExists(tx.select({ id: householdUsers.id }).from(householdUsers)
+              .where(and(eq(householdUsers.householdId, householdId), eq(householdUsers.scope, 'payer'))))))
+          .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
+        return latest?.action === 'household_user.invite_refused' ? { reason: 'staff_identity' } : null;
       });
     },
     loginEmails: options.loginEmails ?? createPortalInvitationStore().loginEmails,

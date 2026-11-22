@@ -3,7 +3,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import { canMember, isRoutePermission } from '../permissions.js';
 import type { households, members, memberships, paymentMethods, classSessions, attendances, memberRanks } from '../../../db/src/schema/index.js';
 import {
-  portalContracts, portalScheduleContracts, portalSignedLinkContracts, portalContextSchema,
+  portalContracts, portalScheduleContracts, portalSignedLinkContracts, portalAccessContracts, portalContextSchema,
   portalMemberSchema, portalMemberUpdateRequestSchema, portalHouseholdUpdateRequestSchema,
   portalHouseholdSchema, portalScheduleQuerySchema, portalSessionSchema, portalInvoiceResponseSchema, portalPaymentMethodsResponseSchema, portalPaymentMethodSchema,
   portalSignedLinkDataSchema, portalCheckinCodeResponseSchema,
@@ -19,6 +19,14 @@ const line = { id, kind: 'membership', description: 'Training', amountCents: 100
 const card = { id, type: 'card', bankName: null, brand: 'visa', last4: '4242', expiryMonth: 12, expiryYear: 2030, isDefault: true };
 
 describe('portal access and safe projections', () => {
+  it('accepts the optional staff invitation refusal on household logins', () => {
+    const response = portalAccessContracts.logins.response;
+    const logins = { data: [], pagination: { limit: 20, offset: 0, total: 0 } };
+    const refused = { ...logins, inviteRefused: { reason: 'staff_identity' } };
+    expect(response.parse(logins)).toEqual(logins);
+    expect(response.parse(refused)).toEqual(refused);
+    expect(response.safeParse({ ...logins, inviteRefused: { reason: 'staff_identity', email: 'private@example.test' } }).success).toBe(false);
+  });
   it('exposes only a positive class balance and expiry per visible member, to payers and adult members', () => {
     const contract = portalContracts.classCredits;
     expect(contract.permission).toEqual({ kind: 'member', capability: 'profile.read' });

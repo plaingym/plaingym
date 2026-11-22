@@ -333,7 +333,7 @@ describe('trial and zero-value joining', () => {
       .toEqual([['trial', '2026-11-05'], ['trial', '2026-11-05']]);
     expect(finished.members.filter(m => m.householdId === home!.id).map(m => m.status)).toEqual(['trial', 'trial']);
     expect(f.sent).toHaveLength(1); expect(charge).not.toHaveBeenCalled();
-    expect(await (await f.get('/join/return', cookie)).text()).toContain('We sent a sign-in link');
+    expect(await (await f.get('/join/return', cookie)).text()).toContain('If this address can receive a portal login, a sign-in link is on its way.');
     // Submission and effect replay must not reactivate trials before their end date.
     expect((await f.post('/api/public/join', f.body([adult(), child()], images, 'trial@example.invalid', f.trial.id))).status).toBe(200);
     const runner = createChargeRunner({ scope: db.forGym, clock: f.clock, transitions: f.transitions, settings: f.settings, jobs: f.jobs, payments: f.paymentsFor });
@@ -359,7 +359,7 @@ describe('trial and zero-value joining', () => {
     const state = await f.rows();
     expect(state.invoices.find(i => i.householdId === home!.id)).toMatchObject({ status: 'paid', amountCents: 0 });
     expect(state.memberships.find(m => m.householdId === home!.id)).toMatchObject({ status: 'active', nextDueOn: '2026-11-29' });
-    expect(await (await f.get('/join/return', cookie)).text()).toContain('We sent a sign-in link');
+    expect(await (await f.get('/join/return', cookie)).text()).toContain('If this address can receive a portal login, a sign-in link is on its way.');
     expect((await f.get('/join/checkout', cookie)).headers.get('location')).toBe('/join/return');
     expect((await f.post('/api/public/join', f.body(people, images, email, f.free.id))).status).toBe(200);
     expect(f.sent).toHaveLength(1); expect(create).not.toHaveBeenCalled(); expect(charge).not.toHaveBeenCalled();
@@ -394,7 +394,7 @@ describe('trial and zero-value joining', () => {
     expect(state.invoices.find(i => i.householdId === home!.id)).toMatchObject({ amountCents: 0, status: 'paid' });
     expect(state.memberships.find(m => m.householdId === home!.id)).toMatchObject({ status: 'trial', nextDueOn: '2026-11-05' });
     expect(state.members.find(m => m.householdId === home!.id)).toMatchObject({ status: 'trial' });
-    expect(await (await f.get('/join/return', cookie)).text()).toContain('We sent a sign-in link');
+    expect(await (await f.get('/join/return', cookie)).text()).toContain('If this address can receive a portal login, a sign-in link is on its way.');
     expect(create).not.toHaveBeenCalled();
   });
 });
@@ -1050,7 +1050,7 @@ describe('public join pages through the production registrations', () => {
     const returned = await f.get('/join/return', cookie);
     expect(returned.status).toBe(200);
     const welcome = await returned.text();
-    expect(welcome).toContain('We sent a sign-in link');
+    expect(welcome).toContain('If this address can receive a portal login, a sign-in link is on its way.');
     expect(welcome).not.toContain('data-join-confirming');
     expect(welcome).not.toContain('Your bank payment is processing.');
 
@@ -1159,7 +1159,7 @@ describe('public join pages through the production registrations', () => {
     expect(f.sent).toHaveLength(1); expect(f.sent[0]).toMatchObject({ gymId: f.gymId, email: 'payer@example.invalid' });
     expect(state.logins).toEqual([]);
     const welcome = await (await f.get('/join/return', cookie)).text();
-    expect(welcome).toContain('We sent a sign-in link'); expect(welcome).not.toContain('payer@example.invalid');
+    expect(welcome).toContain('If this address can receive a portal login, a sign-in link is on its way.'); expect(welcome).not.toContain('payer@example.invalid');
     // Once settled, the same URL no longer carries the marker, which is what ends the script's polling.
     expect(welcome).not.toContain('data-join-confirming');
     expect(await (await f.post('/join/sign-in', undefined, cookie)).text()).toContain('Use the newest email');
@@ -1196,7 +1196,7 @@ describe('public join pages through the production registrations', () => {
 
     await cancel(joinedMemberships[0]!.id);
     expect(await f.join.state(f.gymId, link!.id)).toMatchObject({ status: 'active' });
-    expect(await (await f.get('/join/return', cookie)).text()).toContain('We sent a sign-in link');
+    expect(await (await f.get('/join/return', cookie)).text()).toContain('If this address can receive a portal login, a sign-in link is on its way.');
 
     await cancel(joinedMemberships[1]!.id);
     const sentBeforeResend = f.sent.length;
@@ -1207,7 +1207,7 @@ describe('public join pages through the production registrations', () => {
     const html = await returned.text();
     expect(html).toContain('The gym has closed this payment');
     expect(html).toContain('Please contact the gym');
-    expect(html).not.toContain('We sent a sign-in link');
+    expect(html).not.toContain('If this address can receive a portal login, a sign-in link is on its way.');
     const resent = await f.post('/join/sign-in', undefined, cookie);
     expect(resent.status).toBe(303);
     expect(resent.headers.get('location')).toBe('/join/return');
@@ -1221,7 +1221,7 @@ describe('public join pages through the production registrations', () => {
     expect(state.memberships.map(row => row.status)).toEqual(['active']);
     await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'void' }).where(eq(invoices.id, link!.invoiceId!)));
     expect(await f.join.state(f.gymId, link!.id)).toMatchObject({ status: 'active' });
-    expect(await (await f.get('/join/return', cookie)).text()).toContain('We sent a sign-in link');
+    expect(await (await f.get('/join/return', cookie)).text()).toContain('If this address can receive a portal login, a sign-in link is on its way.');
   });
 
   it('leaves no active membership when Checkout is abandoned, cancelled or expires, and recovers with a new session', async () => {
@@ -1377,14 +1377,14 @@ describe('public join pages through the production registrations', () => {
     expect((await f.rows()).members.filter(m => m.householdId === home!.id).map(m => m.status)).toEqual(['active']);
     expect(f.afterCheckout).toHaveBeenCalledWith(f.gymId, staff.link.id, opened.session.id);
     expect(f.afterInvoicePaid).toHaveBeenCalledWith(f.gymId, bill.id);
-    expect(await (await f.get('/join/return', cookie)).text()).toContain('We sent a sign-in link');
+    expect(await (await f.get('/join/return', cookie)).text()).toContain('If this address can receive a portal login, a sign-in link is on its way.');
     expect((await f.rows()).audits.filter(a => a.action === 'public.join.completed')).toHaveLength(1);
     expect(f.sent).toHaveLength(1);
 
     const revoked = await links.revoke(system, joinLink.id);
     expect(revoked.revokedAt).toBe(f.clock.now().toISOString());
     expect(await f.join.state(f.gymId, joinLink.id)).toMatchObject({ status: 'active' });
-    expect(await (await f.get('/join/return', cookie)).text()).toContain('We sent a sign-in link');
+    expect(await (await f.get('/join/return', cookie)).text()).toContain('If this address can receive a portal login, a sign-in link is on its way.');
 
     await db.forGym(f.gymId, tx => tx.update(memberships).set({ status: 'cancelled', cancelledAt: f.clock.now() })
       .where(eq(memberships.householdId, home!.id)));
@@ -1406,7 +1406,7 @@ describe('public join pages through the production registrations', () => {
     expect(state.memberships.filter(m => m.householdId === home!.id).map(m => m.status)).toEqual(['active', 'active']);
     expect(f.afterCheckout).not.toHaveBeenCalled();
     expect(f.sent).toEqual([expect.objectContaining({ gymId: f.gymId, email: 'payer@example.invalid' })]);
-    expect(await (await f.get('/join/return', cookie)).text()).toContain('We sent a sign-in link');
+    expect(await (await f.get('/join/return', cookie)).text()).toContain('If this address can receive a portal login, a sign-in link is on its way.');
     expect((await f.get('/join/checkout', cookie)).headers.get('location')).toBe('/join/return');
     // A retried command, a replayed effect and the Checkout hook all find the join complete.
     await f.transitions.manualPayment(context, cash); await f.drain();
@@ -1433,7 +1433,7 @@ describe('public join pages through the production registrations', () => {
     await f.drain();
     expect((await f.rows()).audits.filter(a => a.action === 'public.join.completed')).toHaveLength(1);
     expect(f.sent).toHaveLength(1);
-    expect(await (await f.get('/join/return', cookie)).text()).toContain('We sent a sign-in link');
+    expect(await (await f.get('/join/return', cookie)).text()).toContain('If this address can receive a portal login, a sign-in link is on its way.');
   });
 
   it('shows a closed join page when staff void the invoice or revoke its link, and still continues a paid or recording join', async () => {
@@ -1468,7 +1468,7 @@ describe('public join pages through the production registrations', () => {
     const paidHome = await home('recording@example.invalid');
     await links.revoke(system, (await f.rows()).links.find(l => l.householdId === paidHome.id)!.id);
     expect((await f.get('/join/checkout', recording.cookie)).headers.get('location')).toBe('/join/return');
-    expect(await (await f.get('/join/return', recording.cookie)).text()).toContain('We sent a sign-in link');
+    expect(await (await f.get('/join/return', recording.cookie)).text()).toContain('If this address can receive a portal login, a sign-in link is on its way.');
     // Neither closed join activated anything.
     const state = await f.rows();
     expect(state.members.filter(m => [voidHome.id, revokedHome.id].includes(m.householdId)).map(m => m.status)).toEqual(['prospect', 'prospect']);
@@ -1536,7 +1536,7 @@ describe('public join pages through the production registrations', () => {
       expect(await f.invitations.completeClaim(f.gymId, owner.id, { claim: f.sent[0]!.claim }, f.clock)).toBe(home.id);
       const staffJoin = await paid(f, 'staff@example.invalid');
       expect(f.sent).toHaveLength(1);
-      expect(await (await f.get('/join/return', staffJoin.cookie)).text()).toContain('We sent a sign-in link');
+      expect(await (await f.get('/join/return', staffJoin.cookie)).text()).toContain('If this address can receive a portal login, a sign-in link is on its way.');
       expect((await f.rows()).logins.filter(l => l.userId === staff.id)).toEqual([]);
     });
     it('passwordless: no address awaits staff confirmation', async () => {
@@ -1757,4 +1757,65 @@ describe('promo codes on /join', () => {
       expect(refused.status).toBe(400); expect(await refused.text()).toContain('This code can');
     }
   });
+});
+
+it('keeps a paid staff-address join public response neutral and records refusals without identity data', async () => {
+  const { setLogSink } = await import('../../core/log.js');
+  const f = await fixture(), staffEmail = 'join-staff@example.invalid', ordinaryEmail = 'join-member@example.invalid';
+  const staffUser = await factory('authUser', f.gymId, { email: staffEmail, name: 'Jordan Staff' });
+  await factory('staffRoles', f.gymId, { userId: staffUser.id, role: 'admin' });
+  const warnings: unknown[] = [];
+  const restore = setLogSink(line => {
+    const { event, ...fields } = JSON.parse(line) as Record<string, unknown>;
+    if (event === 'public.join.sign_in_refused') warnings.push(fields);
+  });
+  try {
+    const staff = await f.submit([adult()], staffEmail);
+    expect(staff.response.status).toBe(200);
+    const session = await f.pay(staff.cookie);
+    await f.webhook(session);
+    const staffHome = (await f.joined()).find(h => h.email === staffEmail)!;
+    const audits = async (householdId: string) => (await f.rows()).audits.filter(a => a.targetType === 'household' && a.targetId === householdId);
+    const refusals = async () => (await audits(staffHome.id)).filter(a => a.action === 'household_user.invite_refused');
+    const checkRefusals = async (count: number) => {
+      const records = await refusals();
+      expect(records.map(({ before, after }) => ({ before, after }))).toEqual(
+        Array.from({ length: count }, () => ({ before: null, after: { reason: 'staff_identity' } })));
+      expect(warnings).toEqual(Array.from({ length: count }, () => ({ time: expect.any(String), level: 'warn', gymId: f.gymId, householdId: staffHome.id })));
+      const serialized = JSON.stringify([records.map(({ before, after }) => ({ before, after })), warnings]);
+      for (const value of [staffEmail, staffUser.id, staffUser.name]) expect(serialized).not.toContain(value);
+    };
+    expect(f.sent).toEqual([]);
+    expect((await f.rows()).logins.filter(login => login.householdId === staffHome.id)).toEqual([]);
+    await checkRefusals(1);
+    const staffReturn = await f.get('/join/return', staff.cookie), staffPage = await staffReturn.text();
+    expect(staffReturn.status).toBe(200);
+    expect(staffPage).toContain('Your membership is active. If this address can receive a portal login, a sign-in link is on its way. Open it to set up your member portal login. If nothing arrives, contact the gym.');
+    expect(staffPage).toContain('Send the sign-in link again');
+
+    const resend = await f.post('/join/sign-in', undefined, staff.cookie);
+    expect(resend.status).toBe(200);
+    const staffResent = await resend.text();
+    expect(staffResent).toContain('If your membership email can receive a portal login, a new sign-in link is on its way. Use the newest email.');
+    expect(f.sent).toEqual([]);
+    await checkRefusals(2);
+
+    const ordinary = await f.submit([adult()], ordinaryEmail);
+    expect(ordinary.response.status).toBe(200);
+    await f.pay(ordinary.cookie);
+    expect(f.sent).toEqual([expect.objectContaining({ gymId: f.gymId, email: ordinaryEmail })]);
+    const ordinaryHome = (await f.joined()).find(h => h.email === ordinaryEmail)!;
+    const ordinaryActions = (await audits(ordinaryHome.id)).map(a => a.action);
+    expect(ordinaryActions.filter(action => action === 'household_user.invited')).toHaveLength(1);
+    expect(ordinaryActions).not.toContain('household_user.invite_refused');
+    const ordinaryReturn = await f.get('/join/return', ordinary.cookie);
+    expect(ordinaryReturn.status).toBe(staffReturn.status);
+    expect(await ordinaryReturn.text()).toBe(staffPage);
+    const ordinaryResend = await f.post('/join/sign-in', undefined, ordinary.cookie);
+    expect(ordinaryResend.status).toBe(resend.status);
+    expect(await ordinaryResend.text()).toBe(staffResent);
+    await checkRefusals(2);
+  } finally {
+    setLogSink(restore);
+  }
 });
