@@ -136,11 +136,12 @@ Run the following steps as root.
    tar -xzf plaingym-deploy-vX.Y.Z.tar.gz
    mkdir -p /opt/plaingym/postgres
    cp deploy/compose.yaml deploy/Caddyfile deploy/update.sh deploy/rotate-key.sh \
-     deploy/restore.sh deploy/lib.sh /opt/plaingym/
+     deploy/restore.sh deploy/lib.sh deploy/release-signing.pem /opt/plaingym/
    cp deploy/postgres/01-roles.sh /opt/plaingym/postgres/
    ```
 
-   `update.sh` (which needs `lib.sh` beside it) is how you [update](update-by-hand.md),
+   `update.sh` (which needs `lib.sh` and the release signing public key,
+   `release-signing.pem`, beside it) is how you [update](update-by-hand.md),
    `rotate-key.sh` (also with `lib.sh`) replaces the encryption key
    ([self-hosting.md](self-hosting.md#rotating-the-encryption-key)), and `restore.sh`
    runs a [command-line restore](restoring.md#restore-from-the-command-line).
@@ -181,10 +182,12 @@ described in [`deploy/README.md`](../deploy/README.md) and [configuration.md](co
 ### Adding the update timer
 
 This route installs no update timer, so patch releases don't install themselves (the
-Health page's **Automatic updates** tile says no check has run). To add it, copy
-`release-signing.pem` from `deploy/` into `/opt/plaingym` too when your copy of the
-deployment files has one, then, from the extracted `deploy/` folder (not `/opt/plaingym`,
-which has no `systemd/`), install the two units with the install directory filled in:
+Health page's **Automatic updates** tile says no check has run). To add it, install the two
+units from the extracted `deploy/` folder (not `/opt/plaingym`, which has no `systemd/`) with
+the install directory filled in. The timer verifies later releases with the
+`release-signing.pem` you copied in [step 1](#route-3-docker-compose-by-hand); if
+`/opt/plaingym/release-signing.pem` is missing (an install made without it),
+copy it there first, as [Before you update](update-by-hand.md#before-you-update) says:
 
 ```sh
 for unit in plaingym-update.service plaingym-update.timer; do

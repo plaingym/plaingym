@@ -19,7 +19,15 @@ You run these commands on the server over SSH ([how to log in](install.md#3-log-
    starts.
 4. **Note the version you run now.** The **System health** page shows it. Keep its image on
    the server until you are sure of the update: it is what a rollback goes back to.
-5. **Read the release's notes** on the [releases page](https://github.com/plaingym/plaingym/releases).
+5. **Check the release signing key (hand-made Compose installs).** `update.sh` verifies every
+   release with the trusted public key at `/opt/plaingym/release-signing.pem` and changes
+   nothing without it. If you installed with Docker Compose by hand and that file is missing,
+   copy the trusted `release-signing.pem` from the deployment files for your release source to
+   `/opt/plaingym/release-signing.pem`. Take it from the deployment files of the release you
+   installed from, or check it against the key your release source publishes, not from the
+   update you are about to apply. A fork installs its own key and sets `RELEASE_REPOSITORY`
+   ([the release signing key](update-reference.md#the-release-signing-key)).
+6. **Read the release's notes** on the [releases page](https://github.com/plaingym/plaingym/releases).
    A release whose "Upgrade notes" name manual steps needs them done as well.
 
 ## Update
