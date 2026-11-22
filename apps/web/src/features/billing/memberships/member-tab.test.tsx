@@ -459,6 +459,15 @@ it('closes a refused Freeze form and resumes with the refreshed revision and bil
   save();
   await waitFor(() => expect(client.call).toHaveBeenNthCalledWith(2, 'resumeMembership', { revision: 2, nextDueOn: '2026-12-01' }, { membershipId: membership.id }));
 });
+it('keeps the Freeze form open with the conflict text after a changed membership', async () => {
+  const client = start('admin');
+  fireEvent.click(await screen.findByRole('button', { name: 'Freeze' }));
+  fireEvent.change(screen.getByLabelText('Resume date (optional)'), { target: { value: '2026-12-01' } });
+  vi.mocked(client.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['membership_changed']));
+  save();
+  expect(await screen.findByText('This record or the household billing date changed. Reload and review before saving.')).toBeDefined();
+  expect(screen.getByLabelText('Resume date (optional)')).toHaveProperty('value', '2026-12-01');
+});
 it.each([
   { button: 'Resume', status: 'frozen', field: 'Next billing date', selector: 'input[name="date"]', value: '2026-12-01', operation: 'resumeMembership' },
   { button: 'Change price', status: 'active', field: /^Price/, selector: 'input[name="price"]', value: '50', operation: 'updateMembership' },
@@ -521,4 +530,28 @@ it('keeps the generic refusal for a conflict without a reason', async () => {
   save();
   expect(await screen.findByText('This change could not be saved. Review your entries and try again.')).toBeDefined();
   expect(screen.getByLabelText(/^Price/)).toHaveProperty('value', '50');
+});
+it.each([
+  { ...cancelMembership, row: { ...membership, revision: 3 } },
+  { ...cancelSwitch, row: { ...scheduledRow, revision: 3 } },
+])('closes a stale $open confirmation on a changed membership and retries with the reloaded revision', async ({ open, confirm, prompt, operation, row }) => {
+  const client = start('admin', { plans: [plan, premium], row });
+  const memberReads = () => vi.mocked(client.memberships).mock.calls.filter(([query]) => query.memberId === row.memberId).length;
+  fireEvent.click(await screen.findByRole('button', { name: open }));
+  expect(screen.getByText(prompt)).toBeDefined();
+  const reads = memberReads();
+  vi.mocked(client.memberships).mockResolvedValue([{ ...row, revision: 4, nextDueOn: '2027-01-01' }]);
+  vi.mocked(client.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['membership_changed']));
+  fireEvent.click(screen.getByRole('button', { name: confirm }));
+  const message = 'This record or the household billing date changed. Reload and review before saving.';
+  expect(await screen.findByText(message)).toBeDefined();
+  expect(client.call).toHaveBeenNthCalledWith(1, operation, { revision: 3 }, { membershipId: row.id });
+  expect(screen.queryByText(prompt)).toBeNull();
+  expect(screen.queryByRole('button', { name: confirm })).toBeNull();
+  await waitFor(() => expect(memberReads()).toBe(reads + 1));
+  expect(await screen.findByText('Jan 1, 2027')).toBeDefined();
+  expect(screen.getByText(message)).toBeDefined();
+  fireEvent.click(screen.getByRole('button', { name: open }));
+  fireEvent.click(await screen.findByRole('button', { name: confirm }));
+  await waitFor(() => expect(client.call).toHaveBeenNthCalledWith(2, operation, { revision: 4 }, { membershipId: row.id }));
 });

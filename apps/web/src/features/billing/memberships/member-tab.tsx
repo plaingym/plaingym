@@ -36,6 +36,7 @@ const refusalText: Record<string, string> = {
   plan_inactive: 'reason_plan_inactive',
 };
 const staleMembershipRefusals = new Set(['membership_status', 'membership_cancelled']);
+const staleCancellationRefusals = new Set(['membership_changed', ...staleMembershipRefusals]);
 const staleRefusals = new Set(['household_billing_date', 'household_join_date', ...staleMembershipRefusals]);
 type Action = 'activateMembership' | 'freezeMembership' | 'resumeMembership' | 'cancelMembership' | 'updateMembership' | 'cancelMembershipSwitch';
 type PlanRefresh = { before: Plan[]; after: Plan[] };
@@ -85,6 +86,12 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
             if (before && after) refresh = { before, after };
           }
           refused?.(code, refresh);
+          return false;
+        }
+        if (error.status === 409 && error.reason.includes('membership_changed')) {
+          setMessage(saveError(error));
+          refused?.('membership_changed');
+          void reload();
           return false;
         }
       }
@@ -198,8 +205,8 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
   const priceOnly = !!scheduled && row.scheduledPlanId === row.planId;
   const differentPlanPrice = !!plan && plan.currency === row.currency && plan.interval === row.interval && plan.amountCents !== row.amountCents;
   const closeStaleAction = (reason: string) => { if (staleMembershipRefusals.has(reason)) setAction(null); };
-  const closeStaleCancel = (reason: string) => { if (staleMembershipRefusals.has(reason)) setConfirm(false); };
-  const closeStaleUndo = (reason: string) => { if (staleMembershipRefusals.has(reason)) setConfirmUndo(false); };
+  const closeStaleCancel = (reason: string) => { if (staleCancellationRefusals.has(reason)) setConfirm(false); };
+  const closeStaleUndo = (reason: string) => { if (staleCancellationRefusals.has(reason)) setConfirmUndo(false); };
   async function edit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget);
     const entered = String(form.get('price') ?? '').trim();
