@@ -38,6 +38,7 @@ const refusalText: Record<string, string> = {
 const staleMembershipRefusals = new Set(['membership_status', 'membership_cancelled']);
 const staleRefusals = new Set(['household_billing_date', 'household_join_date', ...staleMembershipRefusals]);
 type Action = 'activateMembership' | 'freezeMembership' | 'resumeMembership' | 'cancelMembership' | 'updateMembership' | 'cancelMembershipSwitch';
+type PlanRefresh = { before: Plan[]; after: Plan[] };
 export function MembershipPanel({ gymId, memberId, manage, client = billingClient, discounts, now }: {
   gymId: string; memberId: string; manage: boolean; client?: BillingClient; discounts?: DiscountClient | undefined; now?: Date;
 }) {
@@ -56,7 +57,7 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
   async function reload() {
     await Promise.all([cache.invalidateQueries({ queryKey: key }), cache.invalidateQueries({ queryKey: ['members', gymId] })]);
   }
-  async function mutate(operation: Action | 'assignMembership', input: unknown, membershipId?: string, refused?: (reason: string) => void) {
+  async function mutate(operation: Action | 'assignMembership', input: unknown, membershipId?: string, refused?: (reason: string, refresh?: PlanRefresh) => void) {
     setBusy(true); setMessage(''); setReminder(false);
     try {
       await client.call(operation, input, membershipId ? { membershipId } : {});
@@ -75,9 +76,15 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
         const code = error.status === 409 && error.reason.find(reason => Object.hasOwn(refusalText, reason));
         if (code) {
           setMessage(text(refusalText[code]!));
-          refused?.(code);
           if (staleRefusals.has(code)) void reload();
-          if (code === 'plan_inactive') await cache.invalidateQueries({ queryKey: plansKey });
+          let refresh: PlanRefresh | undefined;
+          if (code === 'plan_inactive') {
+            const before = cache.getQueryData<Plan[]>(plansKey);
+            await cache.invalidateQueries({ queryKey: plansKey });
+            const after = cache.getQueryData<Plan[]>(plansKey);
+            if (before && after) refresh = { before, after };
+          }
+          refused?.(code, refresh);
           return false;
         }
       }
@@ -99,7 +106,7 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
       {(setup.isPending || plans.isPending || bootstrap.isPending) && <p role="status">{text('loading')}</p>}
       {bootstrap.isError && <Alert variant="error" role="alert">{text('error')} <Button variant="outline" onClick={() => void bootstrap.refetch()}>{text('retry')}</Button></Alert>}
       {setup.isError && <Alert variant="error" role="alert">{text('error')} <Button variant="outline" onClick={() => void setup.refetch()}>{text('retry')}</Button></Alert>}
-      {setup.data && plans.data && bootstrap.data && <AssignmentForm key={memberId} plans={plans.data.filter(plan => plan.active)}
+      {setup.data && plans.data && bootstrap.data && <AssignmentForm key={memberId} catalog={plans.data}
         gymId={gymId} discounts={discounts} householdId={setup.data.member.householdId} memberId={memberId} busy={busy} assign={(data, refused) => mutate('assignMembership', data, undefined, refused)}
         today={localDate(now ?? new Date(), bootstrap.data.gym.timezone)}
         billingDate={startsOn => householdBillingDate(startsOn, setup.data.household, setup.data.billingDay)}/>
@@ -107,19 +114,31 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
     </>}
   </section>;
 }
-function AssignmentForm({ plans, memberId, householdId, today, billingDate, busy, assign, gymId, discounts }: {
-  plans: Plan[]; memberId: string; householdId: string; today: string; billingDate: (startsOn: string) => string; busy: boolean;
-  assign: (data: unknown, refused: (reason: string) => void) => Promise<boolean>;
+function AssignmentForm({ catalog, memberId, householdId, today, billingDate, busy, assign, gymId, discounts }: {
+  catalog: Plan[]; memberId: string; householdId: string; today: string; billingDate: (startsOn: string) => string; busy: boolean;
+  assign: (data: unknown, refused: (reason: string, refresh?: PlanRefresh) => void) => Promise<boolean>;
   gymId: string; discounts?: DiscountClient | undefined;
 }) {
+  const plans = catalog.filter(item => item.active);
   const [chosen, setChosen] = useState(''), [formKey, setFormKey] = useState(0);
+  // `notice` asks staff to review the plan a refresh put in place of the one shown, and keeps the plan list that
+  // refresh produced. `explained` is the plan an inactive-plan refusal named, with the list its own refresh produced:
+  // a removal in exactly that list needs no second message, while any later refresh still gets the notice.
+  const [notice, setNotice] = useState<{ from: string; to: string; list: Plan[] }>();
+  const [explained, setExplained] = useState<{ planId: string; list: Plan[] }>();
   const [picked, setPicked] = useState<{ planId: string; value: MembershipDiscountSelection }>();
   // The billing date follows the start date until staff edit it.
   const [startsOn, setStartsOn] = useState(today), [nextDueOn, setNextDueOn] = useState<string | null>(null);
   const selectedPlan = plans.find(item => item.id === chosen);
   const plan = selectedPlan ?? plans[0], planId = plan?.id ?? '';
-  // Discard choices removed by a refresh, even if those plans later become active again.
-  if (chosen && !selectedPlan) setChosen('');
+  // Keep the plan shown, so a refresh that reorders the plans doesn't change it. A refresh that removes it
+  // shows the first active plan instead (or the empty state), and the removed plan stays discarded even if it
+  // becomes active again.
+  if (chosen !== planId) {
+    if (chosen && !selectedPlan) setNotice(plan && { from: chosen, to: planId, list: catalog });
+    setChosen(planId);
+  }
+  const showNotice = !!plan && notice?.to === planId && !(explained?.planId === notice.from && explained.list === notice.list);
   if (picked && !plans.some(item => item.id === picked.planId)) setPicked(undefined);
   const discount = picked?.planId === planId ? picked.value : undefined;
   const setDiscount = (value: MembershipDiscountSelection | undefined) => setPicked(value && { planId, value });
@@ -128,15 +147,26 @@ function AssignmentForm({ plans, memberId, householdId, today, billingDate, busy
     if (!plan) return;
     const form = new FormData(event.currentTarget);
     // The server takes only the household's billing date, so after a date refusal the field follows the reloaded date again.
-    const dateRefused = (reason: string) => { if (reason === 'household_billing_date' || reason === 'household_join_date') setNextDueOn(null); };
-    if (await assign({ memberId, householdId, planId, startsOn: form.get('startsOn'), nextDueOn: form.get('nextDueOn'), firstPeriod: form.get('firstPeriod'), ...(discount ? { discount } : {}) }, dateRefused)) {
+    const refused = (reason: string, refresh?: PlanRefresh) => {
+      if (reason === 'household_billing_date' || reason === 'household_join_date') setNextDueOn(null);
+      if (refresh) {
+        const isSubmittedPlanActive = (item: Plan) => item.id === planId && item.active;
+        if (refresh.before.some(isSubmittedPlanActive) && !refresh.after.some(isSubmittedPlanActive)) {
+          setExplained({ planId, list: refresh.after });
+        }
+      }
+    };
+    if (await assign({ memberId, householdId, planId, startsOn: form.get('startsOn'), nextDueOn: form.get('nextDueOn'), firstPeriod: form.get('firstPeriod'), ...(discount ? { discount } : {}) }, refused)) {
       setFormKey(value => value + 1); setStartsOn(today); setNextDueOn(null); setDiscount(undefined);
+      // A refresh during the save can create a new notice even if the picker returns to the submitted plan.
+      setNotice(current => current === notice ? undefined : current);
     }
   }
   return <form key={formKey} onSubmit={event => void submit(event)} className="min-w-0 space-y-4 rounded-lg border p-4">
     <h3 className="font-semibold">{text('assign')}</h3>
     {!plan ? <p>{text('noPlans')}</p> : <fieldset disabled={busy} className="grid min-w-0 gap-4 sm:grid-cols-2">
-      <Label className="block min-w-0 sm:col-span-2">{text('plan')}<select className={selectClass} value={planId} onChange={event => { setChosen(event.target.value); setDiscount(undefined); }}>{plans.map(item => <option key={item.id} value={item.id}>{item.name} · {money(item.amountCents, item.currency)}</option>)}</select></Label>
+      <Label className="block min-w-0 sm:col-span-2">{text('plan')}<select className={selectClass} value={planId} onChange={event => { setChosen(event.target.value); setDiscount(undefined); setNotice(undefined); setExplained(undefined); }}>{plans.map(item => <option key={item.id} value={item.id}>{item.name} · {money(item.amountCents, item.currency)}</option>)}</select></Label>
+      {showNotice && <Alert className="sm:col-span-2">{text('planReplaced', { plan: plan.name })}</Alert>}
       <p className="text-sm text-muted-foreground sm:col-span-2">{text('signupFee')}: {money(plan.signupFeeCents, plan.currency)} · {text('trialDays')}: {plan.trialDays}</p>
       <Label className="block min-w-0">{text('startsOn')}<Input name="startsOn" type="date" required value={startsOn}
         onChange={event => { setStartsOn(event.target.value); setNextDueOn(null); }}/></Label>
@@ -168,6 +198,8 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
   const priceOnly = !!scheduled && row.scheduledPlanId === row.planId;
   const differentPlanPrice = !!plan && plan.currency === row.currency && plan.interval === row.interval && plan.amountCents !== row.amountCents;
   const closeStaleAction = (reason: string) => { if (staleMembershipRefusals.has(reason)) setAction(null); };
+  const closeStaleCancel = (reason: string) => { if (staleMembershipRefusals.has(reason)) setConfirm(false); };
+  const closeStaleUndo = (reason: string) => { if (staleMembershipRefusals.has(reason)) setConfirmUndo(false); };
   async function edit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget);
     const entered = String(form.get('price') ?? '').trim();
@@ -194,7 +226,7 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
       {/* A price change a downgrade now left isn't cancelled (that would keep the new plan at the old price): Edit price replaces it. */}
       {manage && !priceOnly && !confirmUndo && <Button variant="outline" disabled={busy} onClick={() => setConfirmUndo(true)}>{text('cancelChange')}</Button>}
       {manage && !priceOnly && confirmUndo && <div className="space-y-2"><p>{text('confirmCancelChange')}</p><div className="flex flex-col gap-2 sm:flex-row">
-        <Button disabled={busy} onClick={async () => { if (await mutate('cancelMembershipSwitch', { revision: row.revision }, row.id)) setConfirmUndo(false); }}>{text('confirmCancelChangeButton')}</Button>
+        <Button disabled={busy} onClick={async () => { if (await mutate('cancelMembershipSwitch', { revision: row.revision }, row.id, closeStaleUndo)) setConfirmUndo(false); }}>{text('confirmCancelChangeButton')}</Button>
         <Button variant="outline" onClick={() => setConfirmUndo(false)}>{text('back')}</Button></div></div>}
     </div>}
     <dl className="grid min-w-0 grid-cols-1 gap-2 text-sm sm:grid-cols-2">
@@ -215,7 +247,7 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
         {row.status === 'frozen' && <Button variant="outline" onClick={() => { setAction('resume'); setConfirm(false); }}>{text('resume')}</Button>}
         <Button variant="outline" onClick={() => { setConfirm(true); setAction(null); }}>{text('cancel')}</Button>
       </div>
-      {confirm && <div className="space-y-2"><p>{text('confirmCancel')}</p><div className="flex flex-col gap-2 sm:flex-row"><Button onClick={async () => { if (await mutate('cancelMembership', { revision: row.revision }, row.id)) setConfirm(false); }}>{text('confirm')}</Button><Button variant="outline" onClick={() => setConfirm(false)}>{text('back')}</Button></div></div>}
+      {confirm && <div className="space-y-2"><p>{text('confirmCancel')}</p><div className="flex flex-col gap-2 sm:flex-row"><Button onClick={async () => { if (await mutate('cancelMembership', { revision: row.revision }, row.id, closeStaleCancel)) setConfirm(false); }}>{text('confirm')}</Button><Button variant="outline" onClick={() => setConfirm(false)}>{text('back')}</Button></div></div>}
       {action === 'edit' && <form noValidate onSubmit={event => void edit(event)} className="space-y-3">
         {formError && <Alert variant="error" focusOnReveal role="alert">{formError}</Alert>}
         {/* A text field, so an entry the browser can't parse as a number is refused rather than read as blank. */}

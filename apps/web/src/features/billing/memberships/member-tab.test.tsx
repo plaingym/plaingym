@@ -311,6 +311,8 @@ it('refreshes archived plans and retries with the displayed plan, keeping dates 
   await waitFor(() => expect(form.queryByRole('option', { name: /^Premium/ })).toBeNull());
   expect(await screen.findByText('That plan is no longer active.')).toBeDefined();
   expect(picker.value).toBe(plan.id);
+  // The refusal already explains the removal, so the form adds no replacement notice.
+  expect(form.queryByText(/form now shows/)).toBeNull();
   expect(form.getByLabelText('Discount')).toHaveProperty('value', 'none');
   expect(form.queryByLabelText('Discount code')).toBeNull();
   expect(nextDueOn.value).toBe('2026-11-15');
@@ -320,6 +322,114 @@ it('refreshes archived plans and retries with the displayed plan, keeping dates 
     startsOn: '2026-10-26', nextDueOn: '2026-11-15', firstPeriod: 'prorate_now',
   }, {}));
   expect(await screen.findByText('Membership saved.')).toBeDefined();
+});
+const plansKey = ['billing', id(1), 'plans'];
+const beginner: Plan = { ...plan, id: id(8), name: 'Beginner', amountCents: 5000 };
+async function assignmentForm(plans: Plan[]) {
+  const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = start('admin', { plans, cache });
+  const assign = await screen.findByRole('button', { name: 'Assign a plan' });
+  const form = within(assign.closest('form')!);
+  fireEvent.change(form.getByLabelText('Discount'), { target: { value: 'code' } });
+  fireEvent.change(form.getByLabelText('Discount code'), { target: { value: 'WELCOME' } });
+  const refresh = async (next: Plan[]) => {
+    vi.mocked(client.plans).mockResolvedValue(next);
+    await act(async () => { await cache.invalidateQueries({ queryKey: plansKey }); });
+  };
+  return { client, assign, form, picker: form.getByLabelText<HTMLSelectElement>('Plan'), refresh };
+}
+it('keeps the shown default plan and its discount when a refresh reorders the plans', async () => {
+  const { client, assign, form, picker, refresh } = await assignmentForm([plan, premium]);
+  expect(picker.value).toBe(plan.id);
+  await refresh([beginner, premium, plan]);
+  await waitFor(() => expect(within(picker).getAllByRole('option')[0]!.textContent).toMatch(/^Beginner/));
+  expect(picker.value).toBe(plan.id);
+  expect(form.getByLabelText<HTMLInputElement>('Discount code').value).toBe('WELCOME');
+  expect(form.queryByText(/form now shows/)).toBeNull();
+  fireEvent.click(assign);
+  await waitFor(() => expect(client.call).toHaveBeenCalledWith('assignMembership', expect.objectContaining({ planId: plan.id, discount: { code: 'WELCOME' } }), {}));
+});
+it('shows an active replacement with a notice when a refresh removes the shown plan, and clears the notice on a selection', async () => {
+  const { client, assign, form, picker, refresh } = await assignmentForm([plan, premium, beginner]);
+  await refresh([premium, { ...plan, active: false }, beginner]);
+  expect(await form.findByText('The plan shown before is no longer active, so the form now shows Premium. Review the plan and discount before assigning.')).toBeDefined();
+  expect(picker.value).toBe(premium.id);
+  expect(form.queryByRole('option', { name: /^Unlimited classes/ })).toBeNull();
+  expect(form.getByLabelText('Discount')).toHaveProperty('value', 'none');
+  expect(form.queryByLabelText('Discount code')).toBeNull();
+  vi.mocked(client.call).mockRejectedValueOnce(new Error('Offline'));
+  fireEvent.click(assign);
+  await waitFor(() => expect(client.call).toHaveBeenCalledOnce());
+  const sent = vi.mocked(client.call).mock.calls[0]![1] as Record<string, unknown>;
+  expect(sent.planId).toBe(premium.id);
+  expect(sent).not.toHaveProperty('discount');
+  await form.findByRole('button', { name: 'Assign a plan' });
+  // A failed save leaves the notice until staff choose a plan.
+  expect(form.getByText(/form now shows Premium/)).toBeDefined();
+  fireEvent.change(picker, { target: { value: beginner.id } });
+  expect(form.queryByText(/form now shows/)).toBeNull();
+  expect(picker.value).toBe(beginner.id);
+});
+it.each([
+  { restoresPlan: false, shown: premium },
+  { restoresPlan: true, shown: plan },
+])('keeps the latest replacement notice across an earlier save (submitted plan restored: $restoresPlan)', async ({ restoresPlan, shown }) => {
+  const { client, assign, form, refresh } = await assignmentForm([plan, premium]);
+  const reloaded = Promise.withResolvers<Membership[]>();
+  vi.mocked(client.memberships).mockReturnValue(reloaded.promise);
+  fireEvent.click(assign);
+  await waitFor(() => expect(client.call).toHaveBeenCalledWith('assignMembership', expect.objectContaining({ planId: plan.id, discount: { code: 'WELCOME' } }), {}));
+  await waitFor(() => expect(vi.mocked(client.memberships).mock.results.some(result => result.value === reloaded.promise)).toBe(true));
+  await refresh([premium, { ...plan, active: false }]);
+  expect(await form.findByText(/form now shows Premium/)).toBeDefined();
+  if (restoresPlan) {
+    await refresh([plan, { ...premium, active: false }]);
+    expect(await form.findByText(/form now shows Unlimited classes/)).toBeDefined();
+  }
+  reloaded.resolve([membership]);
+  expect(await screen.findByText('Membership saved.')).toBeDefined();
+  // The saved form resets into a new element, usable again once the save ends.
+  const usable = within((await screen.findByRole('button', { name: 'Assign a plan' })).closest('form')!);
+  expect(usable.getByLabelText<HTMLSelectElement>('Plan').value).toBe(shown.id);
+  expect(usable.getByText(`The plan shown before is no longer active, so the form now shows ${shown.name}. Review the plan and discount before assigning.`)).toBeDefined();
+});
+it.each(['fails', 'returns the same plans'])('keeps a background replacement notice when a later refusal reload %s', async outcome => {
+  const { client, assign, form, picker, refresh } = await assignmentForm([plan, premium]);
+  const assignment = Promise.withResolvers<never>();
+  vi.mocked(client.call).mockReturnValueOnce(assignment.promise);
+  fireEvent.click(assign);
+  await waitFor(() => expect(client.call).toHaveBeenCalledOnce());
+
+  await refresh([premium, { ...plan, active: false }]);
+  expect(await form.findByText(/form now shows Premium/)).toBeDefined();
+  const reads = vi.mocked(client.plans).mock.calls.length;
+  if (outcome === 'fails') vi.mocked(client.plans).mockRejectedValueOnce(new Error('Offline'));
+  assignment.reject(new ApiError(409, 'conflict', ['plan_inactive']));
+
+  expect(await screen.findByText('That plan is no longer active.')).toBeDefined();
+  await form.findByRole('button', { name: 'Assign a plan' });
+  expect(vi.mocked(client.plans).mock.calls.length).toBeGreaterThan(reads);
+  expect(picker.value).toBe(premium.id);
+  expect(form.getByText(/form now shows Premium/)).toBeDefined();
+});
+it('limits an inactive-plan refusal to its own refresh, so a later removal still shows the notice', async () => {
+  const { client, assign, form, picker, refresh } = await assignmentForm([plan, premium]);
+  vi.mocked(client.plans).mockRejectedValueOnce(new Error('Offline'));
+  vi.mocked(client.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['plan_inactive']));
+  fireEvent.click(assign);
+  expect(await screen.findByText('That plan is no longer active.')).toBeDefined();
+  // The refresh failed, so the list and the shown plan stay as they were.
+  expect(await screen.findByText('Could not load memberships. Please try again.')).toBeDefined();
+  await form.findByRole('button', { name: 'Assign a plan' });
+  expect(picker.value).toBe(plan.id);
+  // Another membership action replaces the refusal message.
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel membership' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm cancellation' }));
+  expect(await screen.findByText('Membership saved.')).toBeDefined();
+  expect(screen.queryByText('That plan is no longer active.')).toBeNull();
+  await refresh([premium, { ...plan, active: false }]);
+  expect(await form.findByText('The plan shown before is no longer active, so the form now shows Premium. Review the plan and discount before assigning.')).toBeDefined();
+  expect(picker.value).toBe(premium.id);
 });
 it('shows the existing empty state when the last active plan is archived', async () => {
   const client = start('admin');
@@ -375,6 +485,34 @@ it('explains when a membership has already been cancelled', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Confirm cancellation' }));
   expect(await screen.findByText("This membership has been cancelled, so it can't be changed.")).toBeDefined();
   expect(client.call).toHaveBeenCalledWith('cancelMembership', { revision: membership.revision }, { membershipId: membership.id });
+});
+const scheduledRow: Membership = { ...membership, scheduledPlanId: premium.id, scheduledAmountCents: premium.amountCents, scheduledInterval: 'monthly', scheduledOn: '2026-12-01' };
+const cancelMembership = { open: 'Cancel membership', confirm: 'Confirm cancellation', prompt: 'Cancel this membership? The commitment date stays on record.', operation: 'cancelMembership' };
+const cancelSwitch = { open: 'Cancel change', confirm: 'Confirm: cancel change', prompt: 'Cancel the scheduled change? The membership keeps its current plan and price.', operation: 'cancelMembershipSwitch' };
+const statusChanged = { reason: 'membership_status', message: "This membership's status has changed. The tab now shows its current status.",
+  reloaded: { ...membership, status: 'frozen' as const, frozenAt: createdAt, revision: 2 }, shown: /^Frozen/ };
+const cancelled = { reason: 'membership_cancelled', message: "This membership has been cancelled, so it can't be changed.",
+  reloaded: { ...membership, status: 'cancelled' as const, cancelledAt: createdAt, revision: 2 }, shown: /^Cancelled/ };
+it.each([
+  { ...cancelMembership, ...statusChanged }, { ...cancelMembership, ...cancelled },
+  { ...cancelSwitch, ...statusChanged }, { ...cancelSwitch, ...cancelled },
+])('closes a stale $open confirmation after $reason while the membership reloads', async ({ open, confirm, prompt, operation, reason, message, reloaded, shown }) => {
+  const client = start('admin', { plans: [plan, premium], row: scheduledRow });
+  fireEvent.click(await screen.findByRole('button', { name: open }));
+  expect(screen.getByText(prompt)).toBeDefined();
+  const reads = vi.mocked(client.memberships).mock.calls.length;
+  const refreshed = Promise.withResolvers<Membership[]>();
+  vi.mocked(client.memberships).mockReturnValue(refreshed.promise);
+  vi.mocked(client.call).mockRejectedValueOnce(new ApiError(409, 'conflict', [reason]));
+  fireEvent.click(screen.getByRole('button', { name: confirm }));
+  expect(await screen.findByText(message)).toBeDefined();
+  expect(client.call).toHaveBeenCalledWith(operation, { revision: 1 }, { membershipId: membership.id });
+  expect(screen.queryByText(prompt)).toBeNull();
+  expect(screen.queryByRole('button', { name: confirm })).toBeNull();
+  expect(vi.mocked(client.memberships).mock.calls.length).toBeGreaterThan(reads);
+  refreshed.resolve([reloaded]);
+  expect(await screen.findByText(shown)).toBeDefined();
+  expect(screen.getByText(message)).toBeDefined();
 });
 it('keeps the generic refusal for a conflict without a reason', async () => {
   start('admin', { call: async () => { throw new ApiError(409, 'conflict', []); } });

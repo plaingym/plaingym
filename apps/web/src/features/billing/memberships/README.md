@@ -32,10 +32,21 @@ that must bill on its start date, a changed status or a cancelled membership,
 the tab reloads its membership data. After either billing-date refusal, the
 assignment form shows the reloaded household date in place of a typed one and
 keeps the rest of the draft. A changed status or cancellation closes the
-refused Freeze, Resume or Change price form. If an assignment is refused
-because the plan is inactive, the picker reloads. If the selected plan is gone,
-the form selects the first active plan, or shows the empty state when none
-remain. The discount for the removed plan is cleared.
+refused Freeze, Resume or Change price form, or the refused Cancel membership or
+Cancel scheduled change confirmation, and its message stays shown.
+
+The assignment form keeps the plan it shows, including the first plan it showed
+by default, when a refresh reorders the plan list, so its discount stays chosen.
+If an assignment is refused because the plan is inactive, the picker reloads.
+If the shown plan is gone, the form selects the first active plan, or shows the
+empty state when none remain. The discount for the removed plan is cleared.
+When a background refresh removed the plan, a notice beside the picker names the
+replacement and asks staff to review it. If the reload after an inactive-plan
+refusal removes the plan, the refusal message explains the replacement. A
+background refresh that removes the plan before or after that reload still
+shows the notice. Choosing a plan clears the notice. A successful assignment
+clears the notice shown at submission. Any replacement notice that appeared
+during the save stays visible, even if the picker returned to the submitted plan.
 
 Owners and admins see the membership's applied discount snapshot and billing
 cycles left (or an ongoing duration). They can add or replace a price discount,
