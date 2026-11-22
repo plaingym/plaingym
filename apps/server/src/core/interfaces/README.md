@@ -46,12 +46,15 @@ are implemented here.
   `missingRefunds` lists processor IDs of pending refunds that the processor reported
   missing. The transition releases them newest first, only as needed, and queues
   a staff notice for each release. Unread processor rows still reserve their amounts and
-  force a retry if the external refund needs more room after those releases. A later
-  verified success for a refund released as missing keeps the row failed and the invoice
-  unchanged, and queues one staff notice for manual reconciliation. The real transition
-  and fake each queue one staff follow-up on the first matching failure after that success,
-  keeping the refund and invoice unchanged. The real transition records the report once,
-  skips any found notice still queued and asks staff to recheck the payment.
+  force a retry if the external refund needs more room after those releases. In the real
+  transition, a verified failure that commits first suppresses a later success for that
+  refund and leaves the original missing notice eligible to send. The failure can come
+  from the refund's own report or from a verified failed read collected for another refund.
+  When verified success commits first, it queues one staff notice for manual reconciliation
+  and leaves the refund and invoice unchanged. The real transition and fake each queue one
+  staff follow-up on the first matching failure after that success, keeping the refund and
+  invoice unchanged. The real transition records the failure once, skips any found notice
+  still queued and asks staff to recheck the payment.
   The fake's `seedRefund` accepts persisted provenance for fixtures. Its plain `refund`
   sends a staff notice when it fails a reservation without a processor ID if the reservation
   is marked as a duplicate or a system actor releases it past `refundRetryWindowMs` (23 hours,
