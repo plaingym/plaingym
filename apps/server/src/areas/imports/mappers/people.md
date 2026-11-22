@@ -60,10 +60,10 @@ announcements consent in the same transaction. Unchanged numbers, including
 formatting-only edits, keep consent when it belongs to that number. A
 formatting edit also clears stale consent whose stored normalized number
 differs, so normalizing cannot revive it; blank or unmapped phones preserve the
-existing phone and consent. Consent changes are audited with the `staff` source
-and contain the consent kind, time and source, never the phone. Other audit
-payloads contain only the import run ID, with no names, contact details or
-processor IDs. Existing household names and contact details, including the
+existing phone and consent. Consent changes are audited with the `import`
+change source and contain the consent kind, time and source, never the phone.
+Other audit payloads contain only the import run ID, with no names, contact
+details or processor IDs. Existing household names and contact details, including the
 billing phone and its notices consent, are preserved; updates can change billing
 day or fill a missing customer ID. A customer or payment
 method already owned by another household is rejected. Existing saved methods,

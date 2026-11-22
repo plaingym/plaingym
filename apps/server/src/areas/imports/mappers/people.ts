@@ -290,7 +290,7 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
         assertRevised(await tx.update(members).set({ ...changes, revision: guard.next,
           ...(changedPhone ? { phoneE164, ...(changedNumber ? clearedMemberSms : {}) } : {}) })
           .where(and(eq(members.id, memberId), guard.matches, isNull(members.anonymizedAt))).returning({ id: members.id }));
-        if (changedNumber) await auditSmsCleared(tx, context, 'member', memberId, current, 'staff', now);
+        if (changedNumber) await auditSmsCleared(tx, context, 'member', memberId, current, 'import', now);
         await audit('member.updated', 'member', memberId);
       }
     } else {

@@ -17,6 +17,7 @@ import { createImportPipeline } from '../pipeline.js';
 import { createPeopleMapper, peopleMapper } from './people.js';
 import { familyExport, minimalExport } from './people.fixtures.js';
 import type { MapperContext } from './registry.js';
+import type { SmsChangeSource, SmsSource } from '../../members/member-write.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
 const clock = new TestClock('2026-10-22T12:00:00Z');
@@ -343,7 +344,7 @@ describe('people mapper through the real import pipeline', () => {
     ]) expect(audits).toContainEqual(expect.objectContaining({ gymId: gymA, actorKind: 'system', targetType, targetId,
       action: targetType + '.sms_consent_changed', occurredAt: clock.now(),
       before: { kind, at: clock.now().toISOString(), source: consentSource },
-      after: { kind, at: null, source: null, changeSource: 'staff' } }));
+      after: { kind, at: null, source: null, changeSource: 'import' } }));
     const auditData = JSON.stringify(saved.audits.map((event) => [event.before, event.after]));
     for (const value of [phone, '020 7946 0018', '+442079460018', normalized].filter((value) => value !== null)) expect(auditData).not.toContain(value);
     // Returning to the previously consented number cannot revive its consent.
@@ -353,6 +354,13 @@ describe('people mapper through the real import pipeline', () => {
     expect(restored.households).toEqual(before.households);
     expect(restored.audits.filter((event) => event.action.endsWith('.sms_consent_changed'))).toHaveLength(2);
     expect(await snapshot(gymB)).toEqual(otherGym);
+  });
+  it('accepts import only as an audit change source, never as a consent-column source', () => {
+    const changeSource: SmsChangeSource = 'import';
+    // @ts-expect-error an import is audited, never written to a consent column
+    const consentSource: SmsSource = 'import';
+    expect(changeSource).toBe('import');
+    expect(consentSource).toBe('import');
   });
   it.each(['020 7946 0018', '02079460018', '+44 (20) 7946 0018', '', null])('keeps SMS consent for an unchanged, reformatted or absent phone: %s', async (phone) => {
     const { home, member } = await consentedContacts();

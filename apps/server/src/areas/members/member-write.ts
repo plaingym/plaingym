@@ -7,6 +7,7 @@ import type { MutationContext } from '../../core/interfaces/common.js';
 import { logError } from '../../core/log.js';
 
 export type SmsSource = 'staff' | 'portal' | 'join';
+export type SmsChangeSource = SmsSource | 'import';
 export type SmsColumns = { phoneE164: string | null; smsNoticesConsentAt: Date | null; smsNoticesConsentSource: string | null;
   smsAnnouncementsConsentAt?: Date | null; smsAnnouncementsConsentSource?: string | null };
 export const clearedMemberSms = { smsNoticesConsentAt: null, smsNoticesConsentSource: null,
@@ -46,7 +47,7 @@ export function smsState(row: SmsColumns, phone: string | null, country?: string
 /** A consent audit holds the choice, time and source, never either form of the phone. */
 export async function auditSmsConsent(tx: Transaction, context: MutationContext, targetType: 'member' | 'household', targetId: string,
   kind: 'notices' | 'announcements', before: { at: Date | null; source: string | null }, after: { at: Date | null; source: string | null },
-  source: SmsSource, now: Date) {
+  source: SmsChangeSource, now: Date) {
   await writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
     ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
     action: targetType + '.sms_consent_changed', targetType, targetId, occurredAt: now,
@@ -54,7 +55,7 @@ export async function auditSmsConsent(tx: Transaction, context: MutationContext,
     after: { kind, at: after.at?.toISOString() ?? null, source: after.source, changeSource: source } });
 }
 export async function auditSmsCleared(tx: Transaction, context: MutationContext, type: 'member' | 'household', id: string,
-  row: SmsColumns, source: SmsSource, now: Date) {
+  row: SmsColumns, source: SmsChangeSource, now: Date) {
   if (row.smsNoticesConsentAt) await auditSmsConsent(tx, context, type, id, 'notices', { at: row.smsNoticesConsentAt, source: row.smsNoticesConsentSource }, { at: null, source: null }, source, now);
   if (row.smsAnnouncementsConsentAt) await auditSmsConsent(tx, context, type, id, 'announcements',
     { at: row.smsAnnouncementsConsentAt ?? null, source: row.smsAnnouncementsConsentSource ?? null }, { at: null, source: null }, source, now);
