@@ -67,9 +67,11 @@ export async function accepted(tx: Transaction, paymentId: string): Promise<bool
   // Payments from an older release are normal payments unless explicitly identified as duplicates.
   return (event?.after as { accepted?: boolean } | undefined)?.accepted !== false;
 }
-export async function effect(tx: Transaction, context: MutationContext, clock: Clock, work: TransitionEffect) {
+export async function effect(tx: Transaction, context: MutationContext, clock: Clock, work: TransitionEffect,
+  id = uuidv7()): Promise<string> {
   // TODO: replace the append-only audit outbox with a dedicated effect table.
-  await audit(tx, context, clock, effectCreated, 'invoice_effect', uuidv7(), work);
+  await audit(tx, context, clock, effectCreated, 'invoice_effect', id, work);
+  return id;
 }
 /** Durable reversal command, independent of the human-readable refund audit snapshot. */
 export async function hasCreditReversal(tx: Transaction, invoiceId: string) {

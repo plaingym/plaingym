@@ -326,7 +326,13 @@ goes. Each such release records the row `failed` and queues one `notice: 'refund
 staff notice naming the invoice and amount; a replayed webhook finds the row failed and
 queues none. A missing row the external refund fits beside stays `pending`. A read that
 throws fails the whole write, so a network error never releases anything.
-The release stands if Stripe later reports that refund `succeeded`: the row stays `failed`
+
+New failure audits on the refund record `releasedMissing` and, for a release as missing,
+the notice's `missingEffectId`. Success and verified failure reports check the found and
+failure-first markers before looking up provenance. They read the indexed refund audits
+for new failures and search for the matching `refund_missing` effect for older failures.
+
+A release as missing stands if Stripe later reports the released refund `succeeded`: the row stays `failed`
 and the invoice keeps its status and refunded total, even when the two refunds together
 exceed the payment. The first such report writes a `billing.refund.missing_found` audit,
 queues one `notice: 'refund_found'` staff notice naming the invoice and amount, and logs
@@ -339,7 +345,9 @@ due. Billing still leaves the row `failed` and the invoice, its refunded total, 
 and credits as they are; the first such report writes a `billing.refund.missing_found_failed`
 audit, queues one `notice: 'refund_found_failed'` staff notice in the same transaction, and
 logs `billing.refunds.missing_found_failed` at warn with the gym, invoice and refund row IDs.
-The audit prevents duplicate follow-ups on replay. A failure needs a `billing.refund.missing_found`
+Both of these warnings are logged after the transaction commits. A rolled-back transaction emits
+neither of them (`billing.refunds.unverified`, below, reports a refusal and is logged before it rolls back). The audit remains the durable record if the process exits before logging,
+and it prevents duplicate follow-ups and warnings on replay. A failure needs a `billing.refund.missing_found`
 audit to create the follow-up, and a cancellation never creates it.
 The webhook and reconciliation writers read Stripe before they take the invoice lock, so two
 reads of the same released refund can commit in either order. A verified `failed` report

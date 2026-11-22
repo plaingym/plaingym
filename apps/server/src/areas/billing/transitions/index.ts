@@ -10,9 +10,9 @@ import type { ChargeOutcome } from '../../../infra/payments/index.js';
 import type { PaymentsResolver } from '../webhooks/inbox.js';
 import { isAssignmentInvoice } from '../assignment-invoices.js';
 import { bankAttemptsExhausted, invoiceLateProcessing, invoiceProcessing, processingIntents, retriesStopped, revokeBankMethod } from './bank.js';
-import { logError } from '../../../core/log.js';
+import { logError, logWarn } from '../../../core/log.js';
 import { readBillingRules } from '../../settings/settings.js';
-import { applyProcessorRefund, applyRefund } from './refunds.js';
+import { applyProcessorRefund, applyRefund, type RefundWarning } from './refunds.js';
 import { createInvoiceVoid } from './void.js';
 import { latestTestSwitchId, stripeWriteScope } from '../stripe-writes.js';
 import { accepted, audit, canceledAttempt, confirmAbandoned, effect, lockInvoice, paymentRecorded, recorded, result, snapshot, terminal,
@@ -215,16 +215,24 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Billi
       });
     },
     async refund(context: MutationContext, request: RefundTransition) {
-      return scope(context.gymId, async tx => {
+      let warnings: RefundWarning[] = [];
+      const value = await scope(context.gymId, async tx => {
+        warnings = [];
         const invoice = await lockInvoice(tx, request.invoiceId);
-        return applyRefund(tx, context, clock, invoice, request);
+        return applyRefund(tx, context, clock, invoice, request, {}, warnings);
       });
+      for (const { event, fields } of warnings) logWarn(event, fields);
+      return value;
     },
     async processorRefund(context: MutationContext, request: ProcessorRefundTransition) {
-      return scope(context.gymId, async tx => {
+      let warnings: RefundWarning[] = [];
+      const value = await scope(context.gymId, async tx => {
+        warnings = [];
         const invoice = await lockInvoice(tx, request.invoiceId);
-        return applyProcessorRefund(tx, context, clock, invoice, request);
+        return applyProcessorRefund(tx, context, clock, invoice, request, warnings);
       });
+      for (const { event, fields } of warnings) logWarn(event, fields);
+      return value;
     },
   };
   async function failedInvoice(tx: Transaction, context: MutationContext, invoice: InvoiceRow, attemptId?: string,

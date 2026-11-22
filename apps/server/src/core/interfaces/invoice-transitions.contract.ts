@@ -256,6 +256,26 @@ export function invoiceTransitionsContract(name: string, create: (options?: { pa
       expect((await h.transitions.processorRefund(h.context, failed)).outcome).toBe('ignored');
       expect(await h.read()).toEqual(afterFailure);
     });
+    it('notifies staff when a separate refund carries a failed read for a found refund', async () => {
+      const h = await create(), missing = await missingRow(h);
+      await h.transitions.processorRefund(h.context, { ...processor(h, { amount: 9000 }), missingRefunds: ['re_missing'] });
+      const found = processor(h, { id: 're_missing', amount: 2000 });
+      expect((await h.transitions.processorRefund(h.context, found)).outcome).toBe('ignored');
+      const before = await h.read();
+      const failed = processor(h, { id: 're_missing', amount: 2000, status: 'failed' }).processorRefund;
+      const separate = processor(h, { id: 're_separate', amount: 1000 }, [failed]);
+      expect((await h.transitions.processorRefund(h.context, separate)).outcome).toBe('applied');
+      const after = await h.read();
+      expect(after.refunds.filter(row => row.processorId === 're_separate')).toEqual([
+        expect.objectContaining({ refundId: separate.refundId, status: 'succeeded', amountCents: 1000 }),
+      ]);
+      expect(after.refunds.find(row => row.refundId === missing.refundId)?.status).toBe('failed');
+      expect(after.invoice).toBe('refunded');
+      expect(count(after.effects, 'staff_notice')).toBe(count(before.effects, 'staff_notice') + 1);
+      expect((await h.transitions.processorRefund(h.context, separate)).outcome).toBe('ignored');
+      expect((await h.transitions.processorRefund(h.context, found)).outcome).toBe('ignored');
+      expect(await h.read()).toEqual(after);
+    });
     // `failed` is reported before any success; `canceled` is reported after a success.
     it.each(['failed', 'canceled'] as const)(
       'adds no staff follow-up for a %s report on a refund released as missing (failure before success, cancellation after success)', async status => {
