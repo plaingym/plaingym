@@ -8,12 +8,6 @@ import { App } from '../../app.js';
 import { createAppRouter } from '../../app/router.js';
 import { createShellServices, type ShellBootstrap, type ShellServices } from '../../app/services.js';
 
-// The root shell asks the server whether this is a demo install; these are ordinary gyms.
-vi.hoisted(() => {
-  const fetcher = globalThis.fetch;
-  vi.stubGlobal('fetch', (...args: Parameters<typeof fetch>) => args[0] === '/api/demo'
-    ? Promise.resolve(Response.json({ data: { mode: 'disabled' } })) : fetcher(...args));
-});
 const gym = { id: '01900000-0000-7000-8000-000000000001', name: 'Training Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] };
 const anonymous = (login: ShellBootstrap['login']): ShellBootstrap => ({ gym, session: null, login });
 const googleUrl = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=client&state=s';
@@ -26,6 +20,11 @@ function login(service: ShellServices, path = '/login') {
 }
 let assign: ReturnType<typeof vi.fn>;
 beforeEach(() => {
+  // The root shell asks the server whether this is a demo install, and login waits for the answer; these are ordinary gyms.
+  // Stubbed for every test, since afterEach unstubs all globals.
+  const fetcher = globalThis.fetch;
+  vi.stubGlobal('fetch', (...args: Parameters<typeof fetch>) => args[0] === '/api/demo'
+    ? Promise.resolve(Response.json({ data: { mode: 'disabled' } })) : fetcher(...args));
   vi.stubGlobal('__SOURCE_URL__', 'https://example.org/source/v1'); vi.stubGlobal('scrollTo', vi.fn());
   assign = vi.fn();
   vi.stubGlobal('location', { ...window.location, origin: 'https://gym.example.org', assign });

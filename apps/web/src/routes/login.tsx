@@ -13,7 +13,7 @@ import { ApiError } from '../lib/api.js';
 import { t } from '../lib/i18n.js';
 import { bootstrapKey, useBootstrap, useShellServices } from '../app/context.js';
 import { sessionDestination } from '../app/services.js';
-import { useDemoMode } from '../features/demo/notice.js';
+import { useDemoDiscoveryStatus, useDemoMode } from '../features/demo/notice.js';
 import { DemoShowcaseSignIn, DemoSignInLink } from '../features/demo/sign-in-link.js';
 /** Messages for the error codes a sign-in returns with: Google's, and those of an email sign-in link (Better Auth's magic-link
  * verify codes). Any other code gets the generic message. */
@@ -26,6 +26,7 @@ const returnedErrors: Record<string, string> = {
 };
 function LoginPage() {
   const showcase = useDemoMode() === 'showcase';
+  const discovery = useDemoDiscoveryStatus();
   const bootstrap = useBootstrap();
   const services = useShellServices();
   const queryClient = useQueryClient();
@@ -85,6 +86,8 @@ function LoginPage() {
     <ErrorState message={t('shell/shell:loadFailed')} onRetry={() => void bootstrap.refetch()} /></main>;
   const destination = bootstrap.data.session && sessionDestination(bootstrap.data.session);
   if (destination) return <Navigate to={destination} replace />;
+  // Until demo discovery answers, a showcase can't be told from a gym, and a showcase must never show the gym's sign-in form.
+  if (discovery === 'pending') return <main id="main-content" className="mx-auto w-full max-w-md p-4 sm:p-6"><LoadingState /></main>;
   const methods = bootstrap.data.login;
   const googleOn = Boolean(methods.google && services.signInWithGoogle);
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -100,7 +103,8 @@ function LoginPage() {
     <Card className="w-full min-w-0 max-w-md space-y-6 p-4 sm:p-6">
       <PageHeader title={t('shell/shell:title')} description={bootstrap.data.gym.name} />
       {returnedError && !sent && <Alert variant="error" focusOnReveal>{t(returnedError)}</Alert>}
-      {showcase ? <DemoShowcaseSignIn /> : <>
+      {/* A failed discovery shows no sign-in methods: the demo shell above shows its error and Retry. */}
+      {discovery === 'error' ? null : showcase ? <DemoShowcaseSignIn /> : <>
         {googleOn && !sent && <div className="space-y-4">
           <Button type="button" variant="outline" className="w-full" disabled={googleBusy || login.isPending} onClick={() => { google.mutate(); }}>
             {t(googleBusy ? 'auth/google:pending' : 'auth/google:signIn')}</Button>

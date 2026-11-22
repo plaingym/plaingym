@@ -8,8 +8,11 @@ import { App } from '../app.js';
 import { createAppRouter } from '../app/router.js';
 import type { ShellBootstrap, ShellServices } from '../app/services.js';
 
-const discovery = vi.hoisted(() => ({ mode: 'disabled' as 'disabled' | 'sandbox' | 'showcase', link: (_body: unknown) => Response.json({}, { status: 404 }) }));
+const discovery = vi.hoisted(() => ({ mode: 'disabled' as 'disabled' | 'sandbox' | 'showcase', link: (_body: unknown) => Response.json({}, { status: 404 }),
+  // Replaces the answer for the current mode, to hold or fail discovery.
+  respond: undefined as undefined | (() => Response | Promise<Response>) }));
 const fetcher = vi.hoisted(() => vi.fn(async (path: string, init?: RequestInit) => {
+  if (path === '/api/demo' && discovery.respond) return discovery.respond();
   if (path === '/api/demo') return discovery.mode !== 'disabled'
     ? Response.json({ data: { mode: discovery.mode, expiresAt: new Date(Date.now() + 3600_000).toISOString(), join: discovery.mode === 'sandbox' } })
     : Response.json({ data: { mode: 'disabled' } });
@@ -33,7 +36,7 @@ beforeEach(() => {
   assign = vi.fn(); vi.stubGlobal('location', { ...window.location, assign });
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.stubGlobal('fetch', fetcher); fetcher.mockClear(); discovery.mode = 'disabled';
-  discovery.link = () => Response.json({}, { status: 404 }); });
+  discovery.link = () => Response.json({}, { status: 404 }); discovery.respond = undefined; });
 
 describe('a sign-in that came back with an error', () => {
   it.each([true, false])('shows forgotten-password help only when password login is available: %s', async password => {
@@ -189,6 +192,68 @@ describe('demo sign-in choices', () => {
     await screen.findByLabelText('Email address');
     expect(screen.getByRole('button', { name: 'Email me a sign-in link' })).toBeDefined();
     expect(screen.queryByText(showcaseMessage)).toBeNull();
+  });
+});
+
+describe('waiting for demo discovery before offering sign-in methods', () => {
+  const showcaseMessage = "This shared demo doesn't send sign-in emails. Choose who to sign in as, or open the Demo menu above.";
+  const withGoogle: ShellBootstrap = { ...anonymous, login: { password: true, magicLink: true, google: true } };
+  const loadBootstrap = () => vi.fn().mockResolvedValue(withGoogle);
+  let router: ReturnType<typeof createAppRouter>;
+  const open = (load = loadBootstrap()) => {
+    router = createAppRouter(createMemoryHistory({ initialEntries: ['/login'] }));
+    render(<App services={{ ...services(), loadBootstrap: load, signInWithGoogle: vi.fn().mockResolvedValue('https://accounts.google.test/auth') }} router={router} />);
+    return load;
+  };
+  function expectNoSignInMethods() {
+    expect(screen.queryByLabelText('Email address')).toBeNull();
+    expect(screen.queryByLabelText('Password')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Email me a sign-in link' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Google/ })).toBeNull();
+  }
+  it('shows loading and no sign-in method while discovery is pending, then only the showcase choices', async () => {
+    let answer!: (response: Response) => void;
+    discovery.respond = () => new Promise<Response>(resolve => { answer = resolve; });
+    const load = open();
+    await waitFor(() => expect(load).toHaveBeenCalled());
+    // Let the resolved bootstrap reach the page: the query cache notifies on a zero-delay timer.
+    await act(async () => { await load.mock.results[0]?.value; await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(fetcher.mock.calls.some(([path]) => path === '/api/demo')).toBe(true);
+    expect(screen.getByRole('status').textContent).toBe('Loading...');
+    expectNoSignInMethods();
+    await act(async () => { answer(Response.json({ data: { mode: 'showcase', expiresAt: new Date(Date.now() + 3600_000).toISOString(), join: false } })); });
+    await screen.findByText(showcaseMessage);
+    expect(screen.getByRole('button', { name: 'Sign in as owner' })).toBeDefined();
+    expectNoSignInMethods();
+  });
+  it('hides the sign-in methods when discovery fails, and a Retry that finds the showcase shows only its choices', async () => {
+    discovery.respond = () => Response.json({}, { status: 500 });
+    open();
+    await screen.findByText('The demo is unavailable. Please try again later.');
+    await screen.findByText('Training Academy');
+    expectNoSignInMethods();
+    expect(screen.queryByText(showcaseMessage)).toBeNull();
+    expect(screen.queryByText(/Sign-in is currently unavailable/)).toBeNull();
+    discovery.respond = undefined; discovery.mode = 'showcase';
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await screen.findByText(showcaseMessage);
+    expect(screen.queryByText('The demo is unavailable. Please try again later.')).toBeNull();
+    expectNoSignInMethods();
+  });
+  it('offers the configured methods once discovery says demo mode is off', async () => {
+    open();
+    await screen.findByLabelText('Email address');
+    expect(screen.getByLabelText('Password')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Sign in with Google' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Email me a sign-in link' })).toBeDefined();
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+  it('still sends a signed-in visitor on while discovery is pending', async () => {
+    discovery.respond = () => new Promise<Response>(() => undefined);
+    const member: ShellBootstrap = { ...anonymous, session: { userId: 'member', displayName: 'Test User', roles: [], member: true } };
+    open(vi.fn().mockResolvedValue(member));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/portal'));
+    expectNoSignInMethods();
   });
 });
 

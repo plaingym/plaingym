@@ -24,6 +24,12 @@ export const useDemoExpiry = () => sandboxExpiry(useContext(DemoContext));
 /** Whether this sandbox takes test-card joins (the shared Stripe test account is configured). */
 export const useDemoJoin = () => { const discovery = useContext(DemoContext); return (discovery?.mode === 'sandbox' || discovery?.mode === 'showcase') && discovery.join; };
 export const useDemoSandbox = () => { const mode = useDemoMode(); return mode === 'sandbox' || mode === 'showcase'; };
+/** Whether demo discovery has settled: `pending` until `/api/demo` first answers; `error` while it has failed or the sandbox
+ * has expired, so no mode is usable (the shell shows the error and its Retry); `ready` once `useDemoMode()` holds the answer.
+ * Outside the shell nothing is discovered, so it reads `ready`. */
+export type DemoDiscoveryStatus = 'pending' | 'error' | 'ready';
+const DiscoveryStatusContext = createContext<DemoDiscoveryStatus>('ready');
+export const useDemoDiscoveryStatus = () => useContext(DiscoveryStatusContext);
 export function DemoShell({ children }: { children: ReactNode }) {
   // Capture before a child route's login guard can redirect and discard the fragment.
   const [kioskToken, setKioskToken] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get('kioskToken'));
@@ -94,7 +100,8 @@ export function DemoShell({ children }: { children: ReactNode }) {
     }
     setKioskToken(null);
   }, [activeSandbox, kioskToken, tokenSaveAttempt]);
-  return <DemoContext.Provider value={discovery.isError || expired ? undefined : mode}><LoginContext.Provider value={login}>
+  const status: DemoDiscoveryStatus = discovery.isError || expired ? 'error' : discovery.isPending ? 'pending' : 'ready';
+  return <DemoContext.Provider value={status === 'error' ? undefined : mode}><DiscoveryStatusContext.Provider value={status}><LoginContext.Provider value={login}>
     {tokenSaveFailed && <div className="space-y-3 p-4"><Alert key={tokenSaveAttempt} variant="error" focusOnReveal role="alert">{t('kiosk/kiosk:retrySaveError')}</Alert>
       <Button type="button" onClick={() => setTokenSaveAttempt(value => value + 1)}>{t('shell/shell:retry')}</Button></div>}
     {(discovery.isError || expired) && <div className="p-4" role="alert">
@@ -104,7 +111,7 @@ export function DemoShell({ children }: { children: ReactNode }) {
       {handoffSaveFailed && <Button type="button" onClick={() => setHandoffSaveAttempt(value => value + 1)}>{t('shell/shell:retry')}</Button>}</div> : <LoadingState />
       : <><CopyPrompt showcase={mode?.mode === 'showcase'} /><DemoNotice /><DemoEntry />
         {kioskToken && (discovery.isPending || activeSandbox) ? (tokenSaveFailed ? null : <LoadingState />) : children}</>}
-  </LoginContext.Provider></DemoContext.Provider>;
+  </LoginContext.Provider></DiscoveryStatusContext.Provider></DemoContext.Provider>;
 }
 export function DemoEntry() {
   return useContext(DemoContext)?.mode === 'entry' ? <aside aria-label={t('demo/demo:entryTitle')} className="border-b border-border bg-secondary p-4 sm:p-6">

@@ -15,7 +15,9 @@ The showcase is replaced 24 hours after promotion and runs no gym jobs. It stays
 available until a replacement is ready if capacity delays the swap. Use the
 one-click role logins; magic-link requests are refused on the shared showcase.
 The showcase's `/login` page offers those role sign-ins in place of the email
-form. When the per-network hourly limit refuses a new copy, **Make my own copy**
+form. Every `/login` page waits for the demo check (`GET /api/demo`) before it
+offers any sign-in; if the check fails, it offers none until **Try again** in
+the demo error succeeds. When the per-network hourly limit refuses a new copy, **Make my own copy**
 in the showcase's demo bar shows how many minutes to wait before trying again.
 
 Optional settings accepted by the installer and saved in its protected `.env`:
