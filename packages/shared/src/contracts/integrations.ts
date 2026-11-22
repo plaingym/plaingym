@@ -50,6 +50,8 @@ export const saveSmsIntegrationRequestSchema = z.strictObject({
   testTo: z.string().min(1).max(100),
 });
 export const removeSmsIntegrationRequestSchema = z.strictObject({ revision: revisionSchema });
+/** Why a provider refused the SMS test, when its HTTP status and numeric error code say. */
+export const smsTestFailureSchema = z.enum(['authentication', 'trial_account', 'sender', 'recipient', 'opted_out', 'unreachable']);
 /**
  * What a switch from test to live clears (`clearTestData`): households holding a Stripe customer the test key made,
  * the cards saved through Stripe, and open Checkout or card-setup sessions. `disputes` counts the invoices whose open dispute it closes:
@@ -109,7 +111,7 @@ export const saveEmailIntegrationResponseSchema = z.strictObject({ data: z.stric
 }) });
 /** A failed account check or test keeps the previous stored settings and revision. */
 export const saveSmsIntegrationResponseSchema = z.strictObject({ data: z.strictObject({
-  test: z.enum(['sent', 'failed']), integrations: integrationsSchema,
+  test: z.enum(['sent', 'failed']), failure: smsTestFailureSchema.optional(), integrations: integrationsSchema,
 }) });
 export const removeEmailIntegrationRequestSchema = z.strictObject({ revision: revisionSchema });
 /**
@@ -184,6 +186,7 @@ export type EmailIntegration = z.infer<typeof emailIntegrationSchema>;
 export type SmsIntegration = z.infer<typeof smsIntegrationSchema>;
 export type SaveSmsIntegrationRequest = z.infer<typeof saveSmsIntegrationRequestSchema>;
 export type RemoveSmsIntegrationRequest = z.infer<typeof removeSmsIntegrationRequestSchema>;
+export type SmsTestFailure = z.infer<typeof smsTestFailureSchema>;
 export type PaymentsIntegration = z.infer<typeof paymentsIntegrationSchema>;
 export type StripeTestData = z.infer<typeof stripeTestDataSchema>;
 export type BackupsIntegration = z.infer<typeof backupsIntegrationSchema>;

@@ -31,15 +31,19 @@ export function SmsIntegrationSection({ sms, editable, state }: { sms: SmsIntegr
     try {
       const reply = await state.change((revision, signal) => api.PUT('/api/settings/integrations/sms', { signal, body: {
         revision, provider: 'twilio', accountSid: field('accountSid'), testTo: field('testTo'),
-        auth: authKind === 'token' ? { token: String(form.get('token') ?? '') } : { apiKey: field('apiKey'), secret: String(form.get('secret') ?? '') },
+        auth: authKind === 'token' ? { token: field('token') } : { apiKey: field('apiKey'), secret: field('secret') },
         sender: senderKind === 'from' ? { from: field('from') } : { messagingServiceSid: field('messagingServiceSid') },
         ...(sms.baseUrl !== undefined && field('baseUrl') ? { baseUrl: field('baseUrl') } : {}),
       } }), data => {
         const value = parseResponse(saveSmsIntegrationResponseSchema, data).data;
-        return { integrations: value.integrations, result: value.test };
+        return { integrations: value.integrations, result: { test: value.test, failure: value.failure } };
       }, { timeoutMs: 75_000 });
-      if (reply.result === 'sent') { setOpen(false); setMessage({ kind: 'status', text: label('saved') }); }
-      else setMessage({ kind: 'alert', text: reply.result === 'failed' ? label('testFailed')
+      let failureKey = reply.result?.failure ? 'testFailed_' + reply.result.failure : 'testFailed';
+      const baseUrl = field('baseUrl');
+      if (reply.result?.failure === 'authentication' && baseUrl && new URL(baseUrl).origin !== 'https://api.twilio.com')
+        failureKey = 'testFailed_authentication_custom';
+      if (reply.result?.test === 'sent') { setOpen(false); setMessage({ kind: 'status', text: label('saved') }); }
+      else setMessage({ kind: 'alert', text: reply.result?.test === 'failed' ? label(failureKey)
         : reply.reason === 'invalid_phone' ? label('invalidPhone') : reply.reason === 'twilio_only' ? label('twilioOnly') : refusedText(reply) });
     } catch (error) { setMessage({ kind: 'alert', text: failedText(error) }); }
     finally { setBusy(false); }

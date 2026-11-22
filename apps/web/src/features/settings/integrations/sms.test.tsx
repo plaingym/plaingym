@@ -93,6 +93,41 @@ describe('SMS integration form', () => {
     expect(client.PUT.mock.calls[0]?.[1].body).not.toHaveProperty('baseUrl');
     expect((await screen.findByRole('alert')).textContent).toContain('nothing was saved');
   });
+  it.each(['token', 'apiKey'] as const)('trims a pasted credential: %s', async authKind => {
+    const user = userEvent.setup(); renderSection(); const form = await fill(user);
+    if (authKind === 'token') {
+      const token = within(form).getByLabelText('Auth token');
+      await user.clear(token); await user.type(token, ' tok ');
+    } else {
+      await user.selectOptions(within(form).getByLabelText('Authentication method'), 'apiKey');
+      await user.type(within(form).getByLabelText('API key SID'), apiKey);
+      await user.type(within(form).getByLabelText('API key secret'), ' sec ');
+    }
+    client.PUT.mockResolvedValue(reply(200, { data: { test: 'failed', integrations: current } }));
+    await user.click(within(form).getByRole('button', { name: 'Send test text and save' }));
+    expect(client.PUT.mock.calls[0]?.[1].body).toMatchObject({ auth: authKind === 'token' ? { token: 'tok' } : { apiKey, secret: 'sec' } });
+  });
+  it.each([
+    ['authentication', /Twilio Console.*list and send messages/],
+    ['unreachable', /No response arrived.*text may have been sent/],
+    ['trial_account', /Twilio trial account.*Twilio templates.*already upgraded, verify the test number/],
+    [undefined, /The account check or test text failed\. Check your credentials/],
+  ] as const)('names the cause of a failed test: %s', async (failure, shown) => {
+    const user = userEvent.setup(); renderSection(); const form = await fill(user);
+    client.PUT.mockResolvedValue(reply(200, { data: { test: 'failed', ...(failure ? { failure } : {}), integrations: current } }));
+    await user.click(within(form).getByRole('button', { name: 'Send test text and save' }));
+    expect((await screen.findByRole('alert')).textContent).toMatch(shown);
+  });
+  it('directs owners to the submitted custom provider for authentication failures', async () => {
+    const user = userEvent.setup(); renderSection(); const form = await fill(user);
+    const url = within(form).getByLabelText('Provider base URL (HTTPS)');
+    await user.clear(url); await user.type(url, 'https://provider.invalid');
+    client.PUT.mockResolvedValue(reply(200, { data: { test: 'failed', failure: 'authentication', integrations: current } }));
+    await user.click(within(form).getByRole('button', { name: 'Send test text and save' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('credentials issued by the provider at the configured URL');
+    expect(alert.textContent).not.toContain('Twilio');
+  });
   it('removes stored credentials through the shared revision queue', async () => {
     current = configured; const user = userEvent.setup(); renderSection();
     client.DELETE.mockResolvedValue(reply(200, { data: { ...integrations, revision: 5 } }));

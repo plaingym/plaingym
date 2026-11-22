@@ -688,8 +688,10 @@ Old versions and documents referenced by signatures remain retained after retire
   any provider call. Multi-gym installs accept only Twilio's URL; single-gym
   installs may use an HTTPS Twilio-compatible provider URL.
   Settings and delivery share a config reader that ignores newer nested keys
-  after rollback; new writes remain strict. Failed provider tests log only the
-  error name and acceptance status, and unexpected errors return 500.
+  after rollback; new writes remain strict. The `settings.sms_test_failed` event
+  records the failed step, error name, acceptance or suppression status, and
+  the provider's HTTP status and numeric error code when available. Provider
+  response text and test phone numbers stay out of the log. Unexpected errors return 500.
   Phone numbers and consent are gym-scoped personal data. Consent belongs to the
   normalized number and is checked against the current phone immediately before
   delivery. Household billing phones have separate notices consent. Member erasure

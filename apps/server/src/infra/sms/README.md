@@ -17,8 +17,13 @@ There are no automatic retries or redirects. Each request, including reading its
 reply, has a 30-second hard deadline. DNS, refused connection, certificate failures
 and all HTTP 4xx (including 429) prove `not_accepted`. HTTP 5xx, timeouts, resets
 and malformed success replies are `unknown`. HTTP 4xx code 21610 adds the safe
-`recipient_opted_out` reason. Raw replies, request content and error causes are
-never exposed by the adapter.
+`recipient_opted_out` reason. Every `SmsDeliveryError` from a request also carries
+`provider: { httpStatus, code }`: the HTTP status (`null` when no response arrived,
+such as a connect failure or the deadline before headers) and Twilio's JSON error
+`code` when it is an integer from 1 to 999999 (else `null`). A refused base URL or
+account SID, an invalid message and a malformed success reply carry no `provider`. Raw replies, Twilio's
+`message` and `more_info`, request content and error causes are never exposed by
+the adapter.
 
 `createSmsResolver({ key, tenancy, scope, demo, clock, fetch })` in
 `areas/settings/sms.ts` reads only the requested gym's encrypted config and returns

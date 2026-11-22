@@ -4,7 +4,7 @@ import { canStaff, isRoutePermission, staffRoles } from '../permissions.js';
 import {
   integrationsContracts, integrationsSchema, saveEmailIntegrationRequestSchema, saveStripeIntegrationRequestSchema,
   createBackupKeyRequestSchema, createBackupKeyResponseSchema, confirmBackupKeyRequestSchema, removeEmailIntegrationRequestSchema,
-  googleLoginSchema, saveGoogleLoginRequestSchema, setupSmtpRequestSchema,
+  googleLoginSchema, saveGoogleLoginRequestSchema, setupSmtpRequestSchema, saveSmsIntegrationResponseSchema,
 } from './index.js';
 
 const signIn = { password: false, magicLink: true };
@@ -83,5 +83,12 @@ describe('integration settings contracts', () => {
     expect(createBackupKeyRequestSchema.safeParse({ revision: 1, destination }).success).toBe(true);
     expect(createBackupKeyRequestSchema.safeParse({ revision: 1, destination: { ...destination, endpoint: 'ftp://s3.example.test' } }).success).toBe(false);
     expect(confirmBackupKeyRequestSchema.safeParse({ revision: 1, privateKey: 'age1example' }).success).toBe(false);
+  });
+
+  it('names an SMS test failure only with a known reason', () => {
+    const failed = { test: 'failed', integrations };
+    expect(saveSmsIntegrationResponseSchema.safeParse({ data: { ...failed, failure: 'unreachable' } }).success).toBe(true);
+    expect(saveSmsIntegrationResponseSchema.safeParse({ data: failed }).success).toBe(true);
+    expect(saveSmsIntegrationResponseSchema.safeParse({ data: { ...failed, failure: 'other' } }).success).toBe(false);
   });
 });

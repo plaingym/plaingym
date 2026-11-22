@@ -490,8 +490,8 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     },
     updateSmsDailyCap(context: MutationContext, input: UpdateSmsDailyCapRequest) { return sms.updateDailyCap(context, input); },
     async saveSms(context: MutationContext, input: SaveSmsIntegrationRequest) {
-      const test = await sms.save(context, input);
-      return { test, integrations: await present(context.gymId, userOf(context)) };
+      const { test, failure } = await sms.save(context, input);
+      return { test, ...(failure ? { failure } : {}), integrations: await present(context.gymId, userOf(context)) };
     },
     async removeSms(context: MutationContext, input: RemoveSmsIntegrationRequest) {
       await sms.remove(context, input.revision);

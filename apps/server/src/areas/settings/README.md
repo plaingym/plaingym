@@ -96,8 +96,14 @@ text the provider accepted stays recorded even if the save then conflicts. Both
 must succeed before an encrypted config is committed with its revision and the
 `integrations.sms_saved` audit; failures preserve the previous config. Provider save and remove
 use the shared integration save transaction and record the resulting revision in their audit.
-Failed provider tests log only the error name and provider acceptance status, never the message;
-unexpected programming errors propagate as server errors. Remove
+A failed provider test logs `settings.sms_test_failed`. Alongside `time`, `level` and `event`, it records `errorName`, `providerStatus` (the acceptance,
+or `suppressed`), `step` (`account` for the account check, `send` for the test text), `providerHttpStatus` and
+`providerCode` (the provider's HTTP status and integer error code, each `null` when unknown or for a suppressed
+result), never the provider's message, a credential, a number or the text. `smsTestFailure` names the cause from
+the status and code, and the response carries it as `failure` only when it names one: `unreachable` (no response),
+`authentication` (401, 403, or code 20003 or 20008), `trial_account` (572006, 21608), `opted_out` (21610), `sender`
+(21212, 21606, 21659, 21660) or `recipient` (21211, 21408, 21612, 21614). The `integrations.sms_tested` audit stays
+`{ test }`. Unexpected programming errors propagate as server errors. Remove
 clears the config and writes `integrations.sms_removed`; with nothing stored it
 answers 409 `not_configured`, like email.
 Removal leaves the member-text switch on. Health warns when texts are on without a

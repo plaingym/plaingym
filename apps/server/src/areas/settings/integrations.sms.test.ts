@@ -69,6 +69,7 @@ async function call(app: ReturnType<typeof server>, method = 'GET', body?: unkno
 const input = (revision: number, overrides: Record<string, unknown> = {}) => ({ revision, provider: 'twilio', accountSid,
   auth: { token }, sender: { from: '+1 (415) 555-2671' }, testTo: '+1 (202) 555-0123', ...overrides });
 const save = async (app = server(), overrides: Record<string, unknown> = {}) => call(app, 'PUT', input((await row()).revision, overrides));
+const logKeys = ['time', 'level', 'event', 'errorName', 'providerStatus', 'step', 'providerHttpStatus', 'providerCode'].sort();
 function providerError() {
   const error = new SmsDeliveryError('not_accepted');
   error.message = token + secret;
@@ -165,8 +166,60 @@ describe('SMS integration settings', () => {
     if (failure === 'account') expect(send).not.toHaveBeenCalled();
     const logs = seen.filter(line => line.includes('settings.sms_test_failed')).map(line => JSON.parse(line));
     expect(logs).toEqual([expect.objectContaining({ errorName: failure === 'suppressed' ? 'SmsSuppressed' : 'DeliveryError',
-      providerStatus: failure === 'suppressed' ? 'suppressed' : 'not_accepted' })]);
-    expect(Object.keys(logs[0]).sort()).toEqual(['time', 'level', 'event', 'errorName', 'providerStatus'].sort());
+      providerStatus: failure === 'suppressed' ? 'suppressed' : 'not_accepted', step: failure === 'account' ? 'account' : 'send',
+      providerHttpStatus: null, providerCode: null })]);
+    expect(Object.keys(logs[0]).sort()).toEqual(logKeys);
+    expect(saveSmsIntegrationResponseSchema.parse(result.body).data).not.toHaveProperty('failure');
+  });
+  it.each([
+    ['unreachable', 'send', null, null],
+    ['authentication', 'account', 401, 20003],
+    ['authentication', 'account', 401, null],
+    ['authentication', 'account', 403, null],
+    ['authentication', 'send', 403, null],
+    ['authentication', 'account', 400, 20008],
+    ['trial_account', 'send', 400, 572006],
+    ['trial_account', 'send', 400, 21608],
+    ['opted_out', 'send', 400, 21610],
+    ['sender', 'send', 400, 21212],
+    ['sender', 'send', 400, 21606],
+    ['sender', 'send', 400, 21659],
+    ['sender', 'send', 400, 21660],
+    ['recipient', 'send', 400, 21211],
+    ['recipient', 'send', 400, 21408],
+    ['recipient', 'send', 400, 21612],
+    ['recipient', 'send', 400, 21614],
+    [undefined, 'send', 400, 30000],
+    [undefined, 'send', 400, null],
+  ] as const)('names the cause %s after a failed %s with status %s and code %s', async (failure, step, httpStatus, code) => {
+    const error = new SmsDeliveryError(httpStatus === null || httpStatus < 500 ? 'not_accepted' : 'unknown',
+      code === 21610 ? 'recipient_opted_out' : 'provider_error', { httpStatus, code });
+    error.message = `${token} ${secret} provider says +12025550123`;
+    if (step === 'account') verify.mockRejectedValueOnce(error); else send.mockRejectedValueOnce(error);
+    const before = await row(), result = await save();
+    expect(result.status).toBe(200);
+    const value = saveSmsIntegrationResponseSchema.parse(result.body).data;
+    expect(value).toMatchObject({ test: 'failed', integrations: { revision: before.revision } });
+    if (failure) expect(value.failure).toBe(failure); else expect(value).not.toHaveProperty('failure');
+    expect((await row()).smsConfig).toBeNull();
+    const lines = seen.filter(line => line.includes('settings.sms_test_failed'));
+    const logs = lines.map(line => JSON.parse(line));
+    expect(logs).toEqual([expect.objectContaining({ errorName: 'DeliveryError', step, providerHttpStatus: httpStatus, providerCode: code })]);
+    expect(Object.keys(logs[0]).sort()).toEqual(logKeys);
+    for (const hidden of [token, secret, 'provider says', '+12025550123']) expect(lines.join('\n')).not.toContain(hidden);
+    const audits = await database.forGym(gymId, tx => tx.select().from(auditEvents));
+    expect(audits.map(a => [a.action, a.after])).toEqual([['integrations.sms_tested', { test: 'failed' }]]);
+  });
+  it('names no cause for a refusal that carries no provider answer', async () => {
+    send.mockRejectedValueOnce(providerError());
+    const value = saveSmsIntegrationResponseSchema.parse((await save()).body).data;
+    expect(value.test).toBe('failed');
+    expect(value).not.toHaveProperty('failure');
+  });
+  it('returns no failure for a sent test', async () => {
+    const value = saveSmsIntegrationResponseSchema.parse((await save()).body).data;
+    expect(value.test).toBe('sent');
+    expect(value).not.toHaveProperty('failure');
   });
   it('fails the test, not the request, when the adapter refuses the message itself', async () => {
     await database.forGym(gymId, tx => tx.update(gyms).set({ name: 'G'.repeat(1600) }));

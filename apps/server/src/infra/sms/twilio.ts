@@ -17,6 +17,12 @@ function failedBeforeConnect(error: unknown): boolean {
   if (error instanceof AggregateError) return error.errors.length > 0 && error.errors.every(failedBeforeConnect);
   return 'cause' in error && failedBeforeConnect(error.cause);
 }
+/** Twilio's numeric error code, when its error body has one; anything else gives `null`. */
+function providerCode(body: unknown): number | null {
+  if (!body || typeof body !== 'object' || !('code' in body)) return null;
+  const { code } = body;
+  return typeof code === 'number' && Number.isInteger(code) && code >= 1 && code <= 999_999 ? code : null;
+}
 /** No redirects, retries or raw error causes: they can disclose credentials or recipient content. */
 export class TwilioSms implements Sms {
   readonly #config: TwilioConfig;
@@ -50,28 +56,32 @@ export class TwilioSms implements Sms {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let acceptance: 'not_accepted' | 'unknown' = 'unknown';
+    // Only the status and the integer error code leave the adapter: Twilio's message text can quote phone numbers.
+    let httpStatus: number | null = null;
+    const provider = (code: number | null = null) => ({ httpStatus, code });
     try {
       return await Promise.race([
         (async () => {
           const response = await this.fetcher(url, { method, redirect: 'manual', signal: controller.signal,
             headers: { Authorization: `Basic ${Buffer.from(credentials).toString('base64')}`,
               ...(body ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}) }, ...(body ? { body } : {}) });
+          httpStatus = response.status;
           // Status alone proves rejection, even if reading the error payload fails or exceeds the deadline.
           if (response.status >= 400 && response.status < 500) acceptance = 'not_accepted';
           if (method === 'GET' && response.ok) { await response.body?.cancel(); return undefined; }
           const result: unknown = await response.json().catch(() => null);
           if (response.status >= 400 && response.status < 500) {
-            const optedOut = result && typeof result === 'object' && 'code' in result && result.code === 21610;
-            throw new SmsDeliveryError('not_accepted', optedOut ? 'recipient_opted_out' : 'provider_error');
+            const code = providerCode(result);
+            throw new SmsDeliveryError('not_accepted', code === 21610 ? 'recipient_opted_out' : 'provider_error', provider(code));
           }
-          if (!response.ok) throw new SmsDeliveryError('unknown');
+          if (!response.ok) throw new SmsDeliveryError('unknown', 'provider_error', provider(providerCode(result)));
           return result;
         })(),
-        new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new SmsDeliveryError(acceptance)); }, smsDeadlineMs); }),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new SmsDeliveryError(acceptance, 'provider_error', provider())); }, smsDeadlineMs); }),
       ]);
     } catch (error) {
       if (error instanceof SmsDeliveryError) throw error;
-      throw new SmsDeliveryError(failedBeforeConnect(error) ? 'not_accepted' : acceptance);
+      throw new SmsDeliveryError(failedBeforeConnect(error) ? 'not_accepted' : acceptance, 'provider_error', provider());
     } finally { clearTimeout(timer); }
   }
 }

@@ -12,8 +12,14 @@ export interface Sms {
   /** Checks credentials without sending a message. */
   verifyAccount(): Promise<void>;
 }
+/**
+ * What the provider's answer said, for naming a failed owner test: the HTTP status (`null` when no response arrived)
+ * and the provider's integer error code (`null` when the body had none). Never the provider's message text.
+ */
+export interface SmsProviderFailure { readonly httpStatus: number | null; readonly code: number | null }
 export class SmsDeliveryError extends DeliveryError {
-  constructor(acceptance: 'not_accepted' | 'unknown', readonly reason: 'recipient_opted_out' | 'provider_error' = 'provider_error') {
+  constructor(acceptance: 'not_accepted' | 'unknown', readonly reason: 'recipient_opted_out' | 'provider_error' = 'provider_error',
+    readonly provider?: SmsProviderFailure) {
     super(acceptance, reason === 'recipient_opted_out' ? 'SMS recipient opted out' : 'SMS provider request failed');
   }
 }
