@@ -66,6 +66,8 @@ intent without an attempt. The invoice keeps its terminal state. `cardSucceeded`
 failure, and a past-due assignment invoice stays past due on a later card
 decline. A one-off charge returns to open. A closed account is revoked by its
 processor method ID and the household receives an update-method link. The
+transition records `billing.payment_method.unsaved_revoked` with the invoice ID
+and processor method ID when the household has no saved row for the account. The
 invoice's stopped-retry audit also cancels work already queued. `processingFailed`
 handles a reported failure or cancellation for the current processing Checkout
 intent. It records the normalized failure code in the invoice audit. For an

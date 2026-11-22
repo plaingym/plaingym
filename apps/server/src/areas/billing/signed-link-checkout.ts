@@ -110,7 +110,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     const setup = result.value.object;
     if (setup.status !== 'succeeded' || setup.metadata.gymId !== gymId || setup.metadata.linkId !== linkId
       || setup.customerId !== session.customerId || setup.paymentMethodId !== session.paymentMethodId) unavailable();
-    await cards.collect(gymId, provider, session.customerId, session.paymentMethodId, setup.mandateId);
+    await cards.collect(gymId, provider, session.customerId, session.paymentMethodId, setup.mandateId, setup.id);
   }
   async function createCheckout(provider: Payments, gymId: string, bankDebit: CheckoutRequest['bankDebit'], request: CheckoutRequest & { linkId: string }) {
     // A lost response retries the original options, even if the gym toggled bank payments or

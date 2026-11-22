@@ -10,6 +10,7 @@ import { abandonedAttempt, audit, canceledAttempt, type InvoiceRow } from './sto
 export const retriesStopped = 'billing.invoice.retries_stopped';
 export const invoiceProcessing = 'billing.invoice.processing';
 export const invoiceLateProcessing = 'billing.invoice.late_processing';
+export const unsavedBankRevoked = 'billing.payment_method.unsaved_revoked';
 
 /** The invoice lock serializes the intent history, including Checkout payments without a runner attempt. */
 export async function processingIntents(tx: Transaction, invoiceId: string) {
@@ -33,7 +34,18 @@ export async function revokeBankMethod(tx: Transaction, context: MutationContext
   const [removed] = await tx.update(paymentMethods).set({ revokedAt: clock.now(), isDefault: false }).where(and(
     eq(paymentMethods.householdId, invoice.householdId), eq(paymentMethods.processorId, processorId),
     inArray(paymentMethods.type, ['us_bank_account', 'acss_debit']), isNull(paymentMethods.revokedAt))).returning();
-  if (!removed) return; // Checkout can use an account the household never saved.
+  if (!removed) {
+    // A saved row may have already been revoked.
+    const [saved] = await tx.select({ id: paymentMethods.id }).from(paymentMethods).where(and(
+      eq(paymentMethods.householdId, invoice.householdId), eq(paymentMethods.processorId, processorId)));
+    if (saved) return;
+    const revocations = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
+      eq(auditEvents.action, unsavedBankRevoked), eq(auditEvents.targetType, 'household'), eq(auditEvents.targetId, invoice.householdId)));
+    if (!revocations.some(({ after }) => (after as { paymentMethodId?: unknown } | null)?.paymentMethodId === processorId))
+      await audit(tx, context, clock, unsavedBankRevoked, 'household', invoice.householdId,
+        { invoiceId: invoice.id, paymentMethodId: processorId });
+    return;
+  }
   await audit(tx, context, clock, 'billing.payment_method.revoked', 'payment_method', removed.id, { invoiceId: invoice.id });
   const gym = await readGymSettings(tx, context.gymId);
   await promoteDefaultCard(tx, context, clock, invoice.householdId, gym.timezone);

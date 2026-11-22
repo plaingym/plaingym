@@ -77,11 +77,15 @@ that needs to save its method remains retryable after its payment commits if
 the method has not attached. When the provider confirms the bank method
 belongs to the Checkout customer but has no usable last four digits, collection
 logs the gym and method IDs and records one skip audit per household and method,
-including the mandate ID when available. A later payment-method update with
-usable digits finishes that household's collection and carries over the recorded
-mandate. A payment Checkout still uses its pay link and starts a join's memberships.
-A card-update or onboarding link stays unused when its collection event skips
-saving the method. Replaying a Checkout does not pay twice.
+including the mandate ID and SetupIntent ID when available. Collection reads the
+method once more after the skip commits to catch digits that arrived during the
+skip. A later payment-method update with usable digits finishes that household's
+collection and carries over the recorded mandate. Once the method is saved, an
+update also completes the recorded setup's card-update or onboarding link. A
+replayed update leaves the saved method and completed link unchanged. An account
+revoked as unusable before it was saved is never saved. A payment Checkout still
+uses its pay link and starts a join's memberships. Replaying a Checkout does not
+pay twice.
 
 The method's immutable processor creation time is stored in nullable
 `payment_methods.processor_created_at`. Under the household row lock, a collected

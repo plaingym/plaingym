@@ -3,7 +3,7 @@ import { createHmac } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { auditEvents, invoices, paymentAttempts, paymentMethods, payments, refunds, uuidv7 } from '@plaingym/db';
+import { auditEvents, invoices, paymentAttempts, paymentMethods, payments, refunds, uuidv7, writeAudit } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../../../core/clock.js';
@@ -23,13 +23,15 @@ import { createWebhookHealthQuery, createWebhookInbox, type WebhookHandler } fro
 import { createWebhookInboxRoutes } from '../inbox.routes.js';
 import { createWebhookInboxJobs } from '../inbox.jobs.js';
 import { createTransitionJobs } from '../../transitions/transitions.jobs.js';
+import { revokeBankMethod } from '../../transitions/bank.js';
 import { composeBillingWebhooks } from './composition.js';
-import { billingWebhookTypes, registerBillingWebhookHandlers } from './index.js';
+import { billingWebhookTypes, registerBillingWebhookHandlers, type HandlerOptions } from './index.js';
 import { createCampaignsService } from '../../../links/campaigns.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 const secret = 'whsec_SYNTHETIC';
-async function fixture(kind: 'cycle' | 'one_off' = 'cycle', savedMethod = 'pm_test') {
+async function fixture(kind: 'cycle' | 'one_off' = 'cycle', savedMethod = 'pm_test',
+  afterCheckoutRecorded?: HandlerOptions['afterCheckoutRecorded']) {
   const gymId = uuidv7(), clock = new TestClock('2026-10-25T12:00:00Z');
   await factory('gyms', gymId, { currency: 'USD', billingEnabled: true, memberEmailsEnabled: true });
   const household = await factory('households', gymId, { stripeCustomerId: 'cus_fixture', email: 'payer@example.invalid' });
@@ -52,7 +54,7 @@ async function fixture(kind: 'cycle' | 'one_off' = 'cycle', savedMethod = 'pm_te
   createServerRegistry({ jobs: registrations }).registerJobs(jobs, new Set());
   const handlers = new Map<string, WebhookHandler>();
   registerBillingWebhookHandlers({ register(type, handler) { handlers.set(type, handler); } },
-    { scope: db.forGym, clock, transitions: composed.transitions });
+    { scope: db.forGym, clock, transitions: composed.transitions, ...(afterCheckoutRecorded ? { afterCheckoutRecorded } : {}) });
   const context = { gymId, clock, timezone: 'UTC', attempt: 1, jobId: uuidv7(), payments: provider };
   const run = async (type: string, reference: PaymentObjectReference = { kind: 'charge', id: 'pi_1' }, override: Payments = provider) => {
     const history = vi.spyOn(override, 'listChangesSince').mockRejectedValue(new Error('Handlers must not scan payment history'));
@@ -397,7 +399,9 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
     expect(skipped.methods).toEqual([]);
     expect(skipped.audits).toMatchObject([{ action: 'billing.payment_method.incomplete_bank_skipped',
       actorKind: 'system', targetType: 'household', targetId: f.household.id }]);
-    expect(skipped.audits[0]!.after).toEqual({ paymentMethodId: id });
+    expect(skipped.audits[0]!.after).toEqual({ paymentMethodId: id, setupId: 'seti_bank' });
+    expect(f.transport.requests.filter(request => request.method === 'GET' &&
+      request.path === '/v1/payment_methods/' + id)).toHaveLength(2);
     expect(lines.map(line => JSON.parse(line))).toEqual([
       { time: expect.any(String), level: 'warn', event: 'billing.payment_method.incomplete_bank', gymId: f.gymId, paymentMethodId: id },
     ]);
@@ -427,6 +431,73 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
     await f.run('payment_method.updated', update);
     expect(await f.read()).toEqual(revoked);
   });
+  it.each(['cus_fixture', 'cus_other'])('handles digits arriving during the skip for %s', async customer => {
+    const f = await fixture(), id = 'pm_usbank_6789';
+    setup(f, 'seti_bank', id);
+    const method = f.transport.objects.get(id)!;
+    method.us_bank_account = { last4: null };
+    await factory('households', f.gymId, { stripeCustomerId: 'cus_other' });
+    f.transport.objects.set('cus_other', { id: 'cus_other', object: 'customer', metadata: { gym_id: f.gymId } });
+    const request = f.transport.request.bind(f.transport);
+    let reads = 0;
+    vi.spyOn(f.transport, 'request').mockImplementation(async input => {
+      const response = await request(input);
+      if (input.method === 'GET' && input.path === '/v1/payment_methods/' + id && ++reads === 1) {
+        method.us_bank_account = { last4: '6789' };
+        method.customer = customer;
+      }
+      return response;
+    });
+    await f.run('setup_intent.succeeded', { kind: 'setup', id: 'seti_bank' });
+    const { methods, audits } = await f.read();
+    expect(reads).toBe(2);
+    expect(audits.filter(row => row.action === 'billing.payment_method.incomplete_bank_skipped')).toMatchObject([
+      { targetId: f.household.id, after: { paymentMethodId: id, setupId: 'seti_bank' } },
+    ]);
+    const updates = audits.filter(row => row.action === 'billing.payment_method.updated');
+    if (customer === 'cus_fixture') {
+      expect(methods).toMatchObject([{ processorId: id, last4: '6789', type: 'us_bank_account' }]);
+      expect(updates).toMatchObject([{ targetType: 'payment_method', targetId: methods[0]!.id }]);
+    } else {
+      expect(methods).toEqual([]);
+      expect(updates).toEqual([]);
+    }
+  });
+  it('never saves a bank account revoked before it was saved', async () => {
+    const f = await fixture(), id = 'pm_usbank_6789', setupRef = { kind: 'setup' as const, id: 'seti_bank' };
+    setup(f, setupRef.id, id);
+    const method = f.transport.objects.get(id)!;
+    method.us_bank_account = { last4: null };
+    await f.run('setup_intent.succeeded', setupRef);
+    const revoke = () => db.forGym(f.gymId, tx => revokeBankMethod(tx, { gymId: f.gymId, actor: { kind: 'system' } },
+      f.clock, f.invoice, id));
+    await Promise.all([revoke(), revoke()]);
+    const revoked = await f.read();
+    expect(revoked.audits.filter(row => row.action === 'billing.payment_method.unsaved_revoked')).toMatchObject([
+      { targetType: 'household', targetId: f.household.id, after: { invoiceId: f.invoice.id, paymentMethodId: id } },
+    ]);
+    expect(revoked.methods).toEqual([]);
+    expect(revoked.audits.filter(row => row.action === 'billing.payment_method.updated')).toEqual([]);
+    method.us_bank_account = { last4: '6789' };
+    await f.run('payment_method.updated', { kind: 'payment_method', id });
+    expect(await f.read()).toEqual(revoked);
+    await f.run('setup_intent.succeeded', setupRef);
+    expect(await f.read()).toEqual(revoked);
+  });
+  it('records only the saved-method revocation for a bank account with a row', async () => {
+    const f = await fixture(), method = await factory('paymentMethods', f.gymId, {
+      householdId: f.household.id, processorId: 'pm_usbank_6789', type: 'us_bank_account', isDefault: true,
+    });
+    const revoke = () => db.forGym(f.gymId, tx => revokeBankMethod(tx, { gymId: f.gymId, actor: { kind: 'system' } },
+      f.clock, f.invoice, method.processorId));
+    await revoke();
+    const revoked = await f.read();
+    expect(revoked.methods).toMatchObject([{ id: method.id, isDefault: false, revokedAt: f.clock.now() }]);
+    expect(revoked.audits).toMatchObject([{ action: 'billing.payment_method.revoked', targetType: 'payment_method',
+      targetId: method.id, after: { invoiceId: f.invoice.id } }]);
+    await revoke();
+    expect(await f.read()).toEqual(revoked);
+  });
   it('requires the skipped bank method ID and carries its mandate into deferred collection', async () => {
     const f = await fixture(), id = 'pm_usbank_6789', otherId = 'pm_acss_6789';
     setup(f, 'seti_other_bank', otherId);
@@ -434,7 +505,7 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
     await f.run('setup_intent.succeeded', { kind: 'setup', id: 'seti_other_bank' });
     const skippedOther = await f.read();
     expect(skippedOther.audits).toMatchObject([{ action: 'billing.payment_method.incomplete_bank_skipped',
-      targetId: f.household.id, after: { paymentMethodId: otherId } }]);
+      targetId: f.household.id, after: { paymentMethodId: otherId, setupId: 'seti_other_bank' } }]);
 
     const update = { kind: 'payment_method' as const, id };
     await f.run('payment_method.updated', update);
@@ -452,12 +523,58 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
     expect(skipped.methods).toEqual([]);
     expect(skipped.audits.filter(row => row.action === 'billing.payment_method.incomplete_bank_skipped')
       .map(row => row.after)).toEqual(expect.arrayContaining([
-      { paymentMethodId: otherId }, { paymentMethodId: id, mandateId: 'mandate_setup' },
+      { paymentMethodId: otherId, setupId: 'seti_other_bank' },
+      { paymentMethodId: id, mandateId: 'mandate_setup', setupId: setupRef.id },
     ]));
     expect(skipped.audits).toHaveLength(2);
     method.us_bank_account = { last4: '6789' };
     await f.run('payment_method.updated', update);
     expect((await f.read()).methods).toMatchObject([{ processorId: id, last4: '6789', mandateId: 'mandate_setup' }]);
+  });
+  it.each([
+    { skipEvent: 'setup_intent.succeeded', failSetupRead: false },
+    { skipEvent: 'checkout.session.completed', failSetupRead: true },
+  ] as const)('completes a deferred setup link after $skipEvent', async ({ skipEvent, failSetupRead }) => {
+    const complete = vi.fn<NonNullable<HandlerOptions['afterCheckoutRecorded']>>().mockResolvedValue(undefined);
+    const f = await fixture('cycle', undefined, complete), id = 'pm_usbank_6789', linkId = uuidv7();
+    const setupRef = { kind: 'setup' as const, id: 'seti_bank' }, checkoutRef = { kind: 'checkout' as const, id: 'cs_setup' };
+    setup(f, setupRef.id, id);
+    const metadata = { gym_id: f.gymId, link_id: linkId };
+    f.transport.objects.get(setupRef.id)!.metadata = metadata;
+    f.transport.objects.set(checkoutRef.id, { id: checkoutRef.id, object: 'checkout.session', mode: 'setup', status: 'complete',
+      setup_intent: setupRef.id, customer: 'cus_fixture', metadata });
+    await db.forGym(f.gymId, tx => writeAudit(tx, { gymId: f.gymId, actorKind: 'system', action: 'billing.card_setup.started',
+      targetType: 'signed_link', targetId: linkId, after: { sessionId: checkoutRef.id }, occurredAt: f.clock.now() }));
+    const method = f.transport.objects.get(id)!;
+    method.us_bank_account = { last4: null };
+    await f.run(skipEvent, skipEvent === 'setup_intent.succeeded' ? setupRef : checkoutRef);
+    expect((await f.read()).methods).toEqual([]);
+    expect(complete).toHaveBeenCalledExactlyOnceWith(f.gymId, linkId, checkoutRef.id);
+
+    method.us_bank_account = { last4: '6789' };
+    const update = { kind: 'payment_method' as const, id };
+    if (failSetupRead) {
+      const read = f.provider.readPaymentObject.bind(f.provider);
+      const setupRead = vi.spyOn(f.provider, 'readPaymentObject').mockImplementation(reference => reference.kind === 'setup'
+        ? Promise.reject(new Error('Setup read unavailable')) : read(reference));
+      try {
+        await expect(f.run('payment_method.updated', update)).rejects.toThrow('Setup read unavailable');
+      } finally { setupRead.mockRestore(); }
+      expect((await f.read()).methods).toMatchObject([{ processorId: id, last4: '6789' }]);
+      expect(complete).toHaveBeenCalledTimes(1);
+    }
+    complete.mockImplementationOnce(async () => {
+      expect((await f.read()).methods).toMatchObject([{ processorId: id, last4: '6789' }]);
+    });
+    await f.run('payment_method.updated', update);
+    expect(complete).toHaveBeenCalledTimes(2);
+    expect(complete).toHaveBeenLastCalledWith(f.gymId, linkId, checkoutRef.id);
+    const collected = await f.read();
+    expect(collected.audits.filter(row => row.action === 'billing.payment_method.updated')).toHaveLength(1);
+    await f.run('payment_method.updated', update);
+    expect(complete).toHaveBeenCalledTimes(3);
+    expect(complete).toHaveBeenLastCalledWith(f.gymId, linkId, checkoutRef.id);
+    expect(await f.read()).toEqual(collected);
   });
   it('keeps the newer collected card on reverse delivery, replay, and concurrent collection', async () => {
     const f = await fixture(); setup(f, 'seti_old', 'pm_4242'); setup(f);
@@ -528,6 +645,30 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
     f.transport.objects.get('pm_3155')!.customer = 'cus_fixture';
     await f.run('checkout.session.completed', { kind: 'checkout', id: session.id });
     expect((await f.read()).payments).toHaveLength(1); expect((await f.read()).methods).toHaveLength(1);
+  });
+  it('collects a deferred payment Checkout method without rerunning link completion', async () => {
+    const complete = vi.fn<NonNullable<HandlerOptions['afterCheckoutRecorded']>>().mockResolvedValue(undefined);
+    const f = await fixture('cycle', undefined, complete), id = 'pm_usbank_6789', linkId = uuidv7();
+    const session = await f.provider.createCheckout({ mode: 'payment', customerId: 'cus_fixture', invoiceId: f.invoice.id,
+      amount: 10000, currency: 'usd', bankDebit: { type: 'us_bank_account' }, saveForOffSession: true, linkId,
+      idempotencyKey: 'deferred-bank-checkout', successUrl: 'https://gym.invalid/ok', cancelUrl: 'https://gym.invalid/cancel' });
+    const intent = f.transport.completeCheckout(session.id, { method: 'us_bank_account' });
+    await db.forGym(f.gymId, tx => writeAudit(tx, { gymId: f.gymId, actorKind: 'system', action: 'billing.checkout.started',
+      targetType: 'signed_link', targetId: linkId, after: { sessionId: session.id }, occurredAt: f.clock.now() }));
+    const method = f.transport.objects.get(id)!;
+    method.us_bank_account = { last4: null };
+    await f.run('checkout.session.completed', { kind: 'checkout', id: session.id });
+    const skipped = await f.read();
+    expect(skipped.invoice.status).toBe('processing');
+    expect(skipped.methods).toEqual([]);
+    expect(skipped.audits.filter(row => row.action === 'billing.payment_method.incomplete_bank_skipped').map(row => row.after))
+      .toEqual([{ paymentMethodId: id, mandateId: 'mandate_' + String(intent.id) }]);
+    expect(complete).toHaveBeenCalledExactlyOnceWith(f.gymId, linkId, session.id);
+
+    method.us_bank_account = { last4: '6789' };
+    await f.run('payment_method.updated', { kind: 'payment_method', id });
+    expect((await f.read()).methods).toMatchObject([{ processorId: id, last4: '6789' }]);
+    expect(complete).toHaveBeenCalledTimes(1);
   });
   it.each(['stripe', 'fake'])('records provider success time for delayed intent delivery and replay through %s', async kind => {
     const f = await fixture(), succeededAt = f.clock.now();
