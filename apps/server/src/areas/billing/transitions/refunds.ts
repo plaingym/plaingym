@@ -7,12 +7,14 @@ import { conflict, notFound, type MutationContext } from '../../../core/interfac
 import { logWarn } from '../../../core/log.js';
 import type { RefundTransition, ProcessorRefundTransition, InvoiceTransitionResult } from '../../../core/interfaces/invoice-transitions.js';
 import { pastRefundWindow, sameRefund } from './lapsed-refunds.js';
-import { accepted, audit, duplicateReservation, effect, effectCreated, missingFound, missingFoundFailed, recorded, result, snapshot,
-  type InvoiceRow, type TransitionEffect } from './store.js';
+import { accepted, audit, duplicateReservation, effect, effectCreated, missingFailedBeforeFound, missingFound, missingFoundFailed,
+  recorded, result, snapshot, type InvoiceRow, type TransitionEffect } from './store.js';
 
-/** The caller holds the invoice lock; every reservation, audit and effect commits with the refund. */
+/** The caller holds the invoice lock; every reservation, audit and effect commits with the refund. `verified` marks a
+ * report or pending read the processor returned for the row's own processor ID, which only the processor refund path
+ * passes. */
 export async function applyRefund(tx: Transaction, context: MutationContext, clock: Clock, invoice: InvoiceRow,
-  request: RefundTransition, appCreated = false, missing = false): Promise<InvoiceTransitionResult> {
+  request: RefundTransition, appCreated = false, missing = false, verified = false): Promise<InvoiceTransitionResult> {
   idSchema.parse(request.refundId); moneySchema.parse({ amountCents: request.amountCents, currency: request.currency });
   if (invoice.status === 'processing') conflict('Payment is processing');
   if (request.amountCents <= 0 || !['pending', 'succeeded', 'failed', 'canceled'].includes(request.status)) conflict('Invalid refund');
@@ -28,10 +30,12 @@ export async function applyRefund(tx: Transaction, context: MutationContext, clo
   const reversed = previous?.status === 'succeeded' && request.status === 'failed'
     && previous.processorId !== null && previous.processorId === request.processorId;
   // A success for a refund released as missing contradicts that release. Staff reconcile it by hand: the row and the
-  // invoice stay as they are, and the first such report is recorded once with a staff notice.
+  // invoice stay as they are, and the first such report is recorded once with a staff notice. A success read before a
+  // verified failure that has already committed is stale: it records nothing.
   if (previous?.status === 'failed' && previous.processorId !== null && previous.processorId === request.processorId
     && request.status === 'succeeded' && await releasedAsMissing(tx, invoice.id, previous)) {
-    if (await recorded(tx, missingFound, previous.id)) return result('ignored', invoice);
+    if (await recorded(tx, missingFound, previous.id) || await recorded(tx, missingFailedBeforeFound, previous.id))
+      return result('ignored', invoice);
     await audit(tx, context, clock, missingFound, 'refund', previous.id,
       { processorId: previous.processorId, amountCents: previous.amountCents, currency: previous.currency });
     await effect(tx, context, clock, { kind: 'staff_notice', notice: 'refund_found', invoiceId: invoice.id,
@@ -49,6 +53,16 @@ export async function applyRefund(tx: Transaction, context: MutationContext, clo
     await effect(tx, context, clock, { kind: 'staff_notice', notice: 'refund_found_failed', invoiceId: invoice.id,
       paymentId: payment.id, refundId: previous.id });
     logWarn('billing.refunds.missing_found_failed', { gymId: context.gymId, invoiceId: invoice.id, refundId: previous.id });
+    return result('ignored', invoice);
+  }
+  // A verified failure before any success confirms the release. The first one is recorded once, so a success the
+  // processor returned earlier but that commits later can't tell staff the refund was found. The row, the invoice and
+  // the release's own missing notice stay as they are, and staff get no new notice.
+  if (verified && previous?.status === 'failed' && previous.processorId !== null && previous.processorId === request.processorId
+    && request.status === 'failed' && await releasedAsMissing(tx, invoice.id, previous)) {
+    if (!await recorded(tx, missingFailedBeforeFound, previous.id))
+      await audit(tx, context, clock, missingFailedBeforeFound, 'refund', previous.id,
+        { processorId: previous.processorId, amountCents: previous.amountCents, currency: previous.currency });
     return result('ignored', invoice);
   }
   if (previous && !reversed && (previous.status === request.status && (previous.processorId !== null || request.processorId === undefined)
@@ -122,10 +136,20 @@ export async function applyProcessorRefund(tx: Transaction, context: MutationCon
   if (value.metadata.gymId !== context.gymId || value.currency.toUpperCase() !== payment.currency
     || ![payment.paymentIntentId, payment.chargeId].includes(value.chargeId)) notFound();
   let rows = await tx.select().from(refunds).where(eq(refunds.paymentId, payment.id));
+  // A pending read taken for this report can show another refund failed after a concurrent write released that row as
+  // missing. That read is as verified as the refund's own report, so it gets the same treatment before this report's
+  // own write, on every path below. Rows it doesn't match exactly are left alone.
+  for (const row of rows) {
+    const current = input.pendingRefunds.find(refund => refund.id === row.processorId);
+    if (row.status === 'failed' && row.processorId !== null && row.processorId !== value.id && current?.status === 'failed'
+      && sameRefund(current, row, payment, context.gymId))
+      await applyRefund(tx, context, clock, invoice, { invoiceId: invoice.id, paymentId: payment.id, refundId: row.id,
+        processorId: row.processorId, amountCents: row.amountCents, currency: row.currency, status: 'failed' }, false, false, true);
+  }
   const appCreated = rows.some(row => row.taggedAt !== null && row.id === value.reservationId
     && row.amountCents === value.amount && row.currency === request.currency);
   const recorded = rows.find(row => row.processorId === value.id);
-  if (recorded) return applyRefund(tx, context, clock, invoice, { ...request, refundId: recorded.id }, appCreated);
+  if (recorded) return applyRefund(tx, context, clock, invoice, { ...request, refundId: recorded.id }, appCreated, false, true);
   const reservations = rows.filter(row => row.processorId === null && row.status === 'pending');
   const own = reservations.find(row => row.taggedAt !== null && row.id === value.reservationId && row.amountCents === value.amount);
   if (own) return applyRefund(tx, context, clock, invoice, { ...request, refundId: own.id });

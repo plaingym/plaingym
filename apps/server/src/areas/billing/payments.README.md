@@ -117,6 +117,9 @@ records the report once, with a `refund_found` staff notice, for staff to reconc
 A failure Stripe reports after that success changes nothing in billing either; it is recorded
 once, retires a `refund_found` notice still queued, and sends a `refund_found_failed` follow-up
 asking staff to check the payment in Stripe and billing and recheck any earlier manual correction.
+A verified failure that commits before any success is recorded once without a new notice.
+A later success then records nothing, and the original `refund_missing` notice can still
+send. A verified failure read for that refund while recording another one counts the same way.
 A pending refund whose read is otherwise unknown or doesn't match blocks any external refund
 that still needs room after those releases, even with no unsent reservation, though never
 the app's own, with a `billing.refunds.unverified` warn line, and a read that throws fails the write. Release notices run immediately after commit and count the

@@ -338,10 +338,30 @@ and credits as they are; the first such report writes a `billing.refund.missing_
 audit, queues one `notice: 'refund_found_failed'` staff notice in the same transaction, and
 logs `billing.refunds.missing_found_failed` at warn with the gym, invoice and refund row IDs.
 The audit prevents duplicate follow-ups on replay. A failure needs a `billing.refund.missing_found`
-audit to create the follow-up, and a cancellation never creates it. The reports can queue
-`refund_missing` on release, `refund_found` on verified success and `refund_found_failed`
-on subsequent verified failure. A queued `refund_found` notice checks under the invoice lock for the
-failure audit and skips its email; one already past that check may still reach staff, so
+audit to create the follow-up, and a cancellation never creates it.
+The webhook and reconciliation writers read Stripe before they take the invoice lock, so two
+reads of the same released refund can commit in either order. A verified `failed` report
+that commits before any `billing.refund.missing_found` audit confirms the release: the
+first one writes a `billing.refund.missing_failed_before_found` audit (`processorId`,
+`amountCents`, `currency`) under the invoice lock and answers `ignored`. It queues no
+notice and changes neither the row nor the invoice, reservations or credits, and the
+release's own `refund_missing` notice still goes out. A later `succeeded` report for that
+refund, such as one Stripe returned before the failure but whose write commits after it,
+finds this audit and records nothing: no found audit, no `refund_found` notice and so no
+follow-up. Only the processor refund path writes this audit, and only for a row released
+as missing whose processor ID matches the report; a cancellation, a failure for an ordinary
+failed refund, and a plain `refund` call never do, and a replay adds nothing. A `failed`
+read in `pendingRefunds` counts as such a report too: a write for another refund may read a
+row while it is still pending, and a concurrent external refund may release that row as
+missing before the write takes the lock. Under the lock, before its own write and on every
+path (including a report for a refund already recorded), the transition applies each read
+whose processor ID, amount, currency, gym and charge match a failed row: a released row
+with no found audit gets the failure-first audit above, one with a found audit gets the
+follow-up above, and any other failed row is left alone.
+When success commits first, it records the found audit and queues `refund_found`. The failure
+that commits after it records the follow-up audit and queues `refund_found_failed`. A queued
+`refund_found` notice checks under the invoice lock for the failure audit and skips its email.
+One already past that check may still reach staff, so
 the follow-up stands on its own: it names the invoice and amount, says Stripe now reports
 the refund failed and billing never changed the invoice, and asks every recipient to check
 the payment in Stripe and billing and recheck any earlier manual correction. Each staff

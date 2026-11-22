@@ -27,6 +27,8 @@ export interface TransitionEffect {
 }
 /** A refund released as missing that Stripe later reported succeeded, and the failure Stripe reported after that. */
 export const missingFound = 'billing.refund.missing_found', missingFoundFailed = 'billing.refund.missing_found_failed';
+/** A verified failure for a refund released as missing, recorded before any success for it: no later success counts. */
+export const missingFailedBeforeFound = 'billing.refund.missing_failed_before_found';
 /** The app gave up on these attempts before the member's card was charged: neither a decline nor a collection. */
 export const createAbandoned = 'create_abandoned', confirmAbandoned = 'confirm_abandoned';
 export const testCleared = 'test_cleared';
