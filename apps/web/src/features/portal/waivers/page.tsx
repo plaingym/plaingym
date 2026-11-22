@@ -62,7 +62,9 @@ function PortalWaiversPage({ context, scope }: { context: PortalContext; scope: 
               <p className="text-sm text-muted-foreground">{name(row.memberId)} · {text('version', { version: row.template.version })}</p></div>
             {member && (!payer || member.id === context.memberId || knownMinor(member.dateOfBirth, today))
               ? <Button onClick={() => setSigning({ template: row.template, member })}>{text('reviewSign')}</Button>
-              : <p className="text-sm text-muted-foreground">{text('ownLogin')}</p>}
+              : member && payer && member.dateOfBirth === null
+                ? <p className="text-sm text-muted-foreground">{text('needsBirthDate', { name: name(member.id) })}</p>
+                : <p className="text-sm text-muted-foreground">{text('ownLogin')}</p>}
           </StackedItem>;
         })}</StackedList>}
       </PageSection>

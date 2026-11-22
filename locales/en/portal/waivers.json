@@ -10,6 +10,7 @@
   "version": "Version {version}",
   "reviewSign": "Review and sign",
   "ownLogin": "Adults sign their own documents, from their own login or at the gym.",
+  "needsBirthDate": "Ask the gym to add {name}'s date of birth so you can sign for them as their parent or guardian.",
   "for": "For {name}",
   "signedBy": "Signed by {name}",
   "signedByGuardian": "Signed by {name} (guardian)",

@@ -385,9 +385,10 @@ describe('portal waivers page', () => {
     expect(await screen.findByText(/Signed by Pat \(guardian\)/)).toBeDefined();
     await user.click(screen.getByRole('button', { name: 'Prepare PDF' }));
     expect((await screen.findByRole('link', { name: /Open the signed PDF/ })).getAttribute('href')).toBe('https://files.example.test/w.pdf');
-    // Another adult signs from their own login; the payer is offered only the child's document.
+    // Another adult signs from their own login; the member with no birth date needs the gym to add it.
     expect(screen.getAllByRole('button', { name: 'Review and sign' })).toHaveLength(1);
-    expect(screen.getAllByText(/Adults sign their own documents/)).toHaveLength(2);
+    expect(screen.getAllByText(/Adults sign their own documents/)).toHaveLength(1);
+    expect(screen.getByText("Ask the gym to add Jordan Rivera's date of birth so you can sign for them as their parent or guardian.")).toBeDefined();
     await user.click(screen.getByRole('button', { name: 'Review and sign' }));
     expect(within(screen.getByRole('dialog')).getByText('For Kim Rivera')).toBeDefined();
     expect(within(screen.getByRole('dialog')).getByLabelText('Relationship to the member')).toBeDefined();

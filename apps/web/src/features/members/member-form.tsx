@@ -2,6 +2,7 @@
 import { useId, type FormEvent } from 'react';
 import * as c from '@plaingym/shared/contracts';
 import { Button } from '../../components/ui/button.js';
+import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { CheckboxField, Select } from '../../components/ui/select.js';
 import { memberRequest } from './api.js';
@@ -9,6 +10,7 @@ import { ErrorMessage, Field, text, useDraft, useMemberSave } from './common.js'
 
 export function MemberForm({ member, householdId, onSaved }: { member?: c.Member; householdId: string; onSaved?: (member: c.Member) => void }) {
   const statusHelpId = useId();
+  const dateOfBirthHintId = useId();
   const draft = useDraft({ firstName: member?.firstName ?? '', lastName: member?.lastName ?? '', email: member?.email ?? '',
     phone: member?.phone ?? '', dateOfBirth: member?.dateOfBirth ?? '', status: member?.status ?? ('prospect' as c.MemberStatus),
     emailOptOut: member?.emailOptOut ?? false, emergencyContacts: member?.emergencyContacts ?? ([] as c.EmergencyContact[]) });
@@ -29,7 +31,9 @@ export function MemberForm({ member, householdId, onSaved }: { member?: c.Member
   }
   return <form className="space-y-4" onSubmit={submit}><ErrorMessage error={state.error}/>
     <div className="grid gap-3 sm:grid-cols-2"><Field name="firstName" value={values.firstName} onChange={(value) => set('firstName', value)} required/><Field name="lastName" value={values.lastName} onChange={(value) => set('lastName', value)} required/>
-      <Field name="email" type="email" value={values.email} onChange={(value) => set('email', value)}/><Field name="phone" value={values.phone} onChange={(value) => set('phone', value)}/><Field name="dateOfBirth" type="date" value={values.dateOfBirth} onChange={(value) => set('dateOfBirth', value)}/>
+      <Field name="email" type="email" value={values.email} onChange={(value) => set('email', value)}/><Field name="phone" value={values.phone} onChange={(value) => set('phone', value)}/>
+      <div className="min-w-0 space-y-2"><Label className="grid gap-2">{text('dateOfBirth')}<Input type="date" aria-describedby={dateOfBirthHintId} value={values.dateOfBirth} onChange={(event) => set('dateOfBirth', event.target.value)}/></Label>
+        <p id={dateOfBirthHintId} className="text-sm text-muted-foreground">{text('dateOfBirthHint')}</p></div>
       <div className="min-w-0 space-y-2"><Label className="grid gap-2">{text('status')}<Select aria-describedby={statusHelpId} value={values.status} onChange={(event) => set('status', c.memberStatusSchema.parse(event.target.value))}>{c.memberStatusSchema.options.map((value) => <option key={value} value={value}>{text('status.' + value)}</option>)}</Select></Label>
         <p id={statusHelpId} className="text-sm text-muted-foreground">{text('statusHelp')}</p></div>
     </div><CheckboxField label={text('emailOptOut')} checked={values.emailOptOut} onChange={(event) => set('emailOptOut', event.target.checked)}/>

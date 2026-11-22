@@ -5,7 +5,7 @@
   "failed": "Could not save or load these details. Check the fields and try again.",
   "conflict": "These details changed. Refresh and review them before saving again.",
   "firstName": "First name", "lastName": "Last name", "name": "Name", "email": "Email", "phone": "Phone",
-  "dateOfBirth": "Date of birth", "status": "Status", "status.prospect": "Prospect", "status.trial": "Trial", "status.active": "Active",
+  "dateOfBirth": "Date of birth", "dateOfBirthHint": "Needed for the household's payer to sign waivers and give text consent for a member under 18.", "status": "Status", "status.prospect": "Prospect", "status.trial": "Trial", "status.active": "Active",
   "status.frozen": "Frozen", "status.cancelled": "Cancelled", "status.visitor": "Visitor", "emailOptOut": "Do not send member emails",
   "statusHelp": "Membership changes reset this status: Active, then Trial, then Frozen, or Cancelled when all are cancelled after a trial or activation. Imports follow the same rule. Pending-only memberships, memberships that never left Pending, and members without memberships keep the status you set.",
   "save": "Save", "refresh": "Refresh", "close": "Close", "remove": "Remove", "previous": "Previous", "next": "Next", "total": "members",
