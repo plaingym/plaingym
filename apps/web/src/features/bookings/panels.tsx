@@ -9,6 +9,7 @@ import { useBootstrap } from '../../app/context.js';
 import { ApiError } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 import { Alert } from '../../components/ui/alert.js';
+import { Autocomplete } from '../../components/ui/autocomplete.js';
 import { Button } from '../../components/ui/button.js';
 import { Pager } from '../../components/ui/pager.js';
 import { Input } from '../../components/ui/input.js';
@@ -113,12 +114,30 @@ function Bookings({ memberId, sessionId }: ExtensionViewProps) {
 
 function BookingForm({ memberId, sessionId, timezone, disabled, onSaved }: ExtensionViewProps & { timezone: string; disabled: boolean; onSaved(booking: ClassBooking): void }) {
   const id = useId(), [member, setMember] = useState(memberId ?? ''), [session, setSession] = useState(sessionId ?? '');
-  const [search, setSearch] = useState(''), [matches, setMatches] = useState<Member[]>([]), [searched, setSearched] = useState(false);
+  const [query, setQuery] = useState(''), [lookup, setLookup] = useState<{ query: string; members: Member[]; failed?: string } | null>(null), [searching, setSearching] = useState(false);
+  const lookupSeq = useRef(0);
   const [date, setDate] = useState(() => localDate(new Date(), timezone)), [sessions, setSessions] = useState<ClassSession[]>([]);
   const [allowWaitlist, setAllowWaitlist] = useState(true), [saving, setSaving] = useState(false), [loading, setLoading] = useState(false), [error, setError] = useState('');
   const selected = sessions.find(row => row.id === session);
   const [now, setNow] = useState(Date.now);
   const waitlistOpen = !!selected && now <= Date.parse(selected.cancelBefore);
+  useEffect(() => {
+    if (memberId) return;
+    const trimmed = query.trim(), seq = ++lookupSeq.current;
+    setLookup(null);
+    if (trimmed.length < 2) { setSearching(false); return; }
+    setSearching(true);
+    const timer = setTimeout(() => {
+      void bookingClient.members(trimmed).then(rows => {
+        if (seq !== lookupSeq.current) return;
+        setLookup({ query: trimmed, members: rows });
+      }).catch(error => {
+        if (seq !== lookupSeq.current) return;
+        setLookup({ query: trimmed, members: [], failed: errorText(error) });
+      }).finally(() => { if (seq === lookupSeq.current) setSearching(false); });
+    }, 250);
+    return () => { clearTimeout(timer); if (lookupSeq.current === seq) lookupSeq.current++; };
+  }, [query, memberId]);
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
     const update = () => {
@@ -141,11 +160,11 @@ function BookingForm({ memberId, sessionId, timezone, disabled, onSaved }: Exten
     return () => { active = false; };
   }, [date, timezone, sessionId]);
   const busy = disabled || saving || loading;
-  async function searchMembers() {
-    setLoading(true); setError(''); setMember('');
-    try { setMatches(await bookingClient.members(search.trim())); setSearched(true); }
-    catch (error) { setError(errorText(error)); } finally { setLoading(false); }
-  }
+  const trimmedQuery = query.trim();
+  const currentLookup = lookup?.query === trimmedQuery ? lookup : null;
+  const memberOptions = currentLookup ? currentLookup.members.map(row => ({ id: row.id, label: `${row.firstName} ${row.lastName}` })) : [];
+  const lookupPending = searching || (trimmedQuery.length >= 2 && !currentLookup);
+  const noMemberMatches = !!currentLookup && !currentLookup.failed && currentLookup.members.length === 0;
   return <form className="min-w-0 space-y-4 rounded-xl border border-border p-4 sm:p-6" onSubmit={event => {
     event.preventDefault(); if (busy || !member || !session) return;
     setSaving(true); setError('');
@@ -156,13 +175,10 @@ function BookingForm({ memberId, sessionId, timezone, disabled, onSaved }: Exten
     <h4 className="font-semibold">{text(memberId ? 'book' : 'addMember')}</h4>
     {error && <Alert variant="error" focusOnReveal>{error}</Alert>}
     {!memberId && <>
-      <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end"><div className="min-w-0 space-y-2"><Label htmlFor={id + '-search'}>{text('search')}</Label>
-        <Input id={id + '-search'} type="search" value={search} disabled={busy} onChange={event => setSearch(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); void searchMembers(); } }}/></div>
-        <Button type="button" variant="outline" disabled={busy} onClick={() => void searchMembers()}>{text('searchButton')}</Button></div>
-      {searched && matches.length === 0 && <p role="status">{text('noMembers')}</p>}
-      <div className="space-y-2"><Label htmlFor={id + '-member'}>{text('member')}</Label><Select id={id + '-member'} value={member} disabled={busy} onChange={event => setMember(event.target.value)}>
-        <option value="">{text('chooseMember')}</option>{matches.map(row => <option key={row.id} value={row.id}>{row.firstName} {row.lastName}</option>)}
-      </Select></div>
+      <Autocomplete label={text('member')} query={query} value={member} onQueryChange={setQuery} onChange={setMember}
+        options={memberOptions} loading={lookupPending} disabled={busy}/>
+      {currentLookup?.failed && <Alert variant="error">{currentLookup.failed}</Alert>}
+      {noMemberMatches && <p role="status">{text('noMembers')}</p>}
     </>}
     {!sessionId && <><div className="space-y-2"><Label htmlFor={id + '-date'}>{text('date')}</Label><Input id={id + '-date'} type="date" value={date} disabled={busy} onChange={event => setDate(event.target.value)}/></div>
       <div className="space-y-2"><Label htmlFor={id + '-session'}>{text('session')}</Label><Select id={id + '-session'} value={session} disabled={busy} onChange={event => setSession(event.target.value)}>

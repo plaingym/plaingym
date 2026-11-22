@@ -28,12 +28,15 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); });
 describe('staff booking panels', () => {
   it.each(['roster', 'member'] as const)('closes an open %s waitlist form one millisecond after the exact cutoff', async kind => {
-    vi.useFakeTimers(); vi.setSystemTime(new Date(session.cancelBefore));
+    vi.useFakeTimers(); vi.setSystemTime(new Date(Date.parse(session.cancelBefore) - (kind === 'roster' ? 250 : 0)));
     try {
       await act(async () => { render(kind === 'roster' ? <BookingRosterPanel sessionId={sessionId}/> : <MemberBookingsPanel memberId={memberId}/>); });
       if (kind === 'roster') {
-        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Search members' })); });
-        fireEvent.change(screen.getByLabelText('Member', { exact: true }), { target: { value: memberId } });
+        const combo = screen.getByRole('combobox', { name: 'Member' });
+        fireEvent.change(combo, { target: { value: 'River' } });
+        await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+        fireEvent.keyDown(combo, { key: 'ArrowDown' });
+        fireEvent.keyDown(combo, { key: 'Enter' });
       } else fireEvent.change(screen.getByLabelText('Class', { exact: true }), { target: { value: sessionId } });
       expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(true);
       await act(async () => { await vi.advanceTimersByTimeAsync(1); });
@@ -56,8 +59,8 @@ describe('staff booking panels', () => {
     client.session.mockRejectedValue(new Error('offline'));
     render(<BookingRosterPanel sessionId={sessionId}/>);
     await screen.findByText('River Lee'); await waitFor(() => expect(client.session).toHaveBeenCalledWith(sessionId));
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Search members' })); });
-    fireEvent.change(screen.getByLabelText('Member', { exact: true }), { target: { value: memberId } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Member' }), { target: { value: 'River' } });
+    fireEvent.click(await screen.findByRole('option', { name: 'River Lee' }));
     expect(screen.queryByRole('checkbox')).toBeNull();
     await act(async () => { fireEvent.submit(screen.getByRole('button', { name: 'Book a place' }).closest('form')!); });
     expect(client.book).toHaveBeenCalledWith({ memberId, sessionId, allowWaitlist: false });
@@ -104,7 +107,7 @@ describe('staff booking panels', () => {
     await waitFor(() => expect(client.roster).toHaveBeenLastCalledWith(sessionId, 0));
     expect(screen.getByText('River Lee')).toBeDefined();
     expect(screen.queryByText('No bookings or check-ins yet')).toBeNull();
-    expect((screen.getByLabelText('Member name') as HTMLInputElement).disabled).toBe(false);
+    expect((screen.getByRole('combobox', { name: 'Member' }) as HTMLInputElement).disabled).toBe(false);
     await act(async () => { reject(new Error('offline')); });
     expect(screen.getByText('River Lee')).toBeDefined();
     await waitFor(() => expect(publish).toHaveBeenLastCalledWith({ ...counts, stale: true }));
@@ -265,9 +268,8 @@ describe('staff booking panels', () => {
     const user = userEvent.setup(); render(<BookingRosterPanel sessionId={sessionId}/>);
     await user.click(await screen.findByRole('button', { name: 'Cancel booking for River Lee' }));
     await screen.findByRole('alert');
-    await user.type(screen.getByLabelText('Member name'), 'River');
-    await user.click(screen.getByRole('button', { name: 'Search members' }));
-    await user.selectOptions(screen.getByLabelText('Member', { exact: true }), memberId);
+    await user.type(screen.getByRole('combobox', { name: 'Member' }), 'River');
+    await user.click(await screen.findByRole('option', { name: 'River Lee' }));
     await user.click(screen.getByRole('button', { name: 'Book a place' }));
     await screen.findByText('Booking saved.');
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
@@ -385,13 +387,113 @@ describe('staff booking panels', () => {
     client.book.mockResolvedValue({ ...booking, status: 'waitlisted', queueRank: 1200 });
     const user = userEvent.setup(); render(<BookingRosterPanel sessionId={sessionId}/>);
     await screen.findByText('River Lee');
-    await user.type(screen.getByLabelText('Member name'), 'River');
-    await user.click(screen.getByRole('button', { name: 'Search members' }));
-    await user.selectOptions(screen.getByLabelText('Member', { exact: true }), memberId);
+    expect(screen.queryByRole('button', { name: 'Search members' })).toBeNull();
+    await user.type(screen.getByRole('combobox', { name: 'Member' }), 'River');
+    await user.click(await screen.findByRole('option', { name: 'River Lee' }));
     await user.click(screen.getByRole('button', { name: 'Book a place' }));
     await screen.findByText('Added to the waitlist at position 1,200.');
     expect(client.members).toHaveBeenCalledWith('River');
     expect(client.book).toHaveBeenCalledWith({ memberId, sessionId, allowWaitlist: true });
+  });
+  it('finds a member in one field and books the ID chosen with the keyboard', async () => {
+    const user = userEvent.setup(); render(<BookingRosterPanel sessionId={sessionId}/>);
+    await screen.findByText('River Lee');
+    const combo = screen.getByRole('combobox', { name: 'Member' });
+    await user.type(combo, 'Ri');
+    expect(await screen.findByRole('option', { name: 'River Lee' })).toBeDefined();
+    expect(client.members).toHaveBeenLastCalledWith('Ri');
+    await user.keyboard('{ArrowDown}{Enter}');
+    expect((combo as HTMLInputElement).value).toBe('River Lee');
+    await user.click(screen.getByRole('button', { name: 'Book a place' }));
+    expect(client.book).toHaveBeenCalledWith({ memberId, sessionId, allowWaitlist: true });
+  });
+  it('looks up a trimmed query after 250 ms and only from two characters', async () => {
+    vi.useFakeTimers();
+    try {
+      await act(async () => { render(<BookingRosterPanel sessionId={sessionId}/>); });
+      const combo = screen.getByRole('combobox', { name: 'Member' });
+      fireEvent.change(combo, { target: { value: ' R ' } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+      expect(client.members).not.toHaveBeenCalled();
+      fireEvent.change(combo, { target: { value: '  River  ' } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(249); });
+      expect(client.members).not.toHaveBeenCalled();
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(client.members).toHaveBeenCalledWith('River');
+    } finally { vi.useRealTimers(); }
+  });
+  it('ignores a superseded lookup so an older response cannot offer a member under newer text', async () => {
+    const older = { ...member, id: 'older-member', firstName: 'River', lastName: 'Lee' };
+    const newer = { ...member, id: 'newer-member', firstName: 'Lee', lastName: 'Park' };
+    let replyOlder!: (rows: (typeof member)[]) => void, replyNewer!: (rows: (typeof member)[]) => void;
+    client.members.mockImplementation((query: string) => new Promise(resolve => {
+      if (query === 'Ri') replyOlder = resolve; else replyNewer = resolve;
+    }));
+    const user = userEvent.setup(); render(<BookingRosterPanel sessionId={sessionId}/>);
+    await screen.findByText('River Lee');
+    const combo = screen.getByRole('combobox', { name: 'Member' });
+    await user.type(combo, 'Ri');
+    await waitFor(() => expect(client.members).toHaveBeenCalledWith('Ri'));
+    await user.clear(combo); await user.type(combo, 'Lee');
+    await waitFor(() => expect(client.members).toHaveBeenCalledWith('Lee'));
+    await act(async () => { replyNewer([newer]); });
+    await screen.findByRole('option', { name: 'Lee Park' });
+    await act(async () => { replyOlder([older]); });
+    await waitFor(() => expect(screen.queryByRole('option', { name: 'River Lee' })).toBeNull());
+    expect(screen.getAllByRole('option').map(row => row.textContent)).toEqual(['Lee Park']);
+    await user.click(screen.getByRole('option', { name: 'Lee Park' }));
+    await user.click(screen.getByRole('button', { name: 'Book a place' }));
+    expect(client.book).toHaveBeenCalledWith({ memberId: 'newer-member', sessionId, allowWaitlist: true });
+  });
+  it('clears the chosen member when the text changes and disables booking until another is chosen', async () => {
+    const user = userEvent.setup(); render(<BookingRosterPanel sessionId={sessionId}/>);
+    await screen.findByText('River Lee');
+    const combo = screen.getByRole('combobox', { name: 'Member' });
+    await user.type(combo, 'River');
+    await user.click(await screen.findByRole('option', { name: 'River Lee' }));
+    expect((screen.getByRole('button', { name: 'Book a place' }) as HTMLButtonElement).disabled).toBe(false);
+    await user.type(combo, 'x');
+    expect(screen.queryByRole('option', { name: 'River Lee' })).toBeNull();
+    expect((combo as HTMLInputElement).value).toBe('River Leex');
+    expect((screen.getByRole('button', { name: 'Book a place' }) as HTMLButtonElement).disabled).toBe(true);
+    await user.clear(combo); await user.type(combo, 'River');
+    await user.click(await screen.findByRole('option', { name: 'River Lee' }));
+    expect((screen.getByRole('button', { name: 'Book a place' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+  it('shows noMembers for a completed lookup with no rows', async () => {
+    client.members.mockResolvedValue([]);
+    const user = userEvent.setup(); render(<BookingRosterPanel sessionId={sessionId}/>);
+    await screen.findByText('River Lee');
+    await user.type(screen.getByRole('combobox', { name: 'Member' }), 'Zed');
+    await screen.findByText('No matching members');
+    expect((screen.getByRole('button', { name: 'Book a place' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+  it('keeps the form and selected session when a member lookup fails', async () => {
+    client.members.mockRejectedValueOnce(new Error('offline')).mockResolvedValue([member]);
+    const user = userEvent.setup(); render(<BookingRosterPanel sessionId={sessionId}/>);
+    await screen.findByText('River Lee');
+    const combo = screen.getByRole('combobox', { name: 'Member' });
+    await user.type(combo, 'Ri');
+    expect((await screen.findByRole('alert')).textContent).toContain('Could not update bookings');
+    expect(screen.getByRole('combobox', { name: 'Member' })).toBeDefined();
+    expect(client.session).toHaveBeenCalledWith(sessionId);
+    await user.type(combo, 'v');
+    await user.click(await screen.findByRole('option', { name: 'River Lee' }));
+    await user.click(screen.getByRole('button', { name: 'Book a place' }));
+    expect(client.book).toHaveBeenCalledWith({ memberId, sessionId, allowWaitlist: true });
+  });
+  it('disables the member picker while a booking saves', async () => {
+    let save!: (value: typeof booking) => void;
+    client.book.mockReturnValue(new Promise(resolve => { save = resolve; }));
+    const user = userEvent.setup(); render(<BookingRosterPanel sessionId={sessionId}/>);
+    await screen.findByText('River Lee');
+    const combo = screen.getByRole('combobox', { name: 'Member' });
+    await user.type(combo, 'River');
+    await user.click(await screen.findByRole('option', { name: 'River Lee' }));
+    await user.click(screen.getByRole('button', { name: 'Book a place' }));
+    await waitFor(() => expect((combo as HTMLInputElement).disabled).toBe(true));
+    await act(async () => { save(booking); });
+    await waitFor(() => expect((combo as HTMLInputElement).disabled).toBe(false));
   });
   it('member tab selects classes by gym-local date and can decline the waitlist', async () => {
     const user = userEvent.setup(); render(<MemberBookingsPanel memberId={memberId}/>);
@@ -402,6 +504,7 @@ describe('staff booking panels', () => {
     await screen.findByText('Booking saved.');
     expect(client.book).toHaveBeenCalledWith({ memberId, sessionId, allowWaitlist: false });
     expect(client.sessions).toHaveBeenCalledWith(expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/), 'America/New_York');
+    expect(client.members).not.toHaveBeenCalled();
   });
   it('rejects a late cancellation visibly, keeps the place, and permits retry', async () => {
     const user = userEvent.setup(); client.cancel.mockRejectedValueOnce(new ApiError(409, 'conflict'));

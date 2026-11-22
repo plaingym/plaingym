@@ -5,23 +5,25 @@ import { Input } from './input.js';
 import { Label } from './label.js';
 
 /** One search/selection control. Suggestions stay in flow so scrollable dialogs never clip them. */
-export function Autocomplete({ label, value, query, options, onQueryChange, onChange, loading = false, required = false }: {
+export function Autocomplete({ label, value, query, options, onQueryChange, onChange, loading = false, required = false, disabled = false }: {
   label: string; value: string; query: string; options: readonly { id: string; label: string }[];
-  onQueryChange(query: string): void; onChange(id: string): void; loading?: boolean; required?: boolean;
+  onQueryChange(query: string): void; onChange(id: string): void; loading?: boolean; required?: boolean; disabled?: boolean;
 }) {
   const id = useId(), listId = id + '-list', input = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false), [active, setActive] = useState(0);
-  const visible = open && !loading, option = visible ? options[active] : undefined;
+  const visible = open && !loading && !disabled, option = visible ? options[active] : undefined;
   useEffect(() => { input.current?.setCustomValidity(required && !value ? t('shell/shell:selectSuggestion') : ''); }, [required, value]);
   useEffect(() => { if (open) document.getElementById(id + '-option-' + active)?.scrollIntoView?.({ block: 'nearest' }); }, [active, open, id]);
+  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
   function choose(item: { id: string; label: string }) { onQueryChange(item.label); onChange(item.id); setOpen(false); }
   return <div className="min-w-0 space-y-2 wrap-anywhere">
     <Label htmlFor={id}>{label}</Label>
-    <Input ref={input} id={id} role="combobox" autoComplete="off" value={query} required={required}
-      aria-autocomplete="list" aria-expanded={open} aria-controls={listId} aria-activedescendant={option ? id + '-option-' + active : undefined}
-      onFocus={() => setOpen(true)} onBlur={() => setOpen(false)}
-      onChange={event => { onQueryChange(event.target.value); onChange(''); setActive(0); setOpen(true); }}
+    <Input ref={input} id={id} role="combobox" autoComplete="off" value={query} required={required} disabled={disabled}
+      aria-autocomplete="list" aria-expanded={open && !disabled} aria-controls={listId} aria-activedescendant={option ? id + '-option-' + active : undefined}
+      onFocus={() => { if (!disabled) setOpen(true); }} onBlur={() => setOpen(false)}
+      onChange={event => { if (disabled) return; onQueryChange(event.target.value); onChange(''); setActive(0); setOpen(true); }}
       onKeyDown={event => {
+        if (disabled) return;
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
           event.preventDefault(); setOpen(true);
           setActive(index => !open ? 0 : Math.max(0, Math.min(options.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1))));
@@ -30,7 +32,7 @@ export function Autocomplete({ label, value, query, options, onQueryChange, onCh
         else if (event.key === 'Enter' && open) { event.preventDefault(); if (option) choose(option); }
         else if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); setOpen(false); }
       }} />
-    {open && <div className="rounded-lg border border-input bg-background p-1">
+    {open && !disabled && <div className="rounded-lg border border-input bg-background p-1">
       <ul id={listId} role="listbox" aria-label={label} className="max-h-56 overflow-y-auto">
         {!loading && options.map((item, index) => <li key={item.id} id={id + '-option-' + index} role="option" aria-selected={item.id === value}
           className={'flex min-h-11 cursor-pointer items-center rounded px-3 py-2 text-sm wrap-anywhere ' + (index === active ? 'bg-secondary' : '')}

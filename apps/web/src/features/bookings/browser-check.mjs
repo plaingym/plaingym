@@ -76,8 +76,10 @@ try {
     await expect(page.getByText('Booked', { exact: true })).toBeVisible();
     if (member) await page.getByLabel('Class', { exact: true }).selectOption('session');
     else {
-      await page.getByLabel('Member name').fill('Alexandria'); await page.getByRole('button', { name: 'Search members' }).click();
-      await page.getByLabel('Member', { exact: true }).selectOption('member');
+      const memberPicker = page.getByRole('combobox', { name: 'Member', exact: true });
+      await memberPicker.fill('Alexandria');
+      await expect(page.getByRole('option', { name: 'Alexandria Rivera-Martinez', exact: true })).toBeVisible();
+      await memberPicker.press('Enter');
     }
     await page.getByRole('button', { name: 'Book a place', exact: true }).click();
     await expect(page.getByText('Added to the waitlist at position 2.')).toBeVisible();

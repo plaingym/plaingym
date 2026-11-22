@@ -40,3 +40,12 @@ it('supports pointer selection, arrows, Escape and blur without trapping focus',
   fireEvent.focus(combo); await user.click(screen.getByRole('option', { name: 'Rivera household' })); expect(selected).toHaveBeenLastCalledWith('1');
   await user.tab(); expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Save' }));
 });
+it('stays closed and ignores edits while disabled', () => {
+  const query = vi.fn(), change = vi.fn();
+  render(<Autocomplete label="Member" query="" value="" disabled onQueryChange={query} onChange={change} options={options} />);
+  const combo = screen.getByRole('combobox');
+  expect((combo as HTMLInputElement).disabled).toBe(true);
+  fireEvent.focus(combo); fireEvent.change(combo, { target: { value: 'riv' } });
+  expect(screen.queryByRole('listbox')).toBeNull();
+  expect(query).not.toHaveBeenCalled(); expect(change).not.toHaveBeenCalled();
+});
