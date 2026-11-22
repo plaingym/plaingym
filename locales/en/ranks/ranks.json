@@ -71,6 +71,7 @@
   "readyHelp": "Members who meet the criteria for the selected rank. Select the ones the coaches have approved, then promote them together.",
   "noEligibleReady": "Nobody meets the criteria yet. Turn off \"Show ready members only\" to see everyone's progress.",
   "noEligibleAll": "Nobody is working toward this rank in this program.",
+  "noCriteriaReady": "This rank has no promotion criteria, so everyone who can receive it is listed as ready. Add criteria in its rank settings to list only members who meet them.",
   "selectAll": "Select everyone who is ready",
   "noProgramsYet": "No programs yet.",
   "noSubRanks": "No sub-ranks. Add stripes, degrees or tips if this rank has them."

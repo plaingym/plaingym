@@ -142,6 +142,20 @@ describe('rank management', () => {
     expect(client.call).toHaveBeenCalledWith('bulkPromote', expect.objectContaining({ memberIds: [memberId], subRank: 0, rankSystemId: system.id, rankId: rank.id, programId: program.id }));
     expect(client.call).toHaveBeenCalledWith('bulkPromote', expect.objectContaining({ memberIds: [secondMemberId], subRank: 1 }));
   });
+  it('says when the selected target rank has no criteria and keeps its members selectable', async () => {
+    const client = makeClient(); client.ranks.mockResolvedValue([{ ...rank, criteria: [] }]);
+    start(<RanksWorkspace gymId={gymId} configure={false} promote client={client}/>);
+    await screen.findByText('This rank has no promotion criteria, so everyone who can receive it is listed as ready. Add criteria in its rank settings to list only members who meet them.');
+    const ada = await screen.findByLabelText('Ada Student — Ready (Sub-rank 0)') as HTMLInputElement;
+    expect(ada.disabled).toBe(false);
+    fireEvent.click(ada);
+    expect(screen.getByRole('button', { name: 'Promote selected (1)' })).toBeDefined();
+  });
+  it('omits the no-criteria notice for a rank that has criteria', async () => {
+    const client = makeClient(); start(<RanksWorkspace gymId={gymId} configure={false} promote client={client}/>);
+    await screen.findByText('Ada Student — Ready (Sub-rank 0)');
+    expect(screen.queryByText('This rank has no promotion criteria, so everyone who can receive it is listed as ready. Add criteria in its rank settings to list only members who meet them.')).toBeNull();
+  });
   it('keeps settings and promotions hidden from front desk while rendering rank definitions', async () => {
     const client = makeClient(); start(<RanksWorkspace gymId={gymId} configure={false} promote={false} client={client}/>);
     await screen.findByText('0. Foundation');

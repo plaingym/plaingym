@@ -48,6 +48,7 @@ export function RanksWorkspace({ gymId, configure, promote, client = ranksClient
   const matchingPrograms = programs.data?.filter((item) => item.rankSystemId === systemId && item.active) ?? [];
   const programId = matchingPrograms.some((item) => item.id === programChoice) ? programChoice : matchingPrograms[0]?.id ?? '';
   const rankId = ranks.data?.some((item) => item.id === rankChoice) ? rankChoice : ranks.data?.[0]?.id ?? '';
+  const targetRank = ranks.data?.find((item) => item.id === rankId);
   const eligibility = useQuery({ queryKey: [...key, 'eligibility', programId, rankId, readyOnly],
     queryFn: () => client.eligibility(programId, rankId, readyOnly), enabled: promote && !!programId && !!rankId });
   const roster = useQuery({ queryKey: [...key, 'member-names'], queryFn: () => client.members(), enabled: promote });
@@ -116,6 +117,7 @@ export function RanksWorkspace({ gymId, configure, promote, client = ranksClient
         </Select></Field>
       </div>
       <CheckboxField label={text('readyOnly')} checked={readyOnly} onChange={(event) => { setReadyOnly(event.target.checked); setSelected([]); }}/>
+      {targetRank?.criteria.length === 0 && <p className="text-sm text-muted-foreground">{text('noCriteriaReady')}</p>}
       {eligibility.isFetching && <LoadingState label={text('loading')}/>}{eligibility.isError && <ErrorState message={text('loadFailed')} onRetry={refresh}/>}
       {roster.isError && <Alert variant="error">{text('namesUnavailable')}</Alert>}
       {eligibility.data?.length === 0 && <EmptyState title={text('noEligible')} description={text(readyOnly ? 'noEligibleReady' : 'noEligibleAll')}/>}

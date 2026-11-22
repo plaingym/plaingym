@@ -27,7 +27,8 @@ from creation; future attendance is ignored. Both detail widgets expose at most
 
 Promotion-ready delegates to ranks `dashboardEligibility`, considering the first
 available rank/sub-rank in rank-position order for each active program. An unmet
-next step cannot be skipped in favor of an easier higher rank. Members ready in
+next step cannot be skipped in favor of an easier higher rank. A next step whose
+rank has no promotion criteria is left out. Members ready in
 several programs appear once, using the first program in service order. Enabled
 module criteria are forwarded. All service reads use separate short transactions;
 the dashboard never wraps service calls in a transaction. The last-seen queries

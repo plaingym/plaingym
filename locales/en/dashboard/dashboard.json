@@ -10,7 +10,7 @@
   "widget.not_seen": "Not seen in 14+ days",
   "widget.promotion_ready": "Promotion ready",
   "description.not_seen": "Active members whose last visit was at least 14 days ago. Open mat counts as a visit. Members who have never visited appear after their first 14 days.",
-  "description.promotion_ready": "Active members who meet the criteria for their next rank or sub-rank in an active program. Each member appears once.",
+  "description.promotion_ready": "Active members who meet the criteria for their next rank or sub-rank in an active program. Ranks with no criteria set are left out. Each member appears once.",
   "empty.not_seen": "No members need a follow-up.",
   "empty.promotion_ready": "No members are ready for promotion yet.",
   "lastSeen": "Last visit",

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it } from 'vitest';
-import { attendances, memberRanks, uuidv7, type members } from '@plaingym/db';
+import { eq } from 'drizzle-orm';
+import { attendances, memberRanks, ranks, uuidv7, type members } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { targetCriterionSchema } from '../../core/interfaces/extensions.js';
@@ -8,8 +9,11 @@ import { TestClock } from '../../core/clock.js';
 import { createAttendanceQueries } from '../attendance/attendance.js';
 import { countPromotionAttendance, promotionAttendanceKey } from '../attendance/promotion.query.js';
 import { promotionAttendanceScanChoices } from '../attendance/promotion.query.test-helper.js';
+import { createMembersService } from '../members/members.js';
 import { createPromotionCriteria } from '../ranks/criteria.js';
 import { createRanksService } from '../ranks/ranks.service.js';
+import { createDashboardService } from './dashboard.js';
+import { createNotSeenRead } from './not-seen.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
 const clock = new TestClock('2026-11-01T12:00:00Z');
@@ -29,7 +33,9 @@ it.each([false, true])('matches paginated eligibility for next steps, linked pro
     { providerId: 'minimum-age', config: { target: 16 } },
     { providerId: 'custom-check', config: { target: 1 } },
   ] });
-  const second = await factory('ranks', gymId, { rankSystemId: system.id, name: 'Second', position: 1, criteria: [] });
+  // The next rank carries a criterion too, so the dashboard lists the member who reaches it.
+  const second = await factory('ranks', gymId, { rankSystemId: system.id, name: 'Second', position: 1,
+    criteria: [{ providerId: 'classes-since-promotion', config: { target: 0 } }] });
   const roster: (typeof members.$inferSelect)[] = [];
   for (let index = 0; index < 8; index++) roster.push(await factory('members', gymId, {
     firstName: 'Member', lastName: String(index), status: index === 7 ? 'cancelled' : 'active',
@@ -97,10 +103,61 @@ it.each([false, true])('matches paginated eligibility for next steps, linked pro
       expect(own.subRank).toBe(program.next.subRank);
       expect(progress.criteria.filter(row => row.programId === program.id).map(row => ({ current: row.current, target: row.required, met: row.eligible })))
         .toEqual(own.criteria.map(({ current, target, met }) => ({ current, target, met })));
-      expect(result.some(row => row.memberId === member.id)).toBe(own.eligible);
+      // The dashboard leaves out a next step whose rank has no criteria; every other step must agree.
+      expect(result.some(row => row.memberId === member.id)).toBe(own.eligible && own.criteria.length > 0);
     }
   }
   await expect(ranks.dashboardEligibility(gymId)).rejects.toMatchObject({ code: 'conflict' });
+});
+
+it('leaves out a next step whose rank has no criteria, while eligibility still offers that rank', async () => {
+  const gymId = uuidv7();
+  await factory('gyms', gymId);
+  const system = await factory('rankSystems', gymId), program = await factory('programs', gymId, { rankSystemId: system.id, active: true });
+  const rank = await factory('ranks', gymId, { rankSystemId: system.id, position: 0, criteria: [] });
+  const member = await factory('members', gymId, { firstName: 'New', lastName: 'Member', status: 'active', createdAt: new Date('2026-10-01Z') });
+  const service = createRanksService({ scope: database.forGym, clock, criteria: createPromotionCriteria(createAttendanceQueries({ scope: database.forGym, clock })) });
+  const dashboard = createDashboardService({ members: createMembersService({ scope: database.forGym, clock }),
+    ranks: service, notSeen: createNotSeenRead(database.forGym) });
+  const widget = async () => (await dashboard.get({ gymId, roles: ['owner'], clock })).data.widgets.find(item => item.id === 'promotion_ready');
+  expect(await widget()).toMatchObject({ count: 0, members: [] });
+  // The Ranks page still offers the first rank so staff can award it in bulk.
+  expect((await service.eligibility(gymId, { programId: program.id, rankId: rank.id, limit: 100, offset: 0 })).data)
+    .toEqual([expect.objectContaining({ memberId: member.id, eligible: true, criteria: [] })]);
+  // A zero-target criterion is met without attendance; a one-class target is not.
+  await database.forGym(gymId, tx => tx.update(ranks).set({ criteria: [
+    { providerId: 'classes-since-promotion', config: { target: 0 } }] }).where(eq(ranks.id, rank.id)));
+  expect(await widget()).toMatchObject({ count: 1, members: [{ memberId: member.id, programId: program.id, rankId: rank.id }] });
+  await database.forGym(gymId, tx => tx.update(ranks).set({ criteria: [
+    { providerId: 'classes-since-promotion', config: { target: 1 } }] }).where(eq(ranks.id, rank.id)));
+  expect(await widget()).toMatchObject({ count: 0, members: [] });
+});
+
+it('lists a ranked member for another program once and never for a later rank in a program whose next step has no criteria', async () => {
+  const gymId = uuidv7();
+  await factory('gyms', gymId);
+  const [systemA, systemB, systemC] = await Promise.all([factory('rankSystems', gymId), factory('rankSystems', gymId), factory('rankSystems', gymId)]);
+  const programA = await factory('programs', gymId, { name: 'A', rankSystemId: systemA.id, active: true });
+  const programB = await factory('programs', gymId, { name: 'B', rankSystemId: systemB.id, active: true });
+  const programC = await factory('programs', gymId, { name: 'C', rankSystemId: systemC.id, active: true });
+  const whiteA = await factory('ranks', gymId, { name: 'White', rankSystemId: systemA.id, position: 0, criteria: [] });
+  // A later rank that this member would meet must never be reached through the no-criteria first rank.
+  await factory('ranks', gymId, { name: 'Yellow', rankSystemId: systemA.id, position: 1,
+    criteria: [{ providerId: 'classes-since-promotion', config: { target: 0 } }] });
+  const whiteC = await factory('ranks', gymId, { name: 'White', rankSystemId: systemC.id, position: 0, criteria: [] });
+  await factory('ranks', gymId, { name: 'Yellow', rankSystemId: systemC.id, position: 1, criteria: [] });
+  const beginnerB = await factory('ranks', gymId, { name: 'Beginner', rankSystemId: systemB.id, position: 0,
+    criteria: [{ providerId: 'classes-since-promotion', config: { target: 1 } }] });
+  const ranked = await factory('members', gymId, { firstName: 'Ranked', lastName: 'Member', status: 'active', createdAt: new Date('2026-10-01Z') });
+  await factory('members', gymId, { firstName: 'Unranked', lastName: 'Member', status: 'active', createdAt: new Date('2026-10-01Z') });
+  await factory('memberRanks', gymId, { memberId: ranked.id, programId: programC.id, rankSystemId: systemC.id,
+    rankId: whiteC.id, subRank: 0, promotedAt: new Date('2026-10-02Z') });
+  await factory('attendances', gymId, { memberId: ranked.id, programId: programB.id, occurredAt: new Date('2026-10-03Z'), kind: 'class' });
+  const service = createRanksService({ scope: database.forGym, clock, criteria: createPromotionCriteria(createAttendanceQueries({ scope: database.forGym, clock })) });
+  expect(await service.dashboardEligibility(gymId)).toEqual([{ memberId: ranked.id, firstName: 'Ranked', lastName: 'Member',
+    programId: programB.id, rankId: beginnerB.id }]);
+  // Both programs still offer their first, no-criteria rank to the Ranks page.
+  expect((await service.eligibility(gymId, { programId: programA.id, rankId: whiteA.id, limit: 100, offset: 0 })).data).toHaveLength(2);
 });
 
 it.each([false, true])('scopes each promotion window to its own lower bound and agrees with evaluate (open mat = %s)', async openMatCountsAsClass => {

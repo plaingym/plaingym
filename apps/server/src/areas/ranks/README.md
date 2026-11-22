@@ -43,7 +43,9 @@ after locking the member row, then sorts it.
 
 Eligibility uses `nextPromotion` for its requested rank; member progress and the
 dashboard use it across the program's ranks, including when no previous rank
-exists. The dashboard reads latest promotions with `DISTINCT ON`, ordered by the
+exists. A next step whose rank has no criteria counts as eligible in `eligibility`
+and `memberProgress` (so staff can award a first rank in bulk), but the dashboard
+leaves it out, and never falls through to a later rank in that program. The dashboard reads latest promotions with `DISTINCT ON`, ordered by the
 same date, position, sub-rank, creation and ID rules, joining the active roster
 instead of binding every member ID. It consumes those rows without sorting again.
 Its criterion registry supports an optional local `prepareBatch` provider hook;

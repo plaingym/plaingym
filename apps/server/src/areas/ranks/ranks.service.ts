@@ -127,7 +127,9 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
         const ordered = snapshot.rankRows.filter(rank => rank.rankSystemId === program.rankSystemId);
         return snapshot.roster.flatMap(member => {
           const previous = latest.get(program.id + ':' + member.id), target = nextPromotion(previous, ordered);
-          if (!target) return [];
+          // A rank with no criteria is not a promotion step the dashboard can report on: every member
+          // would meet an empty list. The Ranks page still offers it so staff can award a first rank.
+          if (!target || !target.rank.criteria.length) return [];
           const { rank } = target;
           const context: CriterionContext = { attendanceScope: { kind: 'gym', gymId }, gymId, memberId: member.id,
             programId: program.id, rankId: rank.id, promotedAt: (previous?.promotedAt ?? member.createdAt).toISOString(),
