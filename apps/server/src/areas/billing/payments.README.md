@@ -114,6 +114,9 @@ parent) is released (newest first, before any unsent reservation, and only as fa
 external refund needs its room) with one `refund_missing` staff notice. If Stripe later
 reports that refund succeeded, billing keeps it failed and leaves the invoice as it is, and
 records the report once, with a `refund_found` staff notice, for staff to reconcile by hand.
+A failure Stripe reports after that success changes nothing in billing either; it is recorded
+once, retires a `refund_found` notice still queued, and sends a `refund_found_failed` follow-up
+asking staff who already corrected the payment to recheck it.
 A pending refund whose read is otherwise unknown or doesn't match blocks any external refund
 that still needs room after those releases, even with no unsent reservation, though never
 the app's own, with a `billing.refunds.unverified` warn line, and a read that throws fails the write. Release notices run immediately after commit and count the

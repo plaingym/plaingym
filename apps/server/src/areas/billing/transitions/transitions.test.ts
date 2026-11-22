@@ -718,6 +718,84 @@ describe('invoice transitions with real PostgreSQL', () => {
       expect((await f.read()).audits.filter(row => row.action === effectCompleted && row.targetId === notices[0]!.targetId)).toHaveLength(1);
     } finally { setLogSink(previous); }
   });
+  describe('a refund released as missing that Stripe reports failed', () => {
+    async function released() {
+      const f = await fixture(); await succeed(f); await f.transitions.cardSucceeded(f.context, f.success);
+      const payment = (await f.read()).payments[0]!, missingId = uuidv7();
+      await f.transitions.refund(f.context, { invoiceId: f.invoice.id, paymentId: payment.id, currency: 'CAD', refundId: missingId,
+        amountCents: 2000, status: 'pending', processorId: 're_unreadable' });
+      const external = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount: 9000, idempotencyKey: 'external' });
+      const writer = createDisputeRefundWriter({ ...f.options, transitions: f.transitions });
+      expect(await writer.refund(f.gymId, payment, external, f.provider)).toBe(true);
+      const found = { ...external, id: 're_unreadable', amount: 2000, status: 'succeeded' as const };
+      const report = (status: 'succeeded' | 'failed' | 'canceled') => writer.refund(f.gymId, payment, { ...found, status }, f.provider);
+      const notices = async (notice: string) => (await f.read()).audits
+        .filter(row => row.action === effectCreated && (row.after as { notice?: string }).notice === notice);
+      const job = () => ({ gymId: f.gymId, timezone: 'UTC', clock: f.clock, jobId: uuidv7(), attempt: 1 });
+      const staffSubjects = () => f.email.messages.filter(message => message.to === 'staff@example.invalid').map(message => message.subject);
+      return { f, payment, missingId, report, notices, job, staffSubjects };
+    }
+    const followUps = (rows: Awaited<ReturnType<Fixture['read']>>) => rows.audits.filter(row => row.action === 'billing.refund.missing_found_failed');
+
+    it('tells staff once after the found notice was delivered, and leaves the invoice and refund rows unchanged', async () => {
+      const { f, payment, missingId, report, notices, job, staffSubjects } = await released();
+      expect(await report('succeeded')).toBe(true);
+      await f.effects.run((await notices('refund_found'))[0]!.targetId, job());
+      const before = await f.read();
+      const lines: string[] = [], previous = setLogSink(line => { lines.push(line); });
+      try {
+        expect(await report('failed')).toBe(true);
+        expect(lines.map(line => JSON.parse(line) as Record<string, unknown>)).toEqual([{ time: expect.any(String),
+          level: 'warn', event: 'billing.refunds.missing_found_failed', gymId: f.gymId, invoiceId: f.invoice.id, refundId: missingId }]);
+      } finally { setLogSink(previous); }
+      const after = await f.read();
+      expect(after.invoice).toEqual(before.invoice);
+      expect(after.refunds).toEqual(before.refunds);
+      expect(after.refunds.find(row => row.id === missingId)).toMatchObject({ status: 'failed', processorId: 're_unreadable' });
+      expect(followUps(after)).toMatchObject([{ targetType: 'refund', targetId: missingId,
+        after: { processorId: 're_unreadable', amountCents: 2000, currency: 'CAD' } }]);
+      const followUp = await notices('refund_found_failed');
+      expect(followUp).toHaveLength(1);
+      expect(followUp[0]!.after).toEqual({ kind: 'staff_notice', notice: 'refund_found_failed', invoiceId: f.invoice.id,
+        paymentId: payment.id, refundId: missingId });
+      // Only the follow-up and its audit are new.
+      expect(after.audits.filter(row => !before.audits.some(old => old.id === row.id)).map(row => row.action).sort())
+        .toEqual(['billing.refund.missing_found_failed', effectCreated]);
+      await f.effects.run(followUp[0]!.targetId, job());
+      expect(staffSubjects()).toEqual(['Refund for invoice 1 was found in Stripe', 'Refund for invoice 1 failed in Stripe']);
+      expect(f.email.messages.at(-1)!.text).toContain('Stripe now reports the refund of');
+    });
+    it('retires a queued found notice, and a replay sends the follow-up to each recipient only once', async () => {
+      const { f, report, notices, job, staffSubjects } = await released();
+      expect(await report('succeeded')).toBe(true);
+      expect(await report('failed')).toBe(true);
+      const [missing] = await notices('refund_missing'), [found] = await notices('refund_found');
+      const [followUp] = await notices('refund_found_failed');
+      for (const effect of [found!, followUp!, missing!]) await f.effects.run(effect.targetId, job());
+      expect(staffSubjects()).toEqual(['Refund for invoice 1 failed in Stripe']);
+      const settled = await f.read();
+      for (const effect of [found!, followUp!, missing!])
+        expect(settled.audits.filter(row => row.action === effectCompleted && row.targetId === effect.targetId)).toHaveLength(1);
+      // A replayed failure adds no audit or effect, and running the work again sends nothing more.
+      expect(await report('failed')).toBe(true);
+      expect(await f.read()).toEqual(settled);
+      for (const effect of [found!, followUp!, missing!]) await f.effects.run(effect.targetId, { ...job(), attempt: 2 });
+      expect(staffSubjects()).toEqual(['Refund for invoice 1 failed in Stripe']);
+      expect(followUps(await f.read())).toHaveLength(1);
+    });
+    it('sends no follow-up for a failure without a found report, or for a cancellation after one', async () => {
+      const { f, report, notices } = await released();
+      const releasedRows = await f.read();
+      expect(await report('failed')).toBe(true);
+      expect(await f.read()).toEqual(releasedRows);
+      expect(await report('succeeded')).toBe(true);
+      const foundRows = await f.read();
+      expect(await report('canceled')).toBe(true);
+      expect(await f.read()).toEqual(foundRows);
+      expect(followUps(foundRows)).toEqual([]);
+      expect(await notices('refund_found_failed')).toEqual([]);
+    });
+  });
   it('releases nothing when the read of a pending processor refund throws', async () => {
     const f = await fixture(); await succeed(f); await f.transitions.cardSucceeded(f.context, f.success);
     const payment = (await f.read()).payments[0]!;

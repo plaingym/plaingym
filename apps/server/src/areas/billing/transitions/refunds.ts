@@ -7,8 +7,8 @@ import { conflict, notFound, type MutationContext } from '../../../core/interfac
 import { logWarn } from '../../../core/log.js';
 import type { RefundTransition, ProcessorRefundTransition, InvoiceTransitionResult } from '../../../core/interfaces/invoice-transitions.js';
 import { pastRefundWindow, sameRefund } from './lapsed-refunds.js';
-import { accepted, audit, duplicateReservation, effect, effectCreated, recorded, result, snapshot, type InvoiceRow,
-  type TransitionEffect } from './store.js';
+import { accepted, audit, duplicateReservation, effect, effectCreated, missingFound, missingFoundFailed, recorded, result, snapshot,
+  type InvoiceRow, type TransitionEffect } from './store.js';
 
 /** The caller holds the invoice lock; every reservation, audit and effect commits with the refund. */
 export async function applyRefund(tx: Transaction, context: MutationContext, clock: Clock, invoice: InvoiceRow,
@@ -31,12 +31,24 @@ export async function applyRefund(tx: Transaction, context: MutationContext, clo
   // invoice stay as they are, and the first such report is recorded once with a staff notice.
   if (previous?.status === 'failed' && previous.processorId !== null && previous.processorId === request.processorId
     && request.status === 'succeeded' && await releasedAsMissing(tx, invoice.id, previous)) {
-    if (await recorded(tx, 'billing.refund.missing_found', previous.id)) return result('ignored', invoice);
-    await audit(tx, context, clock, 'billing.refund.missing_found', 'refund', previous.id,
+    if (await recorded(tx, missingFound, previous.id)) return result('ignored', invoice);
+    await audit(tx, context, clock, missingFound, 'refund', previous.id,
       { processorId: previous.processorId, amountCents: previous.amountCents, currency: previous.currency });
     await effect(tx, context, clock, { kind: 'staff_notice', notice: 'refund_found', invoiceId: invoice.id,
       paymentId: payment.id, refundId: previous.id });
     logWarn('billing.refunds.missing_found', { gymId: context.gymId, invoiceId: invoice.id, refundId: previous.id });
+    return result('ignored', invoice);
+  }
+  // A failure after that success makes the found notice obsolete. The row and the invoice still stay as they are: the
+  // first such report is recorded once with a follow-up for staff who may already have acted on the found notice.
+  if (previous?.status === 'failed' && previous.processorId !== null && previous.processorId === request.processorId
+    && request.status === 'failed' && await recorded(tx, missingFound, previous.id)) {
+    if (await recorded(tx, missingFoundFailed, previous.id)) return result('ignored', invoice);
+    await audit(tx, context, clock, missingFoundFailed, 'refund', previous.id,
+      { processorId: previous.processorId, amountCents: previous.amountCents, currency: previous.currency });
+    await effect(tx, context, clock, { kind: 'staff_notice', notice: 'refund_found_failed', invoiceId: invoice.id,
+      paymentId: payment.id, refundId: previous.id });
+    logWarn('billing.refunds.missing_found_failed', { gymId: context.gymId, invoiceId: invoice.id, refundId: previous.id });
     return result('ignored', invoice);
   }
   if (previous && !reversed && (previous.status === request.status && (previous.processorId !== null || request.processorId === undefined)

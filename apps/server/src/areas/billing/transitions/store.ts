@@ -22,8 +22,11 @@ export interface TransitionEffect {
   bankCode?: BankFailureCode;
   checkoutBankFailure?: true;
   /** A staff notice's subject; absent on older notices, which all report a duplicate payment. */
-  notice?: 'refund_canceled' | 'refund_failed' | 'refund_released' | 'refund_missing' | 'refund_found' | 'refund_arrived' | 'duplicate_released' | 'credits_not_granted';
+  notice?: 'refund_canceled' | 'refund_failed' | 'refund_released' | 'refund_missing' | 'refund_found' | 'refund_found_failed'
+    | 'refund_arrived' | 'duplicate_released' | 'credits_not_granted';
 }
+/** A refund released as missing that Stripe later reported succeeded, and the failure Stripe reported after that. */
+export const missingFound = 'billing.refund.missing_found', missingFoundFailed = 'billing.refund.missing_found_failed';
 /** The app gave up on these attempts before the member's card was charged: neither a decline nor a collection. */
 export const createAbandoned = 'create_abandoned', confirmAbandoned = 'confirm_abandoned';
 export const testCleared = 'test_cleared';

@@ -40,6 +40,7 @@ const senders: [string, number, (notifications: TransitionNotifications, notice:
   ['reversed refund staff notice', 0, (n, notice) => n.staffNotice({ ...notice, reason: 'refund_failed', refund, reversed: true })],
   ['missing refund staff notice', 0, (n, notice) => n.staffNotice({ ...notice, reason: 'refund_missing', refund })],
   ['found refund staff notice', 0, (n, notice) => n.staffNotice({ ...notice, reason: 'refund_found', refund })],
+  ['failed found refund staff notice', 0, (n, notice) => n.staffNotice({ ...notice, reason: 'refund_found_failed', refund })],
 ];
 
 describe('keyed billing notices', () => {
@@ -64,6 +65,20 @@ describe('keyed billing notices', () => {
     await f.notifications.staffNotice({ ...await f.notice(uuidv7()), reason: 'refund_found', refund });
     expect(f.fake.messages).toHaveLength(1);
     expect(f.fake.messages[0]).toMatchObject({ to: 'owner@example.invalid', subject: 'Refund for invoice 7 was found in Stripe' });
+  });
+  it('tells each staff recipient once that a found refund then failed, asking those who acted to recheck', async () => {
+    const f = await fixture(['first@example.invalid', 'second@example.invalid']), notice = await f.notice(uuidv7());
+    f.fake.respondNext(new DeliveryError('not_accepted', 'Mailbox full'));
+    await expect(f.notifications.staffNotice({ ...notice, reason: 'refund_found_failed', refund })).rejects.toThrow('Mailbox full');
+    await f.notifications.staffNotice({ ...notice, reason: 'refund_found_failed', refund });
+    await f.notifications.staffNotice({ ...notice, reason: 'refund_found_failed', refund });
+    expect(f.fake.messages.map(message => message.to).sort()).toEqual(['first@example.invalid', 'second@example.invalid']);
+    expect(f.fake.messages[0]).toMatchObject({ subject: 'Refund for invoice 7 failed in Stripe' });
+    expect(f.fake.messages[0]!.text).toMatch(/25\.00 for invoice 7/);
+    expect(f.fake.messages[0]!.text).toContain('as failed, so the payer did not receive it');
+    expect(f.fake.messages[0]!.text).toContain('Check the payment and its refunds in Stripe and in billing.');
+    expect(f.fake.messages[0]!.text).toContain('If you made a manual correction after the earlier success notice, recheck that correction as well.');
+    expect(f.fake.messages[0]!.text).toContain('Refund the payer only what they are still owed.');
   });
   it('one failed charge gets one notice even if its attempt turns action-required between retries', async () => {
     const f = await fixture(), notice = await f.notice(uuidv7());

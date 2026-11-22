@@ -332,6 +332,21 @@ queues one `notice: 'refund_found'` staff notice naming the invoice and amount, 
 counts as handled (the transition answers `ignored`), so the webhook completes, and staff
 reconcile the payment by hand; a replay writes, queues and logs nothing more. A pending
 `refund_missing` notice checks for that success before delivery and skips the obsolete email.
+If Stripe then reports the same refund `failed`, the found notice's correction is no longer
+due. Billing still leaves the row `failed` and the invoice, its refunded total, reservations
+and credits as they are; the first such report writes a `billing.refund.missing_found_failed`
+audit, queues one `notice: 'refund_found_failed'` staff notice in the same transaction, and
+logs `billing.refunds.missing_found_failed` at warn with the gym, invoice and refund row IDs.
+That audit is the guard: a replay writes, queues and logs nothing more, and a failure or
+cancellation report for a released row with no `billing.refund.missing_found` audit queues
+no follow-up. So staff hear about such a refund in this order: `refund_missing` (when it
+is released), `refund_found` (Stripe reports success) and `refund_found_failed` (Stripe then
+reports failure). A queued `refund_found` notice checks under the invoice lock for the
+failure audit and skips its email; one already past that check may still reach staff, so
+the follow-up stands on its own: it names the invoice and amount, says Stripe now reports
+the refund failed and billing never changed the invoice, and asks staff who corrected the
+payment after the found email to recheck it in Stripe and billing. Each staff recipient
+gets it once, under the usual per-recipient delivery key.
 An unread, unverified or mismatched pending row still reserves its full amount. Unverified
 means any other unknown read: the refund's charge or parent intent is missing, its gym
 metadata isn't this gym's, or the read is uncertain. Such a row forces a retry whenever
@@ -407,7 +422,7 @@ listing it. Late card successes still record and refund duplicates.
 
 `createTransitionNotifications` sends localized receipts, signed pay/update-card
 links, and staff notices (a duplicate card payment, a failed processor refund, a
-canceled app-created refund, a missing processor refund, a later success for one, a duplicate payment's released reservation, or a staff refund released after its window).
+canceled app-created refund, a missing processor refund, a later success for one and a failure after that success, a duplicate payment's released reservation, or a staff refund released after its window).
 Runtime must supply a gym SMTP resolver (or demo outbox), trusted canonical origin and staff recipients; `prepare` may also
 return the gym's name. A receipt uses the shared email layout (`renderReceipt` in `emails/billing/transitions.ts`)
 headed with that name, or "Your gym" without one; dunning and staff notices stay one plain paragraph. Household email respects

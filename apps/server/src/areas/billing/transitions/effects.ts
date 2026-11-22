@@ -19,8 +19,8 @@ import { retryAt } from '../runner/eligibility.js';
 import { retriesStopped } from './bank.js';
 import { createPackCredits } from '../packs/credits.js';
 import { pastRefundWindow, sameRefund, settleLapsed } from './lapsed-refunds.js';
-import { abandonedAttempt, audit, effectCompleted, effectCreated, effectPublished, lockInvoice, recorded, snapshot, systemContext as system, terminal,
-  type TransitionEffect } from './store.js';
+import { abandonedAttempt, audit, effectCompleted, effectCreated, effectPublished, lockInvoice, missingFound, missingFoundFailed, recorded, snapshot,
+  systemContext as system, terminal, type TransitionEffect } from './store.js';
 
 export const effectJob = 'billing.transitions.effect';
 /** How far back the publisher looks. A publish normally follows its commit at once, or within the hour. */
@@ -248,11 +248,13 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       const payment = work.paymentId ? (await tx.select().from(payments).where(eq(payments.id, work.paymentId)))[0] : undefined;
       if (payment && payment.invoiceId !== invoice.id) notFound();
       const refund = (work.notice === 'refund_failed' || work.notice === 'refund_canceled' || work.notice === 'refund_released'
-        || work.notice === 'refund_missing' || work.notice === 'refund_found' || work.notice === 'refund_arrived') && work.refundId
+        || work.notice === 'refund_missing' || work.notice === 'refund_found' || work.notice === 'refund_found_failed'
+        || work.notice === 'refund_arrived') && work.refundId
         ? (await tx.select().from(refunds).where(eq(refunds.id, work.refundId)))[0] : undefined;
       if (refund && refund.paymentId !== payment?.id) notFound();
-      const missingRefundFound = work.notice === 'refund_missing' && refund
-        && await recorded(tx, 'billing.refund.missing_found', refund.id);
+      const missingRefundFound = work.notice === 'refund_missing' && refund && await recorded(tx, missingFound, refund.id);
+      // Read under the invoice lock, so a failure recorded before this point always retires the found notice.
+      const foundRefundFailed = work.notice === 'refund_found' && refund && await recorded(tx, missingFoundFailed, refund.id);
       const refunded = work.notice === 'duplicate_released' && payment
         ? await tx.select({ amountCents: refunds.amountCents }).from(refunds).where(and(eq(refunds.paymentId, payment.id), eq(refunds.status, 'succeeded'))) : [];
       // A refund that failed after it was reported successful gets its own wording.
@@ -271,7 +273,7 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
           eq(classCreditEntries.saleId, sale.id), eq(classCreditEntries.kind, 'reverse')))).reduce((total, row) => total - row.credits, 0) : 0;
       const retryStopped = work.kind === 'retry' && await recorded(tx, retriesStopped, invoice.id);
       return { event, work, invoice, payment, refund, refunded, reversed, attempt, latestAttempt, lines, sale, reversedCredits, retryStopped,
-        missingRefundFound };
+        missingRefundFound, foundRefundFailed };
     });
     if (!loaded) return;
     const { work, invoice, payment, refund, refunded, reversed, attempt, latestAttempt, lines, sale, reversedCredits } = loaded;
@@ -323,7 +325,11 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
         if (!loaded.missingRefundFound) await options.notifications.staffNotice({ ...data, reason: 'refund_missing', refund });
       } else if (work.notice === 'refund_found') {
         if (!refund) throw new Error('Found refund notice has no refund');
-        await options.notifications.staffNotice({ ...data, reason: 'refund_found', refund });
+        // Stripe has since reported the refund failed: its follow-up replaces this obsolete correction.
+        if (!loaded.foundRefundFailed) await options.notifications.staffNotice({ ...data, reason: 'refund_found', refund });
+      } else if (work.notice === 'refund_found_failed') {
+        if (!refund) throw new Error('Failed found refund notice has no refund');
+        await options.notifications.staffNotice({ ...data, reason: 'refund_found_failed', refund });
       } else if (work.notice !== 'refund_failed') await options.notifications.staffNotice(data);
       else if (refund) await options.notifications.staffNotice({ ...data, reason: 'refund_failed', refund, reversed,
         ...(reversedCredits > 0 ? { reversedCredits } : {}) });
