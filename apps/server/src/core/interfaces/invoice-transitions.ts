@@ -142,9 +142,10 @@ export interface InvoiceRefundFixture {
 // `duplicateReservation` (areas/billing/transitions/store.ts) also counts a `duplicate_payment` reason with no
 // `billing.refund.requested` audit on a payment that wasn't accepted; the fake doesn't model that case.
 // `missing` marks a release on a missing report. `found` records the later success; `foundFailed` records the first
-// failure reported after that success (a failure with no earlier success never sets it).
+// failure reported after that success (a failure with no earlier success never sets it). `failedFirst` records a
+// verified failure (a processor report or matching failed pending read) before any success; no later success counts.
 interface StoredRefund { gymId: Id; request: RefundTransition; appCreated: boolean; tagged: boolean; duplicate: boolean; createdAt: Date;
-  missing?: true; found?: true; foundFailed?: true; }
+  missing?: true; found?: true; foundFailed?: true; failedFirst?: true; }
 const terminal = new Set<InvoiceSnapshot['status']>(['paid', 'partially_refunded', 'refunded', 'void']);
 const canceled = (attempt: InvoiceAttemptFixture) => attempt.declineCode === 'intent_canceled' || attempt.declineCode === 'confirm_abandoned';
 
@@ -365,7 +366,9 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
   async refund(context: MutationContext, request: RefundTransition): Promise<InvoiceTransitionResult> {
     return this.#applyRefund(context, request);
   }
-  #applyRefund(context: MutationContext, request: RefundTransition, appCreated = false, missing = false): InvoiceTransitionResult {
+  /** `verified` marks a processor report or pending read for the row's own processor ID; only `processorRefund` passes it. */
+  #applyRefund(context: MutationContext, request: RefundTransition, appCreated = false, missing = false,
+    verified = false): InvoiceTransitionResult {
     const invoice = this.#invoice(context.gymId, request.invoiceId);
     if (invoice.status === 'processing') conflict('Payment is processing');
     const payment = this.#payments.get(scopedKey(context.gymId, request.paymentId)) ?? notFound();
@@ -381,15 +384,18 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
       conflict('Refund ID reused with different parameters');
     const reversed = existing?.status === 'succeeded' && request.status === 'failed'
       && existing.processorId !== undefined && existing.processorId === request.processorId;
-    // Record the first success and its later failure for staff, keeping the released refund and invoice as they are.
+    // Record the first success and its later failure for staff, keeping the released refund and invoice as they are. A
+    // verified failure before any success is recorded silently, and a success after it is stale.
     if (previous?.missing && existing?.status === 'failed' && existing.processorId !== undefined
       && existing.processorId === request.processorId) {
-      if (request.status === 'succeeded' && !previous.found) {
+      if (request.status === 'succeeded' && !previous.found && !previous.failedFirst) {
         this.#refunds.set(key, { ...previous, found: true });
         this.#effect(context.gymId, invoice.id, 'staff_notice', payment.id);
       } else if (request.status === 'failed' && previous.found && !previous.foundFailed) {
         this.#refunds.set(key, { ...previous, foundFailed: true });
         this.#effect(context.gymId, invoice.id, 'staff_notice', payment.id);
+      } else if (request.status === 'failed' && verified && !previous.found && !previous.failedFirst) {
+        this.#refunds.set(key, { ...previous, failedFirst: true });
       }
       return this.#result('ignored', invoice);
     }
@@ -455,11 +461,23 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
     const request: RefundTransition = { invoiceId: input.invoiceId, paymentId: input.paymentId, refundId: input.refundId,
       processorId: value.id, amountCents: value.amount, currency: value.currency.toUpperCase(), status: value.status };
     const read = () => [...this.#refunds.values()].filter(row => row.gymId === context.gymId && row.request.paymentId === payment.id);
+    const matches = (refund: Refund, row: RefundTransition) => refund.amount === row.amountCents
+      && refund.currency.toUpperCase() === row.currency && refund.metadata.gymId === context.gymId
+      && [payment.paymentIntentId, payment.chargeId].includes(refund.chargeId);
+    // Like the real transition, a failed pending read for another failed row counts as that row's verified report and
+    // applies before this report's own write, on every path below. Reads that don't match the row exactly don't count.
+    for (const { request: row } of read()) {
+      const current = input.pendingRefunds.find(refund => refund.id === row.processorId);
+      if (row.status === 'failed' && row.processorId !== undefined && row.processorId !== value.id
+        && current?.status === 'failed' && matches(current, row))
+        this.#applyRefund(context, { invoiceId: invoice.id, paymentId: payment.id, refundId: row.refundId,
+          processorId: row.processorId, amountCents: row.amountCents, currency: row.currency, status: 'failed' }, false, false, true);
+    }
     let rows = read();
     const appCreated = rows.some(row => row.tagged && row.request.refundId === value.reservationId
       && row.request.amountCents === value.amount && row.request.currency === request.currency);
     const recorded = rows.find(row => row.request.processorId === value.id);
-    if (recorded) return this.#applyRefund(context, { ...request, refundId: recorded.request.refundId }, appCreated);
+    if (recorded) return this.#applyRefund(context, { ...request, refundId: recorded.request.refundId }, appCreated, false, true);
     const reservations = rows.filter(row => row.request.processorId === undefined && row.request.status === 'pending');
     const own = reservations.find(row => row.tagged && row.request.refundId === value.reservationId && row.request.amountCents === value.amount);
     if (own) return this.#applyRefund(context, { ...request, refundId: own.request.refundId });
@@ -479,8 +497,7 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
           missing.push(stored);
           continue;
         }
-        if (!current || current.amount !== row.amountCents || current.currency.toUpperCase() !== row.currency
-          || current.metadata.gymId !== context.gymId || ![payment.paymentIntentId, payment.chargeId].includes(current.chargeId)) {
+        if (!current || !matches(current, row)) {
           unread = true;
           continue;
         }

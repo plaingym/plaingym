@@ -268,6 +268,69 @@ export function invoiceTransitionsContract(name: string, create: (options?: { pa
         expect((await h.transitions.processorRefund(h.context, report)).outcome).toBe('ignored');
         expect(await h.read()).toEqual(before);
       });
+    // A 9000 external refund releases the 2000 pending refund as missing, with one staff notice for the release.
+    const released = async (h: InvoiceTransitionsHarness) => {
+      const missing = await missingRow(h), initial = await h.read();
+      await h.transitions.processorRefund(h.context, { ...processor(h, { amount: 9000 }), missingRefunds: [missing.processorId] });
+      const after = await h.read();
+      expect(after.refunds.find(row => row.refundId === missing.refundId)?.status).toBe('failed');
+      expect(count(after.effects, 'staff_notice')).toBe(count(initial.effects, 'staff_notice') + 1);
+      const found = processor(h, { id: missing.processorId, amount: missing.amountCents });
+      return { after, found, failedRead: { ...found.processorRefund, status: 'failed' as const } };
+    };
+    it('ignores a stale success after a verified failure on a refund released as missing, and replays of both', async () => {
+      const h = await create();
+      expect(h.success.amountCents).toBe(10000);
+      const { after, found, failedRead } = await released(h);
+      const failed = { ...found, processorRefund: failedRead };
+      expect((await h.transitions.processorRefund(h.context, failed)).outcome).toBe('ignored');
+      expect((await h.transitions.processorRefund(h.context, found)).outcome).toBe('ignored');
+      expect(await h.read()).toEqual(after);
+      for (const report of [failed, found]) expect((await h.transitions.processorRefund(h.context, report)).outcome).toBe('ignored');
+      expect(await h.read()).toEqual(after);
+    });
+    it.each(['new', 'already recorded'] as const)(
+      'treats a matching failed read supplied with a %s separate refund as a verified failure of a refund released as missing',
+      async primary => {
+        const h = await create(), { after: release, found, failedRead } = await released(h);
+        const separate = processor(h, { id: 're_contract_separate', amount: 1000 });
+        const withRead = { ...separate, pendingRefunds: [failedRead] };
+        if (primary === 'already recorded') await h.transitions.processorRefund(h.context, separate);
+        expect((await h.transitions.processorRefund(h.context, withRead)).outcome).toBe(primary === 'new' ? 'applied' : 'ignored');
+        const after = await h.read();
+        expect(after.refunds.filter(row => row.processorId === separate.processorRefund.id)).toHaveLength(1);
+        expect(succeeded(after.refunds)).toBe(10000);
+        expect(after.invoice).toBe('refunded');
+        expect(count(after.effects, 'staff_notice')).toBe(count(release.effects, 'staff_notice'));
+        for (const report of [found, withRead, found])
+          expect((await h.transitions.processorRefund(h.context, report)).outcome).toBe('ignored');
+        expect(await h.read()).toEqual(after);
+      });
+    it.each(['a mismatched amount', 'a mismatched currency', 'a mismatched gym', 'a mismatched charge', 'a canceled status',
+      'a rolled-back report'] as const)(
+      'keeps a later success on a refund released as missing eligible for its notice after a failed read with %s', async variant => {
+        const h = await create(), { found, failedRead } = await released(h);
+        const changes: Record<typeof variant, Partial<Refund>> = {
+          'a mismatched amount': { amount: 1500 },
+          'a mismatched currency': { currency: h.success.currency.toLowerCase() === 'eur' ? 'usd' : 'eur' },
+          'a mismatched gym': { metadata: { gymId: randomUUID() } },
+          'a mismatched charge': { chargeId: 'ch_contract_other' },
+          'a canceled status': { status: 'canceled' },
+          'a rolled-back report': {},
+        };
+        // 2000 more than the remaining 1000 can't fit, so that report is refused and rolls back with its read.
+        const separate = { ...processor(h, { id: 're_contract_separate', amount: variant === 'a rolled-back report' ? 2000 : 1000 }),
+          pendingRefunds: [{ ...failedRead, ...changes[variant] }] };
+        if (variant === 'a rolled-back report')
+          await expect(h.transitions.processorRefund(h.context, separate)).rejects.toMatchObject({ code: 'conflict' });
+        else expect((await h.transitions.processorRefund(h.context, separate)).outcome).toBe('applied');
+        const before = await h.read();
+        expect((await h.transitions.processorRefund(h.context, found)).outcome).toBe('ignored');
+        const after = await h.read();
+        expect(after).toEqual({ ...before, effects: [...before.effects, 'staff_notice'].sort() });
+        expect((await h.transitions.processorRefund(h.context, found)).outcome).toBe('ignored');
+        expect(await h.read()).toEqual(after);
+      });
     it('records a later success for a refund released as missing once after the external refund that released it is canceled', async () => {
       const h = await create(), missing = await missingRow(h);
       const report = { ...processor(h, { amount: 9000, status: 'pending' }), missingRefunds: ['re_missing'] };
