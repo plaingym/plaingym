@@ -87,8 +87,9 @@ with fields `handlerFailureFields` builds itself, none taken from message text:
 `gymId`, `eventId` and `type`; `errorName` (the error's name when it is an
 identifier, otherwise its JavaScript type) and `errorCode` (a short code of
 letters, digits and underscores); `errorFrames`, the first 15 stack frames, read
-only after the stack's exact `name: message` header, so a multiline message
-never passes for a frame; and `causeName` and `causeCode` for the error's direct
+by the shared logger's `stackFrames` only after the stack's exact
+`name: message` header, so a multiline message never passes for a frame
+(omitted when there are none); and `causeName` and `causeCode` for the error's direct
 cause, without frames. The exception itself isn't passed to the shared logger,
 so no query text or schema identifier is logged. A `reason` carries the message
 only when both rules hold: the error is a plain `Error` whose message is one of

@@ -4,7 +4,7 @@ import { forGym, forSystem, stripeEvents, uuidv7, writeAudit } from '@plaingym/d
 import { AppError, type Clock } from '@plaingym/shared';
 import { z } from 'zod';
 import { clock as systemClock } from '../../../core/clock.js';
-import { logError, type LogFields } from '../../../core/log.js';
+import { logError, stackFrames, type LogFields } from '../../../core/log.js';
 import { recentWebhookFailureMs, type WebhookHealthQuery } from '../../../core/interfaces/webhook-health.js';
 import type { JobContext, Jobs, JobRecovery } from '../../../infra/jobs/index.js';
 import type { PaymentEvent, Payments } from '../../../infra/payments/index.js';
@@ -62,19 +62,16 @@ function errorNameAndCode(error: unknown) {
 }
 /**
  * A failed handler's diagnostics, built here rather than by the shared logger: the error's name and code, its
- * stack frames, and its cause's name and code. No field is read from message text. Frames are taken only after
- * the stack's exact `name: message` header, so a multiline message never passes for a frame.
+ * stack frames, and its cause's name and code. No field is read from message text. Frames come from the shared
+ * logger's `stackFrames`, taken only after the stack's exact `name: message` header, so a multiline message never
+ * passes for a frame.
  */
 export function handlerFailureFields(error: unknown): LogFields {
   const { name, code } = errorNameAndCode(error);
   const fields: Record<string, string> = { errorName: name, ...(code ? { errorCode: code } : {}) };
-  if (error instanceof Error && typeof error.stack === 'string') {
-    const header = error.message === '' ? `${error.name}\n` : `${error.name}: ${error.message}\n`;
-    if (error.stack.startsWith(header)) {
-      const frames = error.stack.slice(header.length).split(/\r?\n/).filter((line) => line.startsWith('    at '))
-        .slice(0, 15).map((line) => line.trim());
-      if (frames.length > 0) fields.errorFrames = frames.join('\n');
-    }
+  if (error instanceof Error) {
+    const frames = stackFrames(error);
+    if (frames.length > 0) fields.errorFrames = frames.join('\n');
   }
   if (error instanceof Error && error.cause !== undefined) {
     const cause = errorNameAndCode(error.cause);

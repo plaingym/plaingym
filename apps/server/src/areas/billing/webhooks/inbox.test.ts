@@ -8,7 +8,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { TestClock } from '../../../core/clock.js';
-import { setLogSink } from '../../../core/log.js';
+import { describeError, setLogSink } from '../../../core/log.js';
 import type { Principal, RequestEnvironment } from '../../../core/context.js';
 import { errorHandler } from '../../../core/errors.js';
 import { createServerRegistry } from '../../../core/registry.js';
@@ -18,7 +18,7 @@ import { StripePayments } from '../../../infra/payments/stripe.js';
 import { StripeFixtures } from '../../../infra/payments/stripe-fixtures.js';
 import type { ObjectData } from '../../../infra/payments/transport.js';
 import { PaymentWebhookError } from '../../../infra/payments/webhook-error.js';
-import { createWebhookHealthQuery, createWebhookInbox, testEventSkippedAction, type WebhookInbox } from './inbox.js';
+import { createWebhookHealthQuery, createWebhookInbox, handlerFailureFields, testEventSkippedAction, type WebhookInbox } from './inbox.js';
 import { stripeTestClearedAction } from '../customers.js';
 import { createWebhookInboxJobs } from './inbox.jobs.js';
 import { createWebhookInboxRoutes } from './inbox.routes.js';
@@ -179,6 +179,34 @@ it('builds failure diagnostics without reading message text, top level or nested
   expect(output).not.toMatch(/secret and payer details|pm_999/);
   expect(byEvent.get('evt_punctuated')).not.toHaveProperty('reason');
   expect(output).not.toMatch(/another dispute|staff resolution/);
+});
+it('takes the same stack frames as the shared logger', () => {
+  // Literal Node-style stacks, so the test runner's stack formatter cannot change the fixtures.
+  const withStack = (error: Error, stack: string) => Object.assign(error, { stack });
+  const bothPaths = (error: Error) => {
+    const core = describeError(error).frames as string[];
+    const webhook = handlerFailureFields(error);
+    return { core, webhook: webhook.errorFrames === undefined ? undefined : String(webhook.errorFrames).split('\n'), fields: webhook };
+  };
+  // A multiline message with a frame-shaped line: only the real frame after the full header is kept.
+  const multiline = bothPaths(withStack(new Error('lookup failed\n    at privateFrame (cus_123:9:9)'),
+    'Error: lookup failed\n    at privateFrame (cus_123:9:9)\n    at run (/app/server.js:1:1)'));
+  expect(multiline.core).toEqual(['at run (/app/server.js:1:1)']);
+  expect(multiline.webhook).toEqual(['at run (/app/server.js:1:1)']);
+  // A header that is not the error's own name and message gives no frames on either path.
+  for (const error of [withStack(new Error('boom'), 'Error: cus_123\n    at run (/app/server.js:1:1)'),
+    withStack(new Error('boom'), 'TypeError: boom\n    at run (/app/server.js:1:1)'),
+    withStack(new TypeError('boom'), 'Error: boom\n    at run (/app/server.js:1:1)')]) {
+    const result = bothPaths(error);
+    expect(result.core).toEqual([]);
+    expect(result.fields).not.toHaveProperty('errorFrames');
+  }
+  // An empty message's stack is headed by the name alone; both paths keep the first 15 frames, trimmed.
+  const lines = Array.from({ length: 16 }, (_, index) => `    at step${index} (/app/server.js:${index + 1}:1) `);
+  const empty = bothPaths(withStack(new Error(''), `Error\n${lines.join('\n')}`));
+  const expected = lines.slice(0, 15).map((line) => line.trim());
+  expect(empty.core).toEqual(expected);
+  expect(empty.webhook).toEqual(expected);
 });
 it('logs the original handler failure even when the inbox cannot save its marker', async () => {
   await deliver();

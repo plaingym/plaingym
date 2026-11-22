@@ -26,9 +26,10 @@ export function logError(event: string, fields: LogFields, error?: unknown): voi
 const identifier = /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/;
 /**
  * The stack frames after the stack's exact `name: message` header (`name` alone for an empty message), so no
- * line of a multiline message passes for a frame. A stack that doesn't start with that header gives none.
+ * line of a multiline message passes for a frame. A stack that doesn't start with that header gives none. Only
+ * lines starting `    at ` count; at most 15 are kept, trimmed. Every log path that records frames uses this.
  */
-function stackFrames(error: Error): string[] {
+export function stackFrames(error: Error): string[] {
   if (typeof error.stack !== 'string') return [];
   const header = error.message === '' ? `${error.name}\n` : `${error.name}: ${error.message}\n`;
   if (!error.stack.startsWith(header)) return [];

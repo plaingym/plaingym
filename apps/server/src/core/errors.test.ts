@@ -171,3 +171,17 @@ it('keeps a conventional stack\'s frames and logs none from a stack whose header
   for (const secret of ['private@example.test', 'privateFrame']) expect(line).not.toContain(secret);
   expect(logged(Object.assign(new Error('boom'), { stack: undefined })).error.frames).toEqual([]);
 });
+
+it('logs the frames after a literal Node stack header, at most 15 and trimmed', () => {
+  // Literal stacks, so the test runner's stack formatter cannot change what the parser reads.
+  const multiline = Object.assign(new Error('lookup failed\n    at privateFrame (private.ts:9:9)'),
+    { stack: 'Error: lookup failed\n    at privateFrame (private.ts:9:9)\n    at run (/app/server.js:1:1)' });
+  const { line, error } = logged(multiline);
+  expect(error.frames).toEqual(['at run (/app/server.js:1:1)']);
+  expect(line).not.toContain('privateFrame');
+  const mismatched = Object.assign(new TypeError('boom'), { stack: 'Error: boom\n    at run (/app/server.js:1:1)' });
+  expect(logged(mismatched).error.frames).toEqual([]);
+  const lines = Array.from({ length: 16 }, (_, index) => `    at step${index} (/app/server.js:${index + 1}:1) `);
+  const empty = Object.assign(new Error(''), { stack: `Error\n${lines.join('\n')}` });
+  expect(logged(empty).error.frames).toEqual(lines.slice(0, 15).map((frame) => frame.trim()));
+});
