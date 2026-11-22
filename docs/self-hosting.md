@@ -146,9 +146,14 @@ again, and every change is recorded in the audit log without them.
   Service SID. The account is checked without sending a message, then one test
   text goes only to the number you enter. Credentials are saved encrypted only
   after both succeed, and are never shown again. **Remove SMS provider** clears
-  them. A failed test names the cause when the provider gives one; a Twilio
-  trial account must be upgraded before the test text can send. Each text,
-  including a test, is charged to your gym by the provider.
+  them. A failed test names the cause when the provider gives one. Before you
+  connect Twilio, upgrade a trial account (a trial sends only Twilio's own
+  templates, so the test text fails), wait until Twilio approves the account's
+  Primary Customer Profile in **Trust Hub**, and buy an SMS-capable phone number
+  under **Phone Numbers → Manage → Buy a number** to use as the From number, or
+  add one to a Messaging Service. The number a trial's template texts come from
+  belongs to Twilio and can't be used. Each text, including a test, is charged
+  to your gym by the provider.
   Register your sender with the provider before sending: for example,
   [US A2P 10DLC registration](https://www.twilio.com/docs/messaging/compliance/a2p-10dlc)
   or [toll-free verification](https://www.twilio.com/docs/messaging/compliance/toll-free/console-onboarding).
