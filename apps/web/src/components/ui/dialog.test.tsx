@@ -3,7 +3,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { useRef } from 'react';
-import { Dialog, DialogCancel, DialogRecoveryContext, useDialogOperation, useDialogSaved } from './dialog.js';
+import { Dialog, DialogActions, DialogCancel, DialogRecoveryContext, useDialogOperation, useDialogSaved } from './dialog.js';
 
 afterEach(cleanup);
 it('owns suspension, preserving only dialog scroll and focus, and keeps a new dialog closed until recovery ends', () => {
@@ -38,6 +38,25 @@ it('has one scroll container: the dialog clips and its column shrinks inside it'
   expect(dialog.className).toContain('overflow-hidden'); expect(dialog.className).toContain('[&[open]]:flex');
   expect(column.className).toContain('min-h-0'); expect(column.className).not.toMatch(/90dvh/);
   expect(body.className).toContain('overflow-y-auto'); expect(body.className).toContain('relative');
+});
+it('moves the body bottom padding into a sticky action bar that ends the content', () => {
+  const view = render(<Dialog title="Editor" closeLabel="Close" onClose={vi.fn()}><form><input aria-label="Name"/><DialogActions><button>Save</button></DialogActions></form></Dialog>);
+  const body = screen.getByRole('dialog').querySelector<HTMLElement>('[data-dialog-body]')!;
+  const actions = screen.getByRole('button', { name: 'Save' }).parentElement!;
+  expect(body.className).toContain('[&:has([data-dialog-actions-at-end])]:pb-0');
+  expect(actions.hasAttribute('data-dialog-actions')).toBe(true);
+  expect(actions.hasAttribute('data-dialog-actions-at-end')).toBe(true);
+  expect(actions.className).toContain('[&[data-dialog-actions-at-end]]:pb-7');
+  expect(actions.className).toContain('sm:[&[data-dialog-actions-at-end]]:pb-9');
+  // Content after the bar keeps the body's normal padding and the bar's own height.
+  view.rerender(<Dialog title="Editor" closeLabel="Close" onClose={vi.fn()}><form><input aria-label="Name"/><DialogActions><button>Save</button></DialogActions></form><p>After</p></Dialog>);
+  const trailing = screen.getByRole('button', { name: 'Save' }).parentElement!;
+  expect(trailing.hasAttribute('data-dialog-actions-at-end')).toBe(false);
+  expect(trailing.className).toContain('py-3');
+  view.rerender(<Dialog title="Editor" closeLabel="Close" onClose={vi.fn()}><p>Body</p></Dialog>);
+  const plainBody = screen.getByText('Body').parentElement!;
+  expect(plainBody.querySelector('[data-dialog-actions]')).toBeNull();
+  expect(plainBody.className).toContain('py-4'); expect(plainBody.className).toContain('sm:py-6');
 });
 it('does not report fields from a finished or discarded subview as unsaved', () => {
   const close = vi.fn();

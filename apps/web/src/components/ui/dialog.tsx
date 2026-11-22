@@ -9,9 +9,21 @@ const OperationContext = createContext<Dispatch<SetStateAction<number>> | undefi
 const DraftContext = createContext<((form?: HTMLFormElement) => void) | undefined>(undefined);
 const CancelContext = createContext<(() => void) | undefined>(undefined);
 
-/** Keep a long dialog's actions visible inside its single scrolling body. */
+/** Keep a long dialog's actions visible inside its single scrolling body, with the bar's background reaching the body edge. */
 export function DialogActions({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cn('sticky bottom-0 z-10 flex flex-col gap-3 border-t border-border bg-background py-3 sm:flex-row sm:flex-wrap', className)}>{children}</div>;
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const actions = ref.current, body = actions?.closest('[data-dialog-body]');
+    if (!actions || !body) return;
+    // Move the body's bottom padding into the bar only when the bar ends the flowing content;
+    // an action row followed by other content keeps the body's normal padding and its own height.
+    let atEnd = true;
+    for (let node: Element | null = actions; node && node !== body; node = node.parentElement) {
+      if (node.nextElementSibling) { atEnd = false; break; }
+    }
+    actions.toggleAttribute('data-dialog-actions-at-end', atEnd);
+  });
+  return <div ref={ref} data-dialog-actions className={cn('sticky bottom-0 z-10 flex flex-col gap-3 border-t border-border bg-background py-3 [&[data-dialog-actions-at-end]]:pb-7 sm:flex-row sm:flex-wrap sm:[&[data-dialog-actions-at-end]]:pb-9', className)}>{children}</div>;
 }
 /** A Cancel or Close button that asks through the dialog's guarded dismissal, so edits are not discarded silently. */
 export function DialogCancel({ onClick, ...props }: ComponentProps<typeof Button>) {
@@ -116,7 +128,7 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
         </div>
         <Button variant="ghost" size="icon" aria-label={closeLabel} disabled={!dismissible || busy > 0} onClick={requestClose}><CloseIcon /></Button>
       </div>
-      <div data-dialog-body className="relative min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-6">
+      <div data-dialog-body className="relative min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-6 [&:has([data-dialog-actions-at-end])]:pb-0">
         {notice && <div className="sticky top-0 z-10 mb-4 bg-background">{notice}</div>}
         {confirm && <div role="alert" className="mb-4 space-y-3 rounded-lg border border-border bg-muted p-4">
           <p>{t('shell/shell:discardHelp')}</p><div className="flex flex-wrap gap-2">
