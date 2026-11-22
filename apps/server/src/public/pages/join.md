@@ -29,7 +29,9 @@ the website module off, keeps the shared public layout, `t()` strings and the
 source link, and posts as a native multipart form when JavaScript is unavailable
 (PNG signature files replace the canvases). Online joining is unavailable, and
 the page says to contact the gym, while billing is off, no payment provider is
-configured, or the gym has no current document or more than eight.
+configured, or the gym has no current document or more than eight. With one person
+and the script on, the first and last name and each signer name start from the
+contact name and stay editable.
 
 A native submission refused before its admission is stored redisplays the form
 with typed contact, member and signer details and any discount code. It names

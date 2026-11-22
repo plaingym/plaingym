@@ -28,6 +28,33 @@ export const joinBrowserScript = String.raw`// SPDX-License-Identifier: AGPL-3.0
   }
   const form = document.querySelector('[data-join-form]');
   if (!form) return;
+  // One person's first name, last name and signer names start from the contact name as editable defaults. The split
+  // takes the first word as the first name and the rest as the last name; a single word fills only the first name.
+  // The signer name always takes the whole contact name, since the contact signs for themselves or as parent or
+  // guardian. A field the visitor typed in or cleared, and one the server filled on a re-render, is never overwritten.
+  if (form.querySelectorAll('[data-member]').length === 1) {
+    const targets = [...form.elements].filter(element => element.name === 'member-0-firstName'
+      || element.name === 'member-0-lastName' || /^waiver-0-\d+-name$/.test(element.name))
+      .map(element => ({ element, initial: element.value, written: '', typed: false }));
+    for (const target of targets) target.element.addEventListener('input', () => { target.typed = true; });
+    // Fill only a field the script itself last wrote and that started empty, so autofill and server values stay.
+    const write = (target, value) => {
+      if (!target || target.typed || target.initial !== '' || target.element.value !== target.written) return;
+      target.element.value = value;
+      target.written = value;
+    };
+    const firstName = targets.find(target => target.element.name === 'member-0-firstName');
+    const lastName = targets.find(target => target.element.name === 'member-0-lastName');
+    const signerNames = targets.filter(target => target.element.name.startsWith('waiver-0-'));
+    const contactName = form.elements.namedItem('contactName');
+    contactName?.addEventListener('input', () => {
+      const name = contactName.value.trim().replace(/\s+/g, ' ');
+      const space = name.indexOf(' ');
+      write(firstName, space < 0 ? name : name.slice(0, space));
+      write(lastName, space < 0 ? '' : name.slice(space + 1));
+      for (const target of signerNames) write(target, name);
+    });
+  }
   const feedback = document.getElementById('feedback');
   const message = key => document.querySelector('[data-message="' + key + '"]')?.textContent || '';
   const images = new Map();
