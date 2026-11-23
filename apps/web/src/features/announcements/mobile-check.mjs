@@ -12,7 +12,6 @@ const root = fileURLToPath(new URL('../../../', import.meta.url));
 const output = new URL('../../../../../coverage/announcements/', import.meta.url);
 const outDir = fileURLToPath(new URL('fixture/', output));
 await mkdir(output, { recursive: true });
-process.env.SOURCE_URL ||= 'https://github.com/plaingym/plaingym';
 await build({ root, build: { outDir, emptyOutDir: true, rollupOptions: { input: fileURLToPath(new URL('./browser-fixture.html', import.meta.url)) } } });
 const server = await preview({ root, build: { outDir }, preview: { host: process.env.E2E_LOOPBACK ?? '127.0.0.1', port: 5198, strictPort: true } });
 let browser;

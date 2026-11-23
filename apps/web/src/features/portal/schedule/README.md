@@ -30,7 +30,7 @@ replacing a code. Codes are never cached between visits.
 The progress page shows the current rank and next step per program with the
 shared criterion progress bars, the promotion history and paged attendance.
 
-After `pnpm build` (with `SOURCE_URL` set) and installing the pinned `e2e/`
+After `pnpm build` and installing the pinned `e2e/`
 dependencies, run from the repository root:
 
 ```sh

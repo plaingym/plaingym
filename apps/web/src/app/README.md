@@ -30,4 +30,4 @@ The mobile-first admin shell (`admin-shell.tsx`) has a sticky two-line header wi
 
 The admin and member portal share `account-menu.tsx`. In the admin, **Your account** opens `/admin/account` from `features/account`. The **Account** menu also provides sign-out and a **System**, **Light**, or **Dark** choice saved in the browser.
 
-Tailwind configuration and the design tokens are in `styles.css`, imported directly by `main.tsx` and processed by `@tailwindcss/vite`. Both dev and build use Vite with no generated CSS or installation scripts. Vite proxies `/api` to the local server. Set `SOURCE_URL` using the root environment configuration for development/builds.
+Tailwind configuration and the design tokens are in `styles.css`, imported directly by `main.tsx` and processed by `@tailwindcss/vite`. Both dev and build use Vite with no generated CSS or installation scripts. Vite proxies `/api` to the local server.

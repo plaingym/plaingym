@@ -35,7 +35,7 @@ function start(service: ShellServices, path = '/login') {
   render(<App services={service} router={router} />);
   return router;
 }
-beforeEach(() => { vi.stubGlobal('fetch', ordinaryDiscovery); vi.stubGlobal('__SOURCE_URL__', 'https://example.org/source/v1'); vi.stubGlobal('scrollTo', vi.fn()); });
+beforeEach(() => { vi.stubGlobal('fetch', ordinaryDiscovery); vi.stubGlobal('scrollTo', vi.fn()); });
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();

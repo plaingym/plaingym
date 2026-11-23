@@ -25,7 +25,7 @@ beforeEach(() => {
   const fetcher = globalThis.fetch;
   vi.stubGlobal('fetch', (...args: Parameters<typeof fetch>) => args[0] === '/api/demo'
     ? Promise.resolve(Response.json({ data: { mode: 'disabled' } })) : fetcher(...args));
-  vi.stubGlobal('__SOURCE_URL__', 'https://example.org/source/v1'); vi.stubGlobal('scrollTo', vi.fn());
+  vi.stubGlobal('scrollTo', vi.fn());
   assign = vi.fn();
   vi.stubGlobal('location', { ...window.location, origin: 'https://gym.example.org', assign });
 });

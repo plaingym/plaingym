@@ -33,7 +33,7 @@ function services(): ShellServices {
 const start = (path = '/login') => render(<App services={services()} router={createAppRouter(createMemoryHistory({ initialEntries: [path] }))} />);
 let assign: ReturnType<typeof vi.fn>;
 beforeEach(() => {
-  vi.stubGlobal('__SOURCE_URL__', 'https://example.org/source/v1'); vi.stubGlobal('scrollTo', vi.fn());
+  vi.stubGlobal('scrollTo', vi.fn());
   assign = vi.fn(); vi.stubGlobal('location', { ...window.location, assign });
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.stubGlobal('fetch', fetcher); fetcher.mockClear(); discovery.mode = 'disabled';

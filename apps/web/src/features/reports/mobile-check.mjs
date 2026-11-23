@@ -18,7 +18,6 @@ const timeout = setTimeout(() => { console.error('Report browser check exceeded 
 let server, browser;
 try {
   await mkdir(output, { recursive: true });
-  process.env.SOURCE_URL ||= 'https://github.com/plaingym/plaingym';
   await build({ root, build: { outDir, emptyOutDir: true, rollupOptions: { input: fileURLToPath(new URL('./browser-fixture.html', import.meta.url)) } } });
   server = await preview({ root, build: { outDir }, preview: { host, port: 5199, strictPort: true } });
   browser = await chromium.launch({ headless: true });

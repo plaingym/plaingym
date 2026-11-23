@@ -37,11 +37,6 @@ function earlyThemeScript(): Plugin {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '../..', '');
-  const sourceUrl = process.env.SOURCE_URL || env.SOURCE_URL;
-  if (!sourceUrl) throw new Error('Set SOURCE_URL to the public source URL for this checkout.');
-  if (!['https:', 'http:'].includes(new URL(sourceUrl).protocol)) {
-    throw new Error('SOURCE_URL must be an HTTP(S) URL.');
-  }
   return {
     plugins: [
       earlyThemeScript(),
@@ -68,7 +63,6 @@ export default defineConfig(({ mode }) => {
         ? new URL(env.PUBLIC_ORIGIN || `https://${env.DEMO_DOMAIN}`).host : undefined),
     },
     define: {
-      __SOURCE_URL__: JSON.stringify(sourceUrl),
       __BUILD_INFO__: JSON.stringify(buildInfo()),
     },
   };

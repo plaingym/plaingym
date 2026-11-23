@@ -87,7 +87,7 @@ the scope's key and stays out of the shell's reserved `shell` segment.
 The server is authoritative for every permission; the pages only hide actions a
 login cannot use.
 
-After `pnpm build` (with `SOURCE_URL` set) and installing the pinned `e2e/`
+After `pnpm build` and installing the pinned `e2e/`
 dependencies, run from the repository root:
 
 ```sh
