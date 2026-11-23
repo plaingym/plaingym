@@ -145,3 +145,25 @@ an eligible bank account when the gym has enabled bank payments.
    error, **Try again** starts a fresh scan. A camera access error also offers
    **Try again** after allowing access. Production kiosks check the server release
    before each lookup or check-in and reload when their bundle is stale.
+
+## Sending a member a link
+
+Members who haven't signed in to the portal can still finish their part through a
+signed link. On a member's record, the **Links** tab sends one to that member's
+household. Front desk staff, admins and owners see it; coaches don't.
+
+1. Pick the **Purpose**: **Complete registration** (the household signs the current
+   waivers and saves a payment method), **Update card** (save a new card on file) or
+   **Sign documents** (this member's waivers). Pay links are sent from the invoice
+   instead.
+2. Pick how to **Send by**: **Email the household** (to the household's email),
+   **Show the link** (shown on screen to copy or open on a front-desk tablet, with
+   nothing sent), or a text to the household's billing phone or one of its members.
+3. Send it. Every link expires after seven days.
+
+Texts go only to phones with notices consent and a valid number, and each text is
+charged to the gym. A card update link can be texted only to the payer: the
+billing phone, or, when there is none, a member at the billing email. Recipients
+who can't get a text are shown but disabled, with the reason. If the app can't
+confirm a send, it says so and the button reads **Send again**: check with the
+member before sending another.
