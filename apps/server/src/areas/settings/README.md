@@ -42,8 +42,11 @@ owner's linked identity. The Email section states this and asks the owner to try
 Google first. Each submitted Settings test writes `integrations.email_tested`
 without credentials or recipients. A failed test's audit and response carry
 `test: 'failed'` and `failure` (`connection`, `tls`, `authentication`, or
-`sender_refused`). Neither includes the server's reply. Failed tests leave the
-saved settings unchanged. The audit records `test: 'sent'` only with the save.
+`sender_refused`). Neither includes the server's reply. The class comes from
+transport error codes, response numbers and the reply's leading enhanced status
+code only, and uses the stored port and security for a timeout on port 465.
+Failed tests leave the saved settings unchanged. The audit records
+`test: 'sent'` only with the save.
 Removing an unreadable stored value is never refused, since it takes no sign-in
 method away; its audit still records `source: 'gym'` for the stored value. Operator-managed refusals reload the
 integrations and show the operator notice in place of the editable forms.

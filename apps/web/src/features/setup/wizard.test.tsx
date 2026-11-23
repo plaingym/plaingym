@@ -418,7 +418,7 @@ describe('setup wizard confirmations', () => {
     expect(JSON.stringify({ ...sessionStorage, ...localStorage })).not.toContain('private-smtp-password');
   });
   it.each([
-    [{ failure: 'tls' }, "The test email failed: the secure connection didn't start. Implicit TLS should be on for port 465 and off for ports 587 and 2525. Or skip this step."],
+    [{ failure: 'tls' }, "The test email failed: the secure connection didn't start, or the server didn't offer a secure connection on this port. Implicit TLS should be on for port 465 and off for ports 587 and 2525; if that is already right, use the port your service lists for secure sending. Or skip this step."],
     [{}, 'The test email failed. Check your SMTP settings and try again, or skip this step.'],
   ] as const)('keeps the failed email test on the form with the error for %o', async (failure, message) => {
     const { fetcher } = start(5);

@@ -110,7 +110,7 @@ describe('Settings → Email', () => {
     await user.click(form.getByRole('checkbox', { name: /I understand/ }));
     await user.click(form.getByRole('button', { name: 'Send test email and save' }));
     expect(client.PUT).toHaveBeenCalledWith('/api/settings/integrations/email', expect.objectContaining({ body: expect.objectContaining({ port, secure }) }));
-    expect((await screen.findByRole('alert')).textContent).toBe('The test email failed: the SMTP server refused the username or password. Nothing was saved.');
+    expect((await screen.findByRole('alert')).textContent).toBe("The test email failed: the SMTP server refused the username or password, or it won't send mail without a login. Check the username, the password and the SMTP hostname. Nothing was saved.");
   });
   it('names the SMTP ports a multi-gym install accepts', async () => {
     const user = userEvent.setup(); renderSection();

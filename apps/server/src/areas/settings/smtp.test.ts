@@ -44,6 +44,45 @@ describe('SMTP test failures', () => {
     expect(smtpTestFailure({ ...tls, code: 'EAUTH' })).toBe('tls');
     expect(smtpTestFailure({ code: 'EAUTH', cause: tls })).toBe('authentication');
   });
+  it.each([
+    [{ code: 'ETIMEDOUT', command: 'CONN' }, { port: 465, security: 'starttls' }, 'tls'],
+    [{ code: 'ETIMEDOUT', command: 'CONN' }, { port: 587, security: 'starttls' }, 'connection'],
+    [{ code: 'ETIMEDOUT', command: 'CONN' }, { port: 465, security: 'tls' }, 'connection'],
+    [{ code: 'ETIMEDOUT', command: 'CONN' }, undefined, 'connection'],
+    [{ code: 'ECONNECTION', originalCode: 'ECONNREFUSED' }, { port: 465, security: 'starttls' }, 'tls'],
+  ] as const)('classifies a timeout %o on %o as %s', (cause, settings, expected) => {
+    expect(smtpTestFailure(new DeliveryError('unknown', 'SMTP failed', { cause }), settings)).toBe(expected);
+  });
+  it.each([
+    [{ code: 'EENVELOPE', command: 'RCPT TO', responseCode: 530 }, 'authentication'],
+    [{ code: 'EENVELOPE', command: 'RCPT TO', responseCode: 550, response: '550 5.7.1 Relaying denied' }, 'authentication'],
+    [{ code: 'EENVELOPE', command: 'RCPT TO', responseCode: 554, response: '554 5.7.0 Not allowed' }, 'authentication'],
+    [{ code: 'EENVELOPE', command: 'RCPT TO', responseCode: 550, response: '550 5.1.1 No such user' }, 'sender_refused'],
+    [{ code: 'EENVELOPE', command: 'RCPT TO', responseCode: 550, response: 'Relaying 5.7.1 denied' }, 'sender_refused'],
+    [{ code: 'EENVELOPE', command: 'RCPT TO', responseCode: 550, response: '550-5.7.1 Relaying denied' }, 'authentication'],
+  ] as const)('classifies a refused envelope %o as %s', (cause, expected) => {
+    expect(smtpTestFailure(new DeliveryError('unknown', 'SMTP failed', { cause }))).toBe(expected);
+  });
+  it.each(['UNABLE_TO_GET_ISSUER_CERT', 'CERT_NOT_YET_VALID', 'CERT_UNTRUSTED', 'CERT_REVOKED', 'CERT_SIGNATURE_FAILURE',
+    'CERT_CHAIN_TOO_LONG', 'EPROTO'].flatMap((code) => [[{ code }, 'tls'] as const, [{ originalCode: code }, 'tls'] as const]))(
+    'classifies certificate error %o as tls', (cause, expected) => {
+      expect(smtpTestFailure(new DeliveryError('unknown', 'SMTP failed', { cause }))).toBe(expected);
+    });
+  it('classifies a server that offers no STARTTLS as tls even with a response code', () => {
+    expect(smtpTestFailure(new DeliveryError('unknown', 'SMTP failed', { cause: { code: 'ETLS', command: 'STARTTLS', responseCode: 502 } }))).toBe('tls');
+  });
+  it('classifies by code when the response getter throws', () => {
+    const tls = { code: 'ETLS', get response() { throw new Error('reply contained a secret'); } };
+    expect(smtpTestFailure(new DeliveryError('unknown', 'SMTP failed', { cause: tls }))).toBe('tls');
+    const authentication = { code: 'EENVELOPE', responseCode: 530, get response() { throw new Error('reply contained a secret'); } };
+    expect(smtpTestFailure(new DeliveryError('unknown', 'SMTP failed', { cause: authentication }))).toBe('authentication');
+  });
+  it('uses the stored port and security for a timeout during the test send', async () => {
+    const message = { to: 'test@example.test', subject: 'Test', text: 'Test', html: '<p>Test</p>' };
+    await expect(sendSmtpTest({ ...own, port: 465 }, message, async () => {
+      throw new DeliveryError('unknown', 'SMTP failed', { cause: { code: 'ETIMEDOUT', command: 'CONN' } });
+    })).resolves.toBe('tls');
+  });
   it('returns null on acceptance and returns a safe class on failure', async () => {
     const message = { to: 'test@example.test', subject: 'Test', text: 'Test', html: '<p>Test</p>' };
     await expect(sendSmtpTest(own, message, async () => {})).resolves.toBeNull();
