@@ -154,9 +154,12 @@ front desk, who bill catalog charge types priced by managers. Charging an existi
 invoice is unchanged.
 
 Removing a payment method first revokes it locally and clears its default flag.
-Removing the default promotes the household's newest active method with no stored
-expiry or an expiry that has not passed in the gym's timezone. If all remaining
-methods have expired, it falls back to the newest. Methods are ordered by processor
+Removing the default promotes the household's newest active method the gym's current
+currency can charge: a card, or the currency's own bank type (US bank accounts in USD,
+Canadian PADs in CAD, and no bank type otherwise). It prefers a method with no stored
+expiry or an expiry that has not passed in the gym's timezone, and falls back to the
+newest when all eligible methods have expired. An account the currency cannot charge
+stays on file and is never promoted to the default. Eligible methods are ordered by processor
 creation time when known (local creation time otherwise), then local creation time
 and row ID descending, in the same transaction under the household lock, with a
 `billing.card.default_changed` audit. Removing a non-default method leaves the

@@ -19,7 +19,8 @@ import { markRefundSending, markRefundSent, pastRefundWindow, sameRefund, settle
 import { duplicateReservation } from './transitions/store.js';
 import { withJobTransaction } from '../../infra/jobs/index.js';
 import { CardImportRefused, isProviderOutage } from '../../infra/payments/index.js';
-import { cardImportSnapshotVersion, customerCardImportJob } from './customer-card-import.js';
+import { readGymSettings } from '../settings/settings.js';
+import { bankAccountType, cardImportSnapshotVersion, customerCardImportJob } from './customer-card-import.js';
 
 type Options = PaymentOptions & { scope: typeof forGym; clock: Clock; transitions: InvoiceTransitions; settings: GymSettingsAccessor };
 export const receiptJob = 'billing.payments.receipt';
@@ -51,7 +52,7 @@ export async function recordCardDetached(scope: typeof forGym, context: Mutation
   });
 }
 
-/** Caller holds the household lock. Preserve a chosen default; prefer an unexpired replacement in the gym's month. */
+/** Caller holds the household lock. Preserve a chosen default; prefer an unexpired replacement the gym's currency can charge. */
 export async function promoteDefaultCard(tx: Transaction, context: MutationContext, clock: Clock, householdId: string,
   timezone: string, requestId?: string) {
   const active = and(eq(paymentMethods.householdId, householdId), isNull(paymentMethods.revokedAt));
@@ -59,11 +60,14 @@ export async function promoteDefaultCard(tx: Transaction, context: MutationConte
     .where(and(active, eq(paymentMethods.isDefault, true))).limit(1);
   if (current) return;
 
+  const { currency } = await readGymSettings(tx, context.gymId);
+  const bank = bankAccountType(currency);
   const month = localDate(clock.now(), timezone).slice(0, 7);
   // Compare the stored year and padded month as text. A missing expiry component counts as unexpired.
   const expiry = sql`(${paymentMethods.expiryYear}::text || '-' || lpad(${paymentMethods.expiryMonth}::text, 2, '0')) collate "C"`;
   // Compare instants at millisecond precision, as the app's Date values carry them; local time, then row ID, break ties.
-  const [replacement] = await tx.select({ id: paymentMethods.id }).from(paymentMethods).where(active)
+  const [replacement] = await tx.select({ id: paymentMethods.id }).from(paymentMethods)
+    .where(and(active, inArray(paymentMethods.type, bank ? ['card', bank] : ['card'])))
     .orderBy(asc(sql`coalesce(${expiry} < ${month}, false)`),
       desc(sql`date_trunc('milliseconds', coalesce(${paymentMethods.processorCreatedAt}, ${paymentMethods.createdAt}))`),
       desc(sql`date_trunc('milliseconds', ${paymentMethods.createdAt})`), desc(paymentMethods.id)).limit(1);
