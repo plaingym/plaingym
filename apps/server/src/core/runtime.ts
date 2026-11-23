@@ -78,6 +78,7 @@ import { createSmtpResolver } from '../areas/settings/smtp.js';
 import { configureSignedLinkDelivery, configureSignedLinkSmsDelivery } from '../areas/links/service.js';
 import { configureCampaigns, createCampaignsService } from '../areas/links/campaigns.js';
 import { configureCancellationNotice, createCancellationNotice } from '../areas/announcements/cancellation.js';
+import { configureRestoreNotice, createRestoreNotice } from '../areas/announcements/restored.js';
 import { configurePriceNotice, createPriceNotice } from '../areas/billing/memberships.price-notice.js';
 import { configurePriceChanges, createPriceChangeService } from '../areas/billing/catalog.price-change.js';
 import { configureAnnouncements, createAnnouncementsService } from '../areas/announcements/send.js';
@@ -373,6 +374,11 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
     } }));
   // Cancelling a session with the notice option queues one job that emails its booked and waitlisted members.
   configureCancellationNotice(createCancellationNotice({ jobs: queue, clock, origin: gymOrigin, demoMode: Boolean(demo),
+    sms: { resolver: smsResolver, phoneDigest },
+    mailer: async gymId => demo ? demo.emailFor(gymId) : smtpMailer(smtp!)(gymId),
+    ...(demo ? { demoEmailFor: demo.emailFor } : {}) }));
+  // Restoring a cancelled session with the notice option queues one job that tells the members whose places came back.
+  configureRestoreNotice(createRestoreNotice({ jobs: queue, clock, origin: gymOrigin, demoMode: Boolean(demo),
     sms: { resolver: smsResolver, phoneDigest },
     mailer: async gymId => demo ? demo.emailFor(gymId) : smtpMailer(smtp!)(gymId),
     ...(demo ? { demoEmailFor: demo.emailFor } : {}) }));
