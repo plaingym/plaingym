@@ -122,6 +122,19 @@ an eligible bank account when the gym has enabled bank payments.
   at the cancellation cutoff, so the waitlist is frozen near class time and a freed place
   can be booked by staff or through the portal. The portal and staff booking forms
   stop offering the waitlist after the cutoff; the server also refuses joining it.
+* A member who cancels in the portal (for themself or a household member) gets no notice.
+  When staff cancel one member's booking from the class's **Bookings and check-ins** list,
+  they choose whether to tell the member: **Email**, **Text**, both or neither (both start
+  unticked), with an optional note that goes in the email only. The email goes to the
+  member's own address or the household's billing address when member emails are on,
+  the address can receive email, and the recipient hasn't opted out. The text goes
+  to a phone with notices consent when member texts are on. Each choice works
+  independently. Both messages name the class and its date and time. Erasing the
+  member, or booking them into the same class again before the notice goes out,
+  suppresses both, even if that later booking is cancelled too: only a notice
+  staff chose for the latest cancellation goes out, with its own note. If the
+  cancellation opens a place, the waitlisted member is promoted first, so a slow
+  notice never costs them the place, and they get their own waitlist notice.
 * You can lower a class's capacity only to the number of people already booked.
 * Booking and waitlist promotion are safe when many people act at once; the server
   re-checks capacity for each change.

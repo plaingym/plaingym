@@ -4,6 +4,7 @@ import { bookingsContracts, membersContracts, scheduleContracts, type CreateBook
 import { addDays, localMidnight } from '@plaingym/shared/time';
 import { ApiError, apiErrorReasons, reportApiRefusal } from '../../lib/api.js';
 
+export interface BookingCancelNotice { channels: ('email' | 'sms')[]; note?: string }
 async function request(path: string, query: Record<string, string | number> = {}, body?: unknown) {
   const params = new URLSearchParams(Object.entries(query).map(([key, value]) => [key, String(value)]));
   const response = await fetch(path + (params.size ? '?' + params : ''), { method: body === undefined ? 'GET' : 'POST',
@@ -37,5 +38,10 @@ export const bookingClient = {
     }
   },
   async book(input: CreateBookingRequest) { return parseResponse(bookingsContracts.create.response, await request('/api/bookings', {}, bookingsContracts.create.body.parse(input))).data; },
-  async cancel(id: string) { return parseResponse(bookingsContracts.cancel.response, await request(`/api/bookings/${id}/cancel`, {}, {})).data; },
+  /** Without a notice the body carries no notice fields. The note is sent only with the email channel. */
+  async cancel(id: string, notice?: BookingCancelNotice) {
+    const body = notice?.channels.length ? { notify: true, channels: notice.channels,
+      ...(notice.channels.includes('email') && notice.note?.trim() ? { note: notice.note } : {}) } : {};
+    return parseResponse(bookingsContracts.cancel.response, await request(`/api/bookings/${id}/cancel`, {}, bookingsContracts.cancel.body.parse(body))).data;
+  },
 };

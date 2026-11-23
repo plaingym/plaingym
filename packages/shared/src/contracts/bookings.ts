@@ -4,6 +4,7 @@ import type { EndpointContract } from './definition.js';
 import { idSchema, instantSchema, listResponseSchema, paginationSchema } from './common.js';
 import type { RoutePermission } from '../permissions.js';
 import { attendanceSchema } from './attendance.js';
+import { cancellationNoticeChannelsSchema } from './schedule.js';
 
 const manageBookings = { kind: 'staff', capability: 'bookings.manage' } as const satisfies RoutePermission;
 const bookSelf = { kind: 'member', capability: 'bookings.self' } as const satisfies RoutePermission;
@@ -43,6 +44,17 @@ export const memberBookingSchema = z.discriminatedUnion('status', [
 export const createBookingRequestSchema = z.strictObject({
   memberId: idSchema, sessionId: idSchema, allowWaitlist: z.boolean().default(true),
 });
+/**
+ * Staff cancellation of one booking. The body is optional: without it, or without `notify`, the member is not told.
+ * With `notify: true` and no `channels`, the notice goes by email and text. The note goes in the email only.
+ */
+export const cancelBookingRequestSchema = z.strictObject({
+  notify: z.boolean().optional(),
+  channels: cancellationNoticeChannelsSchema.optional().describe(
+    'Choose each channel at most once. Requires notify to be true. Omitting channels with notify set to true sends both email and SMS.',
+  ),
+  note: z.string().max(1_000).optional().describe('Sent in the email only.'),
+}).refine((value) => !value.channels || value.notify === true, { path: ['channels'], message: 'Notice channels need notify' });
 /** The principal supplies self; the household member ID comes from the authorized path. */
 export const memberCreateBookingRequestSchema = createBookingRequestSchema.omit({ memberId: true });
 export const bookingListQuerySchema = paginationSchema.extend({
@@ -69,7 +81,8 @@ export const bookingRosterResponseSchema = listResponseSchema(bookingRosterEntry
 export const bookingsContracts = {
   list: { method: 'get', path: '/api/bookings', permission: manageBookings, query: bookingListQuerySchema, response: bookingListResponseSchema },
   create: { method: 'post', path: '/api/bookings', permission: manageBookings, body: createBookingRequestSchema, response: bookingResponseSchema },
-  cancel: { method: 'post', path: '/api/bookings/{id}/cancel', permission: manageBookings, params: bookingIdParamsSchema, response: bookingResponseSchema },
+  cancel: { method: 'post', path: '/api/bookings/{id}/cancel', permission: manageBookings, params: bookingIdParamsSchema, body: cancelBookingRequestSchema,
+    description: 'The JSON body is optional. A booking that is already cancelled returns its earlier result and sends no notice.', response: bookingResponseSchema },
   roster: { method: 'get', path: '/api/bookings/sessions/{sessionId}/roster', permission: manageBookings, params: bookingRosterParamsSchema, query: paginationSchema, response: bookingRosterResponseSchema },
   listSelf: { method: 'get', path: '/api/portal/bookings', permission: bookSelf, query: memberBookingListQuerySchema, response: memberBookingListResponseSchema },
   createSelf: { method: 'post', path: '/api/portal/bookings', permission: bookSelf, body: memberCreateBookingRequestSchema, response: memberBookingResponseSchema },
@@ -84,6 +97,7 @@ export type ClassBooking = z.infer<typeof classBookingSchema>;
 export type MemberBooking = z.infer<typeof memberBookingSchema>;
 export type CreateBookingRequest = z.infer<typeof createBookingRequestSchema>;
 export type CreateBookingInput = z.input<typeof createBookingRequestSchema>;
+export type CancelBookingRequest = z.infer<typeof cancelBookingRequestSchema>;
 export type MemberCreateBookingRequest = z.infer<typeof memberCreateBookingRequestSchema>;
 export type BookingListQuery = z.infer<typeof bookingListQuerySchema>;
 export type MemberBookingListQuery = z.infer<typeof memberBookingListQuerySchema>;

@@ -11,10 +11,19 @@ import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js'
 import { lockMemberForWrite, memberWriteScope } from '../members/member-write.js';
 import { createGymSettingsAccessor, readBookingRules } from '../settings/settings.js';
 import { lacksClassEligibility } from '../billing/packs/index.js';
+import { withJobTransaction, type JobTransaction } from '../../infra/jobs/index.js';
 import { activeBookings, assertBookable, assertCancellable, bookablePlaces, bookingAudit, bookingConflict, cutoffPassed, openPlaces, reconcileSessionBookings,
   type BookingRow } from './bookings.rules.js';
 
 export interface BookingOptions { scope?: typeof forGym; clock?: Clock; settings?: GymSettingsAccessor; }
+export type BookingNoticeChannel = 'email' | 'sms';
+/** A staff cancellation's notice to the member, queued in the cancelling transaction so it commits or rolls back with it. */
+export interface BookingCancelNoticeRequest {
+  channels: readonly BookingNoticeChannel[];
+  /** Sent in the email only; empty without one. */
+  note: string;
+  enqueue(transaction: JobTransaction, notice: { bookingId: string; sessionId: string; channels: BookingNoticeChannel[]; note: string }, timezone: string): Promise<void>;
+}
 export type BookingActor = MutationContext & { actor: { kind: 'user'; userId: string }; portal?: PortalIdentity };
 
 export async function bookingView(tx: Transaction, row: BookingRow): Promise<ClassBooking> {
@@ -88,9 +97,10 @@ export function createBookingService(options: BookingOptions = {}) {
         return { booking: await bookingView(tx, row!), promoted };
       });
     },
-    async cancel(context: BookingActor, id: string, memberId?: string) {
+    async cancel(context: BookingActor, id: string, memberId?: string, notice?: BookingCancelNoticeRequest) {
       const gym = await settings.get(context.gymId);
-      return scope(context.gymId, async tx => {
+      return withJobTransaction(scope, context.gymId, async transaction => {
+        const { tx } = transaction;
         const [target] = await tx.select().from(classBookings).where(and(eq(classBookings.id, id), memberId ? eq(classBookings.memberId, memberId) : undefined));
         if (!target) notFound();
         const [session] = await tx.select().from(classSessions).where(eq(classSessions.id, target.sessionId)).for('update');
@@ -103,6 +113,8 @@ export function createBookingService(options: BookingOptions = {}) {
         const [cancelled] = await tx.update(classBookings).set({ status: 'cancelled', waitlistPosition: null, cancelledAt: clock.now() })
           .where(eq(classBookings.id, id)).returning();
         await bookingAudit(tx, context, clock.now(), 'cancelled', cancelled!);
+        // Only this transition queues a notice: an already-cancelled booking returned above, and a rollback drops the job.
+        if (notice) await notice.enqueue(transaction, { bookingId: id, sessionId: cancelled!.sessionId, channels: [...notice.channels], note: notice.note }, gym.timezone);
         return bookingView(tx, cancelled!);
       });
     },

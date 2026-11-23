@@ -6,7 +6,7 @@ import { idSchema } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import { createEmailDeliveries, DeliveryError, SmtpEmail, type Email } from '../../infra/email/index.js';
 import { logEmailSuppression, type SuppressionReason } from '../../infra/email/member.js';
-import { defaultSucceededRetentionDays, type Jobs } from '../../infra/jobs/index.js';
+import { defaultSucceededRetentionDays, type JobTransaction, type Jobs } from '../../infra/jobs/index.js';
 import { logError, logInfo } from '../../core/log.js';
 import { createSmtpResolver } from '../settings/smtp.js';
 import { createGymSettingsAccessor, createSettingsService } from '../settings/settings.js';
@@ -14,6 +14,7 @@ import { renderBookingPromotion } from '../../emails/bookings/bookings.js';
 import { promoteWaitlist, type BookingOptions } from './bookings.js';
 import { readMemberNoticeEmails } from './bookings.recipients.js';
 import { createBookingSms, type ClassNoticeSmsOptions } from './bookings.sms.js';
+import { createBookingCancelNotice, type CancelNotice } from './bookings.cancel-notice.js';
 
 export const promotionJob = 'bookings.promote';
 export const noticeJob = 'bookings.notice';
@@ -53,10 +54,11 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
     for (const row of rows) await enqueueNotice(gymId, row.id);
     return rows;
   }
+  const promotionKey = (cancellationId: string) => `booking-cancelled:${cancellationId}`;
   async function request(gymId: string, sessionId: string, cancellationId: string) {
     const gym = await settings.get(gymId);
     await options.jobs.enqueue(promotionJob, { sessionId }, { gymId, timezone: gym.timezone,
-      idempotencyKey: `booking-cancelled:${cancellationId}` });
+      idempotencyKey: promotionKey(cancellationId) });
   }
   /**
    * After-commit enqueues must not undo committed work: a failed notice or promotion request is logged with
@@ -161,6 +163,20 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
     try { await sendSms(gymId, bookingId); } catch (error) { failure ??= error; }
     if (failure) throw failure;
   }
-  return { promote, request, requestPromotion, sweep, send, enqueueNotice, enqueueNotices };
+  // A staff cancellation's notice: queued in the cancelling transaction, sent after commit, keyed apart from promotions.
+  const cancelNotice = createBookingCancelNotice({ scope, clock, settings, jobs: options.jobs, mailer: options.mailer,
+    ...(options.sms ? { sms: options.sms } : {}) });
+  /**
+   * Queues the promotion request for the freed place, then the notice, both in the cancelling transaction, so a
+   * rollback drops both. The notice runs in the batch lane (`bookings.jobs.ts`), apart from the promotions, so a slow
+   * or retrying notice never holds them up. The route's after-commit request then finds this job by its key.
+   */
+  async function enqueueCancelNotice(transaction: JobTransaction, notice: CancelNotice & { sessionId: string }, timezone: string) {
+    await options.jobs.enqueue(promotionJob, { sessionId: notice.sessionId }, { gymId: transaction.gymId, timezone,
+      idempotencyKey: promotionKey(notice.bookingId) }, transaction);
+    await cancelNotice.enqueue(transaction, { bookingId: notice.bookingId, channels: notice.channels, note: notice.note }, timezone);
+  }
+  return { promote, request, requestPromotion, sweep, send, enqueueNotice, enqueueNotices,
+    enqueueCancelNotice, sendCancelNotice: cancelNotice.run };
 }
 export type BookingDelivery = ReturnType<typeof createBookingDelivery>;

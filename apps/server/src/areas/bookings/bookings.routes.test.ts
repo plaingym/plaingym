@@ -21,8 +21,10 @@ import { createMembersService } from '../members/members.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { createMembersRoutes } from '../members/members.routes.js';
 import { createBookingService, promoteWaitlist } from './bookings.js';
-import { createBookingRoutes } from './bookings.routes.js';
+import { configureBookingRoutes, createBookingRoutes } from './bookings.routes.js';
+import { configureBookingJobs } from './bookings.jobs.js';
 import { createBookingDelivery, noticeJob, promotionJob, type BookingDelivery } from './bookings.delivery.js';
+import { cancelNoticeJob } from './bookings.cancel-notice.js';
 import { FakeEmail } from '../../infra/email/index.js';
 import { createPortalBookingService } from '../portal/bookings.js';
 import { createPortalBookingRoutes } from '../portal/bookings.routes.js';
@@ -33,8 +35,8 @@ beforeAll(() => initializeDatabase(db.appUrl));
 afterAll(closeDatabase);
 const clock = new TestClock('2026-10-29T16:00:00Z');
 const service = createBookingService({ scope: db.forGym, clock });
-async function fixture() {
-  const gymId = uuidv7(); await factory('gyms', gymId, { bookingWindowDays: 7, cancellationCutoffMinutes: 60 });
+async function fixture(gym: { memberEmailsEnabled?: boolean } = {}) {
+  const gymId = uuidv7(); await factory('gyms', gymId, { bookingWindowDays: 7, cancellationCutoffMinutes: 60, ...gym });
   const staff = await factory('authUser', gymId), payer = await factory('authUser', gymId), adult = await factory('authUser', gymId);
   const member = await factory('members', gymId), sibling = await factory('members', gymId, { householdId: member.householdId });
   const outsider = await factory('members', gymId);
@@ -391,5 +393,106 @@ describe('booking route permissions and production composition', () => {
     const row = bookingsContracts.createSelf.response.parse(await response.json()).data;
     expect((await server.request('/api/portal/bookings')).status).toBe(200);
     expect((await post(server, `/api/portal/bookings/${row.id}/cancel`)).status).toBe(200);
+  });
+});
+
+describe('staff cancellation notice choices', () => {
+  function noticeApp(f: Fixture, principal: Principal = staffPrincipal(f, 'front_desk')) {
+    const jobs = new FakeJobs(clock), delivery = createBookingDelivery({ scope: db.forGym, clock, jobs, mailer: async () => new FakeEmail() });
+    return { jobs, server: app(f, principal, false, false, delivery), notices: () => jobs.jobs.filter(job => job.name === cancelNoticeJob) };
+  }
+  const status = async (f: Fixture, id: string) => (await service.list(f.gymId, { limit: 50, offset: 0 })).data.find(row => row.id === id)?.status;
+  it.each([['no body', undefined], ['an empty body', {}], ['notify false', { notify: false }], ['a note alone', { note: 'Hi' }]] as const)(
+    'cancels without a notice for %s', async (_label, body) => {
+      const f = await fixture(), booking = await book(f), { server, notices } = noticeApp(f);
+      const response = body === undefined
+        ? await server.request(`/api/bookings/${booking.id}/cancel`, { method: 'POST', headers: { origin: 'http://localhost', ...portalTestHeaders(server) } })
+        : await post(server, `/api/bookings/${booking.id}/cancel`, body);
+      expect(response.status).toBe(200);
+      expect((await response.json()).data).toMatchObject({ id: booking.id, status: 'cancelled' });
+      expect(notices()).toHaveLength(0);
+    });
+  it.each([
+    ['a JSON header', { 'content-type': 'application/json' }], ['a JSON header with a charset', { 'content-type': 'application/json; charset=utf-8' }], ['no header', {}],
+    ['a text header', { 'content-type': 'text/plain;charset=UTF-8' }], ['a form header', { 'content-type': 'application/x-www-form-urlencoded' }],
+  ] as const)('cancels without a notice for zero bytes with %s', async (_label, headers) => {
+    const f = await fixture(), booking = await book(f), { server, notices } = noticeApp(f);
+    // A byte array, unlike a string, adds no content type of its own.
+    const response = await server.request(`/api/bookings/${booking.id}/cancel`, { method: 'POST',
+      headers: { origin: 'http://localhost', ...portalTestHeaders(server), ...headers }, body: new Uint8Array(0) });
+    expect(response.status).toBe(200);
+    expect((await response.json()).data).toMatchObject({ id: booking.id, status: 'cancelled' });
+    expect(notices()).toHaveLength(0);
+  });
+  it.each([
+    ['application/json', '{"notify":'], ['application/json', ' '], ['application/json', 'null'],
+    ['application/json', '\uFEFF'], ['text/plain', '{}'],
+  ])('refuses %s with body %j and leaves the booking unchanged', async (type, body) => {
+    const f = await fixture(), booking = await book(f), { server, jobs } = noticeApp(f);
+    const response = await server.request(`/api/bookings/${booking.id}/cancel`, { method: 'POST',
+      headers: { origin: 'http://localhost', 'content-type': type, ...portalTestHeaders(server) }, body });
+    expect(response.status).toBe(400);
+    expect(await status(f, booking.id)).toBe('booked'); expect(jobs.jobs).toHaveLength(0);
+  });
+  it.each([
+    [{ notify: true }, ['email', 'sms'], ''], [{ notify: true, channels: ['email'], note: 'See you Monday' }, ['email'], 'See you Monday'],
+    [{ notify: true, channels: ['sms'], note: 'Email only' }, ['sms'], ''], [{ notify: true, channels: ['sms', 'email'] }, ['sms', 'email'], ''],
+  ] as const)('queues one notice for %j', async (body, channels, note) => {
+    const f = await fixture(), booking = await book(f), { server, notices } = noticeApp(f);
+    expect((await post(server, `/api/bookings/${booking.id}/cancel`, body)).status).toBe(200);
+    expect(notices()).toMatchObject([{ payload: { bookingId: booking.id, channels, note },
+      options: { gymId: f.gymId, idempotencyKey: `booking-cancel-notice:${booking.id}` } }]);
+    // An already-cancelled booking returns its earlier result and queues nothing more.
+    const again = await post(server, `/api/bookings/${booking.id}/cancel`, { notify: true });
+    expect(again.status).toBe(200); expect((await again.json()).data).toMatchObject({ id: booking.id, status: 'cancelled' });
+    expect(notices()).toHaveLength(1);
+  });
+  it.each([
+    { notify: true, channels: [] }, { notify: true, channels: ['email', 'email'] }, { notify: true, channels: ['fax'] },
+    { channels: ['email'] }, { notify: false, channels: ['sms'] }, { notify: true, note: 'x'.repeat(1_001) }, { notify: 'yes' }, { notify: true, memberId: uuidv7() },
+  ])('refuses %j and leaves the booking unchanged', async body => {
+    const f = await fixture(), booking = await book(f), { server, jobs } = noticeApp(f);
+    expect((await post(server, `/api/bookings/${booking.id}/cancel`, body)).status).toBe(400);
+    expect(await status(f, booking.id)).toBe('booked'); expect(jobs.jobs).toHaveLength(0);
+  });
+  it('returns 404 for another gym booking and queues nothing', async () => {
+    const f = await fixture(), foreign = await fixture(), booking = await book(foreign), { server, jobs } = noticeApp(f, staffPrincipal(f));
+    expect((await post(server, `/api/bookings/${booking.id}/cancel`, { notify: true, channels: ['email', 'sms'] })).status).toBe(404);
+    expect(await status(foreign, booking.id)).toBe('booked'); expect(jobs.jobs).toHaveLength(0);
+  });
+  it('keeps portal callers off the staff route and queues no notice for self or household cancellations', async () => {
+    const f = await fixture(), { server, notices } = noticeApp(f, memberPrincipal(f));
+    const own = await book(f), child = await book(f, f.sibling.id), outsider = await book(f, f.outsider.id);
+    expect([401, 403]).toContain((await post(server, `/api/bookings/${own.id}/cancel`, { notify: true })).status);
+    expect(await status(f, own.id)).toBe('booked');
+    expect((await post(server, `/api/portal/members/${f.outsider.id}/bookings/${outsider.id}/cancel`, { notify: true })).status).toBe(404);
+    expect((await post(server, `/api/portal/bookings/${outsider.id}/cancel`, { notify: true })).status).toBe(404);
+    expect(await status(f, outsider.id)).toBe('booked');
+    expect((await post(server, `/api/portal/bookings/${own.id}/cancel`, { notify: true, channels: ['email'] })).status).toBe(200);
+    expect((await post(server, `/api/portal/members/${f.sibling.id}/bookings/${child.id}/cancel`, { notify: true })).status).toBe(200);
+    expect(await status(f, own.id)).toBe('cancelled'); expect(await status(f, child.id)).toBe('cancelled');
+    expect(notices()).toHaveLength(0);
+  });
+  // Last in the file: it configures the production booking delivery, as the runtime does.
+  it('sends a staff cancellation notice through the production route and job registrations', async () => {
+    const f = await fixture({ memberEmailsEnabled: true }), member = await factory('members', f.gymId, { email: 'river@example.test' });
+    // Production route factories use the injected app database and the current system clock.
+    const future = new Date(); future.setUTCDate(future.getUTCDate() + 1);
+    const session = await factory('classSessions', f.gymId, { name: 'Open mat', startsAt: future, endsAt: new Date(future.getTime() + 3_600_000), capacity: 5 });
+    const jobs = new FakeJobs(clock), email = new FakeEmail(), delivery = createBookingDelivery({ jobs, mailer: async () => email });
+    configureBookingRoutes(delivery); configureBookingJobs(delivery);
+    const server = app(f, staffPrincipal(f), false, true);
+    const booked = await post(server, '/api/bookings', { memberId: member.id, sessionId: session.id, allowWaitlist: true });
+    expect(booked.status).toBe(200);
+    const id = bookingsContracts.create.response.parse(await booked.json()).data.id;
+    const cancelled = await post(server, `/api/bookings/${id}/cancel`, { notify: true, channels: ['email'], note: 'The mats are being replaced.' });
+    expect(cancelled.status).toBe(200);
+    const queued = jobs.jobs.filter(job => job.name === cancelNoticeJob);
+    expect(queued).toMatchObject([{ payload: { bookingId: id, channels: ['email'], note: 'The mats are being replaced.' },
+      options: { gymId: f.gymId, idempotencyKey: `booking-cancel-notice:${id}` } }]);
+    const registration = areaContributions.jobs.find(job => job.id === cancelNoticeJob)!;
+    await registration.handler(queued[0]!.payload, { gymId: f.gymId, jobId: 'test', timezone: 'UTC', attempt: 1, clock });
+    expect(email.messages.map(message => message.to)).toEqual(['river@example.test']);
+    for (const value of ['Open mat', 'The mats are being replaced.']) expect(email.messages[0]!.text).toContain(value);
   });
 });

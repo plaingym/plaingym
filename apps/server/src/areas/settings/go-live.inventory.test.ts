@@ -14,6 +14,7 @@ const boundaries = {
   'areas/settings/integrations.sms.ts': 'owner-initiated test to the submitted number is exempt from member switches, consent and the cap; sandbox changes are refused',
   'areas/health/auto-update.notices.ts': 'staff-only owner update notices are exempt from memberEmailsEnabled; gym SMTP and durable per-attempt delivery reservations',
   'areas/bookings/bookings.delivery.ts': 'memberEmailsEnabled, current booking and member or billing email suppression rechecked immediately before gym SMTP delivery',
+  'areas/bookings/bookings.cancel-notice.ts': 'staff-chosen channels only, each under its own booking key; cancelled booking, erasure, memberEmailsEnabled and recipient email rechecked before gym SMTP, and memberNoticePhones rechecked before MemberSms enforces notices consent, switch and cap',
   'areas/bookings/bookings.sms.ts': 'independent promotion key; current promotion and memberNoticePhones rechecked, then MemberSms enforces notices consent, switch and cap',
   'areas/announcements/cancellation.sms.ts': 'session and keyed phone digest deduplicate the snapshot; MemberSms enforces notices consent, switch and cap at delivery',
   'areas/announcements/send.sms.ts': 'keyed announcement phone reservations; MemberSms rechecks the switch, announcements consent and daily cap, with quiet hours at the provider boundary',

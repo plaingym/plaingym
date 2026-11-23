@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { BookingRosterPanel, MemberBookingsPanel } from './panels.js';
 import { registration } from './registrations.js';
 import { ApiError } from '../../lib/api.js';
+import { Dialog } from '../../components/ui/dialog.js';
 import { SessionCountsProvider, useSessionChanged, type SessionCounts } from '../../lib/session-summary.js';
 import { memo, useState } from 'react';
 
@@ -26,6 +27,23 @@ beforeEach(() => {
   client.book.mockResolvedValue(booking); client.cancel.mockResolvedValue({ ...booking, status: 'cancelled' });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); });
+/** The session roster's confirmation replaces the roster in place, so a session dialog never opens a second dialog. */
+const confirmation = () => screen.findByRole('form', { name: 'Cancel this booking?' });
+/** The session roster confirms first; tick the named notice boxes, type an optional note, then confirm. */
+async function cancelFromRoster(user: ReturnType<typeof userEvent.setup>, boxes: readonly ('Email' | 'Text')[] = [], note = '') {
+  await user.click(await screen.findByRole('button', { name: 'Cancel booking for River Lee' }));
+  const form = await confirmation();
+  for (const box of boxes) await user.click(within(form).getByRole('checkbox', { name: box }));
+  if (note) await user.type(within(form).getByLabelText('Note for the email (optional)'), note);
+  await user.click(within(form).getByRole('button', { name: 'Cancel booking' }));
+}
+/** A refused roster cancellation shows its error in the confirmation; Keep booking returns to the roster with it. */
+async function keepAfterRefusal(user: ReturnType<typeof userEvent.setup>) {
+  const form = await confirmation();
+  await within(form).findByRole('alert');
+  await user.click(within(form).getByRole('button', { name: 'Keep booking' }));
+  await screen.findByRole('alert');
+}
 describe('staff booking panels', () => {
   it.each(['roster', 'member'] as const)('closes an open %s waitlist form one millisecond after the exact cutoff', async kind => {
     vi.useFakeTimers(); vi.setSystemTime(new Date(Date.parse(session.cancelBefore) - (kind === 'roster' ? 250 : 0)));
@@ -179,7 +197,7 @@ describe('staff booking panels', () => {
     const user = userEvent.setup(); render(<Probe/>);
     expect((await screen.findByTestId('roster-counts')).textContent).toBe('Booked 1,200 · 2,400 waitlisted · 3,600 checked in');
     await waitFor(() => expect(screen.getByTestId('top').textContent).toBe('1200/2400/3600'));
-    await user.click(screen.getByRole('button', { name: 'Cancel booking for River Lee' }));
+    await cancelFromRoster(user);
     await waitFor(() => expect(screen.getByTestId('roster-counts').textContent).toBe('Booked 3 · 1 waitlisted · 3 checked in'));
     await waitFor(() => expect(screen.getByTestId('top').textContent).toBe('3/1/3'));
   });
@@ -216,8 +234,8 @@ describe('staff booking panels', () => {
     client.cancel.mockRejectedValueOnce(new ApiError(409, 'conflict'));
     const tree = (changed: number) => <SessionCountsProvider publish={() => undefined} changed={changed}><BookingRosterPanel sessionId={sessionId}/></SessionCountsProvider>;
     const user = userEvent.setup(); const view = render(tree(0));
-    await user.click(await screen.findByRole('button', { name: 'Cancel booking for River Lee' }));
-    await screen.findByRole('alert');
+    await cancelFromRoster(user);
+    await keepAfterRefusal(user);
     view.rerender(tree(1));
     await waitFor(() => expect(screen.getAllByRole('alert')).toHaveLength(2));
     view.rerender(tree(2));
@@ -228,8 +246,8 @@ describe('staff booking panels', () => {
   it('clears an action error on a manual Refresh', async () => {
     client.cancel.mockRejectedValueOnce(new ApiError(409, 'conflict'));
     const user = userEvent.setup(); render(<BookingRosterPanel sessionId={sessionId}/>);
-    await user.click(await screen.findByRole('button', { name: 'Cancel booking for River Lee' }));
-    await screen.findByRole('alert');
+    await cancelFromRoster(user);
+    await keepAfterRefusal(user);
     await user.click(screen.getByRole('button', { name: 'Refresh' }));
     await waitFor(() => expect(client.roster).toHaveBeenCalledTimes(2));
     await screen.findByText('River Lee');
@@ -256,9 +274,9 @@ describe('staff booking panels', () => {
   });
   it('starts over after a cancellation, so the cancelled row is not left actionable', async () => {
     const user = userEvent.setup(); render(<BookingRosterPanel sessionId={sessionId}/>);
-    const cancel = await screen.findByRole('button', { name: 'Cancel booking for River Lee' });
+    await screen.findByRole('button', { name: 'Cancel booking for River Lee' });
     client.roster.mockReturnValueOnce(new Promise(() => undefined));
-    await user.click(cancel);
+    await cancelFromRoster(user);
     await screen.findByText('Booking cancelled.');
     expect(screen.queryByRole('button', { name: 'Cancel booking for River Lee' })).toBeNull();
     expect(screen.getByText('Loading bookings…')).toBeDefined();
@@ -266,13 +284,29 @@ describe('staff booking panels', () => {
   it('clears an action error when a booking saves on the first page', async () => {
     client.cancel.mockRejectedValueOnce(new ApiError(409, 'conflict'));
     const user = userEvent.setup(); render(<BookingRosterPanel sessionId={sessionId}/>);
-    await user.click(await screen.findByRole('button', { name: 'Cancel booking for River Lee' }));
-    await screen.findByRole('alert');
+    await cancelFromRoster(user);
+    await keepAfterRefusal(user);
     await user.type(screen.getByRole('combobox', { name: 'Member' }), 'River');
     await user.click(await screen.findByRole('option', { name: 'River Lee' }));
     await user.click(screen.getByRole('button', { name: 'Book a place' }));
     await screen.findByText('Booking saved.');
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  });
+  it('keeps the member picker selection and waitlist choice while confirming another booking', async () => {
+    const user = userEvent.setup();
+    const nextMember = { id: '00000000-0000-7000-8000-000000000003', firstName: 'Alex', lastName: 'Kim' };
+    client.members.mockResolvedValue([nextMember]);
+    render(<BookingRosterPanel sessionId={sessionId}/>);
+    await user.type(await screen.findByRole('combobox', { name: 'Member' }), 'Alex');
+    await user.click(await screen.findByRole('option', { name: 'Alex Kim' }));
+    await user.click(screen.getByRole('checkbox', { name: /waitlist/i }));
+    await user.click(screen.getByRole('button', { name: 'Cancel booking for River Lee' }));
+    const form = await confirmation();
+    expect(screen.queryByRole('combobox', { name: 'Member' })).toBeNull();
+    await user.click(within(form).getByRole('button', { name: 'Keep booking' }));
+    await user.click(screen.getByRole('button', { name: 'Book a place' }));
+    expect(client.book).toHaveBeenCalledWith({ memberId: nextMember.id, sessionId, allowWaitlist: false });
+    expect(client.cancel).not.toHaveBeenCalled();
   });
   it('shows the empty state beside an unread action error', async () => {
     client.roster.mockResolvedValueOnce({ data: [{ displayName: 'River Lee', booking, attendance: null }], pagination: { total: 1 }, counts: { booked: 1, waitlisted: 0, checkedIn: 0 } })
@@ -280,8 +314,8 @@ describe('staff booking panels', () => {
     client.cancel.mockRejectedValueOnce(new ApiError(409, 'conflict'));
     const tree = (changed: number) => <SessionCountsProvider publish={() => undefined} changed={changed}><BookingRosterPanel sessionId={sessionId}/></SessionCountsProvider>;
     const user = userEvent.setup(), view = render(tree(0));
-    await user.click(await screen.findByRole('button', { name: 'Cancel booking for River Lee' }));
-    await screen.findByRole('alert');
+    await cancelFromRoster(user);
+    await keepAfterRefusal(user);
     view.rerender(tree(1));
     await screen.findByText('No bookings or check-ins yet');
     expect(screen.getByRole('alert').textContent).toContain('cancellation cutoff');
@@ -506,14 +540,91 @@ describe('staff booking panels', () => {
     expect(client.sessions).toHaveBeenCalledWith(expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/), 'America/New_York');
     expect(client.members).not.toHaveBeenCalled();
   });
-  it('rejects a late cancellation visibly, keeps the place, and permits retry', async () => {
+  it('rejects a cancellation beside the kept choices and note, and retries them unchanged', async () => {
     const user = userEvent.setup(); client.cancel.mockRejectedValueOnce(new ApiError(409, 'conflict'));
     render(<BookingRosterPanel sessionId={sessionId}/>);
+    await cancelFromRoster(user, ['Email', 'Text'], 'Class moved');
+    const form = await confirmation();
+    expect((await within(form).findByRole('alert')).textContent).toContain('cancellation cutoff');
+    for (const name of ['Email', 'Text']) expect((within(form).getByRole('checkbox', { name }) as HTMLInputElement).checked).toBe(true);
+    expect((within(form).getByLabelText('Note for the email (optional)') as HTMLTextAreaElement).value).toBe('Class moved');
+    await user.click(within(form).getByRole('button', { name: 'Cancel booking' }));
+    await screen.findByText('Booking cancelled.');
+    expect(client.cancel.mock.calls).toEqual([['booking', { channels: ['email', 'sms'], note: 'Class moved' }], ['booking', { channels: ['email', 'sms'], note: 'Class moved' }]]);
+    expect(screen.queryByRole('form', { name: 'Cancel this booking?' })).toBeNull();
+  });
+  it('keeps the confirmation inside the session dialog: Escape guards a draft and an untouched one closes only that dialog', async () => {
+    const user = userEvent.setup(), close = vi.fn();
+    render(<Dialog title="Class details" closeLabel="Close" onClose={close}><BookingRosterPanel sessionId={sessionId}/></Dialog>);
     await user.click(await screen.findByRole('button', { name: 'Cancel booking for River Lee' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('cancellation cutoff');
-    expect(screen.getByText('Booked')).toBeDefined();
+    let form = await confirmation();
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    await user.click(within(form).getByRole('checkbox', { name: 'Email' }));
+    await user.type(within(form).getByLabelText('Note for the email (optional)'), 'Class moved');
+    fireEvent(screen.getByRole('dialog'), new Event('cancel', { cancelable: true }));
+    expect(close).not.toHaveBeenCalled();
+    await user.click(await screen.findByRole('button', { name: 'Keep editing' }));
+    form = await confirmation();
+    expect((within(form).getByLabelText('Note for the email (optional)') as HTMLTextAreaElement).value).toBe('Class moved');
+    // Keep booking leaves the confirmation and drops its draft. Escape on an untouched one closes the one dialog, once.
+    await user.click(within(form).getByRole('button', { name: 'Keep booking' }));
+    expect(screen.queryByRole('form', { name: 'Cancel this booking?' })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel booking for River Lee' }));
     await user.click(screen.getByRole('button', { name: 'Cancel booking for River Lee' }));
-    await screen.findByText('Booking cancelled.'); expect(client.cancel).toHaveBeenCalledTimes(2);
+    await confirmation();
+    fireEvent(screen.getByRole('dialog'), new Event('cancel', { cancelable: true }));
+    expect(close).toHaveBeenCalledOnce();
+    expect(client.cancel).not.toHaveBeenCalled();
+  });
+  it.each([
+    [[], undefined], [['Email'], { channels: ['email'] }], [['Text'], { channels: ['sms'] }], [['Email', 'Text'], { channels: ['email', 'sms'] }],
+  ] as const)('confirms a roster cancellation with %j ticked', async (boxes, notice) => {
+    const user = userEvent.setup(); render(<BookingRosterPanel sessionId={sessionId}/>);
+    await user.click(await screen.findByRole('button', { name: 'Cancel booking for River Lee' }));
+    const form = await confirmation();
+    expect(form.textContent).toContain('River Lee');
+    for (const name of ['Email', 'Text']) expect((within(form).getByRole('checkbox', { name }) as HTMLInputElement).checked).toBe(false);
+    expect(within(form).queryByLabelText('Note for the email (optional)')).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(client.cancel).not.toHaveBeenCalled();
+    cleanup(); render(<BookingRosterPanel sessionId={sessionId}/>);
+    await cancelFromRoster(user, boxes);
+    await screen.findByText('Booking cancelled.');
+    expect(client.cancel).toHaveBeenCalledOnce();
+    expect(client.cancel.mock.calls[0]).toEqual(notice ? ['booking', notice] : ['booking', undefined]);
+    expect(screen.queryByRole('form', { name: 'Cancel this booking?' })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Bookings and check-ins' }));
+  });
+  it('sends a note only with Email and only shows the note while Email is ticked', async () => {
+    const user = userEvent.setup(); render(<BookingRosterPanel sessionId={sessionId}/>);
+    await user.click(await screen.findByRole('button', { name: 'Cancel booking for River Lee' }));
+    const form = await confirmation();
+    await user.click(within(form).getByRole('checkbox', { name: 'Email' }));
+    await user.type(within(form).getByLabelText('Note for the email (optional)'), 'Class moved');
+    await user.click(within(form).getByRole('checkbox', { name: 'Email' }));
+    expect(within(form).queryByLabelText('Note for the email (optional)')).toBeNull();
+    await user.click(within(form).getByRole('checkbox', { name: 'Text' }));
+    await user.click(within(form).getByRole('button', { name: 'Cancel booking' }));
+    await screen.findByText('Booking cancelled.');
+    expect(client.cancel).toHaveBeenLastCalledWith('booking', { channels: ['sms'] });
+    await cancelFromRoster(user, ['Email', 'Text'], 'See you Monday');
+    await waitFor(() => expect(client.cancel).toHaveBeenCalledTimes(2));
+    expect(client.cancel).toHaveBeenLastCalledWith('booking', { channels: ['email', 'sms'], note: 'See you Monday' });
+  });
+  it('sends nothing when the confirmation is dismissed, and the member tab cancels without asking', async () => {
+    const user = userEvent.setup(); render(<BookingRosterPanel sessionId={sessionId}/>);
+    await user.click(await screen.findByRole('button', { name: 'Cancel booking for River Lee' }));
+    const form = await confirmation();
+    await user.click(within(form).getByRole('checkbox', { name: 'Text' }));
+    await user.click(within(form).getByRole('button', { name: 'Keep booking' }));
+    expect(screen.queryByRole('form', { name: 'Cancel this booking?' })).toBeNull();
+    expect(screen.getByText('Booked')).toBeDefined();
+    expect(client.cancel).not.toHaveBeenCalled();
+    cleanup(); render(<MemberBookingsPanel memberId={memberId}/>);
+    await user.click(await screen.findByRole('button', { name: /^Cancel booking for Fundamentals/ }));
+    await screen.findByText('Booking cancelled.');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(client.cancel).toHaveBeenCalledWith('booking', undefined);
   });
   it('does not show server details, and refresh recovers from a failed list request', async () => {
     client.roster.mockRejectedValueOnce(new Error('private SQL details'));

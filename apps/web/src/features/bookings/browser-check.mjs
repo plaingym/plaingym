@@ -37,7 +37,7 @@ Object.assign(bookingClient, {
   roster:async()=>{if(window.failRoster)throw new Error('Unavailable');const gone=booking.status==='cancelled',waiting=booking.status==='waitlisted';
     return {data:gone?[]:[{displayName:member.firstName+' '+member.lastName,booking,attendance:null}],pagination:{total:gone?0:1},counts:{booked:gone||waiting?0:1,waitlisted:waiting?1:0,checkedIn:2}};},
   book:async()=>{booking={...booking,status:'waitlisted',queueRank:2,waitlistPosition:3};return booking;},
-  cancel:async()=>{booking={...booking,status:'cancelled',queueRank:null,waitlistPosition:null};return booking;}
+  cancel:async(id,notice)=>{(window.cancelCalls??=[]).push(notice??null);if(window.failCancel){window.failCancel=false;throw new Error('Unavailable');}booking={...booking,status:'cancelled',queueRank:null,waitlistPosition:null};return booking;}
 });
 Object.assign(attendanceClient, { members:async()=>({data:[member],total:1}), checkedIn:async()=>[], record:async()=>({id:'visit',memberId}) });
 const dialogSession={id:sessionId,name:'Fundamentals',startsAt:'2026-11-02T18:00:00Z',endsAt:'2026-11-02T19:00:00Z',coachId:null,status:'scheduled',capacity:5,notes:null,kind:'class',programIds:[],tagIds:[],revision:1};
@@ -49,7 +49,7 @@ const billing={plans:async()=>[plan],memberships:async()=>[membership]};
 const memberView=new URL(location.href).searchParams.has('member'), dialogView=new URL(location.href).searchParams.has('dialog'), membershipView=new URL(location.href).searchParams.has('membership');
 createRoot(document.getElementById('root')).render(<QueryClientProvider client={new QueryClient()}><ShellServicesContext.Provider value={services}>
   <main className="mx-auto max-w-5xl p-4 sm:p-8"><h1 className="mb-6 text-2xl font-bold">Class reservations</h1>
-  {dialogView?<Dialog title="Class details" closeLabel="Close" onClose={()=>undefined}><SessionDetail session={dialogSession} options={options} roles={['owner']} enabledModules={[]} onSaved={() => undefined}/></Dialog>:membershipView?<MembershipPanel gymId="gym" memberId={memberId} manage={false} client={billing}/>:memberView?<MemberBookingsPanel memberId={memberId}/>:<BookingRosterPanel sessionId={sessionId}/>}</main>
+  {dialogView?<Dialog title="Class details" closeLabel="Close" onClose={()=>{window.dialogClosed=true;}}><SessionDetail session={dialogSession} options={options} roles={['owner']} enabledModules={[]} onSaved={() => undefined}/></Dialog>:membershipView?<MembershipPanel gymId="gym" memberId={memberId} manage={false} client={billing}/>:memberView?<MemberBookingsPanel memberId={memberId}/>:<BookingRosterPanel sessionId={sessionId}/>}</main>
 </ShellServicesContext.Provider></QueryClientProvider>);
 `);
 const server = await createServer({ configFile: false, appType: 'custom', root: resolve(root, 'apps/web'), plugins: [react(), tailwindcss()],
@@ -92,7 +92,10 @@ try {
     expect(accessibility.violations).toEqual([]);
     await page.screenshot({ path: resolve(output, (member ? 'member-' : 'session-') + width + '.png'), fullPage: true });
     await page.getByRole('button', { name: /^Cancel booking for/ }).click();
+    // The session roster confirms first; the member tab cancels straight away.
+    if (!member) await page.getByRole('form', { name: 'Cancel this booking?' }).getByRole('button', { name: 'Cancel booking', exact: true }).click();
     await expect(page.getByText('Booking cancelled.')).toBeVisible();
+    expect(await page.evaluate(() => globalThis.cancelCalls)).toEqual([null]);
     results.push({ width, panel: member ? 'member' : 'session', overflow: false, minimumTarget: 44, axeViolations: 0, bookCancel: true });
     await context.close();
   }
@@ -121,9 +124,67 @@ try {
     await page.getByRole('button', { name: 'Refresh', exact: true }).click();
     await expect(page.getByText(/These bookings and counts may be out of date/)).toHaveCount(0);
     await expect(page.getByRole('alert')).toHaveCount(0);
+    // The confirmation replaces the roster inside the one session dialog. Escape guards its draft, and a refused
+    // request keeps the choices and note for a retry.
     await page.getByRole('button', { name: /^Cancel booking for/ }).click();
+    const inDialog = page.getByRole('form', { name: 'Cancel this booking?' });
+    await expect(page.getByRole('dialog')).toHaveCount(1);
+    await inDialog.getByRole('checkbox', { name: 'Email', exact: true }).check();
+    await inDialog.getByLabel('Note for the email (optional)').fill('Class moved to Monday');
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: 'Keep editing', exact: true }).click();
+    await page.evaluate(() => { globalThis.failCancel = true; });
+    await inDialog.getByRole('button', { name: 'Cancel booking', exact: true }).click();
+    await expect(inDialog.getByRole('alert')).toBeVisible();
+    await expect(inDialog.getByRole('checkbox', { name: 'Email', exact: true })).toBeChecked();
+    await expect(inDialog.getByLabel('Note for the email (optional)')).toHaveValue('Class moved to Monday');
+    expect(await page.evaluate(() => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth)).toBe(true);
+    expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze()).violations).toEqual([]);
+    await page.screenshot({ path: resolve(output, 'dialog-cancel-retry-' + width + '.png'), fullPage: true });
+    await inDialog.getByRole('button', { name: 'Cancel booking', exact: true }).click();
     await expect(page.getByTestId('session-counts')).toHaveText('Booked 0 of 5 · 0 waitlisted · 2 checked in');
-    results.push({ width, panel: 'dialog', overflow: false, summaryUpdates: true, staleRecovery: true });
+    const sent = { channels: ['email'], note: 'Class moved to Monday' };
+    expect(await page.evaluate(() => [globalThis.cancelCalls, globalThis.dialogClosed ?? false])).toEqual([[sent, sent], false]);
+    results.push({ width, panel: 'dialog', overflow: false, summaryUpdates: true, staleRecovery: true, escapeKeepsDraft: true, retryKeepsDraft: true });
+    await context.close();
+  }
+  // The roster confirmation: both boxes start unticked; each choice is its own fixture; dismissing sends nothing.
+  const choices = [[[], null], [['Email'], { channels: ['email'], note: 'Class moved to Monday' }], [['Text'], { channels: ['sms'] }],
+    [['Email', 'Text'], { channels: ['email', 'sms'], note: 'Class moved to Monday' }], ['dismiss']];
+  for (const width of [360, 1280]) for (const [boxes, expected] of choices) {
+    const context = await browser.newContext({ viewport: { width, height: 900 } });
+    const page = await context.newPage(); page.setDefaultTimeout(12_000);
+    page.on('pageerror', error => errors.push(error.message));
+    await page.goto(origin + '/bookings-fixture');
+    await expect(page.getByText('Booked', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: /^Cancel booking for/ }).click();
+    const dialog = page.getByRole('form', { name: 'Cancel this booking?' });
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(dialog).toContainText('Alexandria Rivera-Martinez');
+    for (const name of ['Email', 'Text']) await expect(dialog.getByRole('checkbox', { name, exact: true })).not.toBeChecked();
+    await expect(dialog.getByLabel('Note for the email (optional)')).toHaveCount(0);
+    const label = boxes === 'dismiss' ? 'dismiss' : boxes.join('-') || 'none';
+    if (boxes === 'dismiss') {
+      await dialog.getByRole('checkbox', { name: 'Text', exact: true }).check();
+      await dialog.getByRole('button', { name: 'Keep booking', exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      await expect(page.getByText('Booked', { exact: true })).toBeVisible();
+      expect(await page.evaluate(() => globalThis.cancelCalls ?? [])).toEqual([]);
+    } else {
+      for (const name of boxes) await dialog.getByRole('checkbox', { name, exact: true }).check();
+      if (boxes.includes('Email')) await dialog.getByLabel('Note for the email (optional)').fill('Class moved to Monday');
+      expect(await page.evaluate(() => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth)).toBe(true);
+      const small = await dialog.locator('button, textarea, label:has(input[type=checkbox])').evaluateAll(elements => elements.filter(element => {
+        const bounds = element.getBoundingClientRect(); return bounds.width > 0 && (bounds.height < 44 || bounds.width < 44);
+      }).map(element => element.outerHTML));
+      expect(small).toEqual([]);
+      expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze()).violations).toEqual([]);
+      await page.screenshot({ path: resolve(output, 'cancel-confirm-' + label + '-' + width + '.png'), fullPage: true });
+      await dialog.getByRole('button', { name: 'Cancel booking', exact: true }).click();
+      await expect(page.getByText('Booking cancelled.')).toBeVisible();
+      expect(await page.evaluate(() => globalThis.cancelCalls)).toEqual([expected]);
+    }
+    results.push({ width, panel: 'cancel-confirm', choice: label, overflow: false });
     await context.close();
   }
   for (const width of [360, 1280]) {

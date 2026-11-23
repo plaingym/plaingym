@@ -111,7 +111,8 @@ time in the gym's timezone. The durable key is
 Only a definite non-send retries. Texts are independent of email acceptance,
 suppression, missing SMTP and the email switch. Both channels still require a
 recent promotion, an unstarted scheduled class and a current booked participant.
-Ordinary booking confirmations and member booking cancellations send no notice.
+Ordinary booking confirmations and portal cancellations (self or household) send no
+notice; a staff cancellation sends one only when staff choose it (below).
 Unsent promotions expire after the jobs module's exported succeeded-retention
 default, so recovery stops before a completed notice job's key can be pruned.
 The notice handler logs when it skips a stale or missing promotion.
@@ -141,10 +142,78 @@ then passes the result to `configureBookingJobs`, `configureBookingRoutes` and
 routes and jobs. Erasure's after-commit caller can pass each freed session to
 `promoteWaitlist`; the recovery job queues the resulting notices.
 
+## Staff cancellation notices
+
+The staff `POST /api/bookings/{id}/cancel` takes an optional JSON body: `notify`
+(boolean), `channels` (one or both of `email` and `sms`, each once; the schedule
+contract's `cancellationNoticeChannelsSchema`) and `note` (up to 1,000 characters).
+An empty request cancels without telling the member, regardless of its content type.
+A nonempty request must use a JSON content type and pass validation. Sending `{}`
+or omitting `notify` cancels without a notice. `notify: true`
+without `channels` uses both. `channels` without `notify: true`, an empty or
+repeated list, or an unknown channel is a 400 and changes nothing. The portal
+cancellation routes take no body and never queue this notice.
+
+`bookings.cancel-notice.ts` owns the `bookings.cancel_notice` job. The service
+queues it, keyed `booking-cancel-notice:<bookingId>` with the chosen channels and
+the note (kept only with email), in the transaction that cancels the booking and
+writes its audit (`withJobTransaction`): a rolled-back cancellation leaves no job,
+and an already-cancelled booking returns its earlier result without one. The
+booking jobs register its handler, and `createBookingDelivery` binds it to the
+same mailer and SMS options as the promotion notice (`enqueueCancelNotice`,
+`sendCancelNotice`).
+
+The same transaction first queues the promotion request for the freed place
+(`bookings.promote`, keyed `booking-cancelled:<bookingId>`, which the route's
+after-commit request then finds). A rollback drops both jobs. Cancellation
+notices run on their own lane, the job queue's batch lane, which no other booking
+job uses, so a slow mail server or SMS provider can't delay a waitlist promotion:
+while a notice is sending or waiting to retry, the gym's promotions, including a
+failed promotion's retry, are still claimed in the default lane before the
+cancellation cutoff. In return a notice can wait while the gym's other batch work
+(a charge run, an import or an announcement) holds that lane.
+
+After commit the handler attempts only the chosen channels, each under its own
+durable key (`booking-cancel-email:<bookingId>`, `booking-cancel-sms:<bookingId>`),
+apart from the promotion keys. Email goes to one recipient from
+`readMemberNoticeEmails` (the member's own address, or the household billing
+address, which also names the member); text goes to the consented phone from
+`memberNoticePhones` through `MemberSms` notices consent, switch and cap checks
+(the member's own phone isn't told their own name). Right before each provider
+call the handler rechecks that the booking is still cancelled, it is still the
+member's latest booking for that class (rebooking adds a new row; a later booking
+supersedes this one whatever its status, so after a rebooking only the latest
+cancellation's notice and note can go out; creation time orders the rows and the
+time-ordered booking ID breaks a tie), the member isn't erased, the channel's
+switch is on and the address or consented phone is still the one reserved. For a text it checks the booking and the phone
+route again once provider credentials are resolved, since `MemberSms` accepts a
+household phone for any member of that household: a member who gained their own
+consented phone meanwhile isn't texted on the household phone. Both name the class and its local date and time; only the email
+carries the note. A failure on one channel doesn't stop the other; the job retries,
+and an accepted or uncertain channel is never sent again. Without SMTP the email
+is skipped (`bookings.cancel_notice_skipped`). A promotion the cancellation frees
+keeps its own notice.
+
+The email follows the same address rules as other individual booking notices:
+`readMemberNoticeEmails` checks the booked member's own flags for their direct
+address, and the household's flags for the billing fallback. It doesn't apply the
+whole-class mailbox check that a cancelled class's notice uses
+(`readAddressGroup`), so a mailbox shared with another member who opted out or
+whose address is marked undeliverable still receives this member's notice.
+
 ## Staff panels and checks
 
 `features/bookings/registrations.ts` registers a session roster and a member
 profile tab. Both let staff book or cancel places; the roster includes walk-ins.
+The roster's **Cancel booking** asks first, in place of the roster (inside the
+session dialog this stays one dialog, whose dismissal guards a ticked box or a typed
+note): separate **Email** and **Text** boxes, both unticked, and a note for the
+email while **Email** is ticked. With neither ticked the request carries no notice
+fields; **Keep booking** sends nothing. The roster retains the selected member
+and waitlist choice in its add-booking form while staff confirm a cancellation.
+A refused request shows its error beside the
+kept choices and note, ready to retry. The member tab cancels straight away,
+without a notice.
 The member tab chooses classes by a gym-local date. Views use paginated booking
 contracts: the roster includes `displayName` (first and last name) from a
 gym-scoped query; the member tab uses the schedule projection for class names.

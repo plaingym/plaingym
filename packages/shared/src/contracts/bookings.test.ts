@@ -61,6 +61,21 @@ describe('booking and waitlist contracts', () => {
     expect(memberBookingSchema.safeParse(booking).success).toBe(false);
     expect(memberBookingSchema.safeParse({ ...safeProjection, medicalNotes: 'private' }).success).toBe(false);
   });
+  it('gives only the staff cancellation an optional notice body', () => {
+    const schema = bookingsContracts.cancel.body;
+    expect(schema.parse({})).toEqual({});
+    expect(schema.parse({ notify: false })).toEqual({ notify: false });
+    expect(schema.parse({ notify: true })).toEqual({ notify: true });
+    for (const channels of [['email'], ['sms'], ['email', 'sms'], ['sms', 'email']])
+      expect(schema.parse({ notify: true, channels, note: 'See you next week' })).toMatchObject({ notify: true, channels });
+    for (const channels of [[], ['email', 'email'], ['fax'], ['email', 'sms', 'email'], 'email', null])
+      expect(schema.safeParse({ notify: true, channels }).success).toBe(false);
+    for (const body of [{ channels: ['email'] }, { notify: false, channels: ['sms'] }, { notify: 'true' },
+      { notify: true, note: 'x'.repeat(1_001) }, { notify: true, memberId: id }])
+      expect(schema.safeParse(body).success).toBe(false);
+    expect(schema.parse({ notify: true, note: 'x'.repeat(1_000) }).note).toHaveLength(1_000);
+    for (const name of ['cancelSelf', 'cancelHouseholdMember'] as const) expect('body' in bookingsContracts[name]).toBe(false);
+  });
   it('ties checked-in roster entries to the same member and session as the booking', () => {
     const attendance = { id: otherId, memberId: id, sessionId: id, programId: null, occurredAt: createdAt, createdAt, source: 'coach', kind: 'class' };
     expect(bookingRosterEntrySchema.parse({ displayName: 'River Lee', booking, attendance }).attendance?.id).toBe(otherId);
