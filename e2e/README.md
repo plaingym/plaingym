@@ -406,6 +406,12 @@ commands on a Linux Docker runner and retain `e2e/coverage/` as its artifact.
 and setup, the Email removal rule stays visible, and an operator-managed payment
 refusal reloads the integrations and hides the form. It retains layout screenshots.
 
+`setup-stripe-connected.spec.ts` uses API fixtures the same way on the setup
+wizard's payments step at 360 px and 1280 px. It checks the confirmation names test
+mode and the webhook address, the request carries the typed key, and **Continue to
+backups** opens the backups step. It never contacts Stripe and leaves the install
+the fresh-setup spec completes untouched. It retains layout screenshots.
+
 `account-email.spec.ts` uses API fixtures the same way on the account page at
 360 px and 1280 px. It checks that a pending email change stays visible beside the
 local invalid-address message and a refused request, and that a new request's
