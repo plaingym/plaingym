@@ -40,7 +40,9 @@ case-insensitive billing email. For billing notices a phone counts only while it
 stored number still normalizes to its E.164 value for the gym's country (the same
 test the household read uses), so a billing phone left stale by a country change
 falls back to the consenting members. Class notices prefer each member's consented
-phone, otherwise their consented billing phone. Only notices consent qualifies;
+phone, otherwise their consented billing phone, under the same current-phone test,
+so a member phone left stale by a country change falls back to a current consented
+billing phone. Only notices consent qualifies;
 anonymized members are excluded. A shared parent phone yields one entry naming
 all children covered. Delivery must still use `MemberSms` to recheck the current
 phone and consent, switch and cap immediately before sending.

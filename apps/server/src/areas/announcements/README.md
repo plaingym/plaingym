@@ -194,7 +194,12 @@ plain text note, and the portal schedule link. The group is checked again at the
 send boundary, including the member-email switch and household billing preferences.
 Address suppression uses the same indexed address-group reader as announcements.
 The send guard logs `email.suppressed` with the gym ID, the group's first member
-ID at reservation, and the reason. The guard renders the content once. A reload
+ID at reservation, and the reason: `disabled` for the switch, or the address's
+`opt_out` or `undeliverable`. When no preference blocks the address but nobody
+covered is left there (erased, or moved to another address), it logs
+`announcements.cancellation_notice_skipped` with the gym, session and that member
+ID and reason `no_recipient` instead. Either way the address's decision is
+`suppressed`. The guard renders the content once. A reload
 or render failure before transport records a definite non-send, and the job
 continues with the remaining addresses.
 
@@ -216,7 +221,10 @@ After the email pass, when texts were chosen, the job independently attempts not
 texts through `createCancellationSms`. Email failure, missing SMTP or an email switch
 being off does not skip the text pass. When both channels fail, the email's error is
 the one the job reports. `memberNoticePhones` selects each member's consented
-phone, falling back to the consented household billing phone. The text pass groups
+phone, falling back to the consented household billing phone. As for billing
+notices, a phone counts only while its stored number still normalizes to its
+`phoneE164` for the gym's country, so a member phone left stale by a country
+change falls back to a current consented billing phone. The text pass groups
 the snapshot once per job and rechecks only that phone's original candidates at
 reservation and the remaining candidates at send. One text per phone names
 the candidates still covered ("Members: …"), prefixed with the gym name and

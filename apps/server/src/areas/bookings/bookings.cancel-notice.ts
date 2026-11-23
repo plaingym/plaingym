@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, gt, isNull, ne, or } from 'drizzle-orm';
-import { classBookings, classSessions, forGym, members } from '@plaingym/db';
+import { classBookings, classSessions, databaseCode, forGym, households, members, type Transaction } from '@plaingym/db';
 import { createTranslator, type Clock } from '@plaingym/shared';
 import { cancellationNoticeChannelsSchema, idSchema } from '@plaingym/shared/contracts';
 import { z } from 'zod';
@@ -10,10 +10,9 @@ import { logInfo } from '../../core/log.js';
 import { createEmailDeliveries, DeliveryError, type Email } from '../../infra/email/index.js';
 import { logEmailSuppression, type SuppressionReason } from '../../infra/email/member.js';
 import type { JobTransaction, Jobs } from '../../infra/jobs/index.js';
-import { createSmsDeliveries, type Sms, type SmsMessage } from '../../infra/sms/index.js';
+import { createSmsDeliveries, SmsRecheckBusy, type MemberSmsOptions, type Sms, type SmsMessage } from '../../infra/sms/index.js';
 import { renderBookingCancellation } from '../../emails/bookings/bookings.js';
-import { createGymSettingsAccessor, createSettingsService } from '../settings/settings.js';
-import type { SmsResolver } from '../settings/sms.js';
+import { createGymSettingsAccessor, createSettingsService, holdGymSettings, readGymSettings } from '../settings/settings.js';
 import { readMemberNoticeEmails } from './bookings.recipients.js';
 import { noticeSender, noticeWhen, readNoticePhones, type ClassNoticeSmsOptions } from './bookings.sms.js';
 import messages from '../../../../../locales/en/bookings/bookings.json' with { type: 'json' };
@@ -49,25 +48,24 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
   const t = createTranslator({ 'bookings/bookings': messages });
 
   /** The cancelled booking and its class, unless the member has been erased or booked that class again since. */
-  function load(gymId: string, bookingId: string) {
-    return scope(gymId, async tx => {
-      const [row] = await tx.select({ memberId: classBookings.memberId, sessionId: classBookings.sessionId, createdAt: classBookings.createdAt,
-        name: classSessions.name, startsAt: classSessions.startsAt })
-        .from(classBookings).innerJoin(classSessions, eq(classSessions.id, classBookings.sessionId))
-        .innerJoin(members, eq(members.id, classBookings.memberId))
-        .where(and(eq(classBookings.gymId, gymId), eq(classBookings.id, bookingId), eq(classBookings.status, 'cancelled'), isNull(members.anonymizedAt)));
-      if (!row) return undefined;
-      // Booking the class again adds a new row and leaves this one cancelled. Only the member's latest booking for the
-      // class speaks for it, whatever that booking's status is now: a later booking (even one cancelled since, with or
-      // without its own notice) supersedes this one. Creation time orders them; the time-ordered ID breaks a tie. The
-      // row itself is excluded by ID, since a stored time finer than the millisecond read back could sort after itself.
-      const [later] = await tx.select({ id: classBookings.id }).from(classBookings)
-        .where(and(eq(classBookings.gymId, gymId), eq(classBookings.sessionId, row.sessionId), eq(classBookings.memberId, row.memberId),
-          ne(classBookings.id, bookingId),
-          or(gt(classBookings.createdAt, row.createdAt), and(eq(classBookings.createdAt, row.createdAt), gt(classBookings.id, bookingId))))).limit(1);
-      return later ? undefined : row;
-    });
+  async function loadIn(tx: Transaction, gymId: string, bookingId: string) {
+    const [row] = await tx.select({ memberId: classBookings.memberId, sessionId: classBookings.sessionId, createdAt: classBookings.createdAt,
+      name: classSessions.name, startsAt: classSessions.startsAt })
+      .from(classBookings).innerJoin(classSessions, eq(classSessions.id, classBookings.sessionId))
+      .innerJoin(members, eq(members.id, classBookings.memberId))
+      .where(and(eq(classBookings.gymId, gymId), eq(classBookings.id, bookingId), eq(classBookings.status, 'cancelled'), isNull(members.anonymizedAt)));
+    if (!row) return undefined;
+    // Booking the class again adds a new row and leaves this one cancelled. Only the member's latest booking for the
+    // class speaks for it, whatever that booking's status is now: a later booking (even one cancelled since, with or
+    // without its own notice) supersedes this one. Creation time orders them; the time-ordered ID breaks a tie. The
+    // row itself is excluded by ID, since a stored time finer than the millisecond read back could sort after itself.
+    const [later] = await tx.select({ id: classBookings.id }).from(classBookings)
+      .where(and(eq(classBookings.gymId, gymId), eq(classBookings.sessionId, row.sessionId), eq(classBookings.memberId, row.memberId),
+        ne(classBookings.id, bookingId),
+        or(gt(classBookings.createdAt, row.createdAt), and(eq(classBookings.createdAt, row.createdAt), gt(classBookings.id, bookingId))))).limit(1);
+    return later ? undefined : row;
   }
+  const load = (gymId: string, bookingId: string) => scope(gymId, tx => loadIn(tx, gymId, bookingId));
   /** Whether the text still goes to the same phone, under the same consent, as the group it was prepared for. */
   const sameGroup = (a: { phoneE164: string; memberIds: readonly string[]; consentMemberIds: readonly string[]; consentHouseholdIds: readonly string[] } | undefined,
     b: typeof a) => !!a && !!b && a.phoneE164 === b.phoneE164
@@ -120,7 +118,6 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
       verifyAccount: () => noticeSender(delivery, gymId, group).verifyAccount(),
       async sendSms() {
         let sender: Sms, message: SmsMessage;
-        const recheck: { changed?: 'no_consent' | 'phone_changed' } = {};
         try {
           const latest = await load(gymId, notice.bookingId);
           if (!latest || latest.memberId !== row.memberId) return { status: 'suppressed', reason: 'no_consent' };
@@ -128,27 +125,45 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
           if (!current || current.phoneE164 !== group.phoneE164) return { status: 'suppressed', reason: 'phone_changed' };
           const self = !current.consentHouseholdIds.length && current.consentMemberIds.length === 1 && current.consentMemberIds[0] === latest.memberId;
           const { timezone } = await settings.get(gymId);
-          // MemberSms resolves the provider before its final consent read, and that read accepts the household phone for
-          // any member of the household. So once credentials are resolved, check again that the booking still warrants a
-          // text and that this member's notices would still go to this phone under the same consent.
-          const resolver: SmsResolver = { status: id => sms.resolver.status(id), configured: id => sms.resolver.configured(id),
-            async resolve(id) {
-              const resolved = await sms.resolver.resolve(id);
-              const again = await load(gymId, notice.bookingId);
-              if (!again || again.memberId !== row.memberId) recheck.changed = 'no_consent';
-              else if (!sameGroup((await scope(gymId, tx => readNoticePhones(tx, gymId, [again.memberId])))[0], current)) recheck.changed = 'phone_changed';
-              if (recheck.changed) throw new Error('Booking cancellation text recipient changed');
-              return resolved;
-            } };
-          sender = noticeSender({ ...delivery, sms: { ...sms, resolver } }, gymId, current);
+          // MemberSms resolves the provider and reads settings before its final consent read, and that read accepts the
+          // household phone for any member of the household. So its cap transaction first runs this check: the booking
+          // still warrants a text and this member's notices still go to this phone under the same consent, under the
+          // settings it locks. Staff booking changes lock the session before the booking, so holding the session through
+          // the slot keeps a rebooking from overtaking the check. Member erasure and deletion lock the household and member
+          // before the session, so those two locks never wait: when either is busy the whole check rolls back, releasing
+          // the session, and MemberSms retries it.
+          const lastCheck: NonNullable<MemberSmsOptions['recheck']> = async (tx: Transaction) => {
+            await holdGymSettings(tx, gymId);
+            const gym = await readGymSettings(tx, gymId);
+            const [booking] = await tx.select({ sessionId: classBookings.sessionId }).from(classBookings)
+              .where(and(eq(classBookings.gymId, gymId), eq(classBookings.id, notice.bookingId)));
+            if (!booking) return 'no_consent';
+            await tx.select({ id: classSessions.id }).from(classSessions)
+              .where(and(eq(classSessions.gymId, gymId), eq(classSessions.id, booking.sessionId))).for('share');
+            const again = await loadIn(tx, gymId, notice.bookingId);
+            if (!again || again.memberId !== row.memberId) return 'no_consent';
+            const share = async <T>(read: () => Promise<T>) => {
+              try { return await read(); }
+              catch (error) { throw databaseCode(error) === '55P03' ? new SmsRecheckBusy() : error; }
+            };
+            const [person] = await share(() => tx.select({ householdId: members.householdId }).from(members)
+              .where(and(eq(members.gymId, gymId), eq(members.id, again.memberId))).for('share', { noWait: true }));
+            if (!person) return 'no_consent';
+            await share(() => tx.select({ id: households.id }).from(households)
+              .where(and(eq(households.gymId, gymId), eq(households.id, person.householdId))).for('share', { noWait: true }));
+            const [now] = await readNoticePhones(tx, gymId, [again.memberId]);
+            if (!now) return 'no_consent';
+            if (!sameGroup(now, current)) return 'phone_changed';
+            return { memberSmsEnabled: gym.memberSmsEnabled, smsDailyCap: gym.smsDailyCap, timezone: gym.timezone, country: gym.address.country ?? null };
+          };
+          sender = noticeSender(delivery, gymId, current, lastCheck);
           message = { to: current.phoneE164,
             body: t(self ? 'bookings/bookings:cancelNoticeSmsSelf' : 'bookings/bookings:cancelNoticeSms', { name: latest.name,
               ...noticeWhen(latest.startsAt, timezone), names: current.memberNames.join(', ') }) };
         } catch (cause) { throw new DeliveryError('not_accepted', 'Booking cancellation text could not be prepared', { cause }); }
-        // MemberSms rechecks the text switch, notices consent and caps. A recipient change found after credentials were
-        // resolved stops it before any of those, so nothing reaches the earlier phone.
-        try { return await sender.sendSms(message); }
-        catch (error) { if (recheck.changed) return { status: 'suppressed', reason: recheck.changed }; throw error; }
+        // MemberSms rechecks the text switch, notices consent and caps after the last check above, so nothing reaches
+        // the earlier phone once the recipient changes.
+        return sender.sendSms(message);
       },
     };
     await texts.attempt(reserved, guarded, { to: group.phoneE164, body: '' });

@@ -107,16 +107,19 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
       cursor = pending.at(-1)!.id;
     }
   }
-  function readNotice(gymId: string, bookingId: string, includeSent = false) {
-    return scope(gymId, tx => readNoticeIn(tx, gymId, bookingId, includeSent));
+  function readNotice(gymId: string, bookingId: string, includeSent = false, log = !includeSent) {
+    return scope(gymId, tx => readNoticeIn(tx, gymId, bookingId, includeSent, log));
   }
-  /** The same read inside a caller's gym transaction, so the text sender can recheck it with its cap reservation. */
-  async function readNoticeIn(tx: Transaction, gymId: string, bookingId: string, includeSent = false) {
+  /**
+   * The same read inside a caller's gym transaction, so the text sender can recheck it with its cap reservation. Only
+   * the email pass's own reads log a stale promotion (`log`); the text loader and the email guard never do.
+   */
+  async function readNoticeIn(tx: Transaction, gymId: string, bookingId: string, includeSent = false, log = !includeSent) {
     const [promotion] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.targetId, bookingId), recentPromotion()));
     const [sent] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.targetId, bookingId), eq(auditEvents.action, 'booking.notice_sent')));
     if (sent && !includeSent) return;
     if (!promotion) {
-      if (!includeSent) logInfo('bookings.notice_skipped', { gymId, bookingId, reason: 'stale_or_missing_promotion' });
+      if (log) logInfo('bookings.notice_skipped', { gymId, bookingId, reason: 'stale_or_missing_promotion' });
       return;
     }
     const [row] = await tx.select({ booking: classBookings, session: classSessions, memberId: members.id })
@@ -126,9 +129,12 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
     return row;
   }
   async function sendEmail(gymId: string, bookingId: string) {
+    // A stale promotion is logged by the read that first finds it, and every read that logs is followed by a return. The
+    // first read runs even with member emails off, so the job logs it once whichever channel is on; the guard never logs.
     const read = () => readNotice(gymId, bookingId);
+    const first = await read();
     const gym = await settings.get(gymId);
-    if (!gym.memberEmailsEnabled || !await read()) return;
+    if (!gym.memberEmailsEnabled || !first) return;
     const email = await options.mailer(gymId);
     if (!email) return;
     const row = await read();
@@ -144,7 +150,7 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
       let message: Awaited<ReturnType<typeof renderBookingPromotion>>;
       try {
         if (!(await settings.get(gymId)).memberEmailsEnabled) return suppress('disabled');
-        const latest = await read();
+        const latest = await readNotice(gymId, bookingId, false, false);
         if (!latest) return suppress('opt_out');
         const [current] = await scope(gymId, tx => readMemberNoticeEmails(tx, gymId, [latest.memberId]));
         if (!current || current.address !== recipient.address) return suppress('opt_out');

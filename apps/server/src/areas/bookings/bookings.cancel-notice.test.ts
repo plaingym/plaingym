@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Isolated fixtures switch the persisted member email and SMS notices.
-import { auditEvents, classBookings, emailDeliveries, gyms, households, members, smsDeliveries, uuidv7 } from '@plaingym/db';
+import { auditEvents, classBookings, emailDeliveries, gyms, households, members, smsDailyUsage, smsDeliveries, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { isInTransaction } from '@plaingym/shared/transaction';
@@ -16,6 +16,7 @@ import { createBookingDelivery, noticeJob, promotionJob } from './bookings.deliv
 import { createBookingJobs } from './bookings.jobs.js';
 import { cancelNoticeJob } from './bookings.cancel-notice.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
+import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { createMemberHouseholdContext } from '../members/household-users.context.js';
 import { createPortalBookingService } from '../portal/bookings.js';
 
@@ -219,6 +220,38 @@ it.each(['ownPhone', 'rebooked'] as const)('sends nothing to the household phone
   // Run again, the notice follows the current route: the member's own phone, or nobody once they are booked again.
   await f.run();
   expect(f.sms.messages.map(message => message.to)).toEqual(change === 'ownPhone' ? [own] : []);
+});
+
+it.each(['ownPhone', 'rebooked', 'unchanged'] as const)('decides the text recipient in the cap transaction after a %s change during the settings read', async change => {
+  const f = await fixture(), own = '+12025550199'; await f.cancel(['sms']);
+  // The change lands in MemberSms's own settings read, after the resolver returned and the last earlier recipient read.
+  const real = createGymSettingsAccessor({ scope: db.forGym }); let pending = change !== 'unchanged';
+  const settings: GymSettingsAccessor = { async get(id) {
+    const value = await real.get(id);
+    if (pending && f.resolver.resolve.mock.calls.length) {
+      pending = false;
+      // The household phone keeps its consent and number, so only the last check of the member's own route catches this.
+      if (change === 'ownPhone') await db.forGym(id, tx => tx.update(members).set({ phone: own, phoneE164: own,
+        smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }).where(eq(members.id, f.child.id)));
+      else await f.service.book(f.actor, { memberId: f.child.id, sessionId: f.session.id, allowWaitlist: true });
+    }
+    return value;
+  } };
+  const delivery = createBookingDelivery({ scope: db.forGym, clock: f.clock, jobs: new FakeJobs(f.clock), settings, mailer: async () => f.email,
+    sms: { resolver: f.resolver, phoneDigest: createSmsPhoneDigest('cancel-notice-test') } });
+  await delivery.sendCancelNotice(f.notices()[0]!.payload, f.gymId);
+  expect(pending).toBe(false);
+  const usage = await db.forGym(f.gymId, tx => tx.select().from(smsDailyUsage));
+  const texts = await db.forGym(f.gymId, tx => tx.select({ state: smsDeliveries.state }).from(smsDeliveries));
+  if (change === 'unchanged') {
+    expect(f.sms.messages.map(message => message.to)).toEqual([phone]);
+    expect(usage).toEqual([expect.objectContaining({ sent: 1, refused: 0 })]);
+    expect(texts).toEqual([{ state: 'accepted' }]);
+  } else {
+    expect(f.sms.messages).toHaveLength(0);
+    expect(usage).toEqual([]);
+    expect(texts).toEqual([{ state: 'not_accepted' }]);
+  }
 });
 
 it('rechecks the email address at the last boundary', async () => {

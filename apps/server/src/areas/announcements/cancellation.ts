@@ -5,6 +5,7 @@ import { AppError, type Clock } from '@plaingym/shared';
 import { cancellationNoticeChannelsSchema, idSchema } from '@plaingym/shared/contracts';
 import { z } from 'zod';
 import { clock as systemClock } from '../../core/clock.js';
+import { logInfo } from '../../core/log.js';
 import { createEmailDeliveries, DeliveryError, deliveryAcceptance, type Email } from '../../infra/email/index.js';
 import { commandDigest, emailInFlightMs } from '../../infra/email/deliveries.js';
 import { logEmailSuppression } from '../../infra/email/member.js';
@@ -61,16 +62,18 @@ export function createCancellationNotice(options: CancellationNoticeOptions) {
     // Inspect the whole address, including members outside this session. A global email preference or an
     // undeliverable address blocks it; announcement-only preferences never affect booking notices.
     const rows = await readAddressGroup(tx, address);
-    if (rows.some(row => row.emailOptOut || !row.emailDeliverable)) return [];
+    const blocked = rows.some(row => row.emailOptOut) ? 'opt_out' as const
+      : rows.some(row => !row.emailDeliverable) ? 'undeliverable' as const : null;
+    if (blocked) return { rows: [], blocked };
     // Membership is bounded by the job-start candidates, including for direct addresses.
-    return (await readMemberNoticeEmails(tx, gymId, [...new Set(ids)])).filter(row => row.address === address);
+    return { rows: (await readMemberNoticeEmails(tx, gymId, [...new Set(ids)])).filter(row => row.address === address), blocked };
   }
   async function reserve(gymId: string, notice: Notice, address: string, ids: readonly string[]) {
     return scope(gymId, async tx => {
       // Only reservations are serialized: SMTP always runs after this transaction commits.
       const [session] = await tx.select().from(classSessions).where(eq(classSessions.id, notice.sessionId)).for('update');
       if (!session || session.status !== 'cancelled') return;
-      const current = await group(tx, gymId, address, ids);
+      const { rows: current } = await group(tx, gymId, address, ids);
       if (!current.length) return;
       const key = noticeKey(notice.sessionId, current[0]!.id), digest = commandDigest([notice.sessionId, address]);
       // Both stable member keys and destination digests survive retries and address changes/convergence.
@@ -142,15 +145,23 @@ export function createCancellationNotice(options: CancellationNoticeOptions) {
       try {
         // Reload the group at the last boundary so an erasure or address change cannot disclose another member's name.
         const guarded: Email = { async sendEmail() {
-          let current: Awaited<ReturnType<typeof group>>, latest: Awaited<ReturnType<typeof renderCancellationNotice>>;
+          let current: Awaited<ReturnType<typeof group>>['rows'], latest: Awaited<ReturnType<typeof renderCancellationNotice>>;
+          const memberId = reservation.current[0]!.id;
           try {
             if (!(await settings.get(gymId)).memberEmailsEnabled) {
-              logEmailSuppression({ event: 'email.suppressed', gymId, memberId: reservation.current[0]!.id, reason: 'disabled' });
+              logEmailSuppression({ event: 'email.suppressed', gymId, memberId, reason: 'disabled' });
               return { status: 'suppressed', reason: 'disabled' };
             }
-            current = await scope(gymId, tx => group(tx, gymId, address, ids));
+            const checked = await scope(gymId, tx => group(tx, gymId, address, ids));
+            current = checked.rows;
             if (!current.length) {
-              logEmailSuppression({ event: 'email.suppressed', gymId, memberId: reservation.current[0]!.id, reason: 'opt_out' });
+              if (checked.blocked) {
+                logEmailSuppression({ event: 'email.suppressed', gymId, memberId, reason: checked.blocked });
+                return { status: 'suppressed', reason: checked.blocked };
+              }
+              // Nobody covered is left at the address (erased, or moved): no preference blocked it, so no suppression is
+              // logged. The result type has no reason for this, and nothing stores the returned one.
+              logInfo('announcements.cancellation_notice_skipped', { gymId, sessionId: notice.sessionId, memberId, reason: 'no_recipient' });
               return { status: 'suppressed', reason: 'opt_out' };
             }
             // A member at their own address isn't told their own name; a household address still lists who it covers.

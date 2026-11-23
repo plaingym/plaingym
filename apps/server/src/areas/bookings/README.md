@@ -102,7 +102,10 @@ receives `sms: { resolver, phoneDigest }`. The gym-aware resolver is the same
 `SmsResolver` used by settings; `phoneDigest` is supplied by
 `createSmsPhoneDigest(AUTH_SECRET)`. Without this injection the composition sends
 only email. `memberNoticePhones` prefers the member's own consented phone and
-otherwise uses their consented household billing phone. `MemberSms` enforces
+otherwise uses their consented household billing phone. As for billing notices,
+a phone counts only while its stored number still normalizes to its `phoneE164`
+for the gym's country, so a member phone left stale by a country change falls
+back to a current consented billing phone. `MemberSms` enforces
 notices consent, current phone and household membership, the independent SMS
 switch and daily cap. Announcement consent alone is insufficient. After the
 provider credentials resolve, the text's last check runs first in the
@@ -155,7 +158,9 @@ before sending. No usable address (neither the member's own nor an unsuppressed
 billing address), erasure, cancellation and a class that has started suppress the
 notice. A confirmed place remains booked. A suppression at the send guard logs
 `email.suppressed` through `logEmailSuppression`. The email pass logs
-`bookings.notice_skipped` for a stale or missing promotion. SMTP failure retries
+`bookings.notice_skipped` for a stale or missing promotion once per job, whether
+or not member emails are on; the text pass and the send guard don't log it again
+(a promotion gone stale at the guard logs only its `email.suppressed`). SMTP failure retries
 delivery without repeating promotion. No network operation runs inside a
 database transaction.
 
@@ -208,10 +213,17 @@ member's latest booking for that class (rebooking adds a new row; a later bookin
 supersedes this one whatever its status, so after a rebooking only the latest
 cancellation's notice and note can go out; creation time orders the rows and the
 time-ordered booking ID breaks a tie), the member isn't erased, the channel's
-switch is on and the address or consented phone is still the one reserved. For a text it checks the booking and the phone
-route again once provider credentials are resolved, since `MemberSms` accepts a
-household phone for any member of that household: a member who gained their own
-consented phone meanwhile isn't texted on the household phone. Both name the class and its local date and time; only the email
+switch is on and the address or consented phone is still the one reserved. For a text, as for the promotion text, the
+recipient is checked again after provider credentials resolve, first in the
+transaction that takes the cap slot, since `MemberSms` accepts a household phone
+for any member of that household. That check locks and reads the gym settings,
+locks the class session, rechecks that the booking is still cancelled and still
+the member's latest for the class, then locks the member and their household
+(giving way to a staff erasure or deletion as the promotion text does) and reruns
+`memberNoticePhones`: a member who gained their own consented phone meanwhile
+isn't texted on the household phone (`phone_changed`), and a booking no longer
+eligible or no consented phone suppresses it (`no_consent`), without taking a
+slot. Both name the class and its local date and time; only the email
 carries the note. A failure on one channel doesn't stop the other; the job retries,
 and an accepted or uncertain channel is never sent again. Without SMTP the email
 is skipped (`bookings.cancel_notice_skipped`). A promotion the cancellation frees

@@ -361,6 +361,32 @@ it('logs only identifiers and the reason when the email switch is disabled after
   }]);
 });
 
+it.each(['opt_out', 'undeliverable', 'erased', 'moved'] as const)('logs why the guard found no %s recipient after reservation', async change => {
+  const f = await fixture(), member = await f.booked();
+  await f.cancel();
+  const scope: typeof db.forGym = async (gymId, fn) => {
+    const result = await db.forGym(gymId, fn);
+    if (result && typeof result === 'object' && 'reserved' in result) {
+      await db.forGym(gymId, tx => tx.update(members).set(change === 'opt_out' ? { emailOptOut: true }
+        : change === 'undeliverable' ? { emailDeliverable: false } : change === 'erased' ? { anonymizedAt: f.clock.now() }
+          : { email: 'moved@example.test' }).where(eq(members.id, member.id)));
+    }
+    return result;
+  };
+  const lines: string[] = [], previous = setLogSink(line => lines.push(line));
+  try { await createCancellationNotice({ ...f.options, scope }).run(f.payload(), f.gymId); }
+  finally { setLogSink(previous); }
+
+  expect(f.email.messages).toHaveLength(0);
+  expect(lines.map(line => JSON.parse(line))).toEqual([change === 'opt_out' || change === 'undeliverable'
+    ? { time: expect.any(String), level: 'info', event: 'email.suppressed', gymId: f.gymId, memberId: member.id, reason: change }
+    : { time: expect.any(String), level: 'info', event: 'announcements.cancellation_notice_skipped',
+      gymId: f.gymId, sessionId: f.session.id, memberId: member.id, reason: 'no_recipient' }]);
+  const decisions = await db.forGym(f.gymId, tx => tx.select({ after: auditEvents.after }).from(auditEvents)
+    .where(eq(auditEvents.action, 'schedule.cancellation_notice_decided')));
+  expect(decisions).toEqual([{ after: { memberId: member.id, status: 'suppressed' } }]);
+});
+
 it('never adds a job on a retried cancellation or duplicates a message on replay or concurrent jobs', async () => {
   const f = await fixture(); await f.booked(); const cancelled = await f.cancel();
   await expect(f.cancel()).rejects.toMatchObject({ code: 'conflict' });

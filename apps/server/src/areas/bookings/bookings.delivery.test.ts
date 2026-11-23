@@ -100,6 +100,54 @@ describe('promotion jobs and notices', () => {
       time: expect.any(String), level: 'info', event: 'email.suppressed', gymId: f.gymId, memberId: f.waiting.id, reason: 'disabled',
     }]);
   });
+  const capture = async (run: () => Promise<unknown>) => {
+    const logs: string[] = [], previous = setLogSink(line => logs.push(line));
+    try { await run(); } finally { setLogSink(previous); }
+    return logs.map(line => JSON.parse(line) as Record<string, unknown>);
+  };
+  const lateClock = (f: Awaited<ReturnType<typeof fixture>>) =>
+    f.clock.set(new Date(Date.parse('2026-10-29T16:00:00Z') + (promotionNoticeDays + 1) * 86_400_000).toISOString());
+  it.each([false, true])('logs a stale promotion once when only member texts are on (emails on: %s)', async emailsOn => {
+    const f = await fixture();
+    await f.delivery.promote(f.gymId, f.session.id);
+    await db.forGym(f.gymId, async tx => {
+      await tx.update(gyms).set({ memberEmailsEnabled: emailsOn, memberSmsEnabled: true }).where(eq(gyms.id, f.gymId));
+      await tx.update(members).set({ phone: '+12025550199', phoneE164: '+12025550199', smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' })
+        .where(eq(members.id, f.waiting.id));
+      await tx.update(classSessions).set({ startsAt: new Date('2026-12-30T18:00:00Z'), endsAt: new Date('2026-12-30T19:00:00Z') })
+        .where(eq(classSessions.id, f.session.id));
+    });
+    const sms = new FakeSms();
+    const resolver = {
+      resolve: async (gymId: string) => ({ gymId, name: 'Cedar Martial Arts', sms }),
+      status: async () => ({ source: 'gym' as const, unreadable: false }), configured: async () => true,
+    };
+    const delivery = createBookingDelivery({ ...f.options, jobs: new FakeJobs(f.clock), mailer: async () => f.email,
+      sms: { resolver, phoneDigest: createSmsPhoneDigest('class-notice-test') } });
+    lateClock(f);
+    const logs = await capture(() => delivery.send(f.gymId, f.queued.id));
+    expect(logs.filter(line => line.event === 'bookings.notice_skipped')).toEqual([{
+      time: expect.any(String), level: 'info', event: 'bookings.notice_skipped',
+      gymId: f.gymId, bookingId: f.queued.id, reason: 'stale_or_missing_promotion',
+    }]);
+    expect(sms.messages).toHaveLength(0);
+    expect(f.email.messages).toHaveLength(0);
+  });
+  it('suppresses a promotion that goes stale after the email reservation without logging it as skipped', async () => {
+    const f = await fixture();
+    await f.delivery.promote(f.gymId, f.session.id);
+    const scope: typeof db.forGym = async (gymId, fn) => {
+      const result = await db.forGym(gymId, fn);
+      if (result && typeof result === 'object' && 'attempts' in result) lateClock(f);
+      return result;
+    };
+    const delivery = createBookingDelivery({ ...f.options, scope, jobs: f.jobs, mailer: async () => f.email });
+    const logs = await capture(() => delivery.send(f.gymId, f.queued.id));
+    expect(f.email.messages).toHaveLength(0);
+    expect(logs).toEqual([{
+      time: expect.any(String), level: 'info', event: 'email.suppressed', gymId: f.gymId, memberId: f.waiting.id, reason: 'opt_out',
+    }]);
+  });
   it('registered jobs promote once and deliver one escaped, gym-local notice on replay', async () => {
     const f = await fixture();
     await f.delivery.request(f.gymId, f.session.id, f.booked.id);

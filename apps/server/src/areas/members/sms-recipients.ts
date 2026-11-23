@@ -50,20 +50,27 @@ export async function householdNoticePhones(tx: Transaction, gymId: string, hous
   return groups.result();
 }
 
-/** Class notices: each member's consented phone wins, otherwise their consented billing phone. */
+/**
+ * Class notices: each member's consented phone wins, otherwise their consented billing phone. As for billing notices,
+ * a phone counts only while its stored number still normalizes to its E.164 form for the gym's country.
+ */
 export async function memberNoticePhones(tx: Transaction, gymId: string, memberIds: readonly string[]): Promise<SmsRecipientGroup[]> {
   if (!memberIds.length) return [];
-  const people = await tx.select({ id: members.id, householdId: members.householdId, phoneE164: members.phoneE164, at: members.smsNoticesConsentAt })
+  const people = await tx.select({ id: members.id, householdId: members.householdId, phone: members.phone, phoneE164: members.phoneE164, at: members.smsNoticesConsentAt })
     .from(members).where(and(eq(members.gymId, gymId), inArray(members.id, [...memberIds]), isNull(members.anonymizedAt)));
   if (!people.length) return [];
-  const homes = await tx.select({ id: households.id, phoneE164: households.phoneE164, at: households.smsNoticesConsentAt })
+  const homes = await tx.select({ id: households.id, phone: households.phone, phoneE164: households.phoneE164, at: households.smsNoticesConsentAt })
     .from(households).where(and(eq(households.gymId, gymId), inArray(households.id, people.map(person => person.householdId))));
+  const country = await readPhoneCountry([...people.map(person => person.phone), ...homes.map(home => home.phone)],
+    async () => (await readGymSettings(tx, gymId)).address.country);
+  const current = (row: { phone: string | null; phoneE164: string | null }) =>
+    row.phoneE164 !== null && normalizePhone(row.phone, country) === row.phoneE164;
   const groups = collector();
   for (const person of people) {
-    if (person.phoneE164 && person.at) groups.add(person.phoneE164, [person.id], person.householdId, 'member', person.id);
+    if (person.phoneE164 && person.at && current(person)) groups.add(person.phoneE164, [person.id], person.householdId, 'member', person.id);
     else {
       const home = homes.find(home => home.id === person.householdId);
-      if (home?.phoneE164 && home.at) groups.add(home.phoneE164, [person.id], home.id, 'household', home.id);
+      if (home?.phoneE164 && home.at && current(home)) groups.add(home.phoneE164, [person.id], home.id, 'household', home.id);
     }
   }
   return groups.result();

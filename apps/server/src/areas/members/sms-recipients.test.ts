@@ -73,6 +73,35 @@ it('keeps an E.164 billing phone without reading the gym country', async () => {
     phoneE164: '+12025550123', memberIds: [f.child.id], householdIds: [f.home.id], consentMemberIds: [], consentHouseholdIds: [f.home.id],
   }]);
 });
+async function classFixture(country: string, member: { phone: string | null; phoneE164: string | null }, billing = { phone: '+12025550123', phoneE164: '+12025550123' }) {
+  const gymId = uuidv7(); await make('gyms', gymId, { address: { country } });
+  const home = await make('households', gymId, { ...billing, ...consent });
+  // Notices consent needs a phone to consent for.
+  const child = await make('members', gymId, { householdId: home.id, ...member, ...(member.phone ? consent : {}) });
+  return { gymId, home, child };
+}
+const stale = { phone: '202 555 0199', phoneE164: '+12025550199' };
+it('falls back from a member phone that is stale for the country to a current billing phone', async () => {
+  const f = await classFixture('GB', stale);
+  expect(await db.forGym(f.gymId, tx => memberNoticePhones(tx, f.gymId, [f.child.id]))).toEqual([{
+    phoneE164: '+12025550123', memberIds: [f.child.id], householdIds: [f.home.id], consentMemberIds: [], consentHouseholdIds: [f.home.id],
+  }]);
+});
+it('gives a class notice no phone when the billing fallback is stale for the country', async () => {
+  const f = await classFixture('GB', { phone: null, phoneE164: null }, { phone: '202 555 0123', phoneE164: '+12025550123' });
+  expect(await db.forGym(f.gymId, tx => memberNoticePhones(tx, f.gymId, [f.child.id]))).toEqual([]);
+});
+it('keeps a national member phone that is current for the country', async () => {
+  const f = await classFixture('US', stale);
+  expect(await db.forGym(f.gymId, tx => memberNoticePhones(tx, f.gymId, [f.child.id]))).toEqual([{
+    phoneE164: '+12025550199', memberIds: [f.child.id], householdIds: [f.home.id], consentMemberIds: [f.child.id], consentHouseholdIds: [],
+  }]);
+});
+it('chooses class notice phones without reading the gym country when every phone is E.164', async () => {
+  // A stored country the settings schema would reject proves the read is skipped.
+  const f = await classFixture('gb', { phone: '+12025550199', phoneE164: '+12025550199' });
+  expect((await db.forGym(f.gymId, tx => memberNoticePhones(tx, f.gymId, [f.child.id]))).map(group => group.phoneE164)).toEqual(['+12025550199']);
+});
 it('never substitutes announcements consent, anonymized members, or another gym', async () => {
   const f = await fixture(), other = await fixture(), child = f.children[0]!;
   await db.forGym(f.gymId, async tx => {
