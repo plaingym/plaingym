@@ -117,7 +117,8 @@ export default defineConfig(
       // Display formatting still to move to the fixed locale.
       'apps/web/src/features/demo/notice.tsx', 'apps/web/src/features/health/page.tsx',
       'apps/web/src/features/members/sms-consent.tsx', 'apps/web/src/features/schedule/session.tsx',
-      'apps/web/src/features/schedule/views.tsx', 'apps/web/src/features/settings/integrations/backups.tsx',
+      'apps/web/src/features/schedule/views.tsx', 'apps/web/src/features/schedule/week-layout.tsx',
+      'apps/web/src/features/settings/integrations/backups.tsx',
     ],
     rules: { 'no-restricted-syntax': ['error',
       ...[
