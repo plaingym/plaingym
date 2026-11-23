@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { compare } from '../../scripts/release/release.mjs';
-import { smokePreviousImage, removeImage, withPreviousTree } from './previous-smoke.mjs';
+import { smokePreviousImage, removeImage, withPreviousTree, holdInterrupts, interruptExitCode } from './previous-smoke.mjs';
 import { git } from '../../scripts/release/version.mjs';
 import { chooseFloor } from '../../scripts/release/prerelease.mjs';
 
@@ -62,13 +62,22 @@ export function prereleaseFloor(image, tag, previous, { smoke = smokePublished, 
     smoke(image, previous, process.env.GITHUB_REPOSITORY ?? 'plaingym/plaingym');
     passed = true;
   } catch (error) {
+    if (interruptExitCode(error) !== undefined) throw error;
     log(`::warning::${previous} did not pass on ${tag}'s schema (${error.message}); ${tag} is its own rollback floor.`);
   }
   return chooseFloor(tag, previous, passed);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [image, tag, mode, previous] = process.argv.slice(2);
-  if (mode === '--prerelease') console.log(`floor=${prereleaseFloor(image, tag, previous || undefined, { log: console.error })}`);
-  else previousMinor(image, tag);
+  holdInterrupts();
+  try {
+    const [image, tag, mode, previous] = process.argv.slice(2);
+    if (mode === '--prerelease') console.log(`floor=${prereleaseFloor(image, tag, previous || undefined, { log: console.error })}`);
+    else previousMinor(image, tag);
+  } catch (error) {
+    const code = interruptExitCode(error);
+    if (code === undefined) throw error;
+    console.error(error.message);
+    process.exitCode = code;
+  }
 }

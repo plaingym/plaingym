@@ -31,7 +31,9 @@ export function runSmoke(args, timeout = 900_000, { killWaitMs = 3_000, stopGrou
     const settleStopped = () => {
       const what = stopCause === 'timeout' ? 'timed out' : `interrupted by ${stopCause}`;
       const group = killError ? 'could not be stopped' : 'was stopped';
-      settle(() => reject(new Error(`Compatibility smoke ${what}; its process group ${group}`, killError ? { cause: killError } : undefined)));
+      const error = new Error(`Compatibility smoke ${what}; its process group ${group}`, killError ? { cause: killError } : undefined);
+      if (stopCause !== 'timeout') error.signal = stopCause;
+      settle(() => reject(error));
     };
     const stop = cause => {
       if (stopping || settled) return;
@@ -55,4 +57,7 @@ export function runSmoke(args, timeout = 900_000, { killWaitMs = 3_000, stopGrou
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
-  await runSmoke(process.argv.slice(2));
+  await runSmoke(process.argv.slice(2)).catch(error => {
+    console.error(error.message);
+    process.exitCode = error.signal === 'SIGINT' ? 130 : error.signal === 'SIGTERM' ? 143 : 1;
+  });

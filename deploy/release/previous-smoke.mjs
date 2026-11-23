@@ -6,6 +6,44 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { git, root } from '../../scripts/release/version.mjs';
 
+/** An interrupted compatibility run, carried through callers that only clean up and rethrow. */
+export class SmokeInterrupted extends Error {
+  /** @type {130 | 143} */
+  #exitCode;
+
+  /** @param {130 | 143} exitCode @param {{ cause?: Error }} [options] */
+  constructor(exitCode, options) {
+    super('Compatibility smoke interrupted', options);
+    this.name = 'SmokeInterrupted';
+    this.#exitCode = exitCode;
+  }
+
+  /** @returns {130 | 143} */
+  get exitCode() { return this.#exitCode; }
+}
+
+/** Callers wrap and clean up; find the interrupt without treating it as a smoke failure. */
+export function interruptExitCode(error) {
+  let current = error;
+  for (let level = 0; current && level < 5; level += 1) {
+    if (current instanceof SmokeInterrupted) return current.exitCode;
+    current = current.cause;
+  }
+  return undefined;
+}
+
+/** Keep the process alive until a blocked child returns, then let its caller's finally blocks finish. */
+export function holdInterrupts(signals = process) {
+  let held = false;
+  const hold = code => () => {
+    if (held) return;
+    held = true;
+    signals.exitCode = code;
+  };
+  signals.on('SIGINT', hold(130));
+  signals.on('SIGTERM', hold(143));
+}
+
 /** Cleanup must neither replace the check's result nor skip subsequent cleanup. */
 export function removeImage(image, run = execFileSync, warn = console.warn) {
   // SIGKILL: the default SIGTERM leaves execFileSync blocked past its timeout if the client ignores it.
@@ -103,8 +141,12 @@ export function smokePreviousImage(previousImage, image, tree, commit, run = exe
       run(process.execPath, [fileURLToPath(new URL('./run-smoke.mjs', import.meta.url)), script, previousImage],
         { cwd: tree, stdio: 'inherit', timeout: 915_000, killSignal: 'SIGKILL',
         env: { ...process.env, SMOKE_MIGRATE_IMAGE: image, VERSION: variable('APP_VERSION'), SOURCE_URL: variable('SOURCE_URL') } });
-    } catch (error) { throw new Error(`${description} failed: ${error.message}`, { cause: error }); }
-    finally {
+    } catch (error) {
+      const exitCode = error?.signal === 'SIGINT' ? 130 : error?.signal === 'SIGTERM' ? 143
+        : error?.status === 130 ? 130 : error?.status === 143 ? 143 : undefined;
+      if (exitCode !== undefined) throw new SmokeInterrupted(exitCode, { cause: error });
+      throw new Error(`${description} failed: ${error.message}`, { cause: error });
+    } finally {
       removeSmokeProject(project, run);
       try { rmSync(script, { force: true }); }
       catch (error) { console.warn(`::warning::Could not remove compatibility harness ${script}: ${error.message}`); }

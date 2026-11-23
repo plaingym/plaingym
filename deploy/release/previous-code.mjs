@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { compare } from '../../scripts/release/release.mjs';
 import { git, releasePattern } from '../../scripts/release/version.mjs';
-import { smokePreviousImage, removeImage, withPreviousTree } from './previous-smoke.mjs';
+import { smokePreviousImage, removeImage, withPreviousTree, holdInterrupts, interruptExitCode } from './previous-smoke.mjs';
 
 const migrations = 'packages/db/src/migrations';
 const floorFile = 'deploy/release/rollback-floor.txt';
@@ -31,19 +31,27 @@ export function previousCode(base, cwd = process.cwd()) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [image, base] = process.argv.slice(2);
-  if (!image) throw new Error('Usage: node deploy/release/previous-code.mjs IMAGE BASE');
-  const { commit, skip } = previousCode(base);
-  if (!commit) console.log(`::notice::Previous code check skipped. ${skip}`);
-  else {
-    const previousImage = `plaingym:previous-code-${randomUUID()}`;
-    withPreviousTree(commit, (worktree) => {
-      try {
-        execFileSync(process.execPath, ['scripts/release/build-image.mjs', previousImage], { cwd: worktree, stdio: 'inherit', timeout: 1_800_000 });
-        smokePreviousImage(previousImage, image, worktree, commit);
-      } finally {
-        removeImage(previousImage);
-      }
-    });
+  holdInterrupts();
+  try {
+    const [image, base] = process.argv.slice(2);
+    if (!image) throw new Error('Usage: node deploy/release/previous-code.mjs IMAGE BASE');
+    const { commit, skip } = previousCode(base);
+    if (!commit) console.log(`::notice::Previous code check skipped. ${skip}`);
+    else {
+      const previousImage = `plaingym:previous-code-${randomUUID()}`;
+      withPreviousTree(commit, (worktree) => {
+        try {
+          execFileSync(process.execPath, ['scripts/release/build-image.mjs', previousImage], { cwd: worktree, stdio: 'inherit', timeout: 1_800_000 });
+          smokePreviousImage(previousImage, image, worktree, commit);
+        } finally {
+          removeImage(previousImage);
+        }
+      });
+    }
+  } catch (error) {
+    const code = interruptExitCode(error);
+    if (code === undefined) throw error;
+    console.error(error.message);
+    process.exitCode = code;
   }
 }
