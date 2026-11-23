@@ -309,6 +309,24 @@ describe('trial and zero-value joining', () => {
       expect(response.status).toBe(303); expect(response.headers.get('location')).toBe('/join/return');
     }
   });
+  it('joins the chosen country code to a native form phone, and leaves a phone with no choice as typed', async () => {
+    const f = await fixture();
+    const submit = async (email: string, fields: Record<string, string>) => {
+      const form = nativeForm(f, f.free.id, email);
+      for (const [name, value] of Object.entries(fields)) form.set(name, value);
+      const response = await f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: form }));
+      expect(response.status).toBe(303);
+      const rows = await f.rows(), home = rows.homes.find(row => row.email === email)!;
+      return { home, members: rows.members.filter(person => person.householdId === home.id) };
+    };
+    const abroad = await submit('gb-phone@example.invalid', { phoneCountry: 'GB', phone: '020 7946 0018', smsNoticesConsent: 'on' });
+    expect(abroad.home).toMatchObject({ phone: '+44 020 7946 0018', phoneE164: '+442079460018', smsNoticesConsentSource: 'join' });
+    expect(abroad.home.smsNoticesConsentAt).not.toBeNull();
+    expect(abroad.members).toHaveLength(1);
+    expect(abroad.members[0]).toMatchObject({ phone: '+44 020 7946 0018', phoneE164: '+442079460018', smsNoticesConsentSource: 'join' });
+    const local = await submit('no-choice@example.invalid', { phoneCountry: '', phone: '(604) 555-0123' });
+    expect(local.home).toMatchObject({ phone: '(604) 555-0123', phoneE164: '+16045550123' });
+  });
   it('starts a trial only after its recorded card setup and bills the first full period at trial end', async () => {
     const f = await fixture(), create = vi.spyOn(f.provider, 'createCheckout'), charge = vi.spyOn(f.provider, 'createCharge');
     const { cookie, images } = await f.submit([adult(), child()], 'trial@example.invalid', f.trial.id);
@@ -962,7 +980,7 @@ describe('public join pages through the production registrations', () => {
     const other = f.app(f.otherGym);
     for (const path of ['/join', `/join?plan=${f.plan.id}`, '/api/public/plans']) {
       const text = await (await f.get(path, '', other)).text();
-      expect(text).not.toContain('North'); expect(text).not.toContain('Adult monthly'); expect(text).not.toContain(f.plan.id);
+      expect(text).not.toContain('North &lt;Gym&gt;'); expect(text).not.toContain('North <Gym>'); expect(text).not.toContain('Adult monthly'); expect(text).not.toContain(f.plan.id);
     }
     expect((await f.get('/join/client.js')).headers.get('content-type')).toContain('text/javascript');
     f.paymentsConfigured.mockResolvedValue(false);

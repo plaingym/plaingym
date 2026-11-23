@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { AppError, type Translator } from '@plaingym/shared';
 import { maxJoinDocuments, maxJoinMembers, publicContracts, type WaiverTemplate } from '@plaingym/shared/contracts';
+import { joinPhone } from '@plaingym/shared/phone-countries';
 import { validateSignatureImage } from '../../areas/waivers/snapshot.js';
 import { joinFieldProblems } from './join.service.js';
 
@@ -24,7 +25,8 @@ export async function readJoinForm(fields: FormData, templates: readonly WaiverT
       : path[0] === 'contact' ? contactProblems : generalProblems;
     target.push(message);
   };
-  const contact = { name: value('contactName'), email: value('email'), ...(value('phone') ? { phone: value('phone') } : {}) };
+  const phone = joinPhone(value('phoneCountry'), value('phone'));
+  const contact = { name: value('contactName'), email: value('email'), ...(phone ? { phone } : {}) };
   const documents = Array.from({ length: maxJoinDocuments }, (_, j) => j).filter(j => value(`waiver-0-${j}-template`));
   const members = await Promise.all(Array.from({ length: count }, async (_, i) => {
     const person = text('member', { number: i + 1 });

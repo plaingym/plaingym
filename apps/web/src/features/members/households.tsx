@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useState, type FormEvent } from 'react';
+import { useId, useState, type FormEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import * as c from '@plaingym/shared/contracts';
 import { Button } from '../../components/ui/button.js';
 import { Pager } from '../../components/ui/pager.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
+import { PhoneInput } from '../../components/ui/phone-input.js';
+import { useBootstrap } from '../../app/context.js';
+import { t } from '../../lib/i18n.js';
 import { CheckboxField } from '../../components/ui/select.js';
 import { LoadingState } from '../../components/ui/states.js';
 import { Autocomplete } from '../../components/ui/autocomplete.js';
@@ -34,6 +37,8 @@ export function HouseholdForm({ household, onSaved }: { household?: c.Household;
   const markSaved = useDialogSaved();
   const draft = useDraft({ name: household?.name ?? '', email: household?.email ?? '', phone: household?.phone ?? '', address: household?.address ?? ({} as c.HouseholdAddress) });
   const state = useMemberSave(), { values, set } = draft, address = values.address;
+  // Two of these forms can be on one screen (the households panel and the add-member dialog), so the phone ids are per form.
+  const country = useBootstrap().data?.gym.country, phoneId = useId();
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formElement = event.currentTarget;
@@ -50,7 +55,8 @@ export function HouseholdForm({ household, onSaved }: { household?: c.Household;
     }, () => { draft.reset(); markSaved(formElement); });
   }
   return <form onSubmit={submit} className="space-y-3"><ErrorMessage error={state.error}/>
-    <Field name="householdName" value={values.name} onChange={(value) => set('name', value)} required/><Field name="email" type="email" value={values.email} onChange={(value) => set('email', value)}/><Field name="phone" value={values.phone} onChange={(value) => set('phone', value)}/>
+    <Field name="householdName" value={values.name} onChange={(value) => set('name', value)} required/><Field name="email" type="email" value={values.email} onChange={(value) => set('email', value)}/><PhoneInput id={phoneId} label={text('phone')} value={values.phone} onChange={(value) => set('phone', value)} defaultCountry={country}
+      {...(country ? {} : { hint: t('shell/phone:noGymCountry') })}/>
     <div className="grid gap-3 sm:grid-cols-2">{(['line1', 'line2', 'city', 'region', 'postalCode', 'countryCode'] as const).map((key) => <Field key={key} name={key} value={address[key] ?? ''} onChange={(value) => set('address', { ...address, [key]: key === 'countryCode' ? value.toUpperCase() : value })}/>)}</div>
     <Button type="submit" className="w-full sm:w-auto" disabled={state.busy}>{text(household ? 'save' : 'createHousehold')}</Button>
   </form>;

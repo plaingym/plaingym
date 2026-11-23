@@ -4,7 +4,7 @@ import { waiverDocumentView } from './page.js';
 import type { Translator } from '@plaingym/shared';
 import type { PublicBranding, PublicPlan, WaiverTemplate } from '@plaingym/shared/contracts';
 import { formatMoney } from '../../core/money.js';
-import { button, secondaryButton, publicLayout } from './page.js';
+import { button, secondaryButton, publicLayout, phoneField } from './page.js';
 import { maxJoinMembers } from '@plaingym/shared/contracts';
 import type { JoinInvoice } from './join.service.js';
 
@@ -82,7 +82,8 @@ export function joinFormPage(input: JoinPageInput & { plan: PublicPlan; count: n
     h('input', { type: 'hidden', name: 'planId', value: plan.id }), h('input', { type: 'hidden', name: 'members', value: input.count }),
     h('fieldset', { class: panel }, h('legend', { class: 'text-lg font-semibold' }, text('contact')),
       field('contactName', text('contactName'), 'text', true, 'name', 200, values.contactName), field('email', text('email'), 'email', true, 'email', 254, values.email),
-      field('phone', text('phone'), 'tel', false, 'tel', 100, values.phone),
+      phoneField(input.t, { label: text('phone'), country: input.gym.address?.country,
+        ...(values.phoneCountry !== undefined ? { selected: values.phoneCountry } : {}), ...(values.phone !== undefined ? { value: values.phone } : {}) }),
       ...(['smsNoticesConsent', 'smsAnnouncementsConsent'] as const).map(kind => h('label', { class: 'flex min-h-11 items-start gap-3 py-2' },
         h('input', { type: 'checkbox', name: kind, checked: values[kind] === 'on', class: 'mt-1 h-6 w-6 shrink-0' }),
         h('span', null, text(kind, { gym: input.gym.name })))),

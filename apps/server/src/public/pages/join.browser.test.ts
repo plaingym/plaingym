@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { joinBrowserScript, joinPollIntervalMs, joinPollLimit } from './join.browser.js';
-import { publicBrowserScript, refusalScript } from './browser.js';
+import { phoneScript, publicBrowserScript, refusalScript } from './browser.js';
 
 const confirming = '<section data-join-confirming>Confirming</section>', welcome = '<section>Welcome</section>';
 class Fake {
@@ -77,6 +77,28 @@ describe('join confirming poll', () => {
     const page = load(false, () => welcome);
     await tick(10);
     expect(page.fetch).not.toHaveBeenCalled(); expect(page.reload).not.toHaveBeenCalled(); expect(page.stop).not.toHaveBeenCalled();
+  });
+});
+
+describe('phone country choice in the browser scripts', () => {
+  const formPhone = new Function(phoneScript + '\nreturn formPhone;')() as (form: unknown, fields: Map<string, string>) => string;
+  /** A form whose country select has this option selected (null: no select at all). */
+  const formWith = (selected: { getAttribute(name: string): string | null } | null) =>
+    ({ querySelector: (selector: string) => selector === 'select[name=phoneCountry]' && selected ? { selectedOptions: [selected] } : null });
+  const code = (value: string | null) => ({ getAttribute: (name: string) => name === 'data-calling-code' ? value : null });
+  it('joins the chosen calling code like the native form does', () => {
+    expect(formPhone(formWith(code('1')), new Map([['phone', '604 555 0123']]))).toBe('+1 604 555 0123');
+    expect(formPhone(formWith(code('1')), new Map([['phone', ' +44 20 7946 0018 ']]))).toBe('+44 20 7946 0018');
+    expect(formPhone(formWith(code(null)), new Map([['phone', '604 555 0123']]))).toBe('604 555 0123');
+    expect(formPhone(formWith(null), new Map([['phone', '604 555 0123']]))).toBe('604 555 0123');
+    expect(formPhone(formWith(code('1')), new Map([['phone', '   ']]))).toBe('');
+    expect(formPhone(formWith(code('1')), new Map())).toBe('');
+  });
+  it('is in both scripts, which send the joined phone only when there is one', () => {
+    for (const script of [joinBrowserScript, publicBrowserScript]) {
+      expect(script).toContain(phoneScript);
+      expect(script).toContain('formPhone(form, fields)');
+    }
   });
 });
 

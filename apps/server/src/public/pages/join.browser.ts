@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { joinBodyBytes } from './join.service.js';
-import { refusalScript } from './browser.js';
+import { phoneScript, refusalScript } from './browser.js';
 
 export const joinPollIntervalMs = 2000;
 export const joinPollLimit = 45;
@@ -75,6 +75,7 @@ export const joinBrowserScript = String.raw`// SPDX-License-Identifier: AGPL-3.0
     const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.onerror = () => reject(new Error('failed')); reader.readAsDataURL(file);
   });
   ${refusalScript}
+  ${phoneScript}
   async function post(path, body) {
     const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (!response.ok) {
@@ -96,7 +97,8 @@ export const joinBrowserScript = String.raw`// SPDX-License-Identifier: AGPL-3.0
     submit.disabled = true; feedback.textContent = message('busy');
     try {
       const fields = new FormData(form), value = name => String(fields.get(name) || '');
-      const contact = { name: value('contactName'), email: value('email'), ...(value('phone') ? { phone: value('phone') } : {}) };
+      const phone = formPhone(form, fields);
+      const contact = { name: value('contactName'), email: value('email'), ...(phone ? { phone } : {}) };
       const members = await Promise.all([...form.querySelectorAll('[data-member]')].map(async (fieldset, i) => ({
         member: { firstName: value('member-' + i + '-firstName'), lastName: value('member-' + i + '-lastName'), dateOfBirth: value('member-' + i + '-dateOfBirth') },
         signatures: await Promise.all([...fieldset.querySelectorAll('[data-waiver]')].map(async (waiver, j) => {

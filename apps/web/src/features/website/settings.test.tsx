@@ -9,9 +9,15 @@ import { createRegistries } from '../../lib/registries.js';
 import { WebsiteSettings } from './settings.js';
 import { prepareImage } from './images.js';
 import { gymSettingsKey } from '../settings/gym-settings.js';
+import { useBootstrap } from '../../app/context.js';
 
 const client = vi.hoisted(() => ({ GET: vi.fn(), PUT: vi.fn(), POST: vi.fn(), DELETE: vi.fn(), PATCH: vi.fn() }));
 vi.mock('../../lib/api.js', async (original) => ({ ...await original<typeof import('../../lib/api.js')>(), api: client, createApiClient: () => client }));
+vi.mock('../../app/context.js', async (original) => ({ ...await original<typeof import('../../app/context.js')>(), useBootstrap: vi.fn() }));
+/** The gym's country code as the shell bootstrap carries it (none: the gym has not set one). */
+function gymCountry(country?: string) {
+  vi.mocked(useBootstrap).mockReturnValue({ data: { gym: { ...(country ? { country } : {}) } } } as unknown as ReturnType<typeof useBootstrap>);
+}
 const id = (n: number) => '01900000-0000-7000-8000-' + String(n).padStart(12, '0');
 const gym: GymSettings = { id: id(1), name: 'Gym', slug: 'gym', timezone: 'America/Vancouver', currency: 'CAD', address: {}, branding: {},
   websiteEnabled: true, existingSiteUrl: null, bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false,
@@ -24,6 +30,7 @@ let cache: QueryClient, stored: WebsiteSettingsData;
 const start = () => render(<QueryClientProvider client={cache}><WebsiteSettings/></QueryClientProvider>);
 
 beforeEach(() => {
+  gymCountry('CA');
   for (const method of Object.values(client)) method.mockReset();
   stored = website;
   client.GET.mockImplementation(async (path: string) => path === '/api/website' ? reply(200, { data: stored }) : reply(200, { data: { ...gym, revision: stored.revision } }));
@@ -62,7 +69,9 @@ describe('website settings', () => {
     start();
     const tagline = await screen.findByRole('textbox', { name: 'Tagline' });
     await user.clear(tagline); await user.type(tagline, '  Strong together ');
-    await user.type(screen.getByRole('textbox', { name: 'Public phone number' }), '604 555 0100');
+    const phone = screen.getByRole('textbox', { name: 'Public phone number' }) as HTMLInputElement;
+    expect(phone.maxLength).toBe(34);
+    await user.type(phone, '604 555 0100');
     expect(screen.queryByLabelText('Primary color')).toBeNull();
     expect(screen.queryByRole('checkbox', { name: 'Use an accent color for the website footer' })).toBeNull();
     expect(screen.getByRole('link', { name: 'Change your brand color in Gym details' }).getAttribute('href')).toBe('#settingsSections.settings.general');
@@ -72,7 +81,7 @@ describe('website settings', () => {
     await user.click(screen.getByRole('button', { name: 'Save website' }));
     await screen.findByText('Website saved.');
     expect(client.PUT).toHaveBeenCalledWith('/api/website', expect.objectContaining({ body: { revision: 4, tagline: 'Strong together', about: 'Since 2010',
-      phone: '604 555 0100', email: null, primaryColor: '#123456', photos: [{ id: id(11), alt: 'Class' }, { id: id(10), alt: 'Mats' }] } }));
+      phone: '+1 604 555 0100', email: null, primaryColor: '#123456', photos: [{ id: id(11), alt: 'Class' }, { id: id(10), alt: 'Mats' }] } }));
     await waitFor(() => expect(cache.getQueryData<{ settings: GymSettings }>(gymSettingsKey)?.settings.revision).toBe(5));
     expect(client.GET.mock.calls.filter(([path]) => path === '/api/website')).toHaveLength(reads);
   });

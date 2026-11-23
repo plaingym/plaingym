@@ -5,6 +5,7 @@ import type { PublicBranding, WaiverTemplate } from '@plaingym/shared/contracts'
 import { formatMoney } from '../../core/money.js';
 import { buildLabelItem } from '../../areas/health/build-label.js';
 import { logoVersion } from '../short-hash.js';
+import { callingCode, phoneCountryOptions } from '@plaingym/shared/phone-countries';
 /** Native browser preview and a separate link also work without JavaScript. */
 export function waiverDocumentView(template: WaiverTemplate, t: Translator, href = `/api/public/waivers/${template.id}/document?view=1`, preview = true) {
   if (!template.document) return h('div', { class: 'max-h-96 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-4', tabindex: 0, 'aria-label': template.name }, template.body);
@@ -62,6 +63,21 @@ export function publicLayout(input: { gym: PublicBranding; title: string; t: Tra
           ...[['/join', 'join'], ['/trial', 'trial'], ['/drop-in', 'drop-in'], ['/portal', 'portal'], ['/source', 'source']].map(([href, key]) =>
             h('a', { href, class: 'inline-flex min-h-11 items-center underline', rel: 'noreferrer' }, text(key!))), buildLabelItem())))).toString();
 }
+/**
+ * A country code choice beside the phone number. Works without script: the form handler (or the page script) joins
+ * `+<calling code> <number>` unless the number starts with +. `selected` (a redisplayed choice, possibly empty) wins over the gym's country.
+ */
+export function phoneField(t: Translator, options: { label: string; country?: string | null | undefined; selected?: string; value?: string }) {
+  const choices = phoneCountryOptions();
+  const selected = typeof options.selected === 'string' ? options.selected : callingCode(options.country) !== null ? options.country!.toUpperCase() : '';
+  return h('div', { class: 'space-y-1' },
+    h('label', { for: 'phoneCountry', class: 'block' }, t('shell/phone:country')),
+    h('select', { id: 'phoneCountry', name: 'phoneCountry', autocomplete: 'country', class: inputClass },
+      h('option', { value: '', selected: selected === '' }, t('shell/phone:choose')),
+      ...choices.map(choice => h('option', { value: choice.value, 'data-calling-code': choice.callingCode, selected: choice.value === selected }, choice.label))),
+    h('label', { for: 'phone', class: 'block' }, options.label),
+    h('input', { id: 'phone', name: 'phone', type: 'tel', autocomplete: 'tel-national', maxlength: 95, ...(options.value !== undefined ? { value: options.value } : {}), class: inputClass }));
+}
 export interface IntakePageInput {
   kind: 'trial' | 'drop-in'; gym: PublicBranding; t: Translator; templates?: WaiverTemplate[];
   dropInFee: { amountCents: number; currency: string; plusTax: boolean } | null; locale?: string;
@@ -81,7 +97,7 @@ export function intakePage(input: IntakePageInput) {
         h('p', null, text(input.kind === 'trial' ? 'trialHelp' : 'drop-inHelp')),
         field('firstName', 'firstName', 'text', true, 'given-name'), field('lastName', 'lastName', 'text', true, 'family-name'),
         field('dateOfBirth', 'dateOfBirth', 'date', true, 'bday'), field('contactName', 'contactName', 'text', true, 'name'),
-        field('email', 'email', 'email', true, 'email', 254), field('phone', 'phone', 'tel', false, 'tel', 100),
+        field('email', 'email', 'email', true, 'email', 254), phoneField(input.t, { label: text('phone'), country: input.gym.address?.country }),
         h('div', { hidden: true, 'aria-hidden': 'true' }, h('label', null, text('honeypot'), h('input', { name: 'honeypot', tabindex: -1, autocomplete: 'off' }))),
         ...(input.templates ?? []).map((template, i) => waiverForm(template, i, input.t)),
         h('p', { id: 'feedback', role: 'status', 'aria-live': 'polite', class: 'break-words' }),

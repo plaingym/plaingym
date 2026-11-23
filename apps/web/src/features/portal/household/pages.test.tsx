@@ -48,8 +48,8 @@ function PageHost({ children }: { children: ReactNode }) {
  * (the open household unless a test says otherwise); the household lists, which the pages read again after an answer for
  * another household, keep naming the open one.
  */
-function mount(element: ReactNode, handle: Handler, { context, answeredFor, householdLists, usePageHost = true }: {
-  context?: PortalContext; answeredFor?: string; householdLists?: () => Promise<Response>; usePageHost?: boolean;
+function mount(element: ReactNode, handle: Handler, { context, answeredFor, householdLists, usePageHost = true, country }: {
+  context?: PortalContext; answeredFor?: string; householdLists?: () => Promise<Response>; usePageHost?: boolean; country?: string;
 } = {}) {
   vi.stubGlobal('scrollTo', vi.fn());
   let current = ids.household;
@@ -68,7 +68,7 @@ function mount(element: ReactNode, handle: Handler, { context, answeredFor, hous
     return result instanceof Response ? result : result === undefined ? new Response(null, { status: 404 }) : Response.json({ ...result as object, householdId: answeredFor ?? current });
   });
   vi.stubGlobal('fetch', fetcher);
-  const services: ShellServices = { loadBootstrap: async () => ({ gym: { id: ids.gym, name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] },
+  const services: ShellServices = { loadBootstrap: async () => ({ gym: { id: ids.gym, name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [], ...(country ? { country } : {}) },
     session: { userId: ids.user, displayName: 'Test User', roles: [], member: true }, login: { password: true, magicLink: false } }), signOut: vi.fn(), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
   const cache = portalTestCache(ids.gym, ids.user, ids.household, { defaultOptions: { queries: { retry: false } } });
   render(<ShellServicesContext.Provider value={services}><QueryClientProvider client={cache}>
@@ -489,6 +489,31 @@ describe('portal household page', () => {
     await act(async () => { await view.cache.invalidateQueries({ queryKey, exact: true }); });
     await screen.findByText('Kim Rivera');
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+  it.each(['household', 'member'] as const)('joins the gym\'s country code to a typed %s phone and shows no setup hint', async kind => {
+    const view = mount(<PortalHousehold />, (path, init) => {
+      if (path === '/api/portal/household') return { data: household };
+      if (path.startsWith('/api/portal/members?')) return page([people[1]!]);
+      if (path === `/api/portal/members/${ids.child}` && init?.method === 'PATCH') return { data: people[1] };
+      return undefined;
+    }, { context: payer, country: 'CA' });
+    await screen.findByLabelText('Phone');
+    await waitFor(() => expect((screen.getByRole('combobox', { name: 'Country code' }) as HTMLSelectElement).value).toBe('CA'));
+    if (kind === 'household') {
+      fireEvent.change(screen.getByLabelText('Phone'), { target: { value: '604 555 0123' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(view.calls('PATCH', '/api/portal/household')).toHaveLength(1));
+      expect(JSON.parse(String(view.calls('PATCH', '/api/portal/household')[0]![1]!.body))).toMatchObject({ phone: '+1 604 555 0123' });
+    } else {
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit details' }));
+      const dialog = within(screen.getByRole('dialog'));
+      await waitFor(() => expect((dialog.getByRole('combobox', { name: 'Country code' }) as HTMLSelectElement).value).toBe('CA'));
+      fireEvent.change(dialog.getByLabelText('Phone'), { target: { value: '604 555 0123' } });
+      fireEvent.click(dialog.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(view.calls('PATCH', `/api/portal/members/${ids.child}`)).toHaveLength(1));
+      expect(JSON.parse(String(view.calls('PATCH', `/api/portal/members/${ids.child}`)[0]![1]!.body))).toMatchObject({ phone: '+1 604 555 0123' });
+    }
+    expect(screen.queryByText(/Settings → Gym details/)).toBeNull();
   });
   it.each(['household', 'member'] as const)('omits untouched JSON after reading extended %s data', async kind => {
     const storedHome = { ...household, address: { ...household.address, future: 'stored extension' } };
@@ -966,6 +991,7 @@ describe('portal household page', () => {
     expect(screen.getByText(hint)).toBeDefined();
     await user.click(agree);
     expect(view.calls('PUT', endpoint)).toHaveLength(0);
+    fireEvent.blur(phone); // Leaving the field, as a person does before pressing Save, shows the trimmed number.
     await user.click(screen.getByRole('button', { name: 'Save' }));
     await screen.findByText('Saved.');
     expect(view.calls('GET', '/api/portal/household')).toHaveLength(2);

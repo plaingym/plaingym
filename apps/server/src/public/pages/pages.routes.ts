@@ -5,6 +5,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { AppError, createTranslator, type Translator } from '@plaingym/shared';
 import { publicContracts as contracts, paginationSchema, publicTrialRequestSchema, waiverDocumentReadContracts } from '@plaingym/shared/contracts';
 import { route, type RouteRegistration } from '../../core/registry.js';
+import { joinPhone } from '@plaingym/shared/phone-countries';
 import { rateLimit } from '../../core/rate-limit.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { publicIntakeRefusal } from '../../core/rate-limit-intake.js';
@@ -112,7 +113,8 @@ export function createPublicRoutes(supplied?: PublicRoutesOptions): readonly Rou
           throw new AppError('invalid_request', 'Expected a form submission');
         const fields = await ctx.req.raw.formData().catch(() => { throw new AppError('invalid_request', 'Invalid form submission'); });
         const value = (name: string) => String(fields.get(name) ?? '');
-        const input = publicTrialRequestSchema.parse({ contact: { name: value('contactName'), email: value('email'), ...(value('phone') ? { phone: value('phone') } : {}) },
+        const phone = joinPhone(value('phoneCountry'), value('phone'));
+        const input = publicTrialRequestSchema.parse({ contact: { name: value('contactName'), email: value('email'), ...(phone ? { phone } : {}) },
           member: { firstName: value('firstName'), lastName: value('lastName'), dateOfBirth: value('dateOfBirth') }, honeypot: value('honeypot') });
         if (kind === 'trial') await config.service.trial(context.gym.gymId, input, context.gym.timezone, context.requestId);
         else {

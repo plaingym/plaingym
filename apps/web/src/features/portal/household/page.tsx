@@ -12,6 +12,7 @@ import { Alert } from '../../../components/ui/alert.js';
 import { Dialog, DialogCancel } from '../../../components/ui/dialog.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
+import { PhoneInput } from '../../../components/ui/phone-input.js';
 import { Card } from '../../../components/ui/card.js';
 import { Page, PageHeader, PageSection } from '../../../components/ui/page.js';
 import { Badge, StackedItem, StackedList } from '../../../components/ui/table.js';
@@ -139,6 +140,7 @@ function HouseholdForm({ household, scope, gymName, timezone, samePhone, saved, 
 }) {
   const cache = useQueryClient();
   const draft = useDraft(householdContact(household), normalizeHousehold);
+  const country = useBootstrap().data?.gym.country;
   const phoneChanged = normalizedPhone(draft.values.phone) !== normalizedPhone(household.phone);
   const refreshHousehold = () => cache.invalidateQueries({ queryKey: [...scope.key, 'household'] });
   // The ref guards handlers before React Query publishes the new pending state.
@@ -197,7 +199,7 @@ function HouseholdForm({ household, scope, gymName, timezone, samePhone, saved, 
     <div className="grid gap-4 sm:grid-cols-2">
       <Field name="name" label={text('householdName')} value={draft.values.name} onChange={event => draft.set('name', event.target.value)} required />
       <Field name="email" label={text('email')} value={draft.values.email ?? ''} onChange={event => draft.set('email', event.target.value)} type="email" autoComplete="email" />
-      <Field name="phone" label={text('phone')} value={draft.values.phone ?? ''} onChange={event => draft.set('phone', event.target.value)} type="tel" autoComplete="tel" />
+      <PhoneInput id="household-phone" label={text('phone')} value={draft.values.phone ?? ''} onChange={value => draft.set('phone', value)} defaultCountry={country} />
       {addressFields.map(field => <Field key={field} name={field} label={text('address_' + field)} value={draft.values.address[field] ?? ''}
         onChange={event => draft.set('address', { ...draft.values.address, [field]: event.target.value })}
         {...(field === 'countryCode' ? { maxLength: 2, pattern: '[A-Za-z]{2}' } : {})} />)}
@@ -219,6 +221,7 @@ function EditMember({ member, scope, close, pending, start, finish }: {
   member: PortalMember; scope: PortalScope; close(): void; pending: boolean; start(): boolean; finish(): void;
 }) {
   const cache = useQueryClient();
+  const country = useBootstrap().data?.gym.country;
   const draft = useDraft({ firstName: member.firstName, lastName: member.lastName, email: member.email,
     phone: member.phone, dateOfBirth: member.dateOfBirth, emergencyContacts: member.emergencyContacts }, value => ({
     firstName: value.firstName.trim(), lastName: value.lastName.trim(), email: value.email?.trim() || null,
@@ -249,7 +252,7 @@ function EditMember({ member, scope, close, pending, start, finish }: {
         <Field prefix="member" name="firstName" label={text('firstName')} value={draft.values.firstName} onChange={event => draft.set('firstName', event.target.value)} required autoComplete="off" />
         <Field prefix="member" name="lastName" label={text('lastName')} value={draft.values.lastName} onChange={event => draft.set('lastName', event.target.value)} required autoComplete="off" />
         <Field prefix="member" name="email" label={text('email')} value={draft.values.email ?? ''} onChange={event => draft.set('email', event.target.value)} type="email" />
-        <Field prefix="member" name="phone" label={text('phone')} value={draft.values.phone ?? ''} onChange={event => draft.set('phone', event.target.value)} type="tel" />
+        <PhoneInput id="member-phone" label={text('phone')} value={draft.values.phone ?? ''} onChange={value => draft.set('phone', value)} defaultCountry={country} />
         <Field prefix="member" name="dateOfBirth" label={text('dateOfBirth')} value={draft.values.dateOfBirth ?? ''} onChange={event => draft.set('dateOfBirth', event.target.value)} type="date" />
       </div>
       <fieldset className="space-y-3"><legend className="font-semibold">{text('contacts')}</legend>

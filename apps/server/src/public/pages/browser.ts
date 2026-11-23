@@ -13,6 +13,15 @@ export const refusalScript = publicCopyScript + String.raw`
     if (Array.isArray(reason) && reason.includes('intake_ceiling')) return 'intakeLimited';
     return Array.isArray(reason) && reason.includes('busy') ? 'retry' : 'limited';
   }`;
+/** The browser twin of `joinPhone` (`@plaingym/shared/phone-countries`): `+<calling code> <number>` unless the number starts with +. */
+export const phoneScript = String.raw`
+  function formPhone(form, fields) {
+    const number = String(fields.get('phone') || '').trim();
+    const option = form.querySelector('select[name=phoneCountry]')?.selectedOptions[0];
+    const code = option ? option.getAttribute('data-calling-code') : null;
+    if (!number) return '';
+    return number.startsWith('+') || !code ? number : '+' + code + ' ' + number;
+  }`;
 /** Plain browser JavaScript stays independent of server bundler helpers. No hydration. */
 export const publicBrowserScript = String.raw`// SPDX-License-Identifier: AGPL-3.0-only
 (() => {
@@ -39,6 +48,7 @@ export const publicBrowserScript = String.raw`// SPDX-License-Identifier: AGPL-3
   });
   let cached;
   ${refusalScript}
+  ${phoneScript}
   async function post(path, body) {
     const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (!response.ok) throw new Error(await refusal(response));
@@ -51,7 +61,8 @@ export const publicBrowserScript = String.raw`// SPDX-License-Identifier: AGPL-3
     submit.disabled = true; feedback.textContent = message('busy');
     try {
       const fields = new FormData(form), value = name => String(fields.get(name) || '');
-      const common = { contact: { name: value('contactName'), email: value('email'), ...(value('phone') ? { phone: value('phone') } : {}) },
+      const phone = formPhone(form, fields);
+      const common = { contact: { name: value('contactName'), email: value('email'), ...(phone ? { phone } : {}) },
         member: { firstName: value('firstName'), lastName: value('lastName'), dateOfBirth: value('dateOfBirth') }, honeypot: value('honeypot') };
       if (form.dataset.publicForm === 'trial') await post('/api/public/trial', common);
       else {

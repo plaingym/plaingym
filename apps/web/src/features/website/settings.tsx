@@ -3,7 +3,8 @@ import { parseResponse } from '../../lib/response.js';
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { maxWebsitePhotos, websiteSettingsResponseSchema, type GymSettings, type WebsiteSettings as WebsiteSettingsData } from '@plaingym/shared/contracts';
-import { bootstrapKey } from '../../app/context.js';
+import { bootstrapKey, useBootstrap } from '../../app/context.js';
+import { PhoneInput } from '../../components/ui/phone-input.js';
 import { api } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 import { useGymSettings } from '../settings/gym-settings.js';
@@ -35,7 +36,7 @@ function Field({ label, help, children }: { label: string; help?: string; childr
  * primary color (General) can't save back what it showed before.
  */
 export function WebsiteSettings() {
-  const cache = useQueryClient(), gym = useGymSettings();
+  const cache = useQueryClient(), gym = useGymSettings(), country = useBootstrap().data?.gym.country;
   const reading = useRef<AbortController | null>(null);
   const savedRevision = useRef<{ revision: number; epoch: number | undefined; reload: boolean } | null>(null);
   const [state, setState] = useState<{ data: WebsiteSettingsData; draft: Draft; dirty: boolean } | null>(null);
@@ -161,7 +162,8 @@ export function WebsiteSettings() {
           <Input value={draft.tagline ?? ''} maxLength={160} aria-describedby={describedBy} onChange={(event) => set({ tagline: event.target.value })}/>}</Field></div>
         <div className="sm:col-span-2"><Field label={text('about')} help={text('aboutHelp')}>{(describedBy) =>
           <Textarea value={draft.about ?? ''} maxLength={5000} rows={6} aria-describedby={describedBy} onChange={(event) => set({ about: event.target.value })}/>}</Field></div>
-        <Field label={text('phone')}>{() => <Input type="tel" autoComplete="tel" value={draft.phone ?? ''} maxLength={40} onChange={(event) => set({ phone: event.target.value })}/>}</Field>
+        <PhoneInput id="website-phone" label={text('phone')} autoComplete="tel" maxLength={34} value={draft.phone ?? ''} onChange={(value) => set({ phone: value })} defaultCountry={country}
+          {...(country ? {} : { hint: t('shell/phone:noGymCountry') })}/>
         <Field label={text('email')}>{() => <Input type="email" autoComplete="email" value={draft.email ?? ''} maxLength={254} onChange={(event) => set({ email: event.target.value })}/>}</Field>
         <p className="text-sm sm:col-span-2"><a className="inline-flex min-h-11 items-center underline" href="#settingsSections.settings.general">{text('brandInGymDetails')}</a></p>
       </fieldset>

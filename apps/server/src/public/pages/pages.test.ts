@@ -32,9 +32,9 @@ const db = useTestDatabase(), factory = createFactories(db), png = demoSignature
 const origin = 'https://gym.example.test';
 const body = (email = 'visitor@example.invalid') => ({ contact: { name: 'Alex Contact', email },
   member: { firstName: 'New', lastName: 'Visitor', dateOfBirth: '1990-01-02' }, honeypot: '' });
-async function fixture(demo = false) {
+async function fixture(demo = false, country?: string) {
   const gymId = uuidv7(), otherGym = uuidv7(), clock = new TestClock('2026-10-29T12:00:00Z');
-  await factory('gyms', gymId, { name: 'North <Gym>', websiteEnabled: false, address: { line1: '12 Mat Street', city: 'Vancouver' },
+  await factory('gyms', gymId, { name: 'North <Gym>', websiteEnabled: false, address: { line1: '12 Mat Street', city: 'Vancouver', ...(country ? { country } : {}) },
     settings: { modules: { website: { phone: '+1 (604) 555-0100', email: 'hello@north.example.test', secret: 'Not public' } } },
     branding: { primaryColor: '#ffff00', logoKey: gymId + '/logo.png' } });
   await factory('gyms', otherGym, { name: 'Other private gym', branding: { primaryColor: '#000080' } });
@@ -295,7 +295,7 @@ describe('core public pages through the production registrations', () => {
     const f = await fixture(), other = f.app(f.otherGym);
     for (const path of ['/trial', '/drop-in', '/trial/received', '/drop-in/received', '/api/public/config', '/api/public/waivers', '/public/pages/theme.css']) {
       const response = await other.request(origin + path), text = await response.text();
-      expect(response.status).toBe(200); expect(text).not.toContain('North'); expect(text).not.toContain(f.template.id); expect(text).not.toContain('#ffff00');
+      expect(response.status).toBe(200); expect(text).not.toContain('North &lt;Gym&gt;'); expect(text).not.toContain('North <Gym>'); expect(text).not.toContain(f.template.id); expect(text).not.toContain('#ffff00');
       if (path === '/public/pages/theme.css') expect(text).not.toContain('#9a9a00');
       expect(text).not.toContain('12 Mat Street'); expect(text).not.toContain('hello@north.example.test');
     }
@@ -496,5 +496,40 @@ describe('core public pages through the production registrations', () => {
     const f = await fixture();
     const response = await f.server.request(origin + '/api/public/trial', { method: 'POST', headers: { origin: 'https://attacker.invalid', cookie: 'session=untrusted', 'content-type': 'application/json' }, body: JSON.stringify(body()) });
     expect(response.status).toBe(403); expect(f.notices).toHaveLength(0);
+  });
+});
+
+describe('phone country choice on the intake pages', () => {
+  const optionOf = (html: string, value: string) => new RegExp(`<option value="${value}"[^>]*>`).exec(html)?.[0] ?? '';
+  const nativeTrial = (f: Awaited<ReturnType<typeof fixture>>, email: string, extra: Record<string, string>) => f.server.request(origin + '/trial', { method: 'POST', headers: { origin },
+    body: new URLSearchParams({ firstName: 'New', lastName: 'Visitor', dateOfBirth: '1990-01-02', contactName: 'Alex Contact', email, honeypot: '', ...extra }) });
+  const phoneOf = async (f: Awaited<ReturnType<typeof fixture>>, email: string) => (await f.rows()).homes.find(home => home.email === email)?.phone;
+
+  it.each(['/trial', '/drop-in'])('preselects the gym\'s country on %s and keeps the number input within the stored limit', async path => {
+    const f = await fixture(false, 'CA'), html = await (await f.server.request(origin + path)).text();
+    expect(html.match(/<select[^>]*name="phoneCountry"/g)).toHaveLength(1);
+    expect(optionOf(html, 'CA')).toContain('data-calling-code="1"');
+    expect(optionOf(html, 'CA')).toContain('selected');
+    expect(html).not.toMatch(/<option value=""[^>]*selected/);
+    expect(html.match(/<option [^>]*selected/g)).toHaveLength(1);
+    expect(/<input[^>]*name="phone"[^>]*>/.exec(html)?.[0]).toContain('maxlength="95"');
+    const select = html.slice(html.indexOf('<div class="space-y-1"><label for="phoneCountry"'), html.indexOf('name="phone"'));
+    expect(select.length).toBeLessThan(18_000);
+  });
+  it.each(['/trial', '/drop-in'])('starts on "Choose a country" on %s when the gym has none', async path => {
+    const f = await fixture(), html = await (await f.server.request(origin + path)).text();
+    expect(/<option value=""[^>]*>/.exec(html)?.[0]).toContain('selected');
+    expect(html.match(/<option [^>]*selected/g)).toHaveLength(1);
+  });
+  it('stores the joined number, the typed number, or the +number as typed from a native trial form', async () => {
+    const f = await fixture(false, 'CA');
+    expect((await nativeTrial(f, 'a@example.invalid', { phoneCountry: 'CA', phone: '604 555 0123' })).status).toBeLessThan(400);
+    expect((await nativeTrial(f, 'b@example.invalid', { phoneCountry: '', phone: '604 555 0123' })).status).toBeLessThan(400);
+    expect((await nativeTrial(f, 'c@example.invalid', { phoneCountry: 'CA', phone: '+44 20 7946 0018' })).status).toBeLessThan(400);
+    expect((await nativeTrial(f, 'd@example.invalid', {})).status).toBeLessThan(400);
+    expect(await phoneOf(f, 'a@example.invalid')).toBe('+1 604 555 0123');
+    expect(await phoneOf(f, 'b@example.invalid')).toBe('604 555 0123');
+    expect(await phoneOf(f, 'c@example.invalid')).toBe('+44 20 7946 0018');
+    expect(await phoneOf(f, 'd@example.invalid')).toBeNull();
   });
 });

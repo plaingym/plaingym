@@ -1,0 +1,6 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "country": "Country code",
+  "choose": "Choose a country",
+  "noGymCountry": "Set the gym's country code in Settings → Gym details to preselect it here."
+}

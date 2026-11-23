@@ -127,6 +127,7 @@ API:
 | `LoadingState`, `EmptyState`, `ErrorState` | Loading, empty and failed states |
 | `Card`, `Alert`, `Badge` | Grouped content, inline messages (`Alert` `variant`: `info`, the default, or `error` for a failure, with the destructive colours and an icon; `FormMessage` shows a form's result and scrolls to and focuses an error, as `useRevealed` does for any element), status labels (`tone`: `default`, `success`, `warning`, `destructive`, `muted`) |
 | `Input`, `Select`, `Textarea`, `CheckboxField`, `Label` | Form controls |
+| `PhoneInput` | A country code choice and a phone number; sends `+<code> <number>` unless the number starts with +, and calls `onChange` only on user input |
 | `Autocomplete` | One searchable selection input; keyboard arrows, Enter and Escape, selected label, loading/empty feedback; suggestions flow within scrollable dialogs |
 | `TableContainer`, `StackedList`, `StackedItem` | Wide tables and their phone layout |
 | `Dialog` | A modal open while mounted, full screen on phones and a centered panel from `sm` (`size="wide"` for more room). Only the body scrolls. The body and dialog contain overscroll, and the page keeps its scroll position and scrollbar space until the last open dialog closes or suspends. Escape, the backdrop and the close button request dismissal, with inline confirmation for changed inputs. Focus returns to the opener. Use `dismissible={false}` or `useDialogOperation` during operations. |

@@ -26,8 +26,8 @@ const homeId = '019ab4f0-0000-7000-8000-000000000001', memberId = '019ab4f0-0000
 const member: Member = { id: memberId, householdId: homeId, firstName: 'Alex', lastName: 'Smith', email: null, phone: null, photoKey: null,
   sms: { phoneValid: false, phoneE164: null, notices: null, announcements: null },
   dateOfBirth: null, status: 'active', emergencyContacts: [], emailOptOut: false, emailDeliverable: true, anonymizedAt: null, revision: 1, createdAt: '2026-10-22T12:00:00Z' };
-function bootstrap(roles: readonly StaffRole[]) {
-  const data: ShellBootstrap = { gym: { id: homeId, name: 'Test gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: memberId, displayName: 'Test User', roles, member: false }, login: { password: true, magicLink: false } };
+function bootstrap(roles: readonly StaffRole[], country?: string) {
+  const data: ShellBootstrap = { gym: { id: homeId, name: 'Test gym', timezone: 'UTC', currency: 'USD', enabledModules: [], ...(country ? { country } : {}) }, session: { userId: memberId, displayName: 'Test User', roles, member: false }, login: { password: true, magicLink: false } };
   vi.mocked(useBootstrap).mockReturnValue(new QueryObserver(new QueryClient(), { queryKey: ['bootstrap'], initialData: data, queryFn: async () => data }).getCurrentResult());
 }
 function view(component: ReactNode) {
@@ -158,6 +158,20 @@ describe('member admin UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await screen.findByRole('alert');
     expect(memberRequest).not.toHaveBeenCalled();
+  });
+  it('creates a household with the gym\'s country code joined to the typed phone', async () => {
+    bootstrap(['admin'], 'CA');
+    view(<HouseholdForm/>);
+    fireEvent.change(screen.getByLabelText('Household name'), { target: { value: 'New family' } });
+    fireEvent.change(screen.getByLabelText('Phone'), { target: { value: '604 555 0123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create household' }));
+    await waitFor(() => expect(memberRequest).toHaveBeenCalledWith(expect.anything(), '/api/households', 'POST', expect.objectContaining({ phone: '+1 604 555 0123' })));
+    expect(screen.queryByText(/Settings → Gym details/)).toBeNull();
+  });
+  it('says where to set the gym\'s country code under the household phone when the gym has none', () => {
+    bootstrap(['admin']);
+    view(<HouseholdForm/>);
+    expect(screen.getByText("Set the gym's country code in Settings → Gym details to preselect it here.")).toBeDefined();
   });
   it('creates a household with empty optional address fields omitted', async () => {
     view(<HouseholdForm/>);

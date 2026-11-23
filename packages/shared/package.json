@@ -9,6 +9,7 @@
     "./contracts": "./src/contracts/index.ts",
     "./money": "./src/money.ts",
     "./phone": "./src/phone.ts",
+    "./phone-countries": "./src/phone-countries.ts",
     "./time": "./src/time.ts",
     "./transaction": {
       "node": "./src/transaction.ts"

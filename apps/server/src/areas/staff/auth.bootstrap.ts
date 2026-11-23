@@ -57,6 +57,7 @@ export function createAuthBootstrapRoutes(options: {
     const login = await (options.login ?? configuredLogin ?? installLogin)(gym.gymId);
     context.header('Cache-Control', 'no-store');
     context.header('Vary', 'Cookie');
-    return context.json({ data: { gym: { id: gym.gymId, name: details.name, timezone: gym.timezone, currency: details.currency, enabledModules: [...gym.enabledModules].sort() }, session, login } }, 200);
+    return context.json({ data: { gym: { id: gym.gymId, name: details.name, timezone: gym.timezone, currency: details.currency, enabledModules: [...gym.enabledModules].sort(),
+      ...(details.address.country ? { country: details.address.country } : {}) }, session, login } }, 200);
   })];
 }

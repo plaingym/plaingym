@@ -30,9 +30,9 @@ beforeAll(async () => {
 afterAll(async () => { await closeDatabase(); vi.unstubAllEnvs(); });
 
 /** Two gyms and one login (named at gym B, as `multi` mode's first provisioning would) that signs in to both. */
-async function fixture() {
+async function fixture(gymAddress: Record<string, unknown> = {}) {
   const gymId = uuidv7(), otherGymId = uuidv7();
-  await factory('gyms', gymId); await factory('gyms', otherGymId);
+  await factory('gyms', gymId, { address: gymAddress }); await factory('gyms', otherGymId);
   const user = await factory('authUser', gymId, { name: 'Named At Another Gym', emailVerified: true });
   await factory('authAccount', gymId, { userId: user.id, accountId: user.id, password: hash });
   const origins = { [gymId]: `https://${gymId}.example.test`, [otherGymId]: `https://${otherGymId}.example.test` };
@@ -89,8 +89,23 @@ async function bootstrap(app: ReturnType<typeof routeApp>, f: Fixture, gymId: st
   expect(response.status).toBe(200);
   return shellBootstrapResponseSchema.parse(await response.json()).data.session;
 }
+async function bootstrapGym(app: ReturnType<typeof routeApp>, f: Fixture, gymId: string) {
+  const response = await app.request(f.origins[gymId] + '/api/auth/bootstrap', { headers: { cookie: await f.signIn(gymId) } });
+  expect(response.status).toBe(200);
+  return shellBootstrapResponseSchema.parse(await response.json()).data.gym;
+}
 const memberOf = (gymId: string, householdId: string, memberId?: string) => (userId: string): Principal =>
   ({ kind: 'member', userId, scope: memberId ? { gymId, householdId, role: 'member', memberId } : { gymId, householdId, role: 'payer' } });
+
+describe('bootstrap gym country', () => {
+  it('names the gym\'s country code when its address has one, and no country otherwise', async () => {
+    const withCountry = await fixture({ country: 'CA' });
+    expect((await bootstrapGym(routeApp(withCountry, { tenancy: 'single' }), withCountry, withCountry.gymId)).country).toBe('CA');
+    const without = await fixture({});
+    const gym = await bootstrapGym(routeApp(without, { tenancy: 'single' }), without, without.gymId);
+    expect(gym).not.toHaveProperty('country');
+  });
+});
 
 describe('bootstrap session identity', () => {
   it('names a staff login by its profile, with the roles the request already resolved', async () => {
