@@ -18,6 +18,9 @@ export function demoLandingDirectives(menuScriptSource?: string): readonly strin
 }
 export const featureKeys = ['members', 'ranks', 'schedule', 'kiosk', 'portal', 'billing', 'waivers', 'join', 'reports', 'server'] as const;
 type FeatureKey = typeof featureKeys[number];
+export const costKeys = ['cardFees', 'sms'] as const;
+type CostKey = typeof costKeys[number];
+export const securityKeys = ['Cards', 'Encrypted', 'Backups', 'Households', 'Roles', 'Audit', 'Erasure', 'Server'] as const;
 // The markup never changes, so render each icon once rather than on every request.
 const iconMarkup = new Map<DemoIconName, string>();
 const icon = (name: DemoIconName) => {
@@ -61,7 +64,7 @@ export function demoLandingPage(showcaseHref: string | undefined, source: string
     } = {}) {
   const t = createTranslator(catalog);
   const text = (key: string) => t('demo/product:' + key);
-  function bullets(key: FeatureKey, catalog: LocaleCatalog): string[] {
+  function bullets(key: FeatureKey | CostKey, catalog: LocaleCatalog): string[] {
     const numbered = new RegExp(`^${key}Bullet\\d+$`);
     const index = key.length + 'Bullet'.length;
     const keys = Object.keys(catalog['demo/product'] ?? {}).filter(name => numbered.test(name));
@@ -139,6 +142,16 @@ export function demoLandingPage(showcaseHref: string | undefined, source: string
         h('button', { type: 'button', tabindex: 0, popovertarget: 'shot-' + key, popovertargetaction: 'hide', class: 'demo-close', autofocus: true }, text('close')),
         picture(key, 'expanded')));
   };
+  const card = 'min-w-0 rounded-2xl border border-border bg-white p-6 shadow-sm dark:border-gray-800 dark:bg-gray-900';
+  // A cost card leads with the service's own price, then what it covers.
+  const cost = (key: CostKey) => h('div', { class: card + ' sm:p-8' },
+    h('span', { class: iconTile }, icon(key)),
+    h('h3', { class: 'mt-4 text-xl font-semibold' }, text(key + 'Title')),
+    h('p', { class: 'mt-4' },
+      h('span', { class: 'block text-4xl font-bold tracking-tight text-primary dark:text-teal-300' }, text(key + 'Price')),
+      h('span', { class: 'mt-1 block ' + muted }, text(key + 'Unit'))),
+    h('p', { class: 'mt-4 ' + muted }, text(key + 'Body')),
+    h('ul', { class: 'mt-4 list-disc space-y-2 pl-5 marker:text-primary dark:marker:text-teal-400' }, ...bullets(key, catalog).map(item => h('li', null, item))));
   const label = buildLabel(undefined, github ?? source);
   return '<!doctype html>' + h('html', { lang: 'en', class: 'theme-system' },
     h('head', null, h('meta', { charset: 'utf-8' }), h('meta', { name: 'viewport', content: 'width=device-width, initial-scale=1, viewport-fit=cover' }),
@@ -159,7 +172,7 @@ export function demoLandingPage(showcaseHref: string | undefined, source: string
         h('section', { class: container + ' py-16 sm:py-24', 'aria-labelledby': 'strengths' },
           h('h2', { id: 'strengths', class: sectionTitle }, text('strengths')),
           h('div', { class: 'mt-8 grid gap-4 sm:grid-cols-2 sm:gap-6 lg:grid-cols-4' }, ...(['data', 'standards', 'open', 'selfHost'] as const).map(key =>
-            h('div', { class: 'min-w-0 rounded-2xl border border-border bg-white p-6 shadow-sm dark:border-gray-800 dark:bg-gray-900' },
+            h('div', { class: card },
               h('span', { class: iconTile }, icon(key)), h('h3', { class: 'mt-4 text-lg font-semibold' }, text(key + 'Title')),
               h('p', { class: 'mt-2 ' + muted }, text(key + 'Body')))))),
         h('div', { class: 'border-y border-border bg-muted dark:border-gray-800 dark:bg-gray-900/50' },
@@ -169,7 +182,19 @@ export function demoLandingPage(showcaseHref: string | undefined, source: string
               h('a', { href: '#feature-' + key, class: `flex min-h-11 min-w-0 items-center gap-3 rounded-xl border border-border bg-white px-3 py-3 text-sm font-semibold ${ring} ${motion} hover:border-primary hover:bg-secondary active:bg-teal-100 sm:px-4 dark:border-gray-700 dark:bg-gray-900 dark:hover:border-teal-400 dark:hover:bg-gray-800 dark:active:bg-gray-700` },
                 h('span', { class: 'shrink-0 text-primary dark:text-teal-300' }, icon(key)), h('span', { class: 'min-w-0' }, text(key + 'Title'))))))),
         h('div', { class: container + ' py-4 sm:py-8' }, ...featureKeys.map(feature)),
-        h('div', { class: container + ' pb-16 sm:pb-24' },
+        h('section', { class: container + ' pt-8 pb-16 sm:pt-12 sm:pb-24', 'aria-labelledby': 'costs' },
+          h('h2', { id: 'costs', class: sectionTitle }, text('costs')),
+          h('p', { class: 'mt-4 max-w-3xl text-lg ' + muted }, text('costsLead')),
+          h('div', { class: 'mt-8 grid gap-4 sm:gap-6 md:grid-cols-2' }, ...costKeys.map(cost))),
+        h('div', { class: 'border-y border-border bg-muted dark:border-gray-800 dark:bg-gray-900/50' },
+          h('section', { class: container + ' py-16 sm:py-24', 'aria-labelledby': 'security' },
+            h('div', { class: 'flex items-center gap-4' }, h('span', { class: iconTile }, icon('security')),
+              h('h2', { id: 'security', class: sectionTitle }, text('security'))),
+            h('p', { class: 'mt-4 max-w-3xl text-lg ' + muted }, text('securityLead')),
+            h('ul', { class: 'mt-8 grid gap-4 sm:grid-cols-2 sm:gap-6 lg:grid-cols-4' }, ...securityKeys.map(key => h('li', { class: card },
+              h('h3', { class: 'text-lg font-semibold' }, text('security' + key + 'Title')),
+              h('p', { class: 'mt-2 ' + muted }, text('security' + key + 'Body'))))))),
+        h('div', { class: container + ' py-16 sm:py-24' },
           h('section', { class: 'rounded-3xl bg-primary px-6 py-12 text-white sm:px-12 sm:py-16 dark:bg-teal-950', 'aria-labelledby': 'explore' },
             h('h2', { id: 'explore', class: sectionTitle }, text('explore')),
             h('ol', { class: 'mt-8 grid gap-8 md:grid-cols-3' }, ...[1, 2, 3].map(step => h('li', { class: 'space-y-3' },

@@ -31,6 +31,12 @@ responsive densities and lazy loading (the hero's loads first). Native popovers
 enlarge them without JavaScript; on a phone held upright an enlarged screenshot keeps
 its own width and scrolls both ways inside the lightbox, with the close button fixed
 in view. Full-size links work in browsers without popover support.
+After the features, **What it costs** shows the two services a gym pays directly:
+Stripe's standard US card rate and Twilio's approximate US text and number prices,
+each with `<key>BulletN` entries listed the same way (`cardFees`, `sms`). **Security
+and privacy** follows with eight short cards summarizing
+[the security model](../../../../docs/security-model.md). Neither section is in the
+header's links. Keep both true when prices or protections change.
 Only the entry host serves `/demo-assets/:file`, from an exact asset allowlist.
 Content-hashed WebP images, the page's stylesheet (`landing-<hash>.css`), and
 its menu script (`landing-menu-<hash>.js`) cache for a year. The server reads

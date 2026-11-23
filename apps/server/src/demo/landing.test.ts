@@ -8,7 +8,7 @@ import type { RequestEnvironment } from '../core/context.js';
 import type { PermissionMiddleware } from '../core/registry.js';
 import { mountSourceLink } from '../core/source-link.js';
 import { setLogSink } from '../core/log.js';
-import { demoLandingPage, featureKeys } from './landing.page.js';
+import { costKeys, demoLandingPage, featureKeys, securityKeys } from './landing.page.js';
 import { createLandingAssets, readLandingAsset } from './landing.assets.js';
 import { readFile, readdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -373,6 +373,37 @@ it('translates and orders the feature bullets from the supplied catalogue', () =
     expect(featureBullets(html, key)).toEqual(englishBullets);
   }
   expect(demoLandingPage('/demo', source, { catalog: { 'demo/product': messages } })).toBe(defaultPage);
+});
+it('shows the Stripe and Twilio costs and the security section between the features and the demo steps', () => {
+  const html = demoLandingPage('/demo', source);
+  const escaped = (value: string) => String(htmlTemplate`${value}`);
+  const order = ['id="features"', 'id="feature-server"', 'id="costs"', 'id="security"', 'id="explore"'].map(id => html.indexOf(id));
+  expect(order.every(index => index > 0)).toBe(true);
+  expect([...order].sort((a, b) => a - b)).toEqual(order);
+  const costs = html.match(/<section[^>]*aria-labelledby="costs".*?<\/section>/s)?.[0] ?? '';
+  expect(costs).toContain('>2.9% + 30¢</span>');
+  expect(costs).toContain('>about $0.008</span>');
+  expect(costs).toContain(escaped(messages.smsUnit));
+  for (const key of costKeys) {
+    const items = Object.entries(messages).filter(([name]) => new RegExp(`^${key}Bullet\\d+$`).test(name)).map(([, value]) => escaped(value));
+    expect(items.length).toBeGreaterThanOrEqual(3);
+    for (const item of items) expect(costs).toContain(`<li>${item}</li>`);
+  }
+  const security = html.match(/<section[^>]*aria-labelledby="security".*?<\/section>/s)?.[0] ?? '';
+  const titles = [...security.matchAll(/<h3[^>]*>([^<]+)<\/h3>/g)].map(match => match[1]);
+  expect(titles).toEqual(securityKeys.map(key => escaped(messages[`security${key}Title`])));
+  for (const key of securityKeys) expect(security).toContain(escaped(messages[`security${key}Body`]));
+  // Each new section has one heading the page can link to, and its icons stay hidden from assistive technology.
+  expect(html.match(/<h2 id="(costs|security)"/g)).toHaveLength(2);
+  for (const [svg] of `${costs}${security}`.matchAll(/<svg\b[^>]*>/g)) expect(svg).toContain('aria-hidden="true"');
+});
+it('lists the cost bullets the supplied catalogue has, in order', () => {
+  const others = Object.fromEntries(Object.entries(messages).filter(([name]) => !name.startsWith('smsBullet')));
+  const html = demoLandingPage('/demo', source, { catalog: { 'demo/product': { ...others, smsBullet2: 'Deuxième', smsBullet1: 'Premier' } } });
+  const costs = html.match(/<section[^>]*aria-labelledby="costs".*?<\/section>/s)?.[0] ?? '';
+  const sms = costs.slice(costs.indexOf(messages.smsTitle));
+  expect([...sms.matchAll(/<li>([^<]+)<\/li>/g)].map(match => match[1])).toEqual(['Premier', 'Deuxième']);
+  expect(costs).toContain(`<li>${String(htmlTemplate`${messages.cardFeesBullet1}`)}</li>`);
 });
 it('redirects old entry links while preserving every gym root and start page', async () => {
   const app = appFor(true), response = await app.request(origin + '/demo');

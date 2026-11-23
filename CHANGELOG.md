@@ -10,6 +10,7 @@ and [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
 
 - A server-rendered product page on the demo entry host, with direct showcase and
   GitHub links. Old entry-host `/demo` links redirect to the product page.
+  It shows what card payments and text messages cost and how member data is protected.
 
 ### Fixed
 
