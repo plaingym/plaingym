@@ -73,7 +73,11 @@ Suppression reasons are `disabled`, `no_provider`, `no_consent`, `phone_changed`
 and `cap_reached`; logs hold event, gym ID, member IDs and reason only. A 21610
 clears both member consents and household notices consent at that E.164 number
 in this gym, in one transaction, incrementing revisions and auditing each record
-with source `provider`. It remains a definite non-send.
+with source `provider`. It locks the members, then the households, holding the
+number, and reads its time only after both locks, so a consent write it waited on
+is ordered before its audits. It then upserts the number's `sms_opted_out_numbers`
+row with that time, whether or not any record still holds the number. It remains
+a definite non-send.
 
 Provider resolution, settings reads, consent checks and the daily-usage lock share
 a 15-second preparation deadline. A timeout proves `not_accepted` and permits a

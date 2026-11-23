@@ -295,6 +295,13 @@
       "when": 1795430736184,
       "tag": "0042_session_restore",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1795466552028,
+      "tag": "0043_sms_opted_out_numbers",
+      "breakpoints": true
     }
   ]
 }

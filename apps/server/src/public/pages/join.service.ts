@@ -9,6 +9,7 @@ import { locales } from '@plaingym/shared/locales';
 import * as c from '@plaingym/shared/contracts';
 import { normalizePhone } from '@plaingym/shared/phone';
 import { auditSmsConsent, readPhoneCountry } from '../../areas/members/member-write.js';
+import { clearSmsOptOut } from '../../areas/members/sms-opt-out.js';
 import { localDate } from '@plaingym/shared/time';
 import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
@@ -473,6 +474,7 @@ export function createJoinService(options: JoinOptions) {
         await tx.insert(members).values(input.members.map((m, i) => ({ id: ids[i]!, gymId, householdId, ...m.member,
           phone: input.contact.phone ?? null, phoneE164, ...notices, ...announcements,
           email: input.contact.email, status: 'prospect', createdAt: now })));
+        if (input.smsNoticesConsent || input.smsAnnouncementsConsent) await clearSmsOptOut(tx, phoneE164);
         await audit(tx, gymId, 'household.created', 'household', householdId);
         const context = system(gymId), off = { at: null, source: null };
         if (input.smsNoticesConsent) await auditSmsConsent(tx, context, 'household', householdId, 'notices', off, { at: now, source: 'join' }, 'join', now);

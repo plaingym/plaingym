@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { and, asc, eq, like } from 'drizzle-orm';
-import { auditEvents, uuidv7 } from '@plaingym/db';
+import { auditEvents, smsOptedOutNumbers, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import type { StaffRole } from '@plaingym/shared';
@@ -63,7 +63,7 @@ async function replyStop(gymId: string, type: Kind, id: string) {
   await expect(sender.sendSms({ to: normalized, body: 'Notice' })).rejects.toMatchObject({ reason: 'recipient_opted_out' });
   return clock.now().toISOString();
 }
-const read = (gymId: string, type: Kind, id: string) => scope(gymId, tx => readSmsOptedOut(tx, type, id));
+const read = (gymId: string, type: Kind, id: string, phoneE164 = normalized) => scope(gymId, tx => readSmsOptedOut(tx, type, id, phoneE164));
 const revisionOf = async (gymId: string, type: Kind, id: string) =>
   (type === 'member' ? await service.getMember(gymId, id) : await service.getHousehold(gymId, id)).revision;
 const numberChanges = (gymId: string) => scope(gymId, tx => tx.select().from(auditEvents)
@@ -92,7 +92,7 @@ describe.each(['member', 'household'] as const)('the %s opted-out date', type =>
     const revision = await revisionOf(gymId, type, record.id);
     if (type === 'member') await service.updateMember(context(gymId), record.id, { phone: '202-555-0199', revision });
     else await service.updateHousehold(context(gymId), record.id, { phone: '202-555-0199', revision });
-    expect(await read(gymId, type, record.id)).toBeNull();
+    expect(await read(gymId, type, record.id, '+12025550199')).toBeNull();
     const changes = await numberChanges(gymId);
     expect(changes).toEqual([expect.objectContaining({ action: type + '.sms_number_changed', targetType: type, targetId: record.id,
       actorKind: 'system', occurredAt: clock.now(), before: null, after: { changeSource: 'staff' } })]);
@@ -206,5 +206,111 @@ describe('number-changed audits', () => {
     const changes = await numberChanges(gymId);
     expect(changes.map(row => [row.action, row.targetId, row.after])).toEqual([['member.sms_number_changed', person.id, { changeSource: 'import' }]]);
     expectNoPhone(changes); expect(JSON.stringify(changes)).not.toContain('5550177');
+  });
+});
+
+const listNumber = (gymId: string, optedOutAt = clock.now(), phoneE164 = normalized) =>
+  factory('smsOptedOutNumbers', gymId, { phoneE164, optedOutAt });
+const listedNumbers = (gymId: string) => scope(gymId, tx => tx.select({ phoneE164: smsOptedOutNumbers.phoneE164 }).from(smsOptedOutNumbers))
+  .then(rows => rows.map(row => row.phoneE164));
+const smsOf = async (gymId: string, type: Kind, id: string) =>
+  (type === 'member' ? await service.getMember(gymId, id) : await service.getHousehold(gymId, id)).sms;
+
+describe('the opted-out numbers list', () => {
+  it('gives records that take a listed number its date on staff reads, inside the gym only', async () => {
+    const gymA = await gym(), gymB = await gym(), gymC = await gym();
+    const listedAt = clock.now(); await listNumber(gymA);
+    clock.advance(60_000);
+    const home = await factory('households', gymA, { phone: '+1 202 555 0123', phoneE164: normalized });
+    const later = await factory('members', gymA, { householdId: home.id, phone: '+1 202 555 0123', phoneE164: normalized });
+    expect((await smsOf(gymA, 'member', later.id)).optedOutAt).toBe(listedAt.toISOString());
+    expect((await smsOf(gymA, 'household', home.id)).optedOutAt).toBe(listedAt.toISOString());
+    const otherNumber = await factory('members', gymA, { householdId: home.id, phone: '202-555-0199', phoneE164: '+12025550199' });
+    expect((await smsOf(gymA, 'member', otherNumber.id)).optedOutAt).toBeNull();
+    const unparseable = await factory('members', gymA, { householdId: home.id, phone: 'not a phone', phoneE164: null });
+    expect((await smsOf(gymA, 'member', unparseable.id)).optedOutAt).toBeNull();
+    // A record's own opt-out audit wins over the list's date.
+    const own = await factory('members', gymA, { householdId: home.id, ...stored });
+    clock.advance(60_000); const ownAt = clock.now();
+    await scope(gymA, tx => tx.insert(auditEvents).values({ gymId: gymA, actorKind: 'system', action: 'member.sms_opted_out',
+      targetType: 'member', targetId: own.id, occurredAt: ownAt }));
+    expect((await smsOf(gymA, 'member', own.id)).optedOutAt).toBe(ownAt.toISOString());
+    // Another gym's row for the same number never answers for this gym's record.
+    await listNumber(gymB);
+    const elsewhere = await factory('households', gymC, stored);
+    const person = await factory('members', gymC, { householdId: elsewhere.id, ...stored });
+    expect((await smsOf(gymC, 'member', person.id)).optedOutAt).toBeNull();
+    expect((await smsOf(gymC, 'household', elsewhere.id)).optedOutAt).toBeNull();
+  });
+
+  it('loses a number when consent is recorded for it, and keeps it otherwise', async () => {
+    const gymId = await gym(), home = await factory('households', gymId, stored);
+    const person = await factory('members', gymId, { householdId: home.id, ...stored });
+    await listNumber(gymId);
+    // A withdrawal, another number's consent and a refused consent leave it.
+    await service.changeMemberSmsConsent(context(gymId), person.id, { kind: 'notices', consent: false, revision: person.revision });
+    const elsewhere = await factory('members', gymId, { householdId: home.id, phone: '202-555-0199', phoneE164: '+12025550199' });
+    await service.changeMemberSmsConsent(context(gymId), elsewhere.id, { kind: 'notices', consent: true, revision: elsewhere.revision });
+    const unparseable = await factory('members', gymId, { householdId: home.id, phone: 'not a phone', phoneE164: null });
+    await expect(service.changeMemberSmsConsent(context(gymId), unparseable.id, { kind: 'notices', consent: true, revision: unparseable.revision }))
+      .rejects.toMatchObject({ code: 'invalid_request' });
+    const homeRevision = (await service.getHousehold(gymId, home.id)).revision;
+    await service.changeHouseholdSmsConsent(context(gymId), home.id, { consent: false, revision: homeRevision });
+    expect(await listedNumbers(gymId)).toEqual([normalized]);
+    // Staff-recorded notices consent removes it.
+    const memberRevision = (await service.getMember(gymId, person.id)).revision;
+    await service.changeMemberSmsConsent(context(gymId), person.id, { kind: 'notices', consent: true, revision: memberRevision });
+    expect(await listedNumbers(gymId)).toEqual([]);
+    // So does the portal's announcements consent, and the household's notices consent.
+    await listNumber(gymId);
+    await service.changeMemberSmsConsent(context(gymId), person.id,
+      { kind: 'announcements', consent: true, revision: (await service.getMember(gymId, person.id)).revision }, 'portal');
+    expect(await listedNumbers(gymId)).toEqual([]);
+    await listNumber(gymId);
+    await service.changeHouseholdSmsConsent(context(gymId), home.id, { consent: true, revision: (await service.getHousehold(gymId, home.id)).revision });
+    expect(await listedNumbers(gymId)).toEqual([]);
+  });
+
+  describe('on erasure', () => {
+    const cleanup = { jobs: new FakeJobs(clock), timezone: 'UTC' };
+    const erase = async (gymId: string, id: string) =>
+      service.eraseMember(context(gymId), id, { revision: (await service.getMember(gymId, id)).revision }, cleanup);
+    async function listed() {
+      const gymId = await gym(), other = await gym();
+      await listNumber(gymId); await listNumber(other);
+      return { gymId, other };
+    }
+
+    it('drops a number held only by the erased member, in its own gym only', async () => {
+      const { gymId, other } = await listed();
+      const home = await factory('households', gymId, {});
+      const person = await factory('members', gymId, { householdId: home.id, ...stored });
+      await erase(gymId, person.id);
+      expect(await listedNumbers(gymId)).toEqual([]);
+      expect(await listedNumbers(other)).toEqual([normalized]);
+    });
+    it('keeps a number another member still holds', async () => {
+      const { gymId } = await listed();
+      const home = await factory('households', gymId, {});
+      const first = await factory('members', gymId, { householdId: home.id, ...stored });
+      await factory('members', gymId, { householdId: home.id, ...stored });
+      await erase(gymId, first.id);
+      expect(await listedNumbers(gymId)).toEqual([normalized]);
+    });
+    it('keeps a number the household still holds after a member who is not the last is erased', async () => {
+      const { gymId } = await listed();
+      const home = await factory('households', gymId, stored);
+      const person = await factory('members', gymId, { householdId: home.id, ...stored });
+      await factory('members', gymId, { householdId: home.id });
+      await erase(gymId, person.id);
+      expect(await listedNumbers(gymId)).toEqual([normalized]);
+    });
+    it('drops the household number when its last member is erased', async () => {
+      const { gymId } = await listed();
+      const home = await factory('households', gymId, stored);
+      const person = await factory('members', gymId, { householdId: home.id, ...stored });
+      await erase(gymId, person.id);
+      expect(await listedNumbers(gymId)).toEqual([]);
+    });
   });
 });

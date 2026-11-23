@@ -20,7 +20,7 @@ import { unscheduled } from '../billing/memberships.plan-change.js';
 import { endDiscount } from '../billing/discounts/apply.js';
 import { lockMemberForWrite, memberWriteScope, smsState, smsPhoneChange, readPhoneCountry, withoutSmsColumns, clearedMemberSms, clearedHouseholdSms, auditSmsCleared, auditSmsConsent, type SmsSource } from './member-write.js';
 import { readGymSettings } from '../settings/settings.js';
-import { readSmsOptedOut } from './sms-opt-out.js';
+import { clearSmsOptOut, forgetUnheldSmsOptOut, readSmsOptedOut } from './sms-opt-out.js';
 
 /** The queue and gym timezone an erasure's cleanup jobs are inserted with. */
 export interface ErasureQueue { jobs: Pick<Jobs, 'enqueue'>; timezone: string }
@@ -121,7 +121,8 @@ export function createMembersService(options: MembersOptions = {}) {
     },
     async getMember(gymId: string, id: string) { return scope(gymId, async (tx) => {
       const row = await getMemberRow(tx, id), read = member(row, await phoneCountry(tx, gymId, [row.phone]));
-      return { ...read, sms: { ...read.sms, optedOutAt: read.sms.phoneE164 ? await readSmsOptedOut(tx, 'member', id) : null } };
+      // The stored number first: the opt-out writes the stored number; older records may have none.
+      return { ...read, sms: { ...read.sms, optedOutAt: read.sms.phoneE164 ? await readSmsOptedOut(tx, 'member', id, row.phoneE164 ?? read.sms.phoneE164) : null } };
     }); },
     async createMember(context: MutationContext, input: c.CreateMemberRequest) {
       const data = c.createMemberRequestSchema.parse(input);
@@ -169,6 +170,7 @@ export function createMembersService(options: MembersOptions = {}) {
           ...(kind === 'notices' ? { smsNoticesConsentAt: after.at, smsNoticesConsentSource: after.source }
             : { smsAnnouncementsConsentAt: after.at, smsAnnouncementsConsentSource: after.source }) })
           .where(and(eq(members.id, id), guard.matches)).returning(memberFields));
+        if (after.at !== null) await clearSmsOptOut(tx, phoneE164);
         if (changedNumber) await auditSmsCleared(tx, context, 'member', id, before, source, now);
         if (at !== after.at || from !== after.source) await auditSmsConsent(tx, context, 'member', id, kind, { at, source: from }, after, source, now);
         return member(row, country);
@@ -190,6 +192,7 @@ export function createMembersService(options: MembersOptions = {}) {
         if ((!consent || unchangedNumber) && before.smsNoticesConsentAt === after.at && before.smsNoticesConsentSource === after.source) return household(before, country);
         const row = assertRevised(await tx.update(households).set({ phoneE164, revision: guard.next, smsNoticesConsentAt: after.at, smsNoticesConsentSource: after.source })
           .where(and(eq(households.id, id), guard.matches)).returning(householdFields));
+        if (consent) await clearSmsOptOut(tx, phoneE164);
         if (!unchangedNumber) await auditSmsCleared(tx, context, 'household', id, before, source, now);
         if (unchangedNumber || consent) await auditSmsConsent(tx, context, 'household', id, 'notices', priorConsent, after, source, now);
         return household(row, country);
@@ -268,6 +271,9 @@ export function createMembersService(options: MembersOptions = {}) {
         await tx.update(households).set({ pinHash: null, revision: homeGuard.next,
           ...(erasedBillingAddress ? { email: null } : {}),
           ...(last ? { name: 'Anonymized household', email: null, phone: null, phoneE164: null, smsNoticesConsentAt: null, smsNoticesConsentSource: null, address: {}, stripeCustomerId: null } : {}) }).where(eq(households.id, home.id));
+        // With both phones cleared, a number on the STOP list that no current record holds leaves the list.
+        await forgetUnheldSmsOptOut(tx, before.phoneE164);
+        if (last) await forgetUnheldSmsOptOut(tx, home.phoneE164);
         const revokedCards: { id: string; processorId: string }[] = [];
         if (last) {
           // Checkout locks its signed link before its invoice. Revoke household links in that order too.
@@ -393,7 +399,7 @@ export function createMembersService(options: MembersOptions = {}) {
     },
     async getHousehold(gymId: string, id: string) { return scope(gymId, async (tx) => {
       const row = await getHouseholdRow(tx, id), read = household(row, await phoneCountry(tx, gymId, [row.phone]));
-      return { ...read, sms: { ...read.sms, optedOutAt: read.sms.phoneE164 ? await readSmsOptedOut(tx, 'household', id) : null } };
+      return { ...read, sms: { ...read.sms, optedOutAt: read.sms.phoneE164 ? await readSmsOptedOut(tx, 'household', id, row.phoneE164 ?? read.sms.phoneE164) : null } };
     }); },
     async createHousehold(context: MutationContext, input: c.CreateHouseholdRequest) {
       const data = c.createHouseholdRequestSchema.parse(input);

@@ -172,7 +172,8 @@ constructor options; see its [module README](../apps/server/src/areas/announceme
 SMS infrastructure stores number-bound notices and announcements consent on members,
 and separate notices consent on household billing phones. Normalization uses
 `@plaingym/shared/phone` with the gym country. `sms_deliveries` retains at-most-once
-send state, `sms_daily_usage` bounds attempts per gym-local day, and `sms_outbox`
+send state, `sms_daily_usage` bounds attempts per gym-local day,
+`sms_opted_out_numbers` lists numbers that replied STOP, and `sms_outbox`
 captures demo texts. These tables have forced gym RLS. The switch defaults off;
 Go-live requires a readable provider before enabling it. The owner sets a daily
 cap from 1 to 100,000 (default 1,000); the SMS Health tile reports attempts and

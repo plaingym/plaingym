@@ -10,7 +10,7 @@ import '@hono/zod-openapi';
 import { asc, eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- The test turns a gym's billing switch off in real PostgreSQL.
 import { auditEvents, gyms, households, householdUsers, invoiceLineItems, invoices, leads, members, memberships, paymentMethods, plans, signedLinks,
-  waiverSignatures, waiverTemplates, uuidv7, discounts, membershipDiscounts, taxRates, databaseCode } from '@plaingym/db';
+  smsOptedOutNumbers, waiverSignatures, waiverTemplates, uuidv7, discounts, membershipDiscounts, taxRates, databaseCode } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError } from '@plaingym/shared';
@@ -201,6 +201,23 @@ describe('join lead intake', () => {
     const logged = JSON.stringify(logs.map(log => [log.before, log.after]));
     expect(logged).not.toContain(phone);
     expect(logged).not.toContain('6045550123');
+  });
+  it.each([[true, false], [false, true], [false, false]])('takes the contact number off the STOP list only with an SMS choice (notices=%s, announcements=%s)', async (smsNoticesConsent, smsAnnouncementsConsent) => {
+    const f = await fixture(), people = [adult()], phoneE164 = '+16045550123';
+    await factory('smsOptedOutNumbers', f.gymId, { phoneE164 });
+    // Another gym's row for the number is never touched.
+    await factory('smsOptedOutNumbers', f.otherGym, { phoneE164 });
+    const contact = { name: 'Pat Payer', email: 'stop-list@example.invalid', phone: '(604) 555-0123' };
+    const choices = { smsNoticesConsent, smsAnnouncementsConsent };
+    const admission = { planId: f.plan.id, contact, ...choices, honeypot: '', members: people.map(member => ({ member,
+      signatures: f.templates.map(template => ({ templateId: template.id, templateVersion: template.version, pngBase64,
+        signer: { kind: 'self', name: member.firstName + ' ' + member.lastName } })) })) };
+    const response = await f.post('/join/signatures', admission); expect(response.status).toBe(200);
+    const images = joinAdmissionResponseSchema.parse(await response.json()).data;
+    expect((await f.post('/api/public/join', { ...f.body(people, images, contact.email, f.plan.id), contact, ...choices })).status).toBe(200);
+    const listed = (gymId: string) => db.forGym(gymId, tx => tx.select({ phoneE164: smsOptedOutNumbers.phoneE164 }).from(smsOptedOutNumbers));
+    expect(await listed(f.gymId)).toEqual(smsNoticesConsent || smsAnnouncementsConsent ? [] : [{ phoneE164 }]);
+    expect(await listed(f.otherGym)).toEqual([{ phoneE164 }]);
   });
   it.each(['', 'not a phone'])('refuses join opt-in with an unparseable phone %s before admission', async phone => {
     const f = await fixture(), form = nativeForm(f, f.plan.id, 'sms-invalid@example.invalid');

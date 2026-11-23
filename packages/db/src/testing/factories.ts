@@ -70,6 +70,7 @@ const defaults = {
   smsOutbox: () => ({ recipient: '+12025550123', body: 'Test', sentAt: date }),
   smsDeliveries: () => ({ key: 'test.delivery:' + uuidv7(), state: 'accepted', updatedAt: date }),
   smsDailyUsage: () => ({ day: '2026-11-16' }),
+  smsOptedOutNumbers: () => ({ phoneE164: '+12025550123', optedOutAt: date }),
   emailDeliveries: () => ({ key: 'test.delivery:' + uuidv7(), state: 'accepted', updatedAt: date }),
   announcements: () => ({ sendGeneration: uuidv7(), subject: 'Gym update', body: 'Welcome to class.', audience: { statuses: ['active'], programIds: [] } }),
   announcementRecipients: () => ({ updatedAt: date }),

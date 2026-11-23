@@ -68,8 +68,8 @@ describe('import and export contracts', () => {
       [...readFileSync(new URL(file, schemaDirectory), 'utf8').matchAll(/pgTable\('([^']+)'/g)].map((match) => match[1]!),
     );
     const systemNames = new Set(systemTables.map((table) => table.name));
-    // Progress, retained issues, signed archive links and email send state are operational state, not portable gym datasets.
-    const runState = new Set(['import_runs', 'import_chunks', 'export_runs', 'email_deliveries', 'sms_deliveries', 'sms_daily_usage', 'announcement_recipients', 'announcement_sms_recipients']);
+    // Progress, retained issues, signed archive links and email and SMS send state are operational state, not portable gym datasets.
+    const runState = new Set(['import_runs', 'import_chunks', 'export_runs', 'email_deliveries', 'sms_deliveries', 'sms_daily_usage', 'sms_opted_out_numbers', 'announcement_recipients', 'announcement_sms_recipients']);
     expect([...exportDatasets].sort()).toEqual(tableNames.filter((name) => !systemNames.has(name) && !runState.has(name)).sort());
     for (const name of [...systemNames, ...runState]) expect(exportDatasetSchema.safeParse(name).success).toBe(false);
   });

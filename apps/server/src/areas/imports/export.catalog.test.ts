@@ -176,9 +176,9 @@ describe('export schema coverage and secret exclusions', () => {
     const tableNames = readdirSync(schemaRoot).filter((file) => file.endsWith('.ts')).flatMap((file) =>
       [...readFileSync(new URL(file, schemaRoot), 'utf8').matchAll(/pgTable\(['"]([^'"]+)['"]/g)].map((match) => match[1]!));
     expect(tableNames.length).toBeGreaterThan(exportDatasets.length);
-    // Operational run state has its own retention deadline; it is not a portable gym dataset. Email send state
-    // only guards this install's job keys against resending.
-    const runState = new Set(['import_runs', 'import_chunks', 'export_runs', 'email_deliveries', 'sms_deliveries', 'sms_daily_usage', 'announcement_recipients', 'announcement_sms_recipients']);
+    // Operational run state has its own retention deadline; it is not a portable gym dataset. Email and SMS send state
+    // only guards this install's job keys and sends.
+    const runState = new Set(['import_runs', 'import_chunks', 'export_runs', 'email_deliveries', 'sms_deliveries', 'sms_daily_usage', 'sms_opted_out_numbers', 'announcement_recipients', 'announcement_sms_recipients']);
     expect(tableNames.filter((name) => !systemNames.has(name) && !runState.has(name)).sort()).toEqual(Object.keys(exportCatalog).sort());
     expect(Object.keys(exportCatalog).sort()).toEqual([...exportDatasets].sort());
   });

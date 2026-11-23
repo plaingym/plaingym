@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
 import { uuidv7 } from './id.js';
+import { households, members } from './schema/index.js';
 import { createFactories } from './testing/factories.js';
 import { useTestDatabase } from './testing/database.js';
 import type { HouseholdScope } from './household.js';
@@ -89,6 +91,27 @@ it('gives the household date only to its payer, for its own household', async ()
   await f.audit('household', f.other.id, 'sms_number_changed', 2);
   expect(await read(f.payer, queries => queries.smsOptedOut('household', both))).toEqual({});
   expect(await read(f.otherLogin, queries => queries.smsOptedOut('household', both))).toEqual({});
+});
+
+it('fills records with no audit answer from the gym\'s opted-out numbers, inside the grant', async () => {
+  const f = await fixture(), listed = '+12025550123', unlisted = '+12025550199';
+  await factory('smsOptedOutNumbers', f.gymId, { phoneE164: listed, optedOutAt: at(10) });
+  // Another gym's row for the unlisted number never answers here.
+  await factory('smsOptedOutNumbers', f.otherGym, { phoneE164: unlisted, optedOutAt: at(11) });
+  const withNumber = (id: string, phoneE164: string, table: 'members' | 'households' = 'members') => database.forGym(f.gymId, tx => table === 'members'
+    ? tx.update(members).set({ phone: phoneE164, phoneE164 }).where(eq(members.id, id))
+    : tx.update(households).set({ phone: phoneE164, phoneE164 }).where(eq(households.id, id)));
+  await withNumber(f.adult.id, listed); await withNumber(f.child.id, unlisted); await withNumber(f.outsider.id, listed);
+  // The quiet member's own opt-out audit wins over the list's date.
+  await withNumber(f.quiet.id, listed); await f.audit('member', f.quiet.id, 'sms_opted_out', 3);
+  const ids = [f.adult.id, f.child.id, f.quiet.id, f.outsider.id];
+  expect(await read(f.payer, queries => queries.smsOptedOut('member', ids)))
+    .toEqual({ [f.adult.id]: at(10).toISOString(), [f.quiet.id]: at(3).toISOString() });
+  expect(await read(f.adultLogin, queries => queries.smsOptedOut('member', ids))).toEqual({ [f.adult.id]: at(10).toISOString() });
+  await withNumber(f.home.id, listed, 'households'); await withNumber(f.other.id, listed, 'households');
+  expect(await read(f.payer, queries => queries.smsOptedOut('household', [f.home.id, f.other.id]))).toEqual({ [f.home.id]: at(10).toISOString() });
+  expect(await read(f.adultLogin, queries => queries.smsOptedOut('household', [f.home.id]))).toEqual({});
+  expect(await read(f.otherLogin, queries => queries.smsOptedOut('household', [f.home.id]))).toEqual({});
 });
 
 it('refuses more than 100 IDs in one read', async () => {

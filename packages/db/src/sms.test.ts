@@ -2,7 +2,7 @@
 import { eq } from 'drizzle-orm';
 import { beforeAll, expect, it } from 'vitest';
 import { uuidv7 } from './id.js';
-import { smsDailyUsage, smsDeliveries, smsOutbox } from './schema/index.js';
+import { smsDailyUsage, smsDeliveries, smsOptedOutNumbers, smsOutbox } from './schema/index.js';
 import { assertCatalog } from './security/catalog.js';
 import { useTestDatabase } from './testing/database.js';
 import { createFactories } from './testing/factories.js';
@@ -10,9 +10,9 @@ import { createFactories } from './testing/factories.js';
 const db = useTestDatabase(), make = createFactories(db), a = uuidv7(), b = uuidv7();
 beforeAll(async () => { await make('gyms', a); await make('gyms', b); });
 it('declares all SMS tables with ENABLE and FORCE and exact gym policies', async () => {
-  expect(await assertCatalog(db.app.sql)).toEqual({ tableCount: 73, tenantTableCount: 61 });
+  expect(await assertCatalog(db.app.sql)).toEqual({ tableCount: 74, tenantTableCount: 62 });
 });
-it.each([['smsDailyUsage', smsDailyUsage], ['smsDeliveries', smsDeliveries], ['smsOutbox', smsOutbox]] as const)('isolates %s for reads and mutations', async (name, table) => {
+it.each([['smsDailyUsage', smsDailyUsage], ['smsDeliveries', smsDeliveries], ['smsOptedOutNumbers', smsOptedOutNumbers], ['smsOutbox', smsOutbox]] as const)('isolates %s for reads and mutations', async (name, table) => {
   const row = await make(name, b), predicate = eq(table.id, row.id);
   expect(await db.forGym(a, tx => tx.select().from(table).where(predicate))).toEqual([]);
   expect(await db.app.db.select().from(table).where(predicate)).toEqual([]);
@@ -38,4 +38,12 @@ it('checks cap, counters, identifier keys and attempt state', async () => {
   await expect(make('smsDailyUsage', a, { sent: -1 })).rejects.toMatchObject({ cause: { code: '23514' } });
   for (const values of [{ key: '+12025550123' }, { key: '' }, { attempts: 0 }, { state: 'retry' }])
     await expect(make('smsDeliveries', a, values)).rejects.toMatchObject({ cause: { code: '23514' } });
+});
+it('keeps one opted-out row per gym and E.164 number', async () => {
+  const first = uuidv7(), second = uuidv7();
+  await make('gyms', first); await make('gyms', second);
+  await expect(make('smsOptedOutNumbers', first, { phoneE164: '2025550123' })).rejects.toMatchObject({ cause: { code: '23514' } });
+  await make('smsOptedOutNumbers', first, { phoneE164: '+12025550123' });
+  await expect(make('smsOptedOutNumbers', first, { phoneE164: '+12025550123' })).rejects.toMatchObject({ cause: { code: '23505' } });
+  await expect(make('smsOptedOutNumbers', second, { phoneE164: '+12025550123' })).resolves.toMatchObject({ gymId: second, phoneE164: '+12025550123' });
 });

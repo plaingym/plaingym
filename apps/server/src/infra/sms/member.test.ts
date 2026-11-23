@@ -3,7 +3,7 @@ import { expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- SQL only reads a transaction-local timeout setting.
 import { sql } from 'drizzle-orm';
-import { auditEvents, databaseCode, households, members, smsDailyUsage, uuidv7, type Transaction } from '@plaingym/db';
+import { auditEvents, databaseCode, households, members, smsDailyUsage, smsOptedOutNumbers, uuidv7, type Transaction } from '@plaingym/db';
 // eslint-disable-next-line database/system-tables -- One extra app-role connection holds the lock in this disposable test database.
 import { openConnection, scopedDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -13,7 +13,8 @@ import { TestClock } from '../../core/clock.js';
 import { setLogSink } from '../../core/log.js';
 import { createGymSettingsAccessor } from '../../areas/settings/settings.js';
 import type { SmsResolver } from '../../areas/settings/sms.js';
-import { createSmsDeliveries, FakeSms, MemberSms, SmsDeliveryError, SmsRecheckBusy, type MemberSmsOptions } from './index.js';
+import { readSmsOptedOut } from '../../areas/members/sms-opt-out.js';
+import { createSmsDeliveries, FakeSms, MemberSms, SmsDeliveryError, SmsRecheckBusy, type MemberSmsOptions, type Sms } from './index.js';
 import { smsInFlightMs } from './deliveries.js';
 import { smsDeadlineMs } from './constants.js';
 
@@ -31,6 +32,8 @@ async function fixture(options: { enabled?: boolean; cap?: number } = {}) {
   const usage = () => scope(gymId, tx => tx.select().from(smsDailyUsage));
   return { gymId, clock, consent, home, person, sms, resolver, settings, sender, usage, logSuppression };
 }
+const listed = (gymId: string) => scope(gymId, tx => tx.select({ phoneE164: smsOptedOutNumbers.phoneE164, optedOutAt: smsOptedOutNumbers.optedOutAt })
+  .from(smsOptedOutNumbers));
 /** The fixture gym's settings as a last check would read them. */
 const locked = { memberSmsEnabled: true, smsDailyCap: 1000, timezone: 'America/Los_Angeles', country: 'US' };
 it('sends only after its transactions commit, with the gym name and a local-day slot', async () => {
@@ -443,8 +446,73 @@ it('clears every consent at an opted-out number in this gym, auditing identifier
   expect(rows.audits.map(row => row.targetId)).toEqual(expect.arrayContaining([f.person.id, second.id, f.home.id, secondHome.id]));
   expect(rows.audits.every(row => JSON.stringify(row.after) === '{"source":"provider"}')).toBe(true);
   expect(JSON.stringify(rows.audits)).not.toContain(phone); expect(JSON.stringify(rows.audits)).not.toContain(message.body);
+  // The number goes on this gym's list at the opt-out's time, and on no other gym's.
+  const optedOutAt = rows.audits.find(row => row.action === 'member.sms_opted_out')!.occurredAt;
+  expect(await listed(f.gymId)).toEqual([{ phoneE164: phone, optedOutAt }]);
+  expect(await listed(other.gymId)).toEqual([]);
+  const usage = await f.usage();
   expect(await f.sender().sendSms(message)).toEqual({ status: 'suppressed', reason: 'no_consent' });
+  expect(await f.usage()).toEqual(usage);
   expect(await other.sender().sendSms(message)).toMatchObject({ status: 'sent' });
+  // A later refusal for the same number moves its one row forward.
+  f.clock.advance(3_600_000);
+  await scope(f.gymId, tx => tx.update(members).set({ smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'portal' }).where(eq(members.id, f.person.id)));
+  f.sms.respondNext(new SmsDeliveryError('not_accepted', 'recipient_opted_out'));
+  await expect(f.sender().sendSms(message)).rejects.toMatchObject({ reason: 'recipient_opted_out' });
+  expect(await listed(f.gymId)).toEqual([{ phoneE164: phone, optedOutAt: new Date(optedOutAt.getTime() + 3_600_000) }]);
+});
+it('lists a number that replied STOP even when no record holds it any more', async () => {
+  const f = await fixture(), moved = '+12025550199';
+  const sms: Sms = {
+    async verifyAccount() { /* not used */ },
+    async sendSms() {
+      // Staff change both records' numbers while the provider is answering.
+      await scope(f.gymId, async tx => {
+        await tx.update(members).set({ phone: moved, phoneE164: moved }).where(eq(members.id, f.person.id));
+        await tx.update(households).set({ phone: moved, phoneE164: moved }).where(eq(households.id, f.home.id));
+      });
+      throw new SmsDeliveryError('not_accepted', 'recipient_opted_out');
+    },
+  };
+  const resolver: SmsResolver = { ...f.resolver, async resolve(id) { return { gymId: id, name: 'Test Gym', sms }; } };
+  await expect(f.sender({ resolver }).sendSms(message)).rejects.toMatchObject({ reason: 'recipient_opted_out' });
+  expect(await listed(f.gymId)).toEqual([{ phoneE164: phone, optedOutAt: f.clock.now() }]);
+  const audits = await scope(f.gymId, tx => tx.select().from(auditEvents));
+  expect(audits.filter(row => row.action.endsWith('.sms_opted_out'))).toEqual([]);
+});
+it('times an opt-out after a consent write it waited on', async () => {
+  const f = await fixture();
+  let locked!: () => void, write!: () => void, wrote!: () => void, release!: () => void, optingOut!: () => void;
+  const lockTaken = new Promise<void>(resolve => { locked = resolve; }), writeGate = new Promise<void>(resolve => { write = resolve; });
+  const written = new Promise<void>(resolve => { wrote = resolve; }), releaseGate = new Promise<void>(resolve => { release = resolve; });
+  const optOutStarted = new Promise<void>(resolve => { optingOut = resolve; });
+  const holderConnection = openConnection(db.appUrl, 1);
+  let holder: Promise<void> | undefined;
+  try {
+    let consentAt: Date | undefined;
+    holder = scopedDatabase(holderConnection.db).forGym(f.gymId, async tx => {
+      await tx.select({ id: members.id }).from(members).where(eq(members.id, f.person.id)).for('update'); locked(); await writeGate;
+      consentAt = f.clock.now();
+      await tx.insert(auditEvents).values({ gymId: f.gymId, actorKind: 'system', action: 'member.sms_consent_changed', targetType: 'member',
+        targetId: f.person.id, occurredAt: consentAt });
+      wrote(); await releaseGate;
+    });
+    await lockTaken;
+    let transactions = 0;
+    const countingScope: typeof scope = (gymId, fn) => scope(gymId, tx => { if (++transactions === 2) optingOut(); return fn(tx); });
+    f.sms.respondNext(new SmsDeliveryError('not_accepted', 'recipient_opted_out'));
+    const sending = f.sender({ scope: countingScope }).sendSms(message).catch(error => error as Error);
+    await optOutStarted;
+    f.clock.advance(60_000); write(); await written;
+    f.clock.advance(60_000); release(); await holder;
+    expect(await sending).toMatchObject({ reason: 'recipient_opted_out' });
+    const [optOut] = await scope(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'member.sms_opted_out')));
+    expect(optOut!.occurredAt.getTime()).toBeGreaterThan(consentAt!.getTime());
+    expect(await scope(f.gymId, tx => readSmsOptedOut(tx, 'member', f.person.id, phone))).toBe(optOut!.occurredAt.toISOString());
+    expect(await listed(f.gymId)).toEqual([{ phoneE164: phone, optedOutAt: optOut!.occurredAt }]);
+  } finally {
+    write(); release(); await holder?.catch(() => undefined); await holderConnection.close();
+  }
 });
 it('refuses a foreign member, household, provider or settings projection', async () => {
   const f = await fixture(), other = await fixture();

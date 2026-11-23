@@ -201,6 +201,10 @@ cancelled session was restored, starting at 0) and the nullable
 cancellation sets on each booking it cancels so restoring the session can bring them back in
 order. Existing rows start with 0 and no marker.
 
+Migration `0043_sms_opted_out_numbers.sql` adds the gym-owned `sms_opted_out_numbers` table:
+one row per gym and E.164 number that replied STOP, with the time of its latest opt-out. It
+starts empty.
+
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver
@@ -385,14 +389,18 @@ sales, invoices or money. Payers see their current household members and adult
 non-payers see only their linked member. Signed links cannot use this read.
 
 `smsOptedOut(type, ids)` takes `'member'` or `'household'` and at most 100 IDs, and returns a
-map from ID to the time that record's number replied STOP. It reads, in one statement, the
-newest `<type>.sms_opted_out`, `<type>.sms_consent_changed` or `<type>.sms_number_changed`
-audit of each record (latest `occurred_at`, then the larger ID) and keeps the record only
-when that audit is the opt-out. The staff read `readSmsOptedOut` in
-`apps/server/src/areas/members/sms-opt-out.ts` uses the same actions and order. Members are
-limited to the grant's members; the household needs household-profile access and only the
-grant's own household counts. IDs outside the grant are left out, never an error, and only
-the date leaves the audit row.
+map from ID to the time that record's number replied STOP. It runs two statements. The first
+reads the newest `<type>.sms_opted_out`, `<type>.sms_consent_changed` or
+`<type>.sms_number_changed` audit of each record (latest `occurred_at`, then the larger ID)
+and keeps the record only when that audit is the opt-out. The second fills only the records
+the audits left without a date: it joins each one's stored `phone_e164` to the gym's
+`sms_opted_out_numbers` row, so a record that took a number after it replied STOP still gets
+the number's date. The audit's date wins over the list's. The staff read `readSmsOptedOut` in
+`apps/server/src/areas/members/sms-opt-out.ts` uses the same actions, order and fallback, except
+that for a record with no stored `phone_e164` it looks the list up by the number as read.
+Members are limited to the grant's members; the household needs household-profile access and
+only the grant's own household counts. IDs outside the grant are left out, never an error,
+and only the date leaves either table.
 
 The portal reads a household's history as pages and single lookups: `bookingPage`,
 `booking`, `sessionBookings`, `attendancePage`, `attendanceCount`, `attendedPrograms`,
@@ -532,6 +540,7 @@ guaranteed order either.
 | sms_outbox | Per-gym captured SMS for demo mode |
 | sms_deliveries | Durable at-most-once SMS send state; identifiers and keyed phone digests only |
 | sms_daily_usage | Per-gym local-day attempted and refused SMS counts |
+| sms_opted_out_numbers | Per-gym phone numbers that replied STOP, until consent is recorded again for them |
 | announcements | Gym announcement content, audience and delivery summary |
 | announcement_recipients | Per-member announcement delivery run state, without copied addresses or bodies |
 | announcement_sms_recipients | Independent text recipient groups and safe outcomes, with keyed phone digests and member IDs |

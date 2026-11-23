@@ -51,6 +51,11 @@ export const smsDailyUsage = pgTable('sms_daily_usage', {
   ...base(), day: date('day').notNull(), sent: integer('sent').notNull().default(0), refused: integer('refused').notNull().default(0),
 }, (t) => [...scoped('sms_daily_usage', t), unique('sms_daily_usage_day_key').on(t.gymId, t.day),
   check('sms_daily_usage_counts_check', sql`${t.sent} >= 0 and ${t.refused} >= 0`)]).enableRLS();
+/** Numbers that replied STOP, one row per gym and number, until consent is recorded for the number again. */
+export const smsOptedOutNumbers = pgTable('sms_opted_out_numbers', {
+  ...base(), phoneE164: text('phone_e164').notNull(), optedOutAt: instant('opted_out_at').notNull(),
+}, (t) => [...scoped('sms_opted_out_numbers', t), unique('sms_opted_out_numbers_phone_key').on(t.gymId, t.phoneE164),
+  check('sms_opted_out_numbers_phone_e164_check', sql`${t.phoneE164} ~ '^[+][1-9][0-9]{1,14}$'`)]).enableRLS();
 export const smsOutbox = pgTable('sms_outbox', {
   ...base(), recipient: text('recipient').notNull(), body: text('body').notNull(), sentAt: instant('sent_at').notNull(),
 }, (t) => [...scoped('sms_outbox', t), index('sms_outbox_gym_time_idx').on(t.gymId, t.sentAt)]).enableRLS();

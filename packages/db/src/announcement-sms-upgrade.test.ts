@@ -29,6 +29,6 @@ it('expands populated email announcements without rewriting their content or rec
     // The previous release can still insert and read an email-only announcement with its original columns.
     await connection.sql`insert into announcements (id, gym_id, created_by, send_generation, subject, body, audience)
       values (${uuidv7()}, ${gym}, ${user}, ${uuidv7()}, 'Old writer', 'Email only', '{"statuses":["active"],"programIds":[]}')`;
-    expect(await assertCatalog(connection.sql)).toEqual({ tableCount: 73, tenantTableCount: 61 });
+    expect(await assertCatalog(connection.sql)).toEqual({ tableCount: 74, tenantTableCount: 62 });
   } finally { await connection.close(); }
 });

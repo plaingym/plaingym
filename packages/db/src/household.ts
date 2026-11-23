@@ -5,7 +5,7 @@ import type { Transaction } from './client.js';
 import { writeAudit } from './audit.js';
 import {
   attendances, auditEvents, classBookings, classSessions, classSessionPrograms, classSessionTags, householdUsers, households, invoiceLineItems, invoices,
-  announcementOptOuts, classCreditEntries, memberRanks, members, memberships, paymentMethods, payments, refunds, signedLinks, waiverSignatures, waiverTemplates,
+  announcementOptOuts, classCreditEntries, memberRanks, members, memberships, paymentMethods, payments, refunds, signedLinks, smsOptedOutNumbers, waiverSignatures, waiverTemplates,
 } from './schema/index.js';
 
 /** User identity or a verified link ID comes from request context. now is supplied by the request clock. */
@@ -219,10 +219,12 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
       return tx.select(memberFields).from(members).where(and(memberPredicate, eq(members.id, id)));
     },
     /**
-     * When each granted record's number last replied STOP: the newest opt-out, consent-change or number-change audit
-     * of that record (latest `occurred_at`, then the larger ID), kept only when it is the opt-out. Members are limited to
-     * the grant's members; the household needs household-profile access and only the grant's own household counts.
-     * IDs outside the grant are left out. Only the date leaves the audit row. One statement, at most 100 IDs.
+     * When each granted record's number last replied STOP, in two statements. First the newest opt-out, consent-change
+     * or number-change audit of each record (latest `occurred_at`, then the larger ID), kept only when it is the opt-out.
+     * Then, for records the audits left without a date, the gym's opted-out-numbers row for the record's stored number.
+     * The audit's date wins; the list only fills records with no audit answer. Members are limited to the grant's
+     * members; the household needs household-profile access and only the grant's own household counts. IDs outside
+     * the grant are left out. Only the date leaves either table. At most 100 IDs.
      */
     smsOptedOut: async (type: 'member' | 'household', ids: readonly string[]): Promise<ReadonlyMap<string, string>> => {
       if (ids.length > 100) throw new RangeError('At most 100 records per opt-out read');
@@ -238,6 +240,16 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
         inArray(auditEvents.action, [optedOut, type + '.sms_consent_changed', type + '.sms_number_changed'])))
         .orderBy(auditEvents.targetId, desc(auditEvents.occurredAt), desc(auditEvents.id));
       for (const row of rows) if (row.action === optedOut) dates.set(row.targetId, row.occurredAt.toISOString());
+      const missing = [...new Set(ids)].filter((id) => !dates.has(id));
+      if (!missing.length) return dates;
+      const listed = type === 'member'
+        ? await tx.select({ id: members.id, optedOutAt: smsOptedOutNumbers.optedOutAt }).from(members)
+          .innerJoin(smsOptedOutNumbers, and(eq(smsOptedOutNumbers.gymId, members.gymId), eq(smsOptedOutNumbers.phoneE164, members.phoneE164)))
+          .where(and(memberPredicate, inArray(members.id, missing)))
+        : await tx.select({ id: households.id, optedOutAt: smsOptedOutNumbers.optedOutAt }).from(households)
+          .innerJoin(smsOptedOutNumbers, and(eq(smsOptedOutNumbers.gymId, households.gymId), eq(smsOptedOutNumbers.phoneE164, households.phoneE164)))
+          .where(and(eq(households.gymId, grant.gymId), eq(households.id, grant.householdId), inArray(households.id, missing)));
+      for (const row of listed) dates.set(row.id, row.optedOutAt.toISOString());
       return dates;
     },
     household: async () => {

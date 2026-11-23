@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { databaseCode, forGym, members, households, smsDailyUsage, writeAudit, type Transaction } from '@plaingym/db';
+import { databaseCode, forGym, members, households, smsDailyUsage, smsOptedOutNumbers, writeAudit, type Transaction } from '@plaingym/db';
 import { and, eq, gt, inArray } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- SQL only sets local timeouts and atomically decrements gym-scoped SMS usage.
 import { sql } from 'drizzle-orm';
@@ -213,11 +213,17 @@ export class MemberSms implements Sms {
       if (error instanceof SmsDeliveryError && error.reason === 'recipient_opted_out') {
         try {
           await scope(gymId, async tx => {
-            const now = clock.now();
             const people = await tx.select({ id: members.id, revision: members.revision }).from(members)
               .where(and(eq(members.gymId, gymId), eq(members.phoneE164, message.to))).orderBy(members.id).for('update');
             const homes = await tx.select({ id: households.id, revision: households.revision }).from(households)
               .where(and(eq(households.gymId, gymId), eq(households.phoneE164, message.to))).orderBy(households.id).for('update');
+            // Read the time after both locks, so every consent write this opt-out waited on is ordered before it.
+            const now = clock.now();
+            // The number stays on the gym's list, held or not, until consent is recorded for it again.
+            if (/^\+[1-9][0-9]{1,14}$/.test(message.to)) {
+              await tx.insert(smsOptedOutNumbers).values({ gymId, phoneE164: message.to, optedOutAt: now, createdAt: now })
+                .onConflictDoUpdate({ target: [smsOptedOutNumbers.gymId, smsOptedOutNumbers.phoneE164], set: { optedOutAt: now } });
+            }
             for (const member of people) {
               await tx.update(members).set({ smsNoticesConsentAt: null, smsNoticesConsentSource: null,
                 smsAnnouncementsConsentAt: null, smsAnnouncementsConsentSource: null, revision: member.revision + 1 }).where(eq(members.id, member.id));
