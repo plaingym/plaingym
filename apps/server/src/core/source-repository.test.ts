@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
+import { releasePattern } from '../../../../scripts/release/version.mjs';
 import { isRelease, releaseRepository, repositoryRoot } from './source-repository.js';
 
 describe('source repository links', () => {
@@ -29,6 +30,12 @@ describe('source repository links', () => {
 
   it('can find the repository root of a GitHub file for the product page', () => {
     expect(repositoryRoot('https://github.com/a/b/blob/main/x')).toBe('https://github.com/a/b');
+  });
+
+  it('uses the release pattern of the release scripts', () => {
+    for (const version of ['0.5.0', '10.20.30', '01.2.3', '1.2', '1.2.3-rc.1']) {
+      expect(isRelease(version)).toBe(releasePattern.test(version));
+    }
   });
 
   it.each([['0.5.0', true], ['01.2.3', false], ['0.5.0-rc.1', false], ['0.4.0+0.g6e55ffe', false], ['dev', false]])(
