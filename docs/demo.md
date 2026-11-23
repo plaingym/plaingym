@@ -45,7 +45,8 @@ use a test Stripe key ([going-live.md](going-live.md#1-try-it-in-test-mode-optio
   **Gym admin** and **Demo outbox** sign you in as the owner, and **Member portal**
   signs you in as the student. If you're signed in as the owner or an admin, the
   links use your current session; as anyone else, **Gym admin** and **Demo outbox**
-  sign you in as the owner. The sample kiosk members check in by full name and PIN `2468`. The
+  sign you in as the owner, and **Member portal** signs you in as the student if your
+  session has no member access. The sample kiosk members check in by full name and PIN `2468`. The
   kiosk's name search shows one.
 * **No outside effects.** Emails and texts are captured in an in-app **outbox** the owner
   and admins can read. On a private copy's `/login` page, **Open my sign-in link**

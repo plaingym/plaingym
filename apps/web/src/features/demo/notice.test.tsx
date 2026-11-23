@@ -224,13 +224,13 @@ it('opens the demo menu with its labelled groups and returns focus to the bar on
   expect(await within(signIn).findByRole('button', { name: 'Sign in as Riley Visitor' })).toBeDefined();
   const goTo = within(menu).getByRole('navigation', { name: 'Go to' });
   const admin = await within(goTo).findByRole('link', { name: 'Gym admin' });
-  const portal = within(goTo).getByRole('link', { name: 'Member portal' });
+  const portal = within(goTo).getByRole('button', { name: 'Member portal' });
   const outbox = within(goTo).getByRole('link', { name: 'Demo outbox' });
   expect(within(goTo).getAllByRole('link').map((link) => [link.textContent?.replace('→', ''), link.getAttribute('href')])).toEqual([
-    ['Start page', '/demo'], ['Gym admin', '/admin'], ['Member portal', '/portal'], ['Kiosk', '/kiosk'], ['Join page', '/join'], ['Demo outbox', '/admin/outbox']]);
+    ['Start page', '/demo'], ['Gym admin', '/admin'], ['Kiosk', '/kiosk'], ['Join page', '/join'], ['Demo outbox', '/admin/outbox']]);
   expect(portal.getAttribute('aria-current')).toBe('page');
   expect(admin.getAttribute('aria-current')).toBeNull();
-  for (const link of [admin, portal, outbox]) {
+  for (const link of [admin, outbox]) {
     link.addEventListener('click', event => event.preventDefault(), { once: true });
     fireEvent.click(link);
   }
@@ -244,6 +244,25 @@ it('opens the demo menu with its labelled groups and returns focus to the bar on
   fireEvent.click(within(menu).getByRole('button', { name: 'Close demo menu' }));
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Demo menu' }));
+});
+it('keeps the demo menu closed after discovery fails while it is open and then recovers', async () => {
+  let failing = false;
+  fetcher.mockImplementation(async (path: string) => path === '/api/demo'
+    ? failing ? Response.json({}, { status: 500 }) : sandbox()
+    : path === '/api/demo/menu' ? Response.json({ data: { members: [], website: false } })
+      : Response.json({}, { status: 404 }));
+  const { client } = start();
+  await openMenu();
+  failing = true;
+  await act(async () => { await client.refetchQueries({ queryKey: ['demo', 'discovery', window.location.origin] }); });
+  await screen.findByRole('button', { name: 'Try again' });
+  expect(screen.queryByRole('dialog', { name: 'Demo menu' })).toBeNull();
+  failing = false;
+  fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+  const bar = await screen.findByRole('complementary', { name: 'Demo controls' });
+  expect(within(bar).getByRole('button', { name: 'Demo menu' })).toBeDefined();
+  // A menu left open cannot reopen itself once discovery recovers.
+  expect(screen.queryByRole('dialog', { name: 'Demo menu' })).toBeNull();
 });
 const protectedDestinations = [
   ['Gym admin', 'owner', '/admin', '/admin'],
@@ -277,13 +296,31 @@ it.each([
   serve({ login: async () => Response.json({ data: { redirect: '/admin' } }) });
   start();
   const goTo = within(within(await openMenu()).getByRole('navigation', { name: 'Go to' }));
-  expect((await goTo.findByRole('link', { name: 'Member portal' })).getAttribute('href')).toBe('/portal');
+  const portal = goTo.getByRole('button', { name: 'Member portal' }) as HTMLButtonElement;
+  await waitFor(() => expect(portal.disabled).toBe(false));
   expect(goTo.getByRole('button', { name: 'Gym admin' })).toBeDefined();
   expect(goTo.getByRole('button', { name: 'Demo outbox' })).toBeDefined();
   fireEvent.click(goTo.getByRole('button', { name }));
   await waitFor(() => expect(assign).toHaveBeenCalledExactlyOnceWith(href));
   const calls = fetcher.mock.calls.filter(([path]) => path === '/api/demo/login');
   expect(calls.map(([, init]) => [init.method, JSON.parse(String(init.body))])).toEqual([['POST', { role: 'owner' }]]);
+});
+it.each(['coach', 'owner'] as const)('signs a %s without member access in to the member portal from the menu', async role => {
+  const assign = vi.fn();
+  vi.stubGlobal('location', { ...window.location, assign });
+  loadBootstrap.mockResolvedValue({
+    ...signedOutBootstrap, session: { userId: role, displayName: 'Staff', roles: [role], member: false },
+  });
+  serve({ login: async () => Response.json({ data: { redirect: '/portal' } }) });
+  start();
+  const goTo = within(within(await openMenu()).getByRole('navigation', { name: 'Go to' }));
+  const portal = goTo.getByRole('button', { name: 'Member portal' }) as HTMLButtonElement;
+  await waitFor(() => expect(portal.disabled).toBe(false));
+  expect(goTo.queryByRole('link', { name: 'Member portal' })).toBeNull();
+  fireEvent.click(portal);
+  await waitFor(() => expect(assign).toHaveBeenCalledExactlyOnceWith('/portal'));
+  const calls = fetcher.mock.calls.filter(([path]) => path === '/api/demo/login');
+  expect(calls.map(([, init]) => [init.method, JSON.parse(String(init.body))])).toEqual([['POST', { role: 'student' }]]);
 });
 it('offers owner sign-in controls to a member while keeping the portal link', async () => {
   loadBootstrap.mockResolvedValue({
@@ -364,6 +401,17 @@ it('shares one sign-in state between the menu and a page inside the shell, and r
   expect(within(bar).getByRole('alert').textContent).toContain('The demo is unavailable');
   expect(screen.getAllByRole('alert')).toHaveLength(1);
   expect((screen.getByRole('button', { name: 'Page sign-in' }) as HTMLButtonElement).disabled).toBe(false);
+});
+it('keeps focus on the Demo menu button when closing the menu reveals the bar alert', async () => {
+  serve({ login: () => Promise.reject(new TypeError('Offline')) });
+  start(undefined, <PageSignIn />);
+  const menu = await openMenu();
+  fireEvent.click(within(menu).getByRole('button', { name: 'Sign in as owner' }));
+  await within(menu).findByRole('alert');
+  fireEvent.click(within(menu).getByRole('button', { name: 'Close demo menu' }));
+  const bar = screen.getByRole('complementary', { name: 'Demo controls' });
+  expect(within(bar).getByRole('alert')).toBeDefined();
+  expect(document.activeElement).toBe(within(bar).getByRole('button', { name: 'Demo menu' }));
 });
 it('disables every sign-in while one is pending and restores them after a failure', async () => {
   let fail!: (reason: Error) => void;

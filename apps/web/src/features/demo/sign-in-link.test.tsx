@@ -38,6 +38,7 @@ it('moves a single role sign-in error between the showcase card, menu and fallba
   fireEvent.click(within(card).getByRole('button', { name: t('demo/demo:owner') }));
   const alert = await within(card).findByRole('alert');
   expect(alert.textContent).toBe(t('demo/demo:error'));
+  expect(document.activeElement).toBe(alert);
   expect(screen.getAllByRole('alert')).toEqual([alert]);
   expect(within(bar).queryByRole('alert')).toBeNull();
 
@@ -52,4 +53,30 @@ it('moves a single role sign-in error between the showcase card, menu and fallba
 
   view.rerender(<p>Other page</p>);
   expect(screen.getAllByRole('alert')).toEqual([within(bar).getByRole('alert')]);
+});
+
+it('closes the menu after a failed sign-in without taking focus from the Demo menu button', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const services = createShellServices(async () => ({
+    gym: { id: '019a0000-0000-7000-8000-0000000000ab', name: 'Demo gym', timezone: 'UTC', currency: 'USD', enabledModules: [] },
+    session: null, login: { password: false, magicLink: true },
+  }));
+  function Wrapper({ children }: { children: ReactNode }) {
+    return <StrictMode><QueryClientProvider client={client}>
+      <ShellServicesContext.Provider value={services}><DemoShell>{children}</DemoShell></ShellServicesContext.Provider>
+    </QueryClientProvider></StrictMode>;
+  }
+  render(<section aria-label="Showcase sign-in"><DemoShowcaseSignIn /></section>, { wrapper: Wrapper });
+  const bar = await screen.findByRole('complementary', { name: t('demo/demo:controls') });
+  const card = screen.getByRole('region', { name: 'Showcase sign-in' });
+  const menuButton = within(bar).getByRole('button', { name: t('demo/demo:menu') });
+  menuButton.focus();
+  fireEvent.click(menuButton);
+  const menu = screen.getByRole('dialog', { name: t('demo/demo:menu') });
+  fireEvent.click(within(menu).getByRole('button', { name: t('demo/demo:owner') }));
+  await within(menu).findByRole('alert');
+  fireEvent.click(within(menu).getByRole('button', { name: t('demo/demo:closeMenu') }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(within(card).getByRole('alert')).toBeDefined();
+  expect(document.activeElement).toBe(menuButton);
 });

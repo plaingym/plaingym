@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { parseResponse } from '../../lib/response.js';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { demoSignInLinkResponse } from '@plaingym/shared/contracts';
 import { Alert } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
@@ -13,10 +13,14 @@ const request = createJsonTransport();
 export function DemoShowcaseSignIn() {
   const { error } = useDemoLogin();
   const showHere = useDemoErrorCard();
+  // Reveal the card's error only when it first appears. While the menu holds the error the
+  // alert is unmounted, so closing the menu must not move focus out of the Demo menu button.
+  const previousError = useRef(error), revealError = error && !previousError.current && showHere;
+  useEffect(() => { previousError.current = error; }, [error]);
   return <div className="space-y-4">
     <p className="text-sm">{t('demo/demo:showcaseSignIn')}</p>
     <DemoSignInButtons />
-    {error && showHere && <Alert variant="error" focusOnReveal>{t('demo/demo:error')}</Alert>}
+    {error && showHere && <Alert variant="error" focusOnReveal={revealError}>{t('demo/demo:error')}</Alert>}
   </div>;
 }
 

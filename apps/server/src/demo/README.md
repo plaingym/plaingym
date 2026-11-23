@@ -244,7 +244,8 @@ takes joins, the website when it's on, outbox) and **About this demo**. From
 owner, and **Member portal** signs them in as the student. A visitor signed in
 as the owner or an admin keeps that identity when following these links; any
 other signed-in visitor is signed in as the owner by **Gym admin** and **Demo
-outbox**, and keeps their session for **Member portal**. Each hint
+outbox**. **Member portal** keeps the session of a visitor with member access and
+signs one without it (an owner or coach) in as the student. Each hint
 shows only where it is used: the sample household on the kiosk's Name and PIN search,
 the test card on the start page's join step, and the outbox note on a private
 copy's `/login` page after requesting a sign-in link. The showcase's `/login`

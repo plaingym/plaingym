@@ -215,6 +215,14 @@ export function DemoNotice() {
   const mode = useContext(DemoContext), expires = mode?.mode === 'sandbox' || mode?.mode === 'showcase' ? mode.expiresAt : undefined;
   const { error } = useDemoLogin();
   const { menuOpen, setMenuOpen, cards } = useContext(DemoErrorPlacement);
+  // An open menu belongs to this notice: when the sandbox stops being usable it must not
+  // open by itself after discovery recovers. Activity moves `expires` later, so its own
+  // cleanup cannot reset the flag; a separate effect handles the notice unmounting.
+  useEffect(() => { if (expires === undefined) setMenuOpen(false); }, [expires, setMenuOpen]);
+  useEffect(() => () => { setMenuOpen(false); }, [setMenuOpen]);
+  // The fallback alert takes focus only when the error first appears, not when closing the menu reveals it.
+  const previousError = useRef(error), revealError = error && !previousError.current;
+  useEffect(() => { previousError.current = error; }, [error]);
   if (!expires) return null;
   return <aside className="border-b border-border bg-secondary px-4" aria-label={t('demo/demo:controls')}>
     <div className="mx-auto flex min-h-11 max-w-6xl items-center justify-between gap-3">
@@ -222,7 +230,7 @@ export function DemoNotice() {
         {mode?.mode === 'sandbox' && <>{' · '}<span className="text-muted-foreground">{t('demo/demo:barExpires', { time: shortTime(expires) })}</span></>}</p>
       <Button type="button" variant="outline" size="sm" className="shrink-0 whitespace-nowrap" aria-haspopup="dialog" onClick={() => setMenuOpen(true)}>{t('demo/demo:menu')}</Button>
     </div>
-    {error && !menuOpen && cards === 0 && <div className="mx-auto max-w-6xl pb-2"><Alert variant="error" focusOnReveal>{t('demo/demo:error')}</Alert></div>}
+    {error && !menuOpen && cards === 0 && <div className="mx-auto max-w-6xl pb-2"><Alert variant="error" focusOnReveal={revealError}>{t('demo/demo:error')}</Alert></div>}
     {mode?.mode === 'showcase' && <div className="mx-auto flex max-w-6xl flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between"><p className="text-sm">{t('demo/demo:copyHelp')}</p><CreateCopyButton /></div>}
     {menuOpen && <DemoMenu expires={mode?.mode === 'showcase' ? undefined : expires} onClose={() => setMenuOpen(false)} />}
   </aside>;
@@ -235,6 +243,10 @@ function DemoMenu({ expires, onClose }: { expires: string | undefined; onClose: 
   const session = bootstrap.data?.session;
   const ownerSession = !!session && (session.roles.includes('owner') || session.roles.includes('admin'));
   const signedOut = bootstrap.isSuccess && !session;
+  // The portal needs member access; a staff session without it signs in as a student instead.
+  const needsSignIn = (role: DemoRole) => bootstrap.isPending || signedOut
+    || (role === 'owner' && bootstrap.isSuccess && !ownerSession)
+    || (role === 'student' && bootstrap.isSuccess && session?.member === false);
   const within = (path: string) => pathname === path || pathname.startsWith(path + '/');
   const destinations: [string, string, boolean, DemoRole?][] = [
     ['/demo', 'startPage', pathname === '/demo'], ['/admin', 'admin', within('/admin') && !within('/admin/outbox'), 'owner'],
@@ -253,7 +265,7 @@ function DemoMenu({ expires, onClose }: { expires: string | undefined; onClose: 
       </section>
       <nav className={section} aria-labelledby="demo-menu-go-to"><h3 id="demo-menu-go-to" className={heading}>{t('demo/demo:goTo')}</h3>
         <ul className="space-y-2">{destinations.map(([href, key, current, role]) => <li key={href}>
-          {role && (bootstrap.isPending || signedOut || (role === 'owner' && bootstrap.isSuccess && !ownerSession))
+          {role && needsSignIn(role)
             ? <DemoMenuControl current={current} disabled={bootstrap.isPending || pending}
                 onClick={() => { void login(role, href.startsWith('/admin/') ? href as `/admin/${string}` : undefined); }}>{t(`demo/demo:${key}`)}</DemoMenuControl>
             : <DemoMenuLink href={href} current={current}>{t(`demo/demo:${key}`)}</DemoMenuLink>}
