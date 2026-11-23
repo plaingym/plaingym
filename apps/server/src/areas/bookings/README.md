@@ -260,9 +260,11 @@ The roster response carries `counts` for the whole session, not the page:
 included). Cancelled bookings are not counted. Without a flag the roster lists
 every member once, ordered by member ID. With `checkInEligible=true` (query strings
 `true` or `false`; omitted means `false`) it first leaves out erased and Cancelled
-members, then orders booked members, the waitlist by `queueRank`, and walk-ins,
-member ID breaking ties, before paging; the total and `counts` then cover only
-those members. The roster reads the session's members, bookings and check-ins in
+members who have no check-in at the session, then orders booked members, the
+waitlist by `queueRank`, and walk-ins, member ID breaking ties, before paging; the
+total and `counts` then cover only those members. A member already checked in stays
+listed whatever their status, so `counts.checkedIn` equals the unflagged roster's.
+The roster reads the session's members, bookings and check-ins in
 one statement (`bookings.roster.query.ts`), so its rows, places in line, total and
 counts describe one moment even while check-ins and booking changes commit. The
 statement orders, ranks and counts the whole session in the database and returns

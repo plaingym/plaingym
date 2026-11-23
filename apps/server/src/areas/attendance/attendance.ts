@@ -201,6 +201,9 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
           ));
           if (existing) return replay(existing);
           if (session.status === 'cancelled') throw new AppError('conflict', 'Session is cancelled');
+          // Staff checking a member into a class can't record a Cancelled member; the member lock above orders this
+          // against a status change. A retry of a visit recorded earlier still replays it.
+          if (origin.source === 'coach' && member.status === 'cancelled') throw new AppError('conflict', 'Member is cancelled');
           kind = classKindSchema.parse(session.kind);
         }
         const [inserted] = await tx.insert(attendances).values({

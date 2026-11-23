@@ -33,8 +33,10 @@ export function readRosterPage(tx: Transaction, sessionId: string, { limit, offs
       eq(classBookings.sessionId, sessionId), ne(classBookings.status, 'cancelled')))
     .leftJoin(attendances, and(eq(attendances.gymId, members.gymId), eq(attendances.memberId, members.id), eq(attendances.sessionId, sessionId)))
     .where(or(isNotNull(classBookings.id), isNotNull(attendances.id))));
-  // Erased and Cancelled members are left out before paging, and the counts cover only who is left.
-  const listed = tx.$with('roster_listed').as(tx.select().from(participants).where(checkInEligible ? sql`${participants.eligible}` : undefined));
+  // Erased and Cancelled members are left out before paging unless they have a check-in at this session, so a coach can
+  // still see and undo it; the counts cover who is listed.
+  const listed = tx.$with('roster_listed').as(tx.select().from(participants)
+    .where(checkInEligible ? sql`(${participants.eligible} or ${participants.attendanceId} is not null)` : undefined));
   const totals = tx.$with('roster_totals').as(tx.select({
     total: sql<number>`count(*)::int`.as('roster_total'),
     booked: sql<number>`(count(*) filter (where ${listed.group} = 0))::int`.as('roster_booked'),

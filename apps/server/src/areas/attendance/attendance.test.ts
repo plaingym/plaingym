@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
-import { attendances, auditEvents, classCreditEntries, classSessions, householdUsers, uuidv7 } from '@plaingym/db';
+import { attendances, auditEvents, classCreditEntries, classSessions, householdUsers, members, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError, errorResponse, staffRoles, type StaffRole } from '@plaingym/shared';
@@ -18,6 +18,7 @@ import { createAttendanceRoutes } from './attendance.routes.js';
 import { createSettingsService } from '../settings/settings.js';
 import { usableLots } from '../billing/packs/ledger.js';
 import { createKioskCheckinHelpers } from '../kiosk/checkin.js';
+import { createBookingService } from '../bookings/bookings.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
 const clock = new TestClock('2026-10-22T12:00:00Z');
@@ -63,7 +64,7 @@ async function snapshot(gymId: string) {
 }
 
 const ledger = (gymId: string) => database.forGym(gymId, tx => tx.select().from(classCreditEntries));
-const balance = (f: Fixture) => database.forGym(f.gymId, async tx =>
+const balance = (f: Pick<Fixture, 'gymId' | 'member'>) => database.forGym(f.gymId, async tx =>
   (await usableLots(tx, f.member.id, clock.now())).reduce((sum, lot) => sum + lot.remaining, 0));
 const undo = (server: ReturnType<typeof app>, id: string) => server.request(`/api/attendance/${id}/undo`, { method: 'POST' });
 
@@ -190,6 +191,103 @@ describe('attendance credits and undo with PostgreSQL', () => {
     await expect(service.undo(invalid, row.id)).rejects.toThrow();
     expect(await balance(f)).toBe(0); expect((await snapshot(f.gymId)).rows).toHaveLength(1);
     expect((await ledger(f.gymId)).filter(row => row.kind === 'reverse')).toHaveLength(0);
+  });
+});
+
+describe('staff session check-ins for Cancelled members with PostgreSQL', () => {
+  const setStatus = (gymId: string, memberId: string, status: string) =>
+    database.forGym(gymId, tx => tx.update(members).set({ status }).where(eq(members.id, memberId)));
+  type Visited = Pick<Fixture, 'gymId' | 'member' | 'session'>;
+  const recorded = async (f: Visited) => (await snapshot(f.gymId)).audits
+    .filter(row => row.action === 'attendance.recorded' && (row.after as { memberId?: string } | null)?.memberId === f.member.id);
+  const visits = async (f: Visited) => (await snapshot(f.gymId)).rows.filter(row => row.memberId === f.member.id && row.sessionId === f.session.id);
+  /** An active pack holder with one credit and no membership, booked on the session. */
+  async function packHolder() {
+    const f = await fixture();
+    await setStatus(f.gymId, f.member.id, 'active');
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1 });
+    await factory('classBookings', f.gymId, { memberId: f.member.id, sessionId: f.session.id, bookedBy: f.user.id });
+    return { ...f, input: { memberId: f.member.id, sessionId: f.session.id, programId: null } };
+  }
+  it('refuses a member Cancelled after the roster was read, writing and spending nothing', async () => {
+    const f = await packHolder();
+    const roster = (eligible: boolean) => createBookingService({ scope: database.forGym, clock })
+      .roster(f.gymId, f.session.id, { ...page, checkInEligible: eligible });
+    expect((await roster(true)).data.map(row => row.booking?.memberId)).toEqual([f.member.id]);
+    await setStatus(f.gymId, f.member.id, 'cancelled');
+    const entries = (await ledger(f.gymId)).length;
+    await expect(service.record(f.context, f.input)).rejects.toMatchObject({ code: 'conflict', message: 'Member is cancelled' });
+    expect(await visits(f)).toEqual([]);
+    expect(await recorded(f)).toEqual([]);
+    expect(await balance(f)).toBe(1);
+    expect(await ledger(f.gymId)).toHaveLength(entries);
+    expect((await roster(true)).data).toEqual([]);
+  });
+  it('orders a check-in and a status change by the member lock', async () => {
+    const f = await packHolder();
+    let updated!: () => void, release!: () => void, settled = false;
+    const isUpdated = new Promise<void>(resolve => { updated = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+    const cancel = database.forGym(f.gymId, async tx => {
+      await tx.update(members).set({ status: 'cancelled' }).where(eq(members.id, f.member.id));
+      updated(); await gate;
+    });
+    await isUpdated;
+    const attempt = service.record(f.context, f.input).finally(() => { settled = true; });
+    const outcome = attempt.then(() => null, (error: unknown) => error);
+    // The check-in can't finish while the status change holds the member row.
+    await new Promise(resolve => setTimeout(resolve, 200));
+    expect(settled).toBe(false);
+    release(); await cancel;
+    expect(await outcome).toMatchObject({ code: 'conflict', message: 'Member is cancelled' });
+    expect(await visits(f)).toEqual([]); expect(await recorded(f)).toEqual([]); expect(await balance(f)).toBe(1);
+    // A check-in committed first stays.
+    const other = await packHolder();
+    const visit = await service.record(other.context, other.input);
+    await setStatus(other.gymId, other.member.id, 'cancelled');
+    expect((await visits(other)).map(row => row.id)).toEqual([visit.id]);
+    expect(await recorded(other)).toHaveLength(1);
+  });
+  it('replays a visit recorded before the member was Cancelled, with its credit notice and no new audit', async () => {
+    const f = await fixture();
+    await setStatus(f.gymId, f.member.id, 'active');
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1, expiresAt: clock.now() });
+    const visit = await service.record(f.context, f.input);
+    expect(visit).toHaveProperty('needsCredits', true);
+    await setStatus(f.gymId, f.member.id, 'cancelled');
+    expect(await service.record(f.context, f.input)).toEqual(visit);
+    expect(await recorded(f)).toHaveLength(1);
+  });
+  it('reports the cancelled session first when the session and the member are both cancelled', async () => {
+    const f = await fixture();
+    await setStatus(f.gymId, f.member.id, 'cancelled');
+    await database.forGym(f.gymId, tx => tx.update(classSessions).set({ status: 'cancelled' }).where(eq(classSessions.id, f.session.id)));
+    await expect(service.record(f.context, f.input)).rejects.toMatchObject({ code: 'conflict', message: 'Session is cancelled' });
+  });
+  it('still records kiosk, open-mat and imported visits for a Cancelled member', async () => {
+    const f = await fixture();
+    await setStatus(f.gymId, f.member.id, 'cancelled');
+    expect(await service.record(f.context, f.input, { source: 'kiosk' })).toMatchObject({ memberId: f.member.id, sessionId: f.session.id });
+    expect(await service.record(f.context, { ...f.input, sessionId: null })).toMatchObject({ memberId: f.member.id, sessionId: null });
+    const other = await fixture();
+    await setStatus(other.gymId, other.member.id, 'cancelled');
+    expect(await service.record(other.context, other.input, { source: 'import', sourceKey: 'cancelled-member-visit' }))
+      .toMatchObject({ memberId: other.member.id, sessionId: other.session.id });
+  });
+  it('answers 409 over HTTP without writing a row', async () => {
+    const f = await fixture();
+    await setStatus(f.gymId, f.member.id, 'cancelled');
+    const response = await post(app(f), f.input);
+    expect(response.status).toBe(409);
+    expect((await snapshot(f.gymId)).rows).toEqual([]);
+  });
+  it('undoes a visit recorded while active and returns its credit after the member is Cancelled', async () => {
+    const f = await packHolder();
+    const visit = await service.record(f.context, f.input);
+    expect(await balance(f)).toBe(0);
+    await setStatus(f.gymId, f.member.id, 'cancelled');
+    expect(await service.undo(f.context, visit.id)).toMatchObject({ id: visit.id });
+    expect(await balance(f)).toBe(1);
+    expect(await visits(f)).toEqual([]);
   });
 });
 

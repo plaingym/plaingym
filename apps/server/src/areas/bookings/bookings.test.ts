@@ -174,42 +174,70 @@ describe('booking transactions', () => {
     expect([first.status, second.status]).toEqual(['waitlisted', 'waitlisted']);
     await factory('attendances', f.gymId, { memberId: walkIn!.id, sessionId: f.session.id });
     await factory('attendances', f.gymId, { memberId: erasedWalkIn!.id, sessionId: f.session.id });
-    // Rows written before the member was erased or Cancelled stay in the session; the eligible roster leaves them out.
+    // Rows written before the member was erased or Cancelled stay in the session; the eligible roster leaves out those
+    // without a check-in and keeps the checked-in ones, so their visit can still be undone.
     await db.forGym(f.gymId, tx => tx.update(memberRows).set({ anonymizedAt: f.clock.now() }).where(inArray(memberRows.id, [erased!.id, erasedWalkIn!.id])));
     await db.forGym(f.gymId, tx => tx.update(memberRows).set({ status: 'cancelled' }).where(eq(memberRows.id, cancelled!.id)));
     await foreign.book(); await factory('attendances', foreign.gymId, { memberId: foreign.other.id, sessionId: foreign.session.id });
-    const eligible = { ...page, checkInEligible: true };
+    const eligible = { ...page, checkInEligible: true }, walkIns = [walkIn!.id, erasedWalkIn!.id].sort();
     const roster = await f.service.roster(f.gymId, f.session.id, eligible);
-    const order = [f.member.id, firstWait!.id, secondWait!.id, walkIn!.id];
+    const order = [f.member.id, firstWait!.id, secondWait!.id, ...walkIns];
     expect(roster.data.map(row => row.booking?.memberId ?? row.attendance?.memberId)).toEqual(order);
-    expect(roster.data.map(row => row.booking?.queueRank ?? null)).toEqual([null, 1, 2, null]);
-    expect(roster.pagination).toEqual({ ...page, total: 4 });
-    expect(roster.counts).toEqual({ booked: 1, waitlisted: 2, checkedIn: 1 });
+    expect(roster.data.map(row => row.booking?.queueRank ?? null)).toEqual([null, 1, 2, null, null]);
+    expect(roster.pagination).toEqual({ ...page, total: 5 });
+    expect(roster.counts).toEqual({ booked: 1, waitlisted: 2, checkedIn: 2 });
     // Every page keeps the same order, total and whole-session counts.
     for (const [offset, memberId] of order.entries()) {
       const single = await f.service.roster(f.gymId, f.session.id, { limit: 1, offset, checkInEligible: true });
       expect(single.data.map(row => row.booking?.memberId ?? row.attendance?.memberId)).toEqual([memberId]);
-      expect(single.pagination.total).toBe(4); expect(single.counts).toEqual(roster.counts);
+      expect(single.pagination.total).toBe(5); expect(single.counts).toEqual(roster.counts);
     }
-    expect((await f.service.roster(f.gymId, f.session.id, { limit: 1, offset: 4, checkInEligible: true })).data).toEqual([]);
+    expect((await f.service.roster(f.gymId, f.session.id, { limit: 1, offset: 5, checkInEligible: true })).data).toEqual([]);
     // Omitted or false keeps every member, ordered by ID, with the unfiltered counts.
     for (const query of [page, { ...page, checkInEligible: false }]) {
       const all = await f.service.roster(f.gymId, f.session.id, query);
       expect(all.data.map(row => row.booking?.memberId ?? row.attendance?.memberId))
         .toEqual([f.member.id, erased!.id, cancelled!.id, firstWait!.id, secondWait!.id, walkIn!.id, erasedWalkIn!.id].sort());
-      expect(all.counts).toEqual({ booked: 3, waitlisted: 2, checkedIn: 2 });
+      expect(all.counts).toEqual({ booked: 3, waitlisted: 2, checkedIn: roster.counts.checkedIn });
     }
     // Cancelling the first waitlist booking moves the other to first place; a check-in leaves the booking waitlisted.
     await f.service.cancel(f.actor, first.id);
     const attendance = await createAttendanceService(f.options).record(f.actor, { memberId: secondWait!.id, sessionId: f.session.id, programId: null });
     const after = await f.service.roster(f.gymId, f.session.id, eligible);
-    expect(after.data.map(row => row.booking?.memberId ?? row.attendance?.memberId)).toEqual([f.member.id, secondWait!.id, walkIn!.id]);
+    expect(after.data.map(row => row.booking?.memberId ?? row.attendance?.memberId)).toEqual([f.member.id, secondWait!.id, ...walkIns]);
     expect(after.data[1]).toMatchObject({ booking: { id: second.id, status: 'waitlisted', queueRank: 1, waitlistPosition: second.waitlistPosition },
       attendance: { id: attendance.id, memberId: secondWait!.id } });
-    expect(after.counts).toEqual({ booked: 1, waitlisted: 1, checkedIn: 2 });
+    expect(after.counts).toEqual({ booked: 1, waitlisted: 1, checkedIn: 3 });
     // The route's parsed query parses again in the service, and another gym's session is not found.
-    expect((await f.service.roster(f.gymId, f.session.id, bookingRosterQuerySchema.parse({ checkInEligible: 'true' }))).pagination.total).toBe(3);
+    expect((await f.service.roster(f.gymId, f.session.id, bookingRosterQuerySchema.parse({ checkInEligible: 'true' }))).pagination.total).toBe(4);
     await expect(f.service.roster(f.gymId, foreign.session.id, eligible)).rejects.toMatchObject({ code: 'not_found' });
+  });
+  it('keeps members checked in before they were Cancelled or erased on the eligible roster, with the unflagged check-in count', async () => {
+    const f = await fixture(3), notCheckedIn = await factory('members', f.gymId);
+    const cancelledBooking = await f.book(), erasedBooking = await f.book(f.other.id); await f.book(notCheckedIn.id);
+    const cancelledVisit = await factory('attendances', f.gymId, { memberId: f.member.id, sessionId: f.session.id });
+    const erasedVisit = await factory('attendances', f.gymId, { memberId: f.other.id, sessionId: f.session.id });
+    await db.forGym(f.gymId, tx => tx.update(memberRows).set({ status: 'cancelled' }).where(inArray(memberRows.id, [f.member.id, notCheckedIn.id])));
+    await db.forGym(f.gymId, tx => tx.update(memberRows).set({ anonymizedAt: f.clock.now() }).where(eq(memberRows.id, f.other.id)));
+    const order = [f.member.id, f.other.id].sort();
+    const roster = await f.service.roster(f.gymId, f.session.id, { ...page, checkInEligible: true });
+    expect(roster.data.map(row => row.booking?.memberId ?? row.attendance?.memberId)).toEqual(order);
+    expect(roster.data.find(row => row.attendance?.memberId === f.member.id))
+      .toMatchObject({ booking: { id: cancelledBooking.id }, attendance: { id: cancelledVisit.id } });
+    expect(roster.data.find(row => row.attendance?.memberId === f.other.id))
+      .toMatchObject({ booking: { id: erasedBooking.id }, attendance: { id: erasedVisit.id } });
+    expect(roster.pagination.total).toBe(2);
+    expect(roster.counts).toEqual({ booked: 2, waitlisted: 0, checkedIn: 2 });
+    const unflagged = await f.service.roster(f.gymId, f.session.id, page);
+    expect(unflagged.pagination.total).toBe(3);
+    expect(unflagged.counts.checkedIn).toBe(roster.counts.checkedIn);
+    for (const [offset, memberId] of order.entries()) {
+      const single = await f.service.roster(f.gymId, f.session.id, { limit: 1, offset, checkInEligible: true });
+      expect(single.data.map(row => row.booking?.memberId ?? row.attendance?.memberId)).toEqual([memberId]);
+      expect(single.data[0]?.attendance).not.toBeNull();
+      expect(single.pagination.total).toBe(2); expect(single.counts).toEqual(roster.counts);
+    }
+    expect((await f.service.roster(f.gymId, f.session.id, { limit: 1, offset: 2, checkInEligible: true })).data).toEqual([]);
   });
   it('describes one moment in the roster while a check-in or a promotion commits between its statements', async () => {
     const mutations = {

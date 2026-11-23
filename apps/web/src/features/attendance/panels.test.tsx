@@ -433,6 +433,24 @@ describe('registered attendance panels', () => {
     await screen.findByRole('button', { name: 'River Lee is checked in' });
     expect(client.record).toHaveBeenCalledTimes(2);
   });
+  it('reloads the roster after a refused check-in, so a member who left the eligible list drops off', async () => {
+    // A member checked in before staff Cancelled them stays listed with their visit; one not yet checked in is refused.
+    rows = [booked(memberId, 'River Lee'), booked('gone', 'Ada One'), { ...booked('kept', 'Bo Two'), attendance: { id: 'kept-visit', source: 'coach' } }];
+    client.record.mockImplementationOnce(async () => {
+      rows = rows.filter(row => row.memberId !== 'gone');
+      throw new Error('Member is cancelled');
+    });
+    const user = userEvent.setup(); render(<AttendanceRosterPanel sessionId={sessionId}/>);
+    expect(await screen.findByRole('button', { name: 'Undo check-in for Bo Two' })).toBeDefined();
+    expect(client.roster).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole('button', { name: 'Check in Ada One' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Please try again');
+    await waitFor(() => expect(screen.queryByText('Ada One')).toBeNull());
+    expect(client.roster).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('alert')).toBeDefined();
+    expect(listed()).toEqual([expect.stringContaining('River Lee'), expect.stringContaining('Bo Two')]);
+    expect(screen.getByRole('button', { name: 'Undo check-in for Bo Two' })).toBeDefined();
+  });
   it('keeps a failed undo visible when a booking change reloads the roster', async () => {
     rows[0]!.attendance = { id: 'visit', source: 'coach' };
     client.undo.mockRejectedValueOnce(new Error('Undo failed'));

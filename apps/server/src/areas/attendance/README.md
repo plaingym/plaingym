@@ -8,7 +8,10 @@ the read interface for promotion criteria and other consumers.
 
 Session check-ins lock the session row and use the existing unique member/session
 constraint. Replays return the original entry without another audit event. Cancelled
-sessions reject new check-ins; existing attendance remains readable. Imports may supply
+sessions reject new check-ins; existing attendance remains readable. A staff (`coach`
+source) session check-in refuses a member whose status is Cancelled with 409
+`conflict`, after the replay check, so a retry of a visit recorded earlier still
+returns it. Kiosk, QR, open-mat and imported visits are unchanged. Imports may supply
 a trusted source key, which is unique within the gym. HTTP forms always record `coach`
 as the source. Kiosk callers pass a device audit actor and `kiosk` source directly to
 the service after device authorization.
@@ -107,16 +110,18 @@ registers the coach roster under `sessionPanels` and the totals/open-mat panel u
 The coach check-in roster lists the session's people, not the whole gym: it reads
 the bookings session roster with `checkInEligible=true` (see the bookings README),
 so it shows booked members, then waitlisted members with a `Waitlisted · #<rank>`
-badge for their current place in line, then walk-ins already checked in, and never
-erased or Cancelled members. Checking in a waitlisted member records attendance
-only; their booking and place stay as they are. **Check in someone else** is one
-member autocomplete over the eligible member list (`checkInEligible=true` on
-`GET /api/members`); choosing a member records their check-in, and they then appear
-as a walk-in until the check-in is undone. The roster reloads after every check-in
-and undo. It also follows each successful read by the session dialog's bookings
-panel (after a booking or cancellation in that panel, a promotion after a capacity
-change, a check-in reported to the dialog, and that panel's periodic, focus and
-visibility reloads) with one quiet read of its own page, and shows the new page when
+badge for their current place in line, then walk-ins already checked in, and
+erased or Cancelled members only when they are already checked in at the session,
+so their visit can still be undone. A failed or refused check-in also reloads the
+roster. Checking in a waitlisted member records attendance only; their booking and
+place stay as they are. **Check in someone else** is one member autocomplete over
+the eligible member list (`checkInEligible=true` on `GET /api/members`); choosing
+a member records their check-in, and they then appear as a walk-in until the
+check-in is undone. The roster reloads after every check-in and undo. It also
+follows each successful read by the session dialog's bookings panel (after a
+booking or cancellation in that panel, a promotion after a capacity change, a
+check-in reported to the dialog, and that panel's periodic, focus and visibility
+reloads) with one quiet read of its own page, and shows the new page when
 its participants changed: who is on it, their booking's ID, status and place, and
 their check-in. A replacement booking or a kiosk walk-in therefore appears even when
 every count stays the same. A failed bookings read is not followed, and the roster's

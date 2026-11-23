@@ -130,7 +130,7 @@ function Roster({ sessionId }: { sessionId: string }) {
       if (walkIn && walkInForm.current) markSaved(walkInForm.current);
       notifyChanged(); refresh();
       return true;
-    } catch { setSaveFailed(true); return false; }
+    } catch { setSaveFailed(true); refresh(); return false; }
     finally { setSaving(false); }
   }
   // A dismissed undo leaves no error behind on the roster.
