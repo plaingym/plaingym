@@ -105,8 +105,8 @@ or whose stored expiry has not passed in the gym's timezone. Methods are ordered
 when known (local creation time otherwise), then local creation time and row ID.
 If all remaining methods have expired, the newest is promoted. If none remain,
 automatic payments stop until another method is saved. A Stripe detach error
-can occur after the local removal; refresh shows that change and staff can retry
-the detach with **Retry payment method removal**.
+can occur after the local removal; the method then shows **Removal pending** with
+**Retry payment method removal** until Stripe has detached it, then **Removed from Stripe**.
 
 * A card whose expiry month has passed makes the *Saved cards* check show *Needs
   attention*, and members get card-expiry emails while member emails are on.

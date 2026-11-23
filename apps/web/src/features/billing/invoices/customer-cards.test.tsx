@@ -91,7 +91,7 @@ it('refreshes committed removal and promotion after a detach error, including ch
   await waitFor(() => expect(cache.getQueryState(active)?.isInvalidated).toBe(true));
   await waitFor(() => expect(within(region).queryByText(/newest remaining payment method/)).toBeNull());
   fireEvent.click(screen.getByRole('button', { name: 'Back to payment methods' }));
-  await screen.findByText('Removed');
+  await screen.findByText('Removal pending');
   expect(screen.queryByText('Default payment method')).toBeNull();
   expect(screen.getByRole('button', { name: 'Retry payment method removal' })).toBeDefined();
 });

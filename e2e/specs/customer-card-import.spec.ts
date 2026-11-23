@@ -50,7 +50,7 @@ for (const width of [360, 1280]) {
       await page.getByRole('button', { name: 'Confirm', exact: true }).click();
       await expect(page.getByRole('alert')).toBeVisible();
       await page.getByRole('button', { name: 'Back to payment methods', exact: true }).click();
-      await expect(second.getByText('Removed', { exact: true })).toBeVisible();
+      await expect(second.getByText('Removal pending', { exact: true })).toBeVisible();
       await expect(second.getByText('Default payment method', { exact: true })).toHaveCount(0);
       await accessibleLayout(page, info, 'household-card-import-' + width);
       await info.attach('household-payment-methods-' + width, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });

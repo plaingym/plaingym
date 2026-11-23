@@ -29,7 +29,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
   const { instantLabel } = useGymTime();
   const cache = useQueryClient(), key = ['billing', gymId, 'invoice', invoiceId];
   const [action, setAction] = useState<Action | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState('');
-  const [message, setMessage] = useState(''), [url, setUrl] = useState('');
+  const [message, setMessage] = useState(''), [url, setUrl] = useState(''), [cardOpen, setCardOpen] = useState(false);
   const actionTitle = useId(), heading = useRef<HTMLHeadingElement>(null), trigger = useRef<HTMLElement | null>(null);
   const linkSend = useSendGeneration('invoice-link'), { uncertain } = linkSend;
   const [draft, setDraft] = useState(false), [discard, setDiscard] = useState(false), keep = useRef<HTMLButtonElement>(null);
@@ -101,6 +101,8 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
   return <div className="min-w-0 space-y-6">
     {message && <Alert variant={message === text('chargeFailed') ? 'error' : 'info'} focusOnReveal>{message}</Alert>}
     <div hidden={!!action} className="space-y-6">
+    {/* A card confirmation replaces the details, as an invoice action does: no invoice action opens beside it. */}
+    <div hidden={cardOpen} className="space-y-6">
     <PageSection title={household.data?.name ?? text('household')}>
       <dl className="grid min-w-0 gap-3 sm:grid-cols-2">
         <div><dt>{text('number')}</dt><dd>{invoice.number ?? text('draft')}</dd></div>
@@ -131,9 +133,10 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
       })}</StackedList>
       {data.refunds.length > 0 && <StackedList aria-label={text('refunds')}>{data.refunds.map(r => <StackedItem key={r.id}>{money(r.amountCents, r.currency)} · {text(r.status)}{r.reason && <p>{r.reason}</p>}</StackedItem>)}</StackedList>}
     </PageSection>
+    </div>
     <PageSection title={text('cards')}>
-      {showCardImport && <CustomerCardImport key={invoice.householdId} gymId={gymId} householdId={invoice.householdId} allowed={access.record} client={client}/>}
-      <CardList key={`cards:${invoice.householdId}`}gymId={gymId} householdId={invoice.householdId} allowed={access.record} client={client}/>
+      {showCardImport && <div hidden={cardOpen}><CustomerCardImport key={invoice.householdId} gymId={gymId} householdId={invoice.householdId} allowed={access.record} client={client}/></div>}
+      <CardList key={`cards:${invoice.householdId}`} gymId={gymId} householdId={invoice.householdId} allowed={access.record} client={client} onActionChange={setCardOpen}/>
     </PageSection>
     </div>
     {action && <section aria-labelledby={actionTitle} className="space-y-4">

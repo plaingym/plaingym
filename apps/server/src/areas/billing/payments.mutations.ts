@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, desc, eq, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Ordering expressions use only payment-method columns and a bound gym month.
 import { sql } from 'drizzle-orm';
-import { forGym, paymentMethods, payments, refunds, uuidv7, type Transaction } from '@plaingym/db';
+import { auditEvents, forGym, paymentMethods, payments, refunds, uuidv7, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { onMinorUnitStep } from '@plaingym/shared/money';
@@ -29,11 +29,27 @@ export const detachJob = 'billing.payments.detach';
  * payment's reservation is sent under its own key; retrying either would make a second, real refund. */
 const retryable = (gymId: string, row: typeof refunds.$inferSelect) =>
   row.processorId === null || row.id !== processorRefundId(gymId, row.processorId);
-const masked = (r: typeof paymentMethods.$inferSelect) => c.maskedPaymentMethodSchema.parse({
+export const cardDetachedAction = 'billing.card.detached';
+/** A revoked row reports `removal` from `detached` (whether its detach audit exists); an active row has none. */
+const masked = (r: typeof paymentMethods.$inferSelect, detached?: boolean) => c.maskedPaymentMethodSchema.parse({
   id: r.id, createdAt: r.createdAt.toISOString(), householdId: r.householdId,
   type: r.type, bankName: r.bankName, brand: r.brand, last4: r.last4,
   expiryMonth: r.expiryMonth, expiryYear: r.expiryYear, isDefault: r.isDefault, revokedAt: r.revokedAt?.toISOString() ?? null,
+  ...(r.revokedAt ? { removal: detached ? 'finished' : 'pending' } : {}),
 });
+
+/** Writes the one `billing.card.detached` audit for a card whose detach call returned; a repeat writes nothing. Its own
+ * short transaction, after the call: no network I/O inside a transaction. The card's row lock makes a removal request
+ * and its detach job, finishing at once, check and write one after the other. */
+export async function recordCardDetached(scope: typeof forGym, context: MutationContext, clock: Clock,
+  card: { id: string; householdId: string }) {
+  await scope(context.gymId, async tx => {
+    await tx.select({ id: paymentMethods.id }).from(paymentMethods).where(eq(paymentMethods.id, card.id)).for('update');
+    const done = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.action, cardDetachedAction),
+      eq(auditEvents.targetType, 'payment_method'), eq(auditEvents.targetId, card.id))).limit(1);
+    if (!done.length) await catalogAudit(tx, context, clock, cardDetachedAction, 'payment_method', card.id, undefined, { householdId: card.householdId });
+  });
+}
 
 /** Caller holds the household lock. Preserve a chosen default; prefer an unexpired replacement in the gym's month. */
 export async function promoteDefaultCard(tx: Transaction, context: MutationContext, clock: Clock, householdId: string,
@@ -108,7 +124,10 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
         await loadHousehold(tx, householdId);
         const where = eq(paymentMethods.householdId, householdId), total = await tx.$count(paymentMethods, where);
         const rows = await tx.select().from(paymentMethods).where(where).orderBy(desc(paymentMethods.createdAt), desc(paymentMethods.id)).limit(q.limit).offset(q.offset);
-        return { data: rows.map(masked), pagination: { limit: q.limit, offset: q.offset, total } };
+        const revoked = rows.filter(r => r.revokedAt).map(r => r.id);
+        const detached = new Set(revoked.length ? (await tx.select({ targetId: auditEvents.targetId }).from(auditEvents).where(and(
+          eq(auditEvents.action, cardDetachedAction), eq(auditEvents.targetType, 'payment_method'), inArray(auditEvents.targetId, revoked)))).map(a => a.targetId) : []);
+        return { data: rows.map(r => masked(r, detached.has(r.id))), pagination: { limit: q.limit, offset: q.offset, total } };
       });
     },
     async setDefault(context: MutationContext, householdId: string, id: string) {
@@ -145,7 +164,8 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
         gymId: context.gymId, timezone, idempotencyKey: `detach:${id}`, maxAttempts: 12,
       });
       await detachCard(context.gymId, row.processorId);
-      return masked(row);
+      await recordCardDetached(scope, context, clock, row);
+      return masked(row, true);
     },
     async refund(context: MutationContext, paymentId: string, input: c.CreateRefundRequest) {
       const request = c.createRefundRequestSchema.parse(input);

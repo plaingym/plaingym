@@ -167,7 +167,12 @@ Customer-card imports also use it after the final page or exhausted restarts.
 Retrying removal of a revoked method
 does not change the default or repeat these audits. Removal then queues
 a detach retry and attempts detachment outside the transaction. Revoked rows
-remain visible so staff can retry removal after an outage. No processor IDs leave
+remain visible so staff can retry removal after an outage. A detach call that returns
+writes one `billing.card.detached` audit (`recordCardDetached`, in its own transaction after
+the call, from the removal request or the detach job; a repeat writes none), and the staff
+list reports a revoked method's `removal` as `finished` with that audit and `pending`
+without it; an active method has no `removal`. A card Stripe detached on its own stays
+`pending` until a retry finishes it. No processor IDs leave
 the staff API. `detachCard(gymId, processorId, options?)` delegates to the gym's
 `Payments.detachPaymentMethod`, idempotent for missing and already detached methods.
 A staff removal passes no options and leaves the method's billing details. The detach

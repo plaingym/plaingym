@@ -9,7 +9,7 @@ import type { TransitionNotifications } from './transitions/notifications.js';
 import { snapshot } from './transitions/store.js';
 import type { DetachOptions, Payments } from '../../infra/payments/index.js';
 import type { InvoiceTransitions } from '../../core/interfaces/invoice-transitions.js';
-import { detachJob, receiptJob } from './payments.mutations.js';
+import { detachJob, receiptJob, recordCardDetached } from './payments.mutations.js';
 import { refundRetryWindowMs, refundSettleSkewMs, settleLapsed } from './transitions/lapsed-refunds.js';
 
 export const lapsedRefundJob = 'billing.payments.settle_lapsed';
@@ -71,8 +71,10 @@ export function createPaymentJobs(options?: DeliveryOptions): readonly JobRegist
       const row = await scope(ctx.gymId, async tx => (await tx.select().from(paymentMethods).where(and(
         eq(paymentMethods.id, paymentMethodId), eq(paymentMethods.isDefault, false))))[0] ?? notFound());
       // Only an erasure asks for the card's billing details to be cleared; a staff removal queues the job without the flag.
-      if (row.revokedAt) await (redactBillingDetails === true ? options.detachCard(ctx.gymId, row.processorId, { redactBillingDetails: true })
+      if (!row.revokedAt) return;
+      await (redactBillingDetails === true ? options.detachCard(ctx.gymId, row.processorId, { redactBillingDetails: true })
         : options.detachCard(ctx.gymId, row.processorId));
+      await recordCardDetached(scope, { gymId: ctx.gymId, actor: { kind: 'system' } }, ctx.clock, row);
     } },
   ];
 }

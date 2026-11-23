@@ -19,7 +19,10 @@ export const maskedPaymentMethodSchema = z.strictObject({
   expiryYear: z.int32().min(2000).nullable(),
   isDefault: z.boolean(),
   revokedAt: instantSchema.nullable(),
-}).refine((value) => !value.isDefault || value.revokedAt === null, 'A revoked payment method cannot be the default.');
+  /** Only on a revoked method: `finished` once Stripe's detach returned, `pending` until then. */
+  removal: z.enum(['pending', 'finished']).optional(),
+}).refine((value) => !value.isDefault || value.revokedAt === null, 'A revoked payment method cannot be the default.')
+  .refine((value) => value.removal === undefined || value.revokedAt !== null, 'Only a revoked payment method has a removal state.');
 export const paymentMethodResponseSchema = z.strictObject({ data: maskedPaymentMethodSchema });
 export const paymentMethodListResponseSchema = listResponseSchema(maskedPaymentMethodSchema).refine(
   (page) => {

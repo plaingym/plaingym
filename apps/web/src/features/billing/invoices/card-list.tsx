@@ -18,8 +18,8 @@ export function invalidateHouseholdCards(cache: QueryClient, gymId: string, hous
     && (queryKey[2] === 'cards' || queryKey[2] === 'activeCards') && queryKey[3] === householdId });
 }
 
-export function CardList({ gymId, householdId, allowed, client = invoiceClient }: {
-  gymId: string; householdId: string; allowed: boolean; client?: InvoiceClient;
+export function CardList({ gymId, householdId, allowed, client = invoiceClient, onActionChange }: {
+  gymId: string; householdId: string; allowed: boolean; client?: InvoiceClient; onActionChange?: (open: boolean) => void;
 }) {
   const cache = useQueryClient(), [offset, setOffset] = useState(0);
   const [action, setAction] = useState<{ kind: 'revoke' | 'default'; card: MaskedPaymentMethod } | null>(null);
@@ -27,6 +27,12 @@ export function CardList({ gymId, householdId, allowed, client = invoiceClient }
   const title = useId(), heading = useRef<HTMLHeadingElement>(null), trigger = useRef<HTMLElement | null>(null);
   useDialogOperation(busy);
   useEffect(() => { if (action) heading.current?.focus(); else if (trigger.current?.isConnected) trigger.current.focus(); }, [action]);
+  const confirming = action !== null, report = useRef(onActionChange);
+  report.current = onActionChange;
+  useEffect(() => {
+    report.current?.(confirming);
+    return () => { if (confirming) report.current?.(false); };
+  }, [confirming]);
   const cards = useQuery({ queryKey: ['billing', gymId, 'cards', householdId, offset], queryFn: () => client.cards(householdId, offset) });
   const selectedCard = action && (cards.data?.data.find(card => card.id === action.card.id) ?? action.card);
   function open(kind: 'revoke' | 'default', card: MaskedPaymentMethod) {
@@ -50,8 +56,8 @@ export function CardList({ gymId, householdId, allowed, client = invoiceClient }
       <StackedList>{cards.data?.data.map(card => <StackedItem key={card.id}>
         <span className="wrap-anywhere">{paymentMethodLabel(card, text)}{card.type === 'card' && card.expiryMonth != null && card.expiryYear != null && <> · {String(card.expiryMonth).padStart(2, '0')}/{card.expiryYear}</>}</span>
         {card.isDefault && <Badge className="self-start">{text('default')}</Badge>}
-        {card.revokedAt && <Badge className="self-start">{text('removed')}</Badge>}
-        {allowed && <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+        {card.revokedAt && <Badge className="self-start">{text(card.removal === 'finished' ? 'removedFromStripe' : 'removalPending')}</Badge>}
+        {allowed && !(card.revokedAt && card.removal === 'finished') && <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
           {!card.revokedAt && !card.isDefault && <Button variant="outline" onClick={() => open('default', card)}>{text('makeDefault')}</Button>}
           <Button variant="outline" onClick={() => open('revoke', card)}>{text(card.revokedAt ? 'retryRemoval' : 'removeCard')}</Button>
         </div>}
