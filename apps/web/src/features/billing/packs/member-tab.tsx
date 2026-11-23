@@ -55,7 +55,7 @@ export function PackPanel({ gymId, memberId, timezone, access, client = packClie
           {entry.reason && <p className="whitespace-pre-wrap">{entry.reason}</p>}{invoice(entry.invoiceId, entry.invoiceNumber)}
         </li>)}</ul>
         <Pager offset={offset} total={ledger.data.pagination.total} limit={25} disabled={ledger.isPlaceholderData} onChange={setOffset} previousLabel={text('previous')} nextLabel={text('next')}>
-          <span>{text('page', { start: Math.min(offset + 1, ledger.data.pagination.total).toLocaleString(), end: Math.min(offset + 25, ledger.data.pagination.total).toLocaleString(), total: ledger.data.pagination.total.toLocaleString() })}</span>
+          <span>{text('page', { start: formatCount(Math.min(offset + 1, ledger.data.pagination.total)), end: formatCount(Math.min(offset + 25, ledger.data.pagination.total)), total: formatCount(ledger.data.pagination.total) })}</span>
         </Pager>
       </div>
     </>}

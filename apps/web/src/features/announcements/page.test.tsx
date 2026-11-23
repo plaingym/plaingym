@@ -37,6 +37,11 @@ function mount(service: AnnouncementClient) {
 function editor(service: AnnouncementClient, owner = true) {
   return render(<AnnouncementEditor gymName="Our Gym" programs={[program]} client={service} owner={owner} close={vi.fn()} sent={vi.fn()} />);
 }
+it('shows long message counts and limits with English grouping', () => {
+  editor(client());
+  fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'x'.repeat(1234) } });
+  expect(screen.getByText('1,234 / 10,000 characters')).toBeDefined();
+});
 it('uses the full text limit and permits confirmed texts with zero email recipients', async () => {
   const service = client(); vi.mocked(service.preview).mockResolvedValue({ recipientCount: 0, smsRecipientCount: 2, smsSegments: 1 });
   editor(service);

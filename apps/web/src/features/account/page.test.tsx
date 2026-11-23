@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { AccountSummary } from '@plaingym/shared/contracts';
 import type { ShellBootstrap } from '../../app/services.js';
 import { AccountRequestError, type AccountClient } from './client.js';
+import { instantLabel } from '../../lib/instant.js';
 import { AccountPage } from './page.js';
 
 const userId = '019ab4f0-0000-7000-8000-000000000001';
@@ -59,6 +60,12 @@ describe('your account page', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Send link' }));
     expect(await screen.findByText(/An email was sent to taken@example.test/)).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('shows the pending link expiry through the shared instant label', async () => {
+    start({ pendingEmail: { email: 'pending@example.test', expiresAt: '2026-11-15T18:30:00Z' } });
+    const label = instantLabel('2026-11-15T18:30:00Z');
+    expect(await screen.findByText(content => content.includes('pending@example.test') && content.includes(label))).toBeTruthy();
   });
 
   it.each([400, 429])('keeps a pending notice beside a failed second request (%s)', async (status) => {

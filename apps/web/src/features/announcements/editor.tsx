@@ -79,10 +79,10 @@ export function AnnouncementEditor({ gymName, programs, client, close, sent, own
         <fieldset disabled={busy} className="min-w-0 space-y-4">
           <div><Label htmlFor="announcement-subject">{text('subject')}</Label>
             <Input ref={subjectInput} id="announcement-subject" value={subject} maxLength={150} required aria-describedby="subject-count" onChange={event => setSubject(event.target.value)} />
-            <p id="subject-count" className="text-sm text-muted-foreground">{text('characters', { count: subject.length.toLocaleString(), max: (150).toLocaleString() })}</p></div>
+            <p id="subject-count" className="text-sm text-muted-foreground">{text('characters', { count: formatCount(subject.length), max: formatCount(150) })}</p></div>
           <div><Label htmlFor="announcement-body">{text('body')}</Label>
             <Textarea id="announcement-body" rows={8} value={body} maxLength={10000} required aria-describedby="body-count" onChange={event => setBody(event.target.value)} />
-            <p id="body-count" className="text-sm text-muted-foreground">{text('characters', { count: body.length.toLocaleString(), max: (10_000).toLocaleString() })}</p></div>
+            <p id="body-count" className="text-sm text-muted-foreground">{text('characters', { count: formatCount(body.length), max: formatCount(10_000) })}</p></div>
           <CheckboxField label={text('includeSms')} checked={smsEnabled} onChange={event => setSmsEnabled(event.target.checked)} />
           {smsEnabled && <div className="min-w-0 space-y-2">
             <Label htmlFor="announcement-sms">{text('smsBody')}</Label>

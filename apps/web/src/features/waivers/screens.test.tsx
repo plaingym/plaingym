@@ -5,7 +5,7 @@ import { cleanup, render, screen, within, waitFor } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Templates, MemberWaivers } from './screens.js';
-import { createWaiversClient } from './api.js';
+import { createWaiversClient, type WaiversClient } from './api.js';
 const template = { id: '01900000-0000-7000-8000-000000000001', name: 'Participation', kind: 'waiver', version: 2, body: 'Original text', retiredAt: null, createdAt: '2026-10-24T12:00:00Z' };
 function fixture() {
   const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
@@ -146,6 +146,16 @@ it('shows a full PDF queue\'s 429 as its retry message rather than a generic fai
   mount(<MemberWaivers gymId="gym" memberId={template.id} manage client={createWaiversClient(fetcher)} />);
   await userEvent.click(await screen.findByRole('button', { name: 'Prepare PDF' }));
   expect((await screen.findByRole('alert')).textContent).toBe('PDF processing is busy; please retry shortly');
+});
+it('shows the uploaded document pages and bytes with English grouping', async () => {
+  const user = userEvent.setup();
+  const client = { call: vi.fn(async () => ({ data: [], pagination: { limit: 20, offset: 0, total: 0 } })),
+    uploadDocument: vi.fn(async () => ({ data: { key: 'gym/waiver.pdf', hash: 'a'.repeat(64), pages: 1234, bytes: 123456 } })) } as unknown as WaiversClient;
+  mount(<Templates gymId="gym" manage client={client} />);
+  await user.click(await screen.findByRole('button', { name: 'New template' }));
+  await user.selectOptions(screen.getByLabelText('Document format'), 'pdf');
+  await user.upload(screen.getByLabelText('Upload a PDF'), new File(['%PDF-1.7'], 'waiver.pdf', { type: 'application/pdf' }));
+  expect((await screen.findByRole('status')).textContent).toContain('Pages: 1,234. Bytes: 123,456.');
 });
 it('shows a full PDF queue\'s 429 on a document upload', async () => {
   const client = createWaiversClient(async () => Response.json({ error: { code: 'rate_limited', message: 'PDF processing is busy; please retry shortly',

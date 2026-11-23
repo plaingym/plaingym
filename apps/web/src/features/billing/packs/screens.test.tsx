@@ -181,6 +181,11 @@ it('renders balance, lot expiry, history reason and an invoice action', async ()
   fireEvent.click(screen.getAllByRole('button', { name: 'Invoice #42' })[0]!);
   expect(await screen.findByText('Opened invoice ' + id(9))).toBeDefined();
 });
+it('shows the history page range with English grouping', async () => {
+  const api = client(); vi.mocked(api.ledger).mockResolvedValue({ ...ledger, pagination: { limit: 25, offset: 0, total: 1234 } });
+  start(<PackPanel gymId={id(1)} memberId={id(3)} timezone="UTC" access={{ record: false, links: false, refund: false }} client={api}/>);
+  await screen.findByText('1–25 of 1,234');
+});
 it('requests the next page of history without changing member scope', async () => {
   const api = client(); vi.mocked(api.ledger).mockResolvedValue({ ...ledger, pagination: { limit: 25, offset: 0, total: 26 } });
   start(<PackPanel gymId={id(1)} memberId={id(3)} timezone="UTC" access={{ record: false, links: false, refund: false }} client={api}/>);

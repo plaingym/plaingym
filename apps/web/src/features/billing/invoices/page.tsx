@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { calendarDateLabel } from '../../../lib/instant.js';
+import { formatCount } from '../../../lib/count.js';
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
@@ -45,7 +46,7 @@ export function InvoiceList({ gymId, householdId, access, custom, catalog, clien
     </StackedItem>)}</StackedList>
     {/* Paging only when the invoices are more than one page. */}
     {rows.data && <Pager offset={offset} total={rows.data.pagination.total} limit={25} onChange={setOffset} previousLabel={text('previous')} nextLabel={text('next')}>
-      <span>{Math.min(offset + 1, rows.data.pagination.total).toLocaleString()}–{Math.min(offset + 25, rows.data.pagination.total).toLocaleString()} / {rows.data.pagination.total.toLocaleString()}</span>
+      <span>{formatCount(Math.min(offset + 1, rows.data.pagination.total))}–{formatCount(Math.min(offset + 25, rows.data.pagination.total))} / {formatCount(rows.data.pagination.total)}</span>
     </Pager>}
     {create && <OneOffEditor gymId={gymId} {...(householdId ? { householdId } : {})} custom={custom} catalog={catalog} client={client} close={() => setCreate(false)} created={invoiceId => {
       setCreate(false); setSelected(invoiceId); void cache.invalidateQueries({ queryKey: ['billing', gymId] });

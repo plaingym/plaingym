@@ -111,6 +111,23 @@ export default defineConfig(
     languageOptions: { globals: globals.browser },
   },
   {
+    files: ['apps/web/src/**/*.{js,jsx,ts,tsx}'],
+    ignores: [
+      '**/*.{test,spec}.*', '**/{test,tests,__tests__}/**',
+      // Display formatting still to move to the fixed locale.
+      'apps/web/src/features/demo/notice.tsx', 'apps/web/src/features/health/page.tsx',
+      'apps/web/src/features/members/sms-consent.tsx', 'apps/web/src/features/schedule/session.tsx',
+      'apps/web/src/features/schedule/views.tsx', 'apps/web/src/features/settings/integrations/backups.tsx',
+    ],
+    rules: { 'no-restricted-syntax': ['error',
+      ...[
+        'CallExpression[callee.property.name=/^toLocale(String|DateString|TimeString)$/][arguments.length=0]',
+        'CallExpression[callee.property.name=/^toLocale(String|DateString|TimeString)$/][arguments.0.type=\'Identifier\'][arguments.0.name=\'undefined\']',
+        ':matches(NewExpression, CallExpression)[callee.object.name=\'Intl\'][callee.property.name=/^(NumberFormat|DateTimeFormat)$/]:matches([arguments.length=0], [arguments.0.type=\'Identifier\'][arguments.0.name=\'undefined\']):not(MemberExpression[property.name=\'resolvedOptions\'] > *)',
+      ].map(selector => ({ selector, message: 'Display formatting uses the fixed en locale: formatCount (lib/count.ts), lib/instant.ts, or an explicit \'en\'.' })),
+    ] },
+  },
+  {
     files: ['apps/server/src/**'],
     rules: {
       'no-restricted-imports': ['error', { patterns: serverImportPatterns }],

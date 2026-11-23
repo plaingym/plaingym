@@ -27,8 +27,11 @@ values, keypad digits, identifiers (including invoice numbers and card digits),
 and legal-record timestamps unchanged. Choose singular/plural messages using
 the numeric value before formatting.
 
-Vitest pins the default number and date locale to `en` in `test/locale.ts`; CI runs the
-suite with a German system locale to catch accidental locale dependencies.
+Vitest pins the default number and date locale to `en` in `test/locale.ts`, so tests can't
+see a locale-less `Intl` call; lint refuses those, and argumentless `toLocaleString()`, in
+`apps/web/src` (`no-restricted-syntax` in `eslint.config.mjs`), except the files listed in
+that rule's `ignores` until their formatting moves to the fixed locale. CI also runs the
+suite with a German system locale.
 
 **Mobile-first.** Build every screen for a 360 px wide phone first, then scale
 up: Tailwind base classes are the phone layout, and `sm:` / `md:` / `lg:` add

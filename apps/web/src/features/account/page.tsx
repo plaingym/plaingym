@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { accountEmailSchema, type AccountSummary } from '@plaingym/shared/contracts';
 import type { ShellBootstrap } from '../../app/services.js';
 import { t } from '../../lib/i18n.js';
+import { instantLabel } from '../../lib/instant.js';
 import { Button } from '../../components/ui/button.js';
 import { Alert, FormMessage } from '../../components/ui/alert.js';
 import { Input } from '../../components/ui/input.js';
@@ -24,7 +25,7 @@ function errorText(error: unknown) {
   }
   return text('errorGeneric');
 }
-const formatTime = (instant: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(instant));
+const formatTime = (instant: string) => instantLabel(instant);
 
 function Row({ label, children }: { label: ReactNode; children: ReactNode }) {
   return <div className="flex flex-col gap-1 border-b border-border py-3 last:border-b-0 sm:flex-row sm:gap-4">

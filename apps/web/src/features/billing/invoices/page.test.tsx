@@ -576,3 +576,10 @@ it('shows an uncertain pay-link replay and changes generation only on a delibera
   expect(sends).toHaveLength(2); expect(sends[1]!.sendGeneration).not.toBe(sends[0]!.sendGeneration);
   sessionStorage.clear();
 });
+it('shows the invoice page range with English grouping', async () => {
+  const f = transport(), original = f.fetcher.getMockImplementation()!;
+  f.fetcher.mockImplementation(async (path, options) => new URL(String(path), 'http://gym.test').pathname === '/api/billing/invoices'
+    ? Response.json({ data: [f.detail.invoice], pagination: { limit: 25, offset: 0, total: 1234 } }) : original(path, options));
+  start(<InvoiceList gymId={gymId} householdId={home} access={desk} custom catalog client={f.client}/>);
+  await screen.findByText('1–25 / 1,234');
+});

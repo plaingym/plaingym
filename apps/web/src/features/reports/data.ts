@@ -18,7 +18,7 @@ const periodColumns = () => [text('start'), text('end'), text('periodStatus')];
 export const countColumns = (columns: readonly string[], counts: readonly string[]) =>
   columns.flatMap((key, index) => counts.includes(key) ? [index] : []);
 const memberCounts = ['activeAtStart', 'new', 'imported', 'cancelled', 'netChange', 'activeAtEnd', 'frozenAtEnd'] as const;
-const attendanceCounts = ['checkIns', 'uniqueMembers'];
+const attendanceCounts = ['checkIns', 'uniqueMembers'] as const;
 const currentPeriod = (buckets: readonly ReportBucket[]) => buckets.find(bucket => bucket.inProgress)?.startDate;
 const period = (bucket: ReportBucket, current: string | undefined) => {
   const status = bucket.inProgress ? 'inProgress' : current && bucket.startDate > current ? 'upcoming' : bucket.partial ? 'partial' : 'complete';
@@ -40,13 +40,15 @@ export function attendanceTable(data: AttendanceReportResponse['data'], selected
   const keys = ['start', 'end', 'periodStatus', 'program', ...attendanceCounts];
   return { dateColumns: [0, 1], columns: keys.map(key => text(key)), textColumns: [keys.indexOf('program')], countColumns: countColumns(keys, attendanceCounts),
     rows: data.buckets.flatMap(bucket => {
+      const row = (name: string, counts: Record<typeof attendanceCounts[number], number>) =>
+        [...period(bucket, current), name, ...attendanceCounts.map(key => String(counts[key]))];
       const programs = bucket.programs.filter(program => selected === allPrograms || programKey(program.programId) === selected);
       if (selected !== allPrograms) {
         const counts = programs[0];
-        return [[...period(bucket, current), selectedName, String(counts?.checkIns ?? 0), String(counts?.uniqueMembers ?? 0)]];
+        return [row(selectedName, { checkIns: counts?.checkIns ?? 0, uniqueMembers: counts?.uniqueMembers ?? 0 })];
       }
-      return [[...period(bucket, current), text('allPrograms'), String(bucket.totals.checkIns), String(bucket.totals.uniqueMembers)],
-        ...programs.map(program => [...period(bucket, current), program.programName ?? text('unassigned'), String(program.checkIns), String(program.uniqueMembers)]) ];
+      return [row(text('allPrograms'), bucket.totals),
+        ...programs.map(program => row(program.programName ?? text('unassigned'), program))];
     }) };
 }
 export function revenueTable(data: RevenueReportResponse['data']['currencies'][number]): ReportTable {

@@ -6,6 +6,7 @@ import { waiverSigningSnapshotSchema, type WaiverTemplate, type WaiverDocument a
 import { useBootstrap } from '../../app/context.js';
 import { t } from '../../lib/i18n.js';
 import { api } from '../../lib/api.js';
+import { formatCount } from '../../lib/count.js';
 import type { ExtensionViewProps } from '../../lib/registries.js';
 import { Page, PageHeader } from '../../components/ui/page.js';
 import { Button } from '../../components/ui/button.js';
@@ -77,7 +78,7 @@ function TemplateEditor({ row, client, close, saved }: { row: WaiverTemplate | '
       {format === 'text' ? <div><Label htmlFor="waiver-body">{text('body')}</Label><Textarea id="waiver-body" name="body" required maxLength={80_000} rows={14} defaultValue={row === 'new' ? '' : row.body} /></div>
         : <div className="min-w-0 space-y-2"><Label htmlFor="waiver-document">{text('uploadDocument')}</Label>
           <Input id="waiver-document" type="file" accept="application/pdf,.pdf" disabled={busy} onChange={event => void upload(event.target.files?.[0])} />
-          <p>{text('documentLimits')}</p>{document && <p role="status">{text('documentUploaded', { pages: new Intl.NumberFormat().format(document.pages), bytes: new Intl.NumberFormat().format(document.bytes) })}</p>}
+          <p>{text('documentLimits')}</p>{document && <p role="status">{text('documentUploaded', { pages: formatCount(document.pages), bytes: formatCount(document.bytes) })}</p>}
         </div>}
       <div className="flex flex-wrap gap-3"><Button type="submit" disabled={busy}>{text('publish')}</Button>
         {row !== 'new' && !row.retiredAt && <Button type="button" variant="destructive" disabled={busy} onClick={() => void retire()}>{text('retire')}</Button>}
