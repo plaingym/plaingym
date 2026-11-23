@@ -10,7 +10,7 @@ import type { JobContext, Jobs, JobRecovery } from '../../../infra/jobs/index.js
 import type { PaymentEvent, Payments } from '../../../infra/payments/index.js';
 import { PaymentWebhookError } from '../../../infra/payments/webhook-error.js';
 import { createWebhookInboxRecovery, webhookDispatchRetried } from './inbox-recovery.js';
-import { latestTestSwitch, latestTestSwitchId, StripeTestModeSwitched, withStripeTestWrites } from '../stripe-writes.js';
+import { latestTestSwitch, stripeSwitchSnapshot, StripeTestModeSwitched, withProviderWrites } from '../stripe-writes.js';
 
 export const webhookDispatchJob = 'billing.webhooks.dispatch';
 export type PaymentsResolver = (gymId: string) => Promise<Payments | null>;
@@ -151,16 +151,15 @@ export function createWebhookInbox(options: {
         if (event.gymId !== context.gymId || event.id !== row.eventId || event.type !== row.type)
           throw new Error('Invalid stored webhook identity');
         const handler = handlers.get(event.type);
-        const switched = handler ? await scope(context.gymId, tx => latestTestSwitchId(tx, context.gymId)) : null;
+        const switched = handler ? await scope(context.gymId, tx => stripeSwitchSnapshot(tx, context.gymId)) : null;
         const payments = handler ? await paymentsFor(context.gymId) : null;
         // The live key can't read a test-mode object, so its handler would fail every retry: the event is finished unread.
         let skipped = payments?.keyMode === 'live' && await testMode(context.gymId, row, event);
         if (handler && payments && !skipped) {
           const handle = () => handler(event, { ...context, payments });
           try {
-            if (payments.keyMode !== 'live' && event.livemode !== true)
-              await withStripeTestWrites(context.gymId, switched, handle);
-            else await handle();
+            if (event.livemode === true) await handle();
+            else await withProviderWrites(payments, context.gymId, switched, handle);
           } catch (error) {
             if (!(error instanceof StripeTestModeSwitched)) throw error;
             skipped = true;

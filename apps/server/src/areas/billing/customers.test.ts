@@ -9,7 +9,8 @@ import { createFactories } from '@plaingym/db/testing/factories';
 import { runInTransaction } from '@plaingym/shared/transaction';
 import { TestClock } from '../../core/clock.js';
 import { CustomerCreationInProgress, CustomerDeleted, FakePayments } from '../../infra/payments/index.js';
-import { createCustomersService, customerUnlinkedAction, CustomerUnavailable, stripeTestClearedAction } from './customers.js';
+import { createCustomersService, customerUnlinkedAction, CustomerUnavailable } from './customers.js';
+import { stripeTestClearedAction } from './stripe-writes.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 async function fixture() {

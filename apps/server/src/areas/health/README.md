@@ -8,7 +8,11 @@ and [charge-run health](charge-run.README.md) for their individual contracts.
 
 Restore's queued payment check and the go-live rerun share a per-gym database
 session lease configured from the runtime's database URL. If a queued check finds
-the lease busy, its job succeeds while the holder records the check's result.
+the lease busy, its job succeeds and queues one follow-up check a minute later,
+since the holder can fail before it records a usable result. The follow-up skips
+when billing is back on, a newer restore has completed, or the latest check is
+already clear for the saved Stripe mode. If a new check starts, billing stays off
+until its report.
 Billing remains paused until the go-live checklist permits the owner to enable it.
 
 When no restore journal exists, startup only sweeps abandoned staging if it can

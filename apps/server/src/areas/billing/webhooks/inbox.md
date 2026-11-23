@@ -72,10 +72,11 @@ processed with a `billing.webhook.test_event_skipped` audit (target: the stored
 event). An event stored without `livemode` counts as test mode when it arrived
 before the gym's latest `integrations.stripe_test_cleared` audit.
 
-Dispatch reads the switch audit before resolving its provider. For a test provider,
-`stripe-writes.ts` carries that snapshot through the handler's separate transactions.
-Each takes the gym settings lock before invoice or household locks and checks the
-latest switch again. A switch committed meanwhile rolls back the stale transaction
+Dispatch reads the switch snapshot (`stripeSwitchSnapshot`: the latest test-data
+clear, or the latest Payments save that changed the Stripe mode) before resolving
+its provider. For a test provider, `stripe-writes.ts` carries that snapshot through
+the handler's separate transactions. Each takes the gym settings lock before invoice
+or household locks and checks the snapshot again. A switch committed meanwhile rolls back the stale transaction
 and finishes the event with the same skipped-event audit. Live events keep their
 normal write path.
 

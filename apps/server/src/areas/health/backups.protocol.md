@@ -166,8 +166,19 @@ lets a manager rerun it after resolving issues, then explicitly enable billing.
 The job and rerun share a per-gym PostgreSQL session lease, outside transactions,
 so job retries and manual checks cannot overlap or take over a long check by age.
 Both use the runtime's database configuration. A job finding that lease busy
-completes successfully: the holder runs the same check and records its outcome.
-The go-live checklist still requires that check's result before billing can resume.
+completes successfully and queues one follow-up check a minute later, because the
+holder can fail before it records a usable outcome. Under the lease, the follow-up
+checks whether billing is back on, its restore has been superseded, or the latest
+check is clear for the saved Stripe mode. If any applies, it finishes before
+resolving Stripe credentials. Otherwise it resolves the provider, then rechecks
+those conditions and the Stripe switch (the latest test-data clear, or the latest
+Payments save that changed the Stripe mode) under the same gym row lock used to
+enable billing. A switch during resolution makes the job retry, and so do Stripe
+settings saved after resolution found none. If a check still needs to run, it
+records its start under the lock. With either key mode, a switch seen during the
+check, after any Stripe read, before cancelling a payment or before the report, also
+makes the job retry, with no report and no further Stripe call. The go-live checklist requires a clear result for the
+latest check before billing can resume.
 
 A restart resumes without needing to retain the age private identity.
 Before the rekey receipt it repeats reset/restore/migrate/rekey from verified

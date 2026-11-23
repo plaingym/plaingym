@@ -28,8 +28,23 @@ exposes the same controllable entry points used by the jobs and PostgreSQL scena
 
 The restore job and go-live rerun share a per-gym PostgreSQL session lease before
 calling `postRestore`. The dedicated connection holds no transaction while checking
-the provider. A busy job retries through the queue; a busy rerun answers 409. The
-lease has no elapsed-time takeover and is released when the call finishes or its
+the provider. A busy job queues one follow-up check a minute later
+(`queueRestoreCheck`, keyed by the busy job's ID) and succeeds, since the holder
+can end without a usable result. The follow-up (`followUpRestore`, under the lease)
+does nothing when billing is back on, when its restore isn't the latest, or when the
+latest check is already clear for the saved Stripe mode, so it never replaces a
+clear result the owner may be reviewing. It decides these skips before it reads the
+Stripe credentials, so a follow-up with nothing to do succeeds even when they can't
+be read, and it reads the switch snapshot (below) before its key. It then decides again
+and records its start in one transaction holding the gym row lock that turning
+billing on takes. If it finds a newer snapshot there, or Stripe settings saved since
+it found none (a first connection), the job retries with the current settings before
+recording a start or calling Stripe. Whatever the key mode, a switch seen during its
+check throws too, with no report and no further Stripe call, so the retry checks with
+the current key; so do Stripe settings saved before its report by a follow-up that
+found none.
+A start it records keeps billing off until its report, and a report with issues
+retries as a first check's does. A busy rerun answers 409. The lease has no elapsed-time takeover and is released when the call finishes or its
 process exits. Abandoned audit markers do not reserve a check.
 
 Generation locks one household and its due memberships in each short transaction.
@@ -119,8 +134,11 @@ assignment invoices needing manual payment; this does not create a staff email.
 A switch from Stripe test mode to live (Settings → Payments) holds the gym row for
 its whole save. The reservation first takes `holdGymSettings` (before the invoice
 lock, in the switch's order), so it waits for a switch in progress, and compares the
-gym's latest `integrations.stripe_test_cleared` audit with the one read before the
-provider was resolved. If a switch committed in between, the provider may hold the
+gym's switch snapshot with the one read before the provider was resolved. The
+snapshot (`stripeSwitchSnapshot`) is the latest `integrations.stripe_test_cleared`
+audit or the latest Payments save that changed the Stripe mode, so a mode change
+with no test data to clear counts too; cleared test data is still identified by the
+clear audit alone. If a switch committed in between, the provider may hold the
 old test key: nothing is reserved, and the charge starts again once with the
 provider resolved again (a second change skips with `collection_changed`). Before
 releasing an invoice's Checkout session or action-needed PaymentIntent, the charge
@@ -132,7 +150,19 @@ The shared `stripe-writes.ts` guard also checks each transaction that applies an
 outcome from the resolved test provider, including releasing an action-needed
 intent or Checkout before reservation. A switch committed during that work makes
 the charge resolve its provider again. Pending and restore reconciliation carry
-the same snapshot into their writes and report stale work for another check.
+the same snapshot into their writes, and a switch seen during either stops its
+Stripe reads at once: the restore report is the incomplete one in the mode it ran
+with (a follow-up writes none and retries), and the hourly run reports nothing that
+hour. Whatever the key mode, both compare the snapshot under the gym row lock
+(`assertStripeSnapshot`) after a read that ends with no guarded transaction (nothing
+found, a provider error, an unknown outcome, a page of changes), before cancelling a
+PaymentIntent and before the restore report, so a switch committed during a read
+stops the run the same way. A live provider isn't wrapped in the guard, but still
+stops at the first switch it sees. Every caller carries the snapshot through
+`withProviderWrites`, for any provider that doesn't hold a live key (a test key,
+or a provider with no mode); the inbox never guards a live-mode event. The
+charge's own recheck and the reservation's comparison stay for a provider resolved
+after a switch committed: it holds the live key, so it runs outside the guard.
 Restore excludes test disputes with the same `testModeDispute` query as alerts:
 the latest matching dispute audit identifies its payment, with the invoice-level
 fallback used only when that audit has no payment ID.
@@ -364,7 +394,8 @@ queue that registers it without the lane makes them wait for the run.
    `billing.runner.daily` (09:00 local, and a stopped collection's continuation), `billing.runner.reconcile` (hourly at :17),
    `billing.runner.retry` (`{ invoiceId }`), `billing.runner.charge_failures` (a stopped
    run's other failures, queued by the previous release; it records them as that run's report), and `billing.runner.restore`
-   (`{ snapshotAt, restoreId }`; legacy jobs may omit `restoreId`). Restore queues
+   (`{ snapshotAt, restoreId }`). A follow-up also carries the busy job's ID in
+   `after`. Legacy jobs may omit `restoreId`. Restore queues
    one durable job per gym/restore before completing its journal. The normal retry path is the transition effect job callback;
    do not independently schedule another set of retries.
    The daily and reconciliation jobs throw `Charge runner is not configured`
@@ -375,7 +406,9 @@ queue that registers it without the lane makes them wait for the run.
    owner confirmation to resume billing is a separate operation. Each started
    restore check targets its restore audit; its result targets that check's audit.
    Only the newest check for the newest restore can clear the go-live gate.
-   Provider failures persist an unresolved report and fail the job. A gym with no
+   A provider failure during a started check persists an unresolved report and
+   fails the job. A follow-up that fails to read its credentials retries before
+   recording a start or report. A gym with no
    payments provider (the resolver throws `AppError` `unavailable`, which the
    runtime's resolver does only when no Stripe settings are stored; any other
    resolver error is a provider failure) reads only the database: with no stored

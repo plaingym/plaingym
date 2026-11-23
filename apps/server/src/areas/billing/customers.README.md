@@ -38,7 +38,9 @@ provider resolved again. The link step first takes a key share lock on the gym r
 which a settings save holds for its whole transaction, so it waits for a switch in
 progress. A creation reserved after the switch looked for reservations, with the
 provider resolved before the switch committed, is abandoned the same way when the
-gym's latest `integrations.stripe_test_cleared` audit changed meanwhile: the service
+gym's switch snapshot changed meanwhile (`stripeSwitchSnapshot`: the latest
+`integrations.stripe_test_cleared` audit, or the latest Payments save that changed
+the Stripe mode): the service
 writes the unlink audit itself, then starts once more. The lock and audit comparison
 use `stripeWriteCurrent` in `stripe-writes.ts`, shared with the runner, refunds and
 webhook writes. Card setup starts record their customer, so a session made
@@ -163,3 +165,9 @@ separate card and bank-account counts when the job imports or skips a bank
 account. It also counts accounts skipped because an existing Stripe key lacks
 Mandates read access. Repeat requests keep the existing payment methods and
 their default.
+
+Each request and page records the gym's switch snapshot (`stripeSwitchSnapshot`)
+and is finished as stale when it changes, or the household's customer does. A
+request queued by an earlier release carries no version marker: it and its pages
+are checked against the marker it was written with, the latest test-data clear. A switch after that request still makes it stale, because
+the Payments save changes the mode of a gym with a linked customer only by clearing.

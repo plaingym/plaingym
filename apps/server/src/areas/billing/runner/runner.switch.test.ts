@@ -6,7 +6,7 @@ import { eq, sql } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- One test holds the gym row the way a settings save does.
 import { auditEvents, gyms, households, invoices, paymentAttempts, paymentMethods, type Transaction } from '@plaingym/db';
 import { FakePayments } from '../../../infra/payments/index.js';
-import { stripeTestClearedAction } from '../customers.js';
+import { stripeTestClearedAction, stripeWriteScope, StripeTestModeSwitched, withProviderWrites } from '../stripe-writes.js';
 import { createChargeRunner } from './index.js';
 import { useRunnerFixture, type Fixture } from './runner.fixture.test-helper.js';
 
@@ -95,6 +95,9 @@ describe('a charge run across a switch from Stripe test mode to live', () => {
   }
   it('makes no release call with the live provider for a test Checkout session the switch cleared after it was read', async () => {
     const f = await fixture(), bill = await invoice(f);
+    // The provider resolved after the switch holds the live key, so it runs outside the guard and only the runner's own
+    // recheck stops the release.
+    f.provider.keyMode = 'live';
     const old = new FakePayments(f.gymId, f.clock);
     old.keyMode = 'test';
     old.seedCustomer({ id: 'cus_test', email: 'payer@example.invalid' });
@@ -142,5 +145,72 @@ describe('a charge run across a switch from Stripe test mode to live', () => {
     const runner = createChargeRunner({ ...f.serviceOptions, transitions: f.transitions, payments: resolve });
     expect(await runner.charge(f.gymId, bill.id)).toEqual({ status: 'succeeded' });
     expect(resolve).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('reconciliation across a switch from Stripe test mode to live', () => {
+  /**
+   * Two invoices, each left with a pending attempt whose PaymentIntent the test provider confirmed but whose answer was
+   * lost; billing paused and the attempts stale. With `switching`, the first `findCharge` commits a switch before it answers.
+   */
+  async function twoPending(switching: boolean) {
+    const f = await fixture();
+    f.provider.keyMode = 'test';
+    // One cycle invoice per household and due date: move the first aside before issuing the second.
+    const first = await invoice(f);
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ dueOn: '2028-02-28', periodStartsOn: '2028-02-28' })
+      .where(eq(invoices.id, first.id)));
+    const second = await invoice(f);
+    for (const bill of [first, second]) {
+      f.provider.loseNextResponse('confirmCharge');
+      await f.runner.charge(f.gymId, bill.id).catch(() => undefined);
+    }
+    expect((await f.read()).attempts.map(row => [row.status, !!row.paymentIntentId])).toEqual([['pending', true], ['pending', true]]);
+    await f.enable(false);
+    f.clock.advance(16 * 60_000);
+    const real = f.provider.findCharge.bind(f.provider);
+    const find = vi.spyOn(f.provider, 'findCharge');
+    if (switching) find.mockImplementationOnce(async (...args) => {
+      await db.forGym(f.gymId, tx => tx.insert(auditEvents).values(switchAudit(f)));
+      return real(...args);
+    });
+    const list = vi.spyOn(f.provider, 'listChangesSince');
+    return { f, find, list };
+  }
+  it('ends a restore check at the switch as its incomplete test-mode report, with no further Stripe read', async () => {
+    const { f, find, list } = await twoPending(true);
+    expect(await f.runner.postRestore(f.gymId, f.clock.now())).toEqual({ inspected: 0, readyForOwnerReview: false,
+      issues: [{ kind: 'provider', id: f.gymId, reason: 'provider_or_transition_error' }], stripeConfigured: true, stripeMode: 'test' });
+    expect(find).toHaveBeenCalledTimes(1);
+    expect(list).not.toHaveBeenCalled();
+  });
+  it('stops the hourly reconciliation at the switch and reports nothing that hour', async () => {
+    const { f, find } = await twoPending(true);
+    expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 0, issues: [] });
+    expect(find).toHaveBeenCalledTimes(1);
+    expect((await f.read()).attempts.map(row => row.status)).toEqual(['pending', 'pending']);
+  });
+  it('publishes no issue for an unknown outcome read while a switch commits, and reads nothing more', async () => {
+    const { f, find } = await twoPending(false);
+    find.mockImplementationOnce(async reference => {
+      await db.forGym(f.gymId, tx => tx.insert(auditEvents).values(switchAudit(f)));
+      return { status: 'unknown' as const, reference: { kind: 'charge' as const, id: reference.id } };
+    });
+    expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 0, issues: [] });
+    expect(find).toHaveBeenCalledTimes(1);
+    expect((await f.read()).attempts.map(row => row.status)).toEqual(['pending', 'pending']);
+  });
+  it('reads every stale attempt when no switch commits', async () => {
+    const { f, find } = await twoPending(false);
+    await f.runner.reconcile(f.gymId);
+    expect(find).toHaveBeenCalledTimes(2);
+  });
+  it('carries the snapshot for every provider that does not hold a live key', async () => {
+    const f = await fixture(), guarded = stripeWriteScope(db.forGym);
+    await db.forGym(f.gymId, tx => tx.insert(auditEvents).values(switchAudit(f)));
+    const work = () => guarded(f.gymId, async () => 'written');
+    await expect(withProviderWrites({ keyMode: 'live' }, f.gymId, null, work)).resolves.toBe('written');
+    await expect(withProviderWrites({ keyMode: 'test' }, f.gymId, null, work)).rejects.toBeInstanceOf(StripeTestModeSwitched);
+    await expect(withProviderWrites({}, f.gymId, null, work)).rejects.toBeInstanceOf(StripeTestModeSwitched);
   });
 });

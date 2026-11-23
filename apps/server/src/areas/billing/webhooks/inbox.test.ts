@@ -19,7 +19,7 @@ import { StripeFixtures } from '../../../infra/payments/stripe-fixtures.js';
 import type { ObjectData } from '../../../infra/payments/transport.js';
 import { PaymentWebhookError } from '../../../infra/payments/webhook-error.js';
 import { createWebhookHealthQuery, createWebhookInbox, handlerFailureFields, testEventSkippedAction, type WebhookInbox } from './inbox.js';
-import { stripeTestClearedAction } from '../customers.js';
+import { stripeTestClearedAction } from '../stripe-writes.js';
 import { createWebhookInboxJobs } from './inbox.jobs.js';
 import { createWebhookInboxRoutes } from './inbox.routes.js';
 import { createReplayCommand } from '../../../cli/replay.js';

@@ -4,13 +4,15 @@ import { and, desc, eq, inArray, isNull, lt, lte, not, notExists, or } from 'dri
 import { sql } from 'drizzle-orm';
 import { AppError } from '@plaingym/shared';
 import { auditEvents, households, invoices, paymentAttempts, payments, refunds, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
-import type { ChargeOutcome, PaymentObject, PaymentObjectReference, Payments } from '../../../infra/payments/index.js';
+import type { ChargeOutcome, CheckoutSession, PaymentObject, PaymentObjectReference, Payments } from '../../../infra/payments/index.js';
 import { invoiceLateProcessing, invoiceProcessing } from '../transitions/bank.js';
 import { applyChargeOutcome } from '../transitions/outcomes.js';
 import { createAbandoned, terminal, terminalInvoiceStatuses } from '../transitions/store.js';
 import { createDisputeRefundWriter } from '../disputes-refunds.js';
 import { testModeDispute } from '../alerts/disputes.query.js';
-import { latestTestSwitchId, stripeWriteScope, StripeTestModeSwitched, withStripeTestWrites } from '../stripe-writes.js';
+import { assertStripeSnapshot, latestTestSwitchId, stripeSwitchSnapshot, stripeWriteScope, StripeTestModeSwitched,
+  withProviderWrites } from '../stripe-writes.js';
+import { holdRestoreCheckStart, readRestoreCheckStart, stripeConfigStored } from '../../settings/go-live.restore.js';
 import { audit, system } from './store.js';
 import type { RunnerOptions } from './index.js';
 import type { MutationContext } from '../../../core/interfaces/common.js';
@@ -183,7 +185,9 @@ export function createReconciliation(options: Options) {
   async function checkout(gymId: string, id: string, provider: Payments, context: MutationContext = system(gymId)) {
     const found = await provider.readPaymentObject({ kind: 'checkout', id });
     if (found.status !== 'found' || found.value.kind !== 'checkout') return false;
-    const session = found.value.object;
+    return applyCheckout(gymId, id, found.value.object, provider, context);
+  }
+  async function applyCheckout(gymId: string, id: string, session: CheckoutSession, provider: Payments, context: MutationContext) {
     if (session.metadata.gymId !== gymId || session.mode !== 'payment') return false;
     const invoice = await scope(gymId, async tx => (await tx.select().from(invoices).where(eq(invoices.checkoutSessionId, id)))[0]);
     if (!invoice || session.metadata.invoiceId !== invoice.id) return false;
@@ -197,20 +201,24 @@ export function createReconciliation(options: Options) {
     if (session.status !== 'complete') return false;
     return apply(gymId, await provider.findCharge({ kind: 'checkout', id }, { includeSuccessTime: true }), context);
   }
-  async function object(gymId: string, value: PaymentObject, provider: Payments): Promise<boolean> {
+  /** `switched` is the snapshot read before `provider` was resolved; a write to Stripe first compares it. */
+  async function object(gymId: string, value: PaymentObject, provider: Payments, switched: string | null): Promise<boolean> {
     if (value.kind === 'charge') {
       const outcome = value.object;
       if (outcome.status !== 'pending') return apply(gymId, outcome);
       // Cancel only stale/unconfirmed work; the adapter serializes cancel against confirm and re-reads races.
-      const attempt = await scope(gymId, async tx => (await tx.select().from(paymentAttempts)
-        .where(eq(paymentAttempts.paymentIntentId, outcome.id)))[0]);
+      const attempt = await scope(gymId, async tx => {
+        // Under the gym row lock and whatever the key mode: never cancel with a key a switch has since replaced.
+        await assertStripeSnapshot(tx, gymId, switched);
+        return (await tx.select().from(paymentAttempts).where(eq(paymentAttempts.paymentIntentId, outcome.id)))[0];
+      });
       if (attempt && (attempt.status === 'processing' || attempt.createdAt.getTime() > clock.now().getTime() - staleAfterMs)) return false;
       const canceled = await provider.cancelCharge(outcome.id);
       if (await apply(gymId, canceled)) return true;
       // An orphan can safely be discarded only after Stripe confirms cancellation.
       return !attempt && canceled.status === 'failed' && canceled.code === 'canceled';
     }
-    if (value.kind === 'checkout') return checkout(gymId, value.object.id, provider);
+    if (value.kind === 'checkout') return applyCheckout(gymId, value.object.id, value.object, provider, system(gymId));
     if (value.kind === 'setup' || value.kind === 'payment_method') return true; // Card collection is webhook-owned.
     // Refunds and disputes are written by the same module as webhook processing, matched through their PaymentIntent.
     // A payment already recorded needs no processor read.
@@ -220,18 +228,23 @@ export function createReconciliation(options: Options) {
     if (value.kind === 'refund') return await writer.refund(gymId, payment, value.object, provider) && value.object.status !== 'pending';
     return await writer.dispute(gymId, payment, value.object) !== 'conflict';
   }
-  /** `resolved` is a provider already resolved by the caller; null means the gym has none, so stored intents are listed unread. */
-  async function pending(gymId: string, resolved?: Payments | null) {
+  /**
+   * `resolved` is a provider already resolved by the caller, with the switch snapshot read before it; a null provider means
+   * the gym has none, so stored intents are listed unread. Every key mode stops at the first switch it sees.
+   */
+  async function pending(gymId: string, resolved?: { provider: Payments | null; switched: string | null }) {
     const now = clock.now().getTime();
     const before = new Date(now - staleAfterMs), processingBefore = new Date(now - 10 * 86400_000);
     const { attempts, checkouts, switched } = await scope(gymId, async tx => {
-      const switched = await latestTestSwitchId(tx, gymId);
+      if (resolved) await assertStripeSnapshot(tx, gymId, resolved.switched);
+      const switched = resolved ? resolved.switched : await stripeSwitchSnapshot(tx, gymId);
       const attempts = await tx.select().from(paymentAttempts).where(or(and(eq(paymentAttempts.status, 'pending'), lte(paymentAttempts.createdAt, before)),
         and(eq(paymentAttempts.status, 'processing'), lt(paymentAttempts.processingAt, processingBefore))));
-      const checkouts = [...await staleProcessingCheckouts(tx, processingBefore), ...await staleLateCheckouts(tx, processingBefore, switched)];
+      const checkouts = [...await staleProcessingCheckouts(tx, processingBefore),
+        ...await staleLateCheckouts(tx, processingBefore, await latestTestSwitchId(tx, gymId))];
       return { attempts, checkouts, switched };
     });
-    let provider = resolved;
+    let provider = resolved?.provider;
     const issues: ReconciliationIssue[] = [];
     async function refresh(kind: 'charge' | 'checkout_debit', id: string,
       handle: (outcome: ChargeOutcome, provider: Payments) => Promise<string | undefined>) {
@@ -240,13 +253,25 @@ export function createReconciliation(options: Options) {
         if (!provider) { issues.push({ kind, id, reason: notConfigured }); return; }
         const current = provider;
         const read = async () => {
-          const outcome = await current.findCharge({ kind: 'charge', id }, { includeSuccessTime: true });
-          const reason = await handle(outcome, current);
+          let reason: string | undefined;
+          try {
+            const outcome = await current.findCharge({ kind: 'charge', id }, { includeSuccessTime: true });
+            reason = await handle(outcome, current);
+          } catch (error) {
+            if (error instanceof StripeTestModeSwitched) throw error;
+            reason = 'provider_or_transition_error';
+          }
+          // The read may have ended with no guarded transaction, and a live key has none: a switch since then stops the
+          // run before its issue or the next read.
+          await scope(gymId, tx => assertStripeSnapshot(tx, gymId, switched));
           if (reason) issues.push({ kind, id, reason });
         };
-        if (current.keyMode === 'test') await withStripeTestWrites(gymId, switched, read);
-        else await read();
-      } catch { issues.push({ kind, id, reason: 'provider_or_transition_error' }); }
+        await withProviderWrites(current, gymId, switched, read);
+      } catch (error) {
+        // A switch stops the run: every later read would use the old key.
+        if (error instanceof StripeTestModeSwitched) throw error;
+        issues.push({ kind, id, reason: 'provider_or_transition_error' });
+      }
     }
     for (const attempt of attempts) {
       if (!attempt.paymentIntentId) {
@@ -260,7 +285,7 @@ export function createReconciliation(options: Options) {
         continue;
       }
       await refresh('charge', attempt.paymentIntentId, async (outcome, current) =>
-        await object(gymId, { kind: 'charge', object: outcome }, current) ? undefined : 'unresolved');
+        await object(gymId, { kind: 'charge', object: outcome }, current, switched) ? undefined : 'unresolved');
     }
     for (const checkout of checkouts) {
       // Read only. Even an unexpected unconfirmed snapshot of a Checkout debit cannot reach cancellation.
@@ -281,13 +306,56 @@ export function createReconciliation(options: Options) {
     // A delayed job for an earlier restore must never clear the current restore's gate.
     if (restoreId && latestRestore?.id !== restoreId) return { inspected: 0, readyForOwnerReview: false, issues: [] };
     restoreId ??= latestRestore?.id;
-    const check = await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system',
+    const check = await scope(gymId, tx => started(tx, gymId, snapshotAt, restoreId));
+    return restoreCheck(gymId, snapshotAt, check.id);
+  }
+  /**
+   * A busy check's follow-up, run under the restore lease. Returns null, with no check, when billing is on, the restore
+   * isn't the latest, or the latest check for this restore is already clear for the saved Stripe mode: the owner may be
+   * reviewing it. It decides that first, before it reads the Stripe credentials, so a follow-up with nothing to do ends
+   * even when they can't be read. It reads the switch snapshot before it resolves the provider, so the guard covers the
+   * key it resolved. It then decides again and records the start in one transaction under the gym row lock that turning
+   * billing on takes, so billing can't turn on while it starts and a start bars billing until its report. A switch
+   * committed since the snapshot throws there, with no start and no Stripe call, and the retry resolves the current key;
+   * so do Stripe settings saved since the resolver found none. One seen during the check throws too, whatever the key
+   * mode, with no report and no further Stripe call (`restoreCheck`).
+   */
+  async function followUpRestore(gymId: string, snapshotAt: Date, restoreId?: string): Promise<RestoreCheck | null> {
+    if (!Number.isFinite(snapshotAt.getTime()) || snapshotAt > clock.now()) throw new Error('Invalid snapshot time');
+    const early = await scope(gymId, async tx => ({
+      switched: await stripeSwitchSnapshot(tx, gymId), gate: await readRestoreCheckStart(tx, gymId, restoreId) }));
+    if (!early.gate.start) return null;
+    const provider = await configuredProvider(gymId);
+    const check = await scope(gymId, async tx => {
+      const gate = await holdRestoreCheckStart(tx, gymId, restoreId, !!provider);
+      if (await stripeSwitchSnapshot(tx, gymId) !== early.switched) throw new StripeTestModeSwitched();
+      // Stripe settings saved since the early read found none: the retry inspects the new account.
+      if (!provider && !early.gate.stripeStored && gate.stripeStored) throw new StripeTestModeSwitched();
+      return gate.start ? started(tx, gymId, snapshotAt, gate.restoreId) : null;
+    });
+    return check && restoreCheck(gymId, snapshotAt, check.id, { provider, switched: early.switched, stored: early.gate.stripeStored });
+  }
+  function started(tx: Transaction, gymId: string, snapshotAt: Date, restoreId: string | undefined) {
+    return writeAudit(tx, { gymId, actorKind: 'system',
       action: 'billing.runner.restore_check_started', targetType: restoreId ? 'restore' : 'gym', targetId: restoreId ?? gymId,
-      after: { snapshotAt: snapshotAt.toISOString() }, occurredAt: clock.now() }));
+      after: { snapshotAt: snapshotAt.toISOString() }, occurredAt: clock.now() });
+  }
+  /**
+   * Runs a started check and records its report against `checkId`. A follow-up, which resolved the provider, passes it
+   * with the switch snapshot it read before resolving it; otherwise both are read here, the snapshot first. Whatever the
+   * key mode, the check compares the snapshot after each read that ends with no guarded transaction, before each Stripe
+   * write and before its report. A switch seen during the check ends it with the incomplete report in the mode it ran
+   * with, except in a follow-up: there it throws with no report, so the retry resolves the current key.
+   */
+  async function restoreCheck(gymId: string, snapshotAt: Date, checkId: string,
+    resolved?: { provider: Payments | null; switched: string | null; stored: boolean }): Promise<RestoreCheck> {
+    let ranMode: 'test' | 'live' | undefined;
     try {
-      const switched = await scope(gymId, tx => latestTestSwitchId(tx, gymId));
-      const provider = await configuredProvider(gymId);
-      return await (provider?.keyMode === 'test' ? withStripeTestWrites(gymId, switched, inspect) : inspect());
+      const switched = resolved ? resolved.switched : await scope(gymId, tx => stripeSwitchSnapshot(tx, gymId));
+      const provider = resolved ? resolved.provider : await configuredProvider(gymId);
+      ranMode = provider?.keyMode;
+      const assertCurrent = () => scope(gymId, tx => assertStripeSnapshot(tx, gymId, switched));
+      return await (provider ? withProviderWrites(provider, gymId, switched, inspect) : inspect());
       async function inspect(): Promise<RestoreCheck> {
         const stripeMode = provider?.keyMode ?? null;
         const issues: ReconciliationIssue[] = [];
@@ -307,17 +375,26 @@ export function createReconciliation(options: Options) {
         });
         async function refresh(ref: PaymentObjectReference) {
           if (!provider) { issues.push({ ...ref, reason: notConfigured }); return; }
+          let reason: string | undefined;
           try {
+            let done: boolean;
             if (ref.kind === 'charge') {
               const outcome = await provider.findCharge({ kind: 'charge', id: ref.id }, { includeSuccessTime: true });
-              if (!await object(gymId, { kind: 'charge', object: outcome }, provider))
-                issues.push({ ...ref, reason: 'manual_resolution_required' });
-              return;
+              done = await object(gymId, { kind: 'charge', object: outcome }, provider, switched);
+            } else {
+              const read = await provider.readPaymentObject(ref);
+              done = read.status === 'found' && await object(gymId, read.value, provider, switched);
             }
-            const read = await provider.readPaymentObject(ref);
-            if (read.status !== 'found' || !await object(gymId, read.value, provider))
-              issues.push({ ...ref, reason: 'manual_resolution_required' });
-          } catch { issues.push({ ...ref, reason: 'provider_or_transition_error' }); }
+            if (!done) reason = 'manual_resolution_required';
+          } catch (error) {
+            // A switch ends the check below, with no further Stripe call.
+            if (error instanceof StripeTestModeSwitched) throw error;
+            reason = 'provider_or_transition_error';
+          }
+          // A missing object or a failed read ends with no guarded transaction, and a live key has none: check for a
+          // switch before the next read.
+          await assertCurrent();
+          if (reason) issues.push({ ...ref, reason });
         }
         for (const ref of references) await refresh(ref);
         // The adapter enumerates events plus creation-time lists (including refunds/disputes), with pinned-version re-fetches.
@@ -329,7 +406,8 @@ export function createReconciliation(options: Options) {
         // A restore keeps the gym's Stripe settings, so a gym without them had none at the snapshot and there are no
         // changes this install can list. Connecting Stripe later and checking again reads them.
         if (provider) do {
-          const page = await provider.listChangesSince(since, cursor ? { cursor } : {});
+          const page = await provider.listChangesSince(since, cursor ? { cursor } : {})
+            .finally(assertCurrent);
           for (const change of page.changes) {
             const id = change.kind === 'charge' && change.object.status === 'unknown' ? change.object.reference.id : 'id' in change.object ? change.object.id : '';
             await refresh({ kind: change.kind, id });
@@ -339,7 +417,7 @@ export function createReconciliation(options: Options) {
           if (cursor && cursors.has(cursor)) throw new Error('Repeated reconciliation cursor');
           if (cursor) cursors.add(cursor);
         } while (cursor);
-        const pendingResult = await pending(gymId, provider);
+        const pendingResult = await pending(gymId, { provider, switched });
         issues.push(...pendingResult.issues);
         const remaining = await scope(gymId, tx => tx.select({ id: paymentAttempts.id, invoiceId: paymentAttempts.invoiceId }).from(paymentAttempts)
           .where(inArray(paymentAttempts.status, ['pending', 'processing'])));
@@ -350,23 +428,32 @@ export function createReconciliation(options: Options) {
         const pendingRefunds = await scope(gymId, tx => tx.select({ id: refunds.id }).from(refunds).where(eq(refunds.status, 'pending')));
         issues.push(...pendingRefunds.map(row => ({ kind: 'refund', id: row.id, reason: 'unresolved' })));
         const unique = [...new Map(issues.map(issue => [`${issue.kind}:${issue.id}`, issue])).values()];
-        await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.runner.restore_checked',
-          targetType: 'restore_check', targetId: check.id, occurredAt: clock.now(),
-          after: { snapshotAt: snapshotAt.toISOString(), inspected, unresolved: unique.length, issues: unique,
-            stripeConfigured: !!provider, stripeMode } }));
+        await scope(gymId, async tx => {
+          // Published only for the settings it read: no switch since the snapshot, and in a follow-up that found no
+          // Stripe settings, still none (a first save makes the retry inspect the new account).
+          await assertStripeSnapshot(tx, gymId, switched);
+          if (resolved && !provider && !resolved.stored && await stripeConfigStored(tx, gymId)) throw new StripeTestModeSwitched();
+          return writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.runner.restore_checked',
+            targetType: 'restore_check', targetId: checkId, occurredAt: clock.now(),
+            after: { snapshotAt: snapshotAt.toISOString(), inspected, unresolved: unique.length, issues: unique,
+              stripeConfigured: !!provider, stripeMode } });
+        });
         return { inspected, readyForOwnerReview: unique.length === 0, issues: unique, stripeConfigured: !!provider, stripeMode };
       }
     } catch (error) {
       const stale = error instanceof StripeTestModeSwitched;
+      if (stale && resolved) throw error;
       const issues = [{ kind: 'provider', id: gymId, reason: 'provider_or_transition_error' }];
+      // A test provider, or one with no mode, keeps the test-mode report; a live provider stopped by a switch reports live.
+      const stripeMode = ranMode === 'live' ? 'live' as const : 'test' as const;
       await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.runner.restore_checked',
-        targetType: 'restore_check', targetId: check.id, occurredAt: clock.now(),
+        targetType: 'restore_check', targetId: checkId, occurredAt: clock.now(),
         after: { snapshotAt: snapshotAt.toISOString(), inspected: 0, unresolved: 1,
-          issues, ...(stale ? { stripeConfigured: true, stripeMode: 'test' } : {}) } }));
+          issues, ...(stale ? { stripeConfigured: true, stripeMode } : {}) } }));
       // A switch makes this report incomplete, not an outage: keep its original mode for the owner's restore gate.
-      if (stale) return { inspected: 0, readyForOwnerReview: false, issues, stripeConfigured: true, stripeMode: 'test' };
+      if (stale) return { inspected: 0, readyForOwnerReview: false, issues, stripeConfigured: true, stripeMode };
       throw error;
     }
   }
-  return { apply, checkout, pending, postRestore };
+  return { apply, checkout, pending, postRestore, followUpRestore };
 }

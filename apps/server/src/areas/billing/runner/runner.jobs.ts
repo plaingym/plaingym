@@ -57,13 +57,22 @@ export function createRunnerJobs(read: () => ChargeRunner | undefined = () => co
     { id: 'billing.runner.restore', async handler(payload, context) {
       const snapshotAt = instantSchema.parse((payload as { snapshotAt?: unknown } | null)?.snapshotAt);
       const restoreId = idSchema.optional().parse((payload as { restoreId?: unknown } | null)?.restoreId);
-      const result = await lease(context.gymId, () => required().postRestore(context.gymId,
-        new Date(snapshotAt), restoreId)).catch(error => {
-        // The holder runs the same check and records its result; contention must not exhaust this job's attempts.
-        if (error instanceof RestoreCheckBusyError) return undefined;
+      const after = z.string().min(1).max(200).optional().parse((payload as { after?: unknown } | null)?.after);
+      // A follow-up for a busy check decides under the lease whether it still needs to run: see `followUpRestore`.
+      const result = await lease(context.gymId, () => after
+        ? required().followUpRestore(context.gymId, new Date(snapshotAt), restoreId)
+        : required().postRestore(context.gymId, new Date(snapshotAt), restoreId)).catch(error => {
+        if (error instanceof RestoreCheckBusyError) return 'busy' as const;
         throw error;
       });
-      if (!result) return;
+      if (result === 'busy') {
+        // The holder may end without a usable result (a failed rerun, or this job's own reclaimed earlier attempt), so
+        // contention queues one follow-up check a minute later instead of spending this job's attempts.
+        await required().queueRestoreCheck(context.gymId, context.timezone,
+          { snapshotAt, ...(restoreId ? { restoreId } : {}), after: context.jobId }, new Date(context.clock.now().getTime() + 60_000));
+        return;
+      }
+      if (!result) return; // A follow-up with nothing left to check.
       // Without Stripe a retry would find the same stored references; the report lists them for the owner, who connects
       // Stripe and checks again. A check that ran with Stripe and left issues retries.
       if (!result.readyForOwnerReview && result.stripeConfigured !== false)

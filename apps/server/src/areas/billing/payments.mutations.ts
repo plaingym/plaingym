@@ -10,7 +10,7 @@ import { localDate } from '@plaingym/shared/time';
 import { notFound, type MutationContext } from '../../core/interfaces/common.js';
 import type { InvoiceTransitions } from '../../core/interfaces/invoice-transitions.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
-import { latestTestSwitchId, stripeWriteCurrent } from './stripe-writes.js';
+import { stripeSwitchSnapshot, stripeWriteCurrent } from './stripe-writes.js';
 import { catalogAudit } from './catalog.js';
 import { processorRefundId } from './disputes-refunds.js';
 import { loadHousehold, loadInvoice, presentRefund, type PaymentOptions } from './payments.js';
@@ -19,7 +19,7 @@ import { markRefundSending, markRefundSent, pastRefundWindow, sameRefund, settle
 import { duplicateReservation } from './transitions/store.js';
 import { withJobTransaction } from '../../infra/jobs/index.js';
 import { CardImportRefused, isProviderOutage } from '../../infra/payments/index.js';
-import { customerCardImportJob } from './customer-card-import.js';
+import { cardImportSnapshotVersion, customerCardImportJob } from './customer-card-import.js';
 
 type Options = PaymentOptions & { scope: typeof forGym; clock: Clock; transitions: InvoiceTransitions; settings: GymSettingsAccessor };
 export const receiptJob = 'billing.payments.receipt';
@@ -63,7 +63,7 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
     async importCustomerCards(context: MutationContext, householdId: string) {
       // Check local ownership before configuration or provider access.
       const loaded = await scope(context.gymId, async tx => ({ household: await loadHousehold(tx, householdId),
-        switched: await latestTestSwitchId(tx, context.gymId) }));
+        switched: await stripeSwitchSnapshot(tx, context.gymId) }));
       if (!loaded.household.stripeCustomerId) paymentConflict('card_import_no_customer', 'Household has no Stripe customer');
       if (!jobs || !paymentsFor) paymentUnavailable('payments_unavailable', 'Card import is not configured');
       const customerId = loaded.household.stripeCustomerId, provider = await paymentsFor(context.gymId);
@@ -96,7 +96,8 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
         if (adopted) await catalogAudit(tx, context, clock, 'billing.customer.adopted', 'household', householdId, undefined,
           { customerId, requestId, source: 'card_import' });
         await catalogAudit(tx, context, clock, 'billing.card.import_requested', 'household', householdId, undefined, { requestId });
-        await jobs.enqueue(customerCardImportJob, { householdId, customerId, requestId, switched: loaded.switched },
+        await jobs.enqueue(customerCardImportJob, { householdId, customerId, requestId, switched: loaded.switched,
+          switchedVersion: cardImportSnapshotVersion },
           { gymId: context.gymId, timezone: gym.timezone, idempotencyKey: requestId, maxAttempts: 8 }, transaction);
       });
       return { queued: true as const };
@@ -168,7 +169,7 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
         const pending = open.find(row => retryable(context.gymId, row));
         if (!lapsed.length && open.length && (!pending || pending.amountCents !== request.amountCents
           || pending.reason !== null && pending.reason !== request.reason)) paymentConflict('pending_refund', 'Resolve the pending refund first');
-        return { payment, invoice, pending, lapsed, processorPayment, switched: await latestTestSwitchId(tx, context.gymId) };
+        return { payment, invoice, pending, lapsed, processorPayment, switched: await stripeSwitchSnapshot(tx, context.gymId) };
       });
       const { payment, invoice, pending, lapsed, processorPayment, switched } = loaded;
       const provider = processorPayment ? await paymentsFor?.(context.gymId) : null;

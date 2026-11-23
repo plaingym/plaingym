@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
-import { forGym, paymentMethods, uuidv7 } from '@plaingym/db';
+import { forGym, paymentMethods, uuidv7, type Transaction } from '@plaingym/db';
 import { createTranslator, type Clock } from '@plaingym/shared';
 import { idSchema } from '@plaingym/shared/contracts';
 import { locales } from '@plaingym/shared/locales';
 import type { JobRegistration } from '../../core/registry.js';
 import { withJobTransaction, type Jobs } from '../../infra/jobs/index.js';
 import { CardCursorRefused, CardImportRefused, type CustomerCardPage, type PaymentMethod, type PaymentMethodType, type Payments } from '../../infra/payments/index.js';
-import { readGymSettings } from '../settings/settings.js';
+import { holdGymSettings, readGymSettings } from '../settings/settings.js';
 import { catalogAudit } from './catalog.js';
 import { loadHousehold } from './payments.js';
-import { stripeWriteCurrent } from './stripe-writes.js';
+import { latestTestSwitchId, stripeWriteCurrent } from './stripe-writes.js';
 import { promoteDefaultCard } from './payments.mutations.js';
 
 export const customerCardImportJob = 'billing.payments.import_customer_cards';
@@ -19,13 +19,29 @@ export const customerCardChunkSize = 100;
 export const customerCardRestartLimit = 3;
 const t = createTranslator(locales.en ?? {});
 const cursorSchema = z.string().regex(/^[A-Za-z0-9_]+$/);
+/** Marks a payload whose `switched` is the write guard's snapshot (`stripeSwitchSnapshot`); see `configurationCurrent`. */
+export const cardImportSnapshotVersion = 2;
 const payloadSchema = z.strictObject({ householdId: idSchema, customerId: z.string().regex(/^[A-Za-z0-9_]+$/),
-  requestId: idSchema, switched: idSchema.nullable(), cursor: cursorSchema.nullish(), skippedCursor: cursorSchema.nullish(),
+  requestId: idSchema, switched: idSchema.nullable(), switchedVersion: z.literal(cardImportSnapshotVersion).optional(),
+  cursor: cursorSchema.nullish(), skippedCursor: cursorSchema.nullish(),
   currency: z.string().optional(),
   restarts: z.number().int().min(0).max(customerCardRestartLimit).default(0),
   importedCards: z.number().int().nonnegative().default(0), importedBankAccounts: z.number().int().nonnegative().default(0),
   skippedCards: z.number().int().nonnegative().default(0), skippedBankAccounts: z.number().int().nonnegative().default(0),
   skippedMandatePermissions: z.number().int().nonnegative().default(0) });
+
+/**
+ * Under the gym lock: whether the Stripe configuration the request saw still holds. A marked payload carries the write
+ * guard's snapshot. One without the marker, queued by an earlier release, carries the test-data clear's ID alone and is
+ * compared with that. A switch after its request still refuses it: while the household holds a Stripe customer, the
+ * Payments save changes the mode only with a clear.
+ */
+async function configurationCurrent(tx: Transaction, gymId: string, payload: z.infer<typeof payloadSchema>) {
+  if (payload.switchedVersion === cardImportSnapshotVersion) return stripeWriteCurrent(tx, gymId, payload.switched);
+  await holdGymSettings(tx, gymId);
+  return await latestTestSwitchId(tx, gymId) === payload.switched;
+}
+
 export interface CustomerCardImportOptions {
   scope?: typeof forGym;
   clock: Clock;
@@ -69,7 +85,7 @@ export function createCustomerCardImportJobs(options: CustomerCardImportOptions)
     async function outcome(reason: string, restart = false) {
       await withJobTransaction(scope, gymId, async transaction => {
         const { tx } = transaction;
-        const current = await stripeWriteCurrent(tx, gymId, payload.switched)
+        const current = await configurationCurrent(tx, gymId, payload)
           && (await loadHousehold(tx, payload.householdId, true)).stripeCustomerId === payload.customerId;
         const restarting = current && restart && payload.restarts < customerCardRestartLimit;
         // Settle the cards already committed when the bounded restart budget ends.
@@ -91,7 +107,7 @@ export function createCustomerCardImportJobs(options: CustomerCardImportOptions)
       });
     }
     const currency = await scope(gymId, async tx => {
-      if (!await stripeWriteCurrent(tx, gymId, payload.switched)
+      if (!await configurationCurrent(tx, gymId, payload)
         || (await loadHousehold(tx, payload.householdId)).stripeCustomerId !== payload.customerId) return null;
       return (await readGymSettings(tx, gymId)).currency;
     });
@@ -125,10 +141,10 @@ export function createCustomerCardImportJobs(options: CustomerCardImportOptions)
     }
     const pageOutcome = await withJobTransaction(scope, gymId, async transaction => {
       const { tx } = transaction;
-      const configurationCurrent = await stripeWriteCurrent(tx, gymId, payload.switched);
+      const configuration = await configurationCurrent(tx, gymId, payload);
       const household = await loadHousehold(tx, payload.householdId, true);
       // Customer replacement, erasure and a test-to-live switch must not restore stale card references.
-      if (!configurationCurrent || household.stripeCustomerId !== payload.customerId) {
+      if (!configuration || household.stripeCustomerId !== payload.customerId) {
         await catalogAudit(tx, actor, options.clock, 'billing.card.import_finished', 'household', household.id, undefined,
           { requestId: payload.requestId, outcome: 'stale', reason: 'customer_or_configuration_changed',
             ...committedCounts, restarts: payload.restarts });

@@ -11,7 +11,7 @@ import type { Payments } from '../../../infra/payments/index.js';
 import type { MutationContext } from '../../../core/interfaces/common.js';
 import { logError, logInfo } from '../../../core/log.js';
 import { assignmentInvoices, audit, generateCycle, latestAttempt, system } from './store.js';
-import { latestTestSwitchId, stripeWriteCurrent, stripeWriteScope, StripeTestModeSwitched, withStripeTestWrites } from '../stripe-writes.js';
+import { stripeSwitchSnapshot, stripeWriteCurrent, stripeWriteScope, StripeTestModeSwitched, withProviderWrites } from '../stripe-writes.js';
 import { createReconciliation } from './reconciliation.js';
 import type { DisputeRefundOptions } from '../disputes-refunds.js';
 import { assignmentInvoiceCondition, eligibility, isAssignmentInvoice, retryAt, retryDeadlines, skipped, type ChargeMode,
@@ -52,9 +52,9 @@ export function createChargeRunner(options: RunnerOptions) {
   const scope = stripeWriteScope(options.scope ?? forGym), clock = options.clock ?? defaultClock;
   const reconciliation = createReconciliation({ ...options, scope, clock });
   /**
-   * `switched` is the gym's latest switch from test to live as read before the provider was resolved. A switch holds the
-   * gym row for its whole save, so the reservation waits for one in progress; if one committed since, the provider may
-   * hold the old test key, and nothing is reserved (`switched`): the caller resolves the provider again.
+   * `switched` is the gym's switch snapshot (`stripeSwitchSnapshot`) as read before the provider was resolved. A switch
+   * holds the gym row for its whole save, so the reservation waits for one in progress; if one committed since, the
+   * provider may hold the old key, and nothing is reserved (`switched`): the caller resolves the provider again.
    */
   async function reserve(context: MutationContext, invoiceId: string, mode: ChargeMode, expiredSession: string | null,
     jobId: string | undefined, switched: string | null) {
@@ -62,6 +62,7 @@ export function createChargeRunner(options: RunnerOptions) {
     const gym = await options.settings.get(gymId);
     return scope(gymId, async tx => {
       // Before the invoice lock: the switch locks the gym row first, then the payable invoices.
+      // This catches a switch for a live-key provider, which runs outside the guard, whether it was resolved before or after it.
       if (!await stripeWriteCurrent(tx, gymId, switched)) return { status: 'switched' as const };
       const check = await eligibility(tx, gym, clock, invoiceId, mode, true);
       if (check.status === 'skipped') return check;
@@ -91,7 +92,7 @@ export function createChargeRunner(options: RunnerOptions) {
       throw new Error('Staff charge requires this gym and a user actor');
     const gym = await options.settings.get(gymId);
     const { check, switched } = await scope(gymId, async tx => ({
-      check: await eligibility(tx, gym, clock, invoiceId, mode), switched: await latestTestSwitchId(tx, gymId) }));
+      check: await eligibility(tx, gym, clock, invoiceId, mode), switched: await stripeSwitchSnapshot(tx, gymId) }));
     if (check.status === 'skipped') return check;
     const { invoice, latest } = check;
     if (invoice.amountCents === 0) {
@@ -100,7 +101,7 @@ export function createChargeRunner(options: RunnerOptions) {
     }
     const provider = await options.payments(gymId);
     try {
-      return await (provider.keyMode === 'test' ? withStripeTestWrites(gymId, switched, collectResolved) : collectResolved());
+      return await withProviderWrites(provider, gymId, switched, collectResolved);
     } catch (error) {
       if (!(error instanceof StripeTestModeSwitched)) throw error;
       return resolvedAgain ? skipped('collection_changed') : charge(gymId, invoiceId, request, true);
@@ -108,8 +109,10 @@ export function createChargeRunner(options: RunnerOptions) {
     async function collectResolved(): Promise<ChargeResult> {
       // A switch that committed between the reads above and resolving the provider cleared the test session or action-needed
       // intent read above, and the provider may hold the live key, which can't release them: start again, as `reserve` does.
+      // Only a live-key provider reaches this after a switch, since it runs outside the guard: one resolved before a save
+      // back to test, or after a switch to live.
       if ((latest?.status === 'requires_action' || invoice.checkoutSessionId)
-        && await scope(gymId, tx => latestTestSwitchId(tx, gymId)) !== switched)
+        && await scope(gymId, tx => stripeSwitchSnapshot(tx, gymId)) !== switched)
         return resolvedAgain ? skipped('collection_changed') : charge(gymId, invoiceId, request, true);
       if (latest?.status === 'requires_action') {
         if (!latest.paymentIntentId) throw new Error('Action-needed attempt has no PaymentIntent ID');
@@ -342,7 +345,21 @@ export function createChargeRunner(options: RunnerOptions) {
       else if (latest && abandonedAttempt(latest)) await retryNextDay(invoiceId, context, owner);
     }
   }
-  return { daily, charge, collectAssigned, retry, reconcile: (gymId: string) => reconciliation.pending(gymId), postRestore: reconciliation.postRestore,
+  /** A switch seen mid-run stops its Stripe reads; the next hourly run reads with the new key. */
+  async function reconcile(gymId: string) {
+    try { return await reconciliation.pending(gymId); }
+    catch (error) {
+      if (error instanceof StripeTestModeSwitched) return { inspected: 0, issues: [] };
+      throw error;
+    }
+  }
+  /** A busy restore check's one follow-up: the key names the busy job, so its replays queue no second one. */
+  function queueRestoreCheck(gymId: string, timezone: string, payload: { snapshotAt: string; restoreId?: string; after: string }, runAt: Date) {
+    return options.jobs.enqueue('billing.runner.restore', payload, { gymId, timezone, runAt,
+      idempotencyKey: 'restore-check:' + gymId + ':after:' + payload.after });
+  }
+  return { daily, charge, collectAssigned, retry, reconcile, postRestore: reconciliation.postRestore,
+    followUpRestore: reconciliation.followUpRestore, queueRestoreCheck,
     onAssigned: assignmentInvoices(clock), reportFailures,
     /** Stopped runs' failure reports, with only the invoices that still need staff. */
     chargeFailures: (gymId: string) => scope(gymId, tx => openChargeFailures(tx, clock.now())),

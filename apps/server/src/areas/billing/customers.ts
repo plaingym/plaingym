@@ -6,8 +6,7 @@ import { auditEvents, forGym, households, writeAudit, type Transaction } from '@
 import { AppError, type Clock } from '@plaingym/shared';
 import { clock as defaultClock } from '../../core/clock.js';
 import { CustomerCreationInProgress, CustomerDeleted, type Payments } from '../../infra/payments/index.js';
-import { latestTestSwitchId, stripeWriteCurrent } from './stripe-writes.js';
-export { latestTestSwitch, latestTestSwitchId, stripeTestClearedAction } from './stripe-writes.js';
+import { stripeSwitchSnapshot, stripeWriteCurrent } from './stripe-writes.js';
 
 export type CustomerUnavailableReason = 'stripe_not_configured' | 'missing_details' | 'creation_expired' | 'details_changed' | 'customer_unreadable';
 export class CustomerUnavailable extends AppError {
@@ -48,7 +47,7 @@ export function createCustomersService(options: CustomersOptions) {
     before: null, after, occurredAt: clock.now(),
   });
 
-  const lastSwitch = latestTestSwitchId;
+  const lastSwitch = stripeSwitchSnapshot;
 
   async function ensureCustomer(gymId: string, householdId: string, retried = false): Promise<string> {
     // Resolve local configuration before reserving an operation that might reach Stripe.

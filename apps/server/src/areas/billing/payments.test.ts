@@ -658,6 +658,64 @@ describe('staff import of externally attached cards', () => {
     const list = vi.spyOn(f.provider, 'listCustomerCards');
     await f.jobs.runNext(); expect(list).not.toHaveBeenCalled(); expect(await rows(f)).toHaveLength(1);
   });
+
+  describe('on a gym whose Payments save changed the Stripe mode without a clear', () => {
+    const modeChange = (f: Fixture) => factory('auditEvents', f.gymId, { action: 'integrations.stripe_saved', targetType: 'gym',
+      targetId: f.gymId, before: { mode: 'test', endpointId: null }, after: { mode: 'live', endpointId: null } });
+    const finished = async (f: Fixture) => (await db.forGym(f.gymId, tx => tx.select().from(auditEvents)
+      .where(eq(auditEvents.action, 'billing.card.import_finished')).orderBy(auditEvents.createdAt, auditEvents.id)))
+      .map(row => (row.after as { outcome: string }).outcome);
+    /** A request as an earlier release queued it: `switched` is the clear audit's ID (none here) and there is no marker. */
+    const oldRequest = (f: Fixture, requestId = uuidv7()) => f.jobs.enqueue(customerCardImportJob,
+      { householdId: f.home.id, customerId: 'cus_fixture', requestId, switched: null }, { gymId: f.gymId, timezone: 'UTC' });
+    it('finishes an old-shape request and its continuation when nothing changed since the request', async () => {
+      const f = await fixture(); await empty(f);
+      for (let i = 0; i < 101; i++) attached(f, 'pm_old_shape_' + i);
+      await modeChange(f);
+      await oldRequest(f);
+      const list = vi.spyOn(f.provider, 'listCustomerCards');
+      await f.jobs.runNext();
+      await f.jobs.runNext();
+      expect(list).toHaveBeenCalled();
+      expect(await rows(f)).toHaveLength(101);
+      expect(await finished(f)).toEqual(['finished']);
+    });
+    it('finishes an old-shape continuation queued before the upgrade', async () => {
+      const f = await fixture(); await empty(f);
+      attached(f, 'pm_after_cursor', new Date('2026-10-01T00:00:00Z'));
+      attached(f, 'pm_cursor', new Date('2026-10-30T00:00:00Z'));
+      await modeChange(f);
+      await f.jobs.enqueue(customerCardImportJob, { householdId: f.home.id, customerId: 'cus_fixture', requestId: uuidv7(),
+        switched: null, cursor: 'pm_cursor', currency: 'USD', importedCards: 1 }, { gymId: f.gymId, timezone: 'UTC' });
+      await f.jobs.runNext();
+      expect((await rows(f)).map(method => method.processorId)).toEqual(['pm_after_cursor']);
+      expect(await finished(f)).toEqual(['finished']);
+    });
+    it('ends an old-shape request stale after a switch made after the request', async () => {
+      const f = await fixture(); attached(f, 'pm_stale');
+      await modeChange(f);
+      await oldRequest(f);
+      await factory('auditEvents', f.gymId, { action: stripeTestClearedAction, targetType: 'gym', targetId: f.gymId });
+      const list = vi.spyOn(f.provider, 'listCustomerCards');
+      await f.jobs.runNext();
+      expect(list).not.toHaveBeenCalled();
+      expect(await rows(f)).toHaveLength(1);
+      expect(await finished(f)).toEqual(['stale']);
+    });
+    it('finishes a new request, and ends one stale after a later mode change with no clear', async () => {
+      const f = await fixture(); await empty(f); attached(f, 'pm_new_shape');
+      await modeChange(f);
+      await f.service.importCustomerCards(f.context, f.home.id);
+      await f.jobs.runNext();
+      expect((await rows(f)).map(method => method.processorId)).toEqual(['pm_new_shape']);
+      await f.service.importCustomerCards(f.context, f.home.id);
+      await modeChange(f);
+      const list = vi.spyOn(f.provider, 'listCustomerCards');
+      await f.jobs.runNext();
+      expect(list).not.toHaveBeenCalled();
+      expect(await finished(f)).toEqual(['finished', 'stale']);
+    });
+  });
 });
 const contracts = { ...billingContracts, releaseInvoiceHold: releaseInvoiceHoldContract };
 const operations = ['listInvoices', 'getInvoice', 'createOneOffInvoice', 'chargeInvoice', 'recordManualPayment', 'listPayments',

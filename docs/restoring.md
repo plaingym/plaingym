@@ -186,8 +186,11 @@ completed setup. You work on the server over SSH.
    If you switch Stripe modes after the check, billing pauses. Go live and Payments
    name the mode the earlier check read and ask you to check again in the saved
    mode before turning billing back on; a clear test-mode check cannot clear live payments.
-   If the queued check meets an already running check, its job completes while
-   that check records the result. Wait for the checklist's result before enabling billing.
+   If the queued check meets an already running check, its job completes and
+   queues one more check a minute later, in case the running check fails. That
+   check skips an older restore. For the current restore, it finishes immediately
+   if the latest check is clear for the saved Stripe mode or you have turned
+   billing back on. Wait for the checklist's result before enabling billing.
 3. **Stripe webhooks.** In **Settings → Integrations**, check that **Payments**
    shows the webhook endpoint as registered. If the hostname changed, the endpoint Stripe knows
    still points at the old address: paste the Stripe key again, which registers the endpoint at
