@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { goLiveChecklistItemSchema, settingsContracts, type GymSettings, type UpdateGoLiveRequest } from '@plaingym/shared/contracts';
 import { canStaff, staffRoles } from '@plaingym/shared';
+import { instantLabel } from '../../lib/instant.js';
 import { GoLiveSettings, reconcileTimeoutMs } from './go-live.js';
 import { saveTimeoutMs } from './gym-settings.js';
 import { holdTimeouts, stalledRequests } from './save-timeout.test-helper.js';
@@ -93,6 +94,39 @@ describe('go-live settings', () => {
     expect(button.getAttribute('aria-pressed')).toBe('false');
     expect(button.disabled).toBe(false);
   });
+  it('shows a save timeout inside the past-due dialog', async () => {
+    live.mockResolvedValue(reply(200, overdue()));
+    const user = userEvent.setup(); start();
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
+    const dialog = screen.getByRole('dialog', { name: 'Review past billing dates' });
+    await user.click(within(dialog).getByRole('checkbox'));
+    const stalled = stalledRequests(), timers = holdTimeouts(saveTimeoutMs);
+    try {
+      client.PATCH.mockImplementation(stalled.answer);
+      await user.click(within(dialog).getByRole('button', { name: 'Confirm dates and turn billing on' }));
+      await vi.waitFor(() => expect(stalled.signals).toHaveLength(1));
+      timers.expire(saveTimeoutMs);
+      expect((await within(dialog).findByRole('alert')).textContent).toContain('The save took too long to answer');
+    } finally { timers.restore(); }
+  });
+  it.each([
+    { name: 'Member texts', details: { memberSmsEnabled: ['read_failed'] }, message: 'The SMS provider could not be checked',
+      item: 'sms_ready', reloaded: 'Reloaded SMS readiness' },
+    { name: 'Billing', details: { billingEnabled: ['read_failed'] }, message: 'Stripe could not be checked',
+      item: 'stripe_ready', reloaded: 'Reloaded payment readiness' },
+  ])('reloads the checklist after a $name read failure', async ({ name, details, message, item, reloaded }) => {
+    const next = checklist();
+    next.data.items = next.data.items.map((entry) => entry.id === item ? { ...entry, message: reloaded } : entry);
+    live.mockResolvedValueOnce(reply(200, checklist())).mockResolvedValueOnce(reply(200, next));
+    client.PATCH.mockResolvedValue({ response: { ok: false, status: 503 },
+      error: { error: { code: 'unavailable', message: 'Private provider detail', details } } });
+    const user = userEvent.setup(); start();
+    await user.click(await screen.findByRole('button', { name: 'Turn on: ' + name }));
+    expect((await screen.findByRole('alert')).textContent).toContain(message);
+    expect(await screen.findByText(reloaded)).toBeDefined();
+    expect(live).toHaveBeenCalledTimes(2);
+    expect(document.body.textContent).not.toContain('Private provider detail');
+  });
   it('shows the Stripe read failure on the page and in the past-due confirmation', async () => {
     live.mockResolvedValue(reply(200, overdue()));
     client.PATCH.mockResolvedValue({ response: { ok: false, status: 503 },
@@ -109,6 +143,17 @@ describe('go-live settings', () => {
     expect(screen.getAllByText(message)).toHaveLength(2);
     expect(confirm.disabled).toBe(false);
     expect(billing.getAttribute('aria-pressed')).toBe('false');
+  });
+  it('shows the restore check time in the gym timezone', async () => {
+    const response = restored(0);
+    live.mockResolvedValue(reply(200, { data: { ...response.data, restoreReconciliation: {
+      ...response.data.restoreReconciliation, checkedAt: '2026-11-21T00:36:58.548Z',
+    } } }));
+    start();
+    const expected = instantLabel('2026-11-21T00:36:58.548Z', 'America/Vancouver');
+    const line = await screen.findByText(/Last check:/);
+    expect(line.textContent).toContain(expected);
+    expect(line.textContent).not.toContain('T00:36');
   });
   it('sends the revision with one switch and shows the saved state', async () => {
     client.PATCH.mockResolvedValue(reply(200, checklist(4, false, true)));

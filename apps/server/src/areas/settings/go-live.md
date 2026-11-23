@@ -43,7 +43,10 @@ Payment configuration comes from the runtime's payments resolver
 configured; without it, the gym's stored Stripe settings decide. Turning billing
 on reads the resolver before the write transaction. A failed read returns
 `unavailable` with `details.billingEnabled: ["read_failed"]` after the revision
-guard and before reconciliation or any writes.
+guard and before reconciliation or any writes. A failed Stripe read in the
+checklist falls back to the stored Stripe setting. A failed Stripe read (in the
+checklist or a billing save) and a failed SMS read in a texts save are logged as
+`settings.go_live.read_failed` with the gym ID, the read and the error name.
 
 Webhook readiness uses `WebhookHealthQuery`, implemented by the real inbox by
 default: a processed event and no pending/failed events are ready. It never reads

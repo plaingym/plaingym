@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { formatCount } from '../../lib/count.js';
+import { instantLabel } from '../../lib/instant.js';
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { type GoLiveSwitches, type GymSettings } from '@plaingym/shared/contracts';
@@ -94,10 +95,10 @@ export function GoLiveSettings() {
       }
       if (result.status === 409) { conflict(result, checklist.revision); return; }
       if (result.status === 503 && Array.isArray(smsReasons) && smsReasons.includes('read_failed')) {
-        setMessage('smsProviderReadFailed'); return;
+        setMessage('smsProviderReadFailed'); reloadChecklist(); return;
       }
       if (result.status === 503 && Array.isArray(billingReasons) && billingReasons.includes('read_failed')) {
-        setMessage('paymentsReadFailed'); return;
+        setMessage('paymentsReadFailed'); reloadChecklist(); return;
       }
       if (result.status >= 300) throw new Error();
       setChecklist(parseChecklist(result.data));
@@ -149,7 +150,8 @@ export function GoLiveSettings() {
         <h3 className="font-semibold">{label('reconcileTitle')}</h3>
         <p className="text-sm text-muted-foreground">{label('reconcileHelp')}</p>
         <p role="status" className="wrap-anywhere text-sm">{checklist.restoreReconciliation.checkedAt
-          ? label(checklist.restoreReconciliation.stripeConfigured === false ? 'reconcileStoredResult' : 'reconcileResult', { at: checklist.restoreReconciliation.checkedAt,
+          ? label(checklist.restoreReconciliation.stripeConfigured === false ? 'reconcileStoredResult' : 'reconcileResult', {
+            at: instantLabel(checklist.restoreReconciliation.checkedAt, settings?.timezone),
             inspected: checklist.restoreReconciliation.inspected === null ? label('unknown') : formatCount(checklist.restoreReconciliation.inspected),
             unresolved: checklist.restoreReconciliation.unresolved === null ? label('unknown') : formatCount(checklist.restoreReconciliation.unresolved) })
           : label('reconcilePending')}</p>
@@ -173,7 +175,8 @@ export function GoLiveSettings() {
           <CheckboxField label={label('confirmDates')} checked={confirmed} disabled={busy}
             onChange={(event) => setConfirmed(event.target.checked)}/>
           {/* The dialog is modal: the page's alert behind it can't be seen, so a failed save shows here too. */}
-          {(message === 'error' || message === 'paymentsReadFailed') && <Alert variant="error" focusOnReveal>{label(message)}</Alert>}
+          {(message === 'error' || message === 'paymentsReadFailed' || message === 'timeout')
+            && <Alert variant="error" focusOnReveal>{label(message)}</Alert>}
           <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
             <Button variant="outline" disabled={busy} onClick={() => setConfirmBilling(false)}>{label('cancel')}</Button>
             <Button disabled={locked || !confirmed} onClick={() => void toggle('billingEnabled', true)}>{label('confirmEnable')}</Button>

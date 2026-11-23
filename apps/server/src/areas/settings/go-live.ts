@@ -7,6 +7,7 @@ import { localDate } from '@plaingym/shared/time';
 import { locales } from '@plaingym/shared/locales';
 import { goLiveChecklistResponseSchema, maxJoinDocuments, updateGoLiveRequestSchema, type GoLiveChecklistItem, type UpdateGoLiveRequest } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
+import { logWarn } from '../../core/log.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import type { WebhookHealthQuery } from '../../core/interfaces/webhook-health.js';
 import { createWebhookHealthQuery } from '../billing/webhooks/inbox.js';
@@ -23,6 +24,8 @@ type Status = GoLiveChecklistItem['status'];
 const item = (id: GoLiveChecklistItem['id'], status: Status, message?: string): GoLiveChecklistItem =>
   ({ id, status, message: message ?? t(`settings/go-live:check.${id}.${status}`) });
 const ready = (value: unknown): Status => value ? 'ready' : 'needs_attention';
+/** The safe part of a failed resolver read: a message can quote credentials or submitted values. */
+const errorName = (error: unknown) => error instanceof Error ? error.name : typeof error;
 /** Mirrors when the public join page is available: billing on, a payment provider, and one to eight current documents. */
 function onlineJoining(billingEnabled: boolean, stripe: boolean, documents: number) {
   const missing = [!billingEnabled && 'billing', !stripe && 'stripe', documents === 0 && 'no_documents',
@@ -90,6 +93,18 @@ export function createGoLiveService(options: {
 }) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const webhooks = options.webhooks ?? createWebhookHealthQuery(scope);
+  /**
+   * The runtime resolver can throw when the saved configuration is unreadable. The checklist falls back to the gym's
+   * stored Stripe setting, while a switch save treats `null` as a failed read and refuses to turn billing on.
+   */
+  async function readPayments(gymId: string): Promise<boolean | null | undefined> {
+    if (!options.paymentsConfigured) return undefined;
+    try { return await options.paymentsConfigured(gymId); }
+    catch (error) {
+      logWarn('settings.go_live.read_failed', { gymId, read: 'payments', error: errorName(error) });
+      return null;
+    }
+  }
   async function canEnableSms(gymId: string): Promise<boolean> {
     if (!options.smsStatus) return await options.smsConfigured?.(gymId) ?? false;
     const { source, unreadable } = await options.smsStatus(gymId);
@@ -106,7 +121,7 @@ export function createGoLiveService(options: {
   async function checklist(gymId: string): Promise<Checklist> {
     // These accessors open their own short transactions, so run outside our scope.
     const [smtp, webhook, payments, smsCheck] = await Promise.all([options.smtpConfigured(gymId), webhooks.get(gymId),
-      options.paymentsConfigured?.(gymId), smsReadiness(gymId)]);
+      readPayments(gymId), smsReadiness(gymId)]);
     return scope(gymId, async (tx) => {
       const [gym] = await tx.select(projection).from(gyms).where(eq(gyms.id, gymId));
       if (!gym) throw new AppError('not_found', t('settings/go-live:notFound'));
@@ -187,8 +202,11 @@ export function createGoLiveService(options: {
     async update(context: MutationContext, input: UpdateGoLiveRequest): Promise<Checklist> {
       const { revision, confirmedPastDueDates, ...changes } = updateGoLiveRequestSchema.parse(input);
       // Resolver reads can open their own transactions. Defer read errors until after the revision check.
-      const payments = changes.billingEnabled ? await options.paymentsConfigured?.(context.gymId).catch(() => null) : undefined;
-      const sms = changes.memberSmsEnabled ? await canEnableSms(context.gymId).catch(() => null) : undefined;
+      const payments = changes.billingEnabled ? await readPayments(context.gymId) : undefined;
+      const sms = changes.memberSmsEnabled ? await canEnableSms(context.gymId).catch((error) => {
+        logWarn('settings.go_live.read_failed', { gymId: context.gymId, read: 'sms', error: errorName(error) });
+        return null;
+      }) : undefined;
       await scope(context.gymId, async (tx) => {
         const [before] = await tx.select(projection).from(gyms).where(eq(gyms.id, context.gymId)).for('update');
         if (!before) throw new AppError('not_found', t('settings/go-live:notFound'));
