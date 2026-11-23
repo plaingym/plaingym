@@ -233,3 +233,45 @@ class PrereleaseTests(UpdateFixture):
         self.assertIn("&page=10", self.calls())
         self.assertNotIn("release-manifest", self.calls())
         self.assertNotIn("kill --signal", self.calls())
+
+    def test_pagination_continues_past_an_older_published_tag(self):
+        self.chain()
+        first = [{"tag_name": "v0.3.0", "prerelease": True}, {"tag_name": "v0.0.5", "draft": False}]
+        first += [{"tag_name": f"v0.0.{index}", "draft": True} for index in range(6, 104)]
+        self.tags(first)
+        second = [{"tag_name": tag, "prerelease": True} for tag in ("v0.2.0", "v0.1.0")]
+        (self.release / "releases-page2.json").write_text(json.dumps(second))
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(result.stdout.index("to=v0.2.0"), result.stdout.index("to=v0.3.0"))
+        self.assertIn("&page=2", self.calls())
+
+    def test_stable_pagination_finds_eligible_release_after_full_prerelease_page(self):
+        (self.root / ".env").write_text(self.initial + "DEMO_RELEASE_CHANNEL=stable\n")
+        self.publish("v0.2.0", floor="v0.1.0")
+        (self.release / "releases-page2.json").write_text(json.dumps([{"tag_name": "v0.2.0", "prerelease": False}]))
+        self.tags([{"tag_name": f"v0.{index}.0", "prerelease": True} for index in range(3, 103)])
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"APP_IMAGE={IMAGE}:v0.2.0@{DIGEST}", (self.root / ".env").read_text())
+        self.assertIn("updated; from=v0.1.0 to=v0.2.0", self.status())
+        self.assertIn("&page=2", self.calls())
+
+    def test_stable_pagination_stops_on_full_page_with_eligible_release(self):
+        (self.root / ".env").write_text(self.initial + "DEMO_RELEASE_CHANNEL=stable\n")
+        self.publish("v0.2.0", floor="v0.1.0")
+        first = [{"tag_name": f"v0.{index}.0", "prerelease": True} for index in range(3, 102)]
+        self.tags(first + [{"tag_name": "v0.2.0", "prerelease": False}])
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("updated; from=v0.1.0 to=v0.2.0", self.status())
+        self.assertEqual(self.calls().count("/releases?per_page=100"), 1)
+
+    def test_stable_pagination_stops_on_short_page_without_eligible_release(self):
+        (self.root / ".env").write_text(self.initial + "DEMO_RELEASE_CHANNEL=stable\n")
+        self.tags([{"tag_name": "v0.2.0", "prerelease": True}, {"tag_name": "v0.3.0", "draft": True},
+                   "v0.0.5", "v1.1.0", "v0.4.0-rc.1"])
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("up_to_date; from=v0.1.0 to=- reason=-", self.status())
+        self.assertEqual(self.calls().count("/releases?per_page=100"), 1)

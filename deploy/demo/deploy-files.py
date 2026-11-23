@@ -89,16 +89,17 @@ def journal_command(command, root, directory, source="", target=""):
                    env={**os.environ, "SYSTEMD_UNIT_DIR": str(directory)}, check=True)
 
 
+def remove_entry(path):
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    elif path.is_symlink() or path.exists():
+        path.unlink()
+
+
 def recover(root, directory):
     # Migrate the older demo snapshot layout once; each rename is repeatable after interruption.
-    retired = root / ".demo-deploy-retired"
-    if retired.exists():
-        shutil.rmtree(retired)
-    stale = root / ".demo-deploy-next"
-    if stale.is_dir() and not stale.is_symlink():
-        shutil.rmtree(stale)
-    elif stale.is_symlink() or stale.exists():
-        stale.unlink()
+    remove_entry(root / ".demo-deploy-retired")
+    remove_entry(root / ".demo-deploy-next")
     journal = root / ".demo-deploy-update"
     if journal.exists():
         if not (journal / "target").is_file() or not any(

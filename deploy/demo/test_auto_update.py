@@ -547,6 +547,26 @@ class DeployArchiveTests(unittest.TestCase):
             self.assertFalse((root / ".demo-deploy-update").exists())
             self.assertFalse((root / ".demo-deploy-retired").exists())
 
+    @unittest.skipUnless(os.name == "posix", "Shared journal requires POSIX.")
+    def test_recover_removes_retired_file_and_symlinks(self):
+        for kind in ("file", "directory symlink", "broken symlink"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                root, units, outside = base / "installed", base / "units", base / "outside"
+                root.mkdir()
+                outside.mkdir()
+                original = outside / "x"
+                original.write_text("keep")
+                retired = root / ".demo-deploy-retired"
+                if kind == "file":
+                    retired.touch()
+                else:
+                    retired.symlink_to(outside if kind == "directory symlink" else outside / "missing")
+                deploy_files.recover(root, units)
+                self.assertFalse(retired.exists())
+                self.assertFalse(retired.is_symlink())
+                self.assertEqual(original.read_text(), "keep")
+
 
 if __name__ == "__main__":
     unittest.main()

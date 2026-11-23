@@ -55,8 +55,9 @@ demo_release_context() {
 }
 
 demo_release_list() { # RUNNING_VERSION
-  # Read through the running version before selecting the oldest newer release.
-  # A truncated history could hide an intermediate rollback floor.
+  # Prerelease catch-up needs the running tag or the end of the history.
+  # Stable can stop as soon as it has an eligible release.
+  local page_length reached eligible
   page=1
   printf '[]\n' > "$work/releases.json"
   while :; do
@@ -64,22 +65,31 @@ demo_release_list() { # RUNNING_VERSION
     [ "$page" -eq 1 ] || url="$url&page=$page"
     download "$url" "$work/page.json" 5000000 || demo_auto_finish skipped release_list_unavailable
     page_summary=$(python3 -c 'import json,re,sys
-page=json.load(open(sys.argv[1])); path=sys.argv[2]
+page_path,path,running,pattern,_channel=sys.argv[1:]
+page=json.load(open(page_path))
 if not isinstance(page,list) or any(not isinstance(r,dict) for r in page): raise ValueError("Invalid release list")
-previous=json.load(open(path))
-with open(path,"w") as output: json.dump(previous+page,output)
+releases=json.load(open(path))+page
+with open(path,"w") as output: json.dump(releases,output)
+
 def version(tag):
     return tuple(map(int,tag[1:].split(".")))
-current=version(sys.argv[3])
-reached_running=False
-for release in page:
+
+current=version(running)
+reached=any(not release.get("draft") and release.get("tag_name")==running for release in page)
+eligible=False
+for release in releases:
     tag=release.get("tag_name")
-    if release.get("draft") or not isinstance(tag,str) or not re.fullmatch(sys.argv[4],tag): continue
-    if version(tag)<=current:
-        reached_running=True
+    if release.get("draft") or release.get("prerelease") or not isinstance(tag,str) or not re.fullmatch(pattern,tag):
+        continue
+    candidate=version(tag)
+    if candidate[0]==current[0] and candidate>current:
+        eligible=True
         break
-print(len(page),int(reached_running))' "$work/page.json" "$work/releases.json" "$1" "$version_pattern") || demo_auto_finish skipped release_list_invalid
-    [ "${page_summary% *}" -ge 100 ] && [ "$channel" = prerelease ] && [ "${page_summary##* }" -eq 0 ] || break
+print(len(page),int(reached),int(eligible))' "$work/page.json" "$work/releases.json" "$1" "$version_pattern" "$channel") || demo_auto_finish skipped release_list_invalid
+    IFS=' ' read -r page_length reached eligible < <(printf '%s\n' "$page_summary")
+    if [ "$page_length" -lt 100 ] || [ "$reached" -eq 1 ] || { [ "$channel" = stable ] && [ "$eligible" -eq 1 ]; }; then
+      break
+    fi
     # Bound the API work; refuse an incomplete history rather than skipping it.
     [ "$page" -lt 10 ] || demo_auto_finish skipped release_list_incomplete
     page=$((page + 1))
