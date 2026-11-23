@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useState, type FormEvent } from 'react';
+import { useId, useState, type FormEvent } from 'react';
 import { createClassSessionRequestSchema, createClassTemplateRequestSchema, type ClassTag, type ClassTemplate } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
 import { Button } from '../../components/ui/button.js';
@@ -7,12 +7,15 @@ import { Dialog, DialogActions, DialogCancel } from '../../components/ui/dialog.
 import { Input } from '../../components/ui/input.js';
 import { Select, Textarea } from '../../components/ui/select.js';
 import { calendarInstant } from './calendar.js';
-import { Checkboxes, Field, check, message, text, type ScheduleOptions } from './session.js';
+import { Checkboxes, CoachHint, Field, check, message, text, type ScheduleOptions } from './session.js';
 
 /** Creates or edits a weekly class, or creates a one-off session (`standalone`), in a dialog. */
 export function ClassEditor({ template, options, tags, onSaved, onClose, standalone = false }:
   { template?: ClassTemplate; options: ScheduleOptions; tags: readonly ClassTag[]; onSaved: () => Promise<void>; onClose: () => void; standalone?: boolean }) {
   const [notice, setNotice] = useState(''), [busy, setBusy] = useState(false);
+  const coachHintId = useId(), capacityHelpId = useId();
+  // A capacity change on an existing weekly class also reaches its upcoming sessions that still have the old one.
+  const editingWeekly = !!template && !standalone;
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget);
     const value = (key: string) => String(form.get(key) ?? '');
@@ -31,6 +34,9 @@ export function ClassEditor({ template, options, tags, onSaved, onClose, standal
         const body = createClassTemplateRequestSchema.parse({ ...common, weekday: Number(value('weekday')), localStartTime: value('localStartTime'), durationMinutes: Number(value('durationMinutes')) });
         result = template ? await api.PUT('/api/schedule/templates/{id}', { params: { path: { id: template.id } }, body: { ...body, revision: template.revision } })
           : await api.POST('/api/schedule/templates', { body });
+        const error = result.error as { error?: { details?: { reason?: unknown } } } | undefined;
+        const reasons = result.response.status === 409 ? error?.error?.details?.reason : undefined;
+        if (Array.isArray(reasons) && reasons.includes('capacityBelowBooked')) { setNotice(text('templateCapacityBelowBooked')); return; }
       }
       check(result.response); await onSaved(); onClose();
     } catch (error) { setNotice(message(error)); } finally { setBusy(false); }
@@ -49,8 +55,12 @@ export function ClassEditor({ template, options, tags, onSaved, onClose, standal
           <Field label={text('localStartTime')}><Input name="localStartTime" type="time" required defaultValue={template?.localStartTime ?? '18:00'}/></Field>
           <Field label={text('duration')}><Input name="durationMinutes" type="number" min={1} step={1} required defaultValue={template?.durationMinutes ?? 60}/></Field>
         </>}
-        <Field label={text('coach')}><Select name="coachId" defaultValue={template?.coachId ?? ''}><option value="">{text('unassigned')}</option>{options.coaches.map((coach) => <option key={coach.id} value={coach.id}>{coach.name}</option>)}</Select></Field>
-        <Field label={text('capacity')}><Input name="capacity" type="number" min={1} step={1} defaultValue={template?.capacity ?? ''}/></Field>
+        <div className="grid min-w-0 gap-2"><Field label={text('coach')}><Select name="coachId" defaultValue={template?.coachId ?? ''}
+          aria-describedby={options.coaches.length ? undefined : coachHintId}><option value="">{text('unassigned')}</option>{options.coaches.map((coach) => <option key={coach.id} value={coach.id}>{coach.name}</option>)}</Select></Field>
+          <CoachHint id={coachHintId} coaches={options.coaches}/></div>
+        <div className="grid min-w-0 gap-2"><Field label={text('capacity')}><Input name="capacity" type="number" min={1} step={1} defaultValue={template?.capacity ?? ''}
+          aria-describedby={editingWeekly ? capacityHelpId : undefined}/></Field>
+          {editingWeekly && <p id={capacityHelpId} className="text-sm text-muted-foreground">{text('templateCapacityHelp')}</p>}</div>
         <Field label={text('kind')}><Select name="kind" defaultValue={template?.kind ?? 'class'}><option value="class">{text('class')}</option><option value="open_mat">{text('open_mat')}</option></Select></Field>
         <Checkboxes legend={text('programs')} name="programIds" items={options.programs} {...(template ? { checked: template.programIds } : {})}/>
         <Checkboxes legend={text('tags')} name="tagIds" items={tags} {...(template ? { checked: template.tagIds } : {})}/>

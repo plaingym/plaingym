@@ -54,6 +54,19 @@ export function SessionPanels({ sessionId, roles, enabledModules = [], registrie
 export function Field({ label, children }: { label: string; children: ReactNode }) {
   return <Label className="grid min-w-0 gap-2">{label}{children}</Label>;
 }
+/**
+ * Under a Coach select with no coaches to offer: where coaches come from, with a link to Staff for those who can
+ * manage it. Renders nothing once the gym has a coach. The link opens a new tab, so a half-filled form survives.
+ */
+export function CoachHint({ id, coaches }: { id: string; coaches: readonly unknown[] }) {
+  const roles = useBootstrap().data?.session?.roles ?? [];
+  if (coaches.length) return null;
+  return <div id={id} className="text-sm text-muted-foreground">
+    <p>{text('coachesHelp')}</p>
+    {canStaff(roles, 'staff.manage') && <a href="/admin/staff" target="_blank" rel="noopener noreferrer"
+      className="inline-flex min-h-11 items-center font-medium text-foreground underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-ring">{text('coachesLink')}</a>}
+  </div>;
+}
 /** Session detail with its staff actions. `siblings` are the loaded sessions, used to warn before a move collides. */
 export function SessionDetail({ session, options, roles, enabledModules, onSaved, tags = [], siblings = [], registries }:
   { session: ClassSession; options: ScheduleOptions; roles: readonly StaffRole[]; enabledModules: readonly string[]; onSaved: (session: ClassSession) => void;
@@ -61,7 +74,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState(''), [editing, setEditing] = useState(false);
   const [emailMembers, setEmailMembers] = useState(false), [textMembers, setTextMembers] = useState(false);
   const [restoreEmail, setRestoreEmail] = useState(false), [restoreText, setRestoreText] = useState(false);
-  const textHintId = useId(), restoreHintId = useId();
+  const textHintId = useId(), restoreHintId = useId(), coachHintId = useId();
   const [now, setNow] = useState(Date.now);
   // The start the server refused a cancel for; a session moved since then (here or elsewhere) is judged afresh.
   const [serverStartedAt, setServerStartedAt] = useState<string | null>(null);
@@ -196,9 +209,11 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
     {manage && <div className="space-y-4">
       <Button variant="outline" className="w-full sm:w-auto" disabled={busy} onClick={() => { setNotice(''); setEditing(true); }}>{text('editSession')}</Button>
       <form key={'coach-' + session.revision} onSubmit={(event) => void change('coach', event)} className="flex flex-col gap-2 sm:flex-row sm:items-end">
-        <div className="flex-1"><Field label={text('coach')}><Select name="coachId" defaultValue={session.coachId ?? ''} disabled={busy}>
+        <div className="flex-1"><Field label={text('coach')}><Select name="coachId" defaultValue={session.coachId ?? ''} disabled={busy}
+          aria-describedby={options.coaches.length ? undefined : coachHintId}>
           <option value="">{text('unassigned')}</option>{options.coaches.map((coach) => <option key={coach.id} value={coach.id}>{coach.name}</option>)}</Select></Field></div>
         <Button type="submit" disabled={busy}>{text('swapCoach')}</Button></form>
+      <CoachHint id={coachHintId} coaches={options.coaches}/>
       <form key={'capacity-' + session.revision} onSubmit={(event) => void change('capacity', event)} className="flex flex-col gap-2 sm:flex-row sm:items-end">
         <div className="flex-1"><Field label={text('capacity')}><Input name="capacity" type="number" min={1} step={1} defaultValue={session.capacity ?? ''} disabled={busy}/></Field></div>
         <Button type="submit" disabled={busy}>{text('saveCapacity')}</Button></form>
@@ -240,7 +255,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
 export function SessionForm({ session, options, tags, siblings, onSaved, onCancel }:
   { session: ClassSession; options: ScheduleOptions; tags: readonly ClassTag[]; siblings: readonly ClassSession[];
     onSaved: (session: ClassSession) => void; onCancel: () => void }) {
-  const [busy, setBusy] = useState(false), [notice, setNotice] = useState('');
+  const [busy, setBusy] = useState(false), [notice, setNotice] = useState(''), coachHintId = useId();
   useDialogOperation(busy);
   const zone = options.timezone, start = new Date(session.startsAt);
   const duration = Math.max(1, Math.round((Date.parse(session.endsAt) - Date.parse(session.startsAt)) / 60_000));
@@ -282,8 +297,10 @@ export function SessionForm({ session, options, tags, siblings, onSaved, onCance
       <Field label={text('date')}><Input name="date" type="date" required defaultValue={calendarDate(start, zone)}/></Field>
       <Field label={text('localStartTime')}><Input name="time" type="time" required defaultValue={localTime(start, zone)}/></Field>
       <Field label={text('duration')}><Input name="durationMinutes" type="number" min={1} step={1} required defaultValue={duration}/></Field>
-      <Field label={text('coach')}><Select name="coachId" defaultValue={session.coachId ?? ''}><option value="">{text('unassigned')}</option>
+      <div className="grid min-w-0 gap-2"><Field label={text('coach')}><Select name="coachId" defaultValue={session.coachId ?? ''}
+        aria-describedby={options.coaches.length ? undefined : coachHintId}><option value="">{text('unassigned')}</option>
         {options.coaches.map((coach) => <option key={coach.id} value={coach.id}>{coach.name}</option>)}</Select></Field>
+        <CoachHint id={coachHintId} coaches={options.coaches}/></div>
       <Field label={text('capacity')}><Input name="capacity" type="number" min={1} step={1} defaultValue={session.capacity ?? ''}/></Field>
       <Field label={text('kind')}><Select name="kind" defaultValue={session.kind}><option value="class">{text('class')}</option><option value="open_mat">{text('open_mat')}</option></Select></Field>
       <Checkboxes legend={text('programs')} name="programIds" items={options.programs} checked={session.programIds}/>

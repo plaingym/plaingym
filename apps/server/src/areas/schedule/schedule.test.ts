@@ -2,7 +2,7 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { and, asc, eq } from 'drizzle-orm';
-import { auditEvents, attendances, classBookings, classSessions, classSessionPrograms, classSessionTags, members, uuidv7, RevisionConflictError } from '@plaingym/db';
+import { auditEvents, attendances, classBookings, classSessions, classTemplates, classSessionPrograms, classSessionTags, members, uuidv7, RevisionConflictError } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { canStaff, staffRoles, type StaffRole } from '@plaingym/shared';
@@ -556,5 +556,128 @@ describe('restoring a cancelled session', () => {
     const restored = await request(server('coach'), 'POST', path, { revision: 2 });
     expect(restored.status).toBe(200);
     expect(scheduleContracts.restoreSession.response.parse(await restored.json()).data).toMatchObject({ status: 'scheduled', revision: 3 });
+  });
+});
+describe('template capacity edits on upcoming sessions', () => {
+  const zone = 'America/New_York';
+  async function weekly(capacity: number | null = null) {
+    const gymId = uuidv7(), at = new TestClock('2026-03-01T00:00:00Z');
+    await factory('gyms', gymId, { timezone: zone });
+    const program = await factory('programs', gymId), user = await factory('authUser', gymId);
+    const own = createScheduleService({ scope: database.forGym, clock: at });
+    const body = { ...fields(), coachId: null, capacity, programIds: [program.id] };
+    const template = await own.createTemplate(context(gymId), body);
+    const sessions = () => database.forGym(gymId, tx => tx.select().from(classSessions).orderBy(asc(classSessions.startsAt), asc(classSessions.id)));
+    const audits = (action: string) => database.forGym(gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, action)));
+    const edit = async (change: Partial<CreateClassTemplateRequest>) => {
+      const [current] = (await own.listTemplates(gymId, { limit: 100, offset: 0 })).data.filter(row => row.id === template.id);
+      return own.updateTemplate(context(gymId), template.id, { ...body, ...change, revision: current!.revision });
+    };
+    return { gymId, at, program, user, own, body, template, sessions, audits, edit };
+  }
+  it('gives every upcoming scheduled session that held the old capacity the new one, with one capacity audit each', async () => {
+    const f = await weekly();
+    const generated = (await f.sessions()).filter(row => row.templateId === f.template.id);
+    expect(generated.length).toBeGreaterThan(4);
+    expect(generated.every(row => row.capacity === null)).toBe(true);
+    const updated = await f.edit({ capacity: 10 });
+    expect(updated.capacity).toBe(10);
+    const after = new Map((await f.sessions()).map(row => [row.id, row]));
+    for (const row of generated) expect(after.get(row.id)).toMatchObject({ capacity: 10, revision: row.revision + 1 });
+    const capacityAudits = await f.audits('schedule.session.capacity');
+    expect(capacityAudits.map(audit => audit.targetId).sort()).toEqual(generated.map(row => row.id).sort());
+    for (const audit of capacityAudits) {
+      expect(audit.before).toMatchObject({ id: audit.targetId, capacity: null });
+      expect(audit.after).toMatchObject({ id: audit.targetId, capacity: 10 });
+      expect(audit.after).not.toHaveProperty('cancelBefore');
+    }
+  });
+  it('keeps a session\'s own capacity, cancelled and started sessions, another template\'s sessions and detached sessions', async () => {
+    const f = await weekly();
+    const other = await f.own.createTemplate(context(f.gymId), { ...f.body, name: 'Other class', weekday: 2 });
+    const detached = await f.own.createSession(context(f.gymId), { ...sessionFields(), coachId: null, programIds: [f.program.id], startsAt: '2026-03-10T18:00:00Z', endsAt: '2026-03-10T19:00:00Z' });
+    const [started, overridden, cancelled, ...rest] = (await f.sessions()).filter(row => row.templateId === f.template.id);
+    await f.own.changeSession(context(f.gymId), overridden!.id, 'capacity', { revision: overridden!.revision, capacity: 6 });
+    await f.own.changeSession(context(f.gymId), cancelled!.id, 'cancel', { revision: cancelled!.revision });
+    // The first session began at 23:00 UTC on the first of March, an hour before this.
+    f.at.set('2026-03-02T00:00:00Z');
+    const before = new Map((await f.sessions()).map(row => [row.id, row]));
+    await f.edit({ capacity: 10 });
+    const after = new Map((await f.sessions()).map(row => [row.id, row]));
+    expect(after.get(started!.id)).toMatchObject({ capacity: null, revision: before.get(started!.id)!.revision });
+    expect(after.get(overridden!.id)).toMatchObject({ capacity: 6, revision: before.get(overridden!.id)!.revision });
+    expect(after.get(cancelled!.id)).toMatchObject({ status: 'cancelled', capacity: null, revision: before.get(cancelled!.id)!.revision });
+    expect(after.get(detached.id)).toMatchObject({ templateId: null, capacity: null, revision: before.get(detached.id)!.revision });
+    for (const row of before.values()) if (row.templateId === other.id) expect(after.get(row.id)).toMatchObject({ capacity: null, revision: row.revision });
+    for (const row of rest) expect(after.get(row.id)).toMatchObject({ capacity: 10 });
+    const targets = (await f.audits('schedule.session.capacity')).filter(audit => (audit.after as { capacity: number }).capacity === 10).map(audit => audit.targetId);
+    expect(targets.sort()).toEqual(rest.map(row => row.id).sort());
+  });
+  async function booked() {
+    const f = await weekly(5);
+    // The second session is a week away, well before any cancellation cutoff.
+    const session = (await f.sessions())[1]!;
+    const memberIds: string[] = [];
+    // Full at capacity 5 with two waiting, so one more place promotes exactly one member.
+    for (const [index, status] of (['booked', 'booked', 'booked', 'booked', 'booked', 'waitlisted', 'waitlisted'] as const).entries()) {
+      const member = await factory('members', f.gymId, { firstName: 'Member ' + index });
+      memberIds.push(member.id);
+      await factory('classBookings', f.gymId, { sessionId: session.id, memberId: member.id, bookedBy: f.user.id, status,
+        waitlistPosition: status === 'waitlisted' ? index - 4 : null, createdAt: new Date(Date.UTC(2026, 1, 20, 12, index)) });
+    }
+    const bookings = () => database.forGym(f.gymId, tx => tx.select().from(classBookings).where(eq(classBookings.sessionId, session.id)).orderBy(asc(classBookings.id)));
+    const snapshot = () => database.forGym(f.gymId, async tx => ({ templates: await tx.select().from(classTemplates).orderBy(asc(classTemplates.id)),
+      sessions: await tx.select().from(classSessions).orderBy(asc(classSessions.id)), bookings: await tx.select().from(classBookings).orderBy(asc(classBookings.id)),
+      audits: await tx.$count(auditEvents) }));
+    return { ...f, session, memberIds, bookings, snapshot };
+  }
+  it('promotes the first waitlisted member when a raised template capacity opens a place', async () => {
+    const f = await booked();
+    await f.edit({ capacity: 6 });
+    const rows = await f.bookings();
+    const status = new Map(rows.map(row => [row.memberId, row.status]));
+    expect(f.memberIds.map(id => status.get(id))).toEqual(['booked', 'booked', 'booked', 'booked', 'booked', 'booked', 'waitlisted']);
+    const promoted = await f.audits('booking.promoted');
+    expect(promoted).toHaveLength(1);
+    expect(promoted[0]!.after).toMatchObject({ memberId: f.memberIds[5] });
+    expect((await f.sessions()).find(row => row.id === f.session.id)).toMatchObject({ capacity: 6 });
+  });
+  it('refuses a template capacity below a session\'s booked count and changes nothing', async () => {
+    const f = await booked();
+    const before = await f.snapshot();
+    await expect(f.edit({ capacity: 3 })).rejects.toMatchObject({ code: 'conflict', details: { reason: ['capacityBelowBooked'] } });
+    expect(await f.snapshot()).toEqual(before);
+  });
+  it('returns the refusal as a 409 through the route', async () => {
+    const f = await booked();
+    const before = await f.snapshot();
+    const app = new OpenAPIHono<RequestEnvironment>();
+    app.use('*', async (c, next) => {
+      c.set('context', { gym: { gymId: f.gymId, timezone: zone, enabledModules: new Set() }, principal: { kind: 'staff', gymId: f.gymId, userId: f.user.id, roles: ['owner'] },
+        clock: f.at, requestId: 'schedule-capacity-test' });
+      await next();
+    });
+    app.onError(errorHandler);
+    createServerRegistry({ routes: createScheduleRoutes(f.own) }).mount(app, authorize, new Set());
+    const contract = scheduleContracts.updateTemplate;
+    const response = await request(app, contract.method, contract.path.replace('{id}', f.template.id), { ...f.body, capacity: 3, revision: f.template.revision });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: 'conflict', details: { reason: ['capacityBelowBooked'] } } });
+    expect(await f.snapshot()).toEqual(before);
+  });
+  it('reads and writes no session when the capacity is unchanged, and hides the template from another gym', async () => {
+    const f = await weekly(5);
+    const before = await f.sessions();
+    const read = vi.spyOn(settings, 'readBookingRules');
+    try {
+      expect(await f.edit({ name: 'Renamed class' })).toMatchObject({ name: 'Renamed class', capacity: 5 });
+      expect(read).not.toHaveBeenCalled();
+    } finally { read.mockRestore(); }
+    expect(await f.sessions()).toEqual(before);
+    expect(await f.audits('schedule.session.capacity')).toEqual([]);
+    const contract = scheduleContracts.updateTemplate;
+    const foreign = await request(server('owner', gymB), contract.method, contract.path.replace('{id}', f.template.id), { ...fields(gymB), capacity: 10, revision: 2 });
+    expect(foreign.status).toBe(404);
+    expect(await f.sessions()).toEqual(before);
   });
 });

@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryObserver } from '@tanstack/react-query';
 import { createWebRegistries, type StaffRole } from '@plaingym/shared';
-import type { ClassSession } from '@plaingym/shared/contracts';
+import type { ClassSession, ClassTemplate } from '@plaingym/shared/contracts';
+import type { ReactElement } from 'react';
+import type { ScheduleOptions } from './session.js';
 import { api } from '../../lib/api.js';
 import { useBootstrap } from '../../app/context.js';
 import type { ShellBootstrap } from '../../app/services.js';
@@ -540,5 +542,67 @@ describe('schedule calendar and session detail', () => {
     rerender(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={vi.fn()}/>);
     fireEvent.click(screen.getByRole('button', { name: 'Edit or move session' }));
     expect(screen.getByRole('form', { name: 'Edit or move session' })).toBeDefined();
+  });
+});
+describe('weekly class capacity and the coach hint', () => {
+  const template: ClassTemplate = { id, name: 'Evening class', weekday: 1, localStartTime: '18:00', durationMinutes: 60, coachId: null, capacity: null,
+    notes: null, kind: 'class', revision: 3, createdAt: '2026-03-01T00:00:00Z', programIds: [programId], tagIds: [] };
+  const capacityHelp = 'Changing it also updates upcoming sessions of this class that still have its old capacity. Sessions with their own capacity keep it.';
+  const coachesHelp = 'Coaches come from staff profiles. Add one in Staff → Staff profiles, and link it to a login to coach from your own account.';
+  it('explains on an existing weekly class only that a capacity change reaches its upcoming sessions', () => {
+    render(<ClassEditor template={template} options={options} tags={[]} onSaved={vi.fn()} onClose={vi.fn()}/>);
+    const help = screen.getByText(capacityHelp);
+    expect(screen.getByLabelText('Capacity').getAttribute('aria-describedby')).toBe(help.id);
+    cleanup(); render(<ClassEditor options={options} tags={[]} onSaved={vi.fn()} onClose={vi.fn()}/>);
+    expect(screen.queryByText(capacityHelp)).toBeNull();
+    expect(screen.getByLabelText('Capacity').hasAttribute('aria-describedby')).toBe(false);
+    cleanup(); render(<ClassEditor standalone options={options} tags={[]} onSaved={vi.fn()} onClose={vi.fn()}/>);
+    expect(screen.queryByText(capacityHelp)).toBeNull();
+  });
+  it('explains a template capacity below a session\'s booked count and keeps the dialog open', async () => {
+    const onClose = vi.fn(), onSaved = vi.fn();
+    vi.mocked(api.PUT).mockResolvedValue({ response: new Response(null, { status: 409 }),
+      error: { error: { code: 'conflict', message: 'Below booked', details: { reason: ['capacityBelowBooked'] } } } } as Awaited<ReturnType<typeof api.PUT>>);
+    render(<ClassEditor template={template} options={options} tags={[]} onSaved={onSaved} onClose={onClose}/>);
+    fireEvent.change(screen.getByLabelText('Capacity'), { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('An upcoming session of this class has more booked members than that capacity. Choose a higher capacity, or change that session on its own.');
+    expect(api.PUT).toHaveBeenCalledWith('/api/schedule/templates/{id}', expect.objectContaining({ body: expect.objectContaining({ capacity: 3, revision: 3 }) }));
+    expect(onSaved).not.toHaveBeenCalled(); expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeDefined();
+    expect((screen.getByLabelText('Capacity') as HTMLInputElement).value).toBe('3');
+  });
+  it('keeps the general conflict message for any other refused template save', async () => {
+    vi.mocked(api.PUT).mockResolvedValue({ response: new Response(null, { status: 409 }),
+      error: { error: { code: 'conflict', message: 'Changed', details: { reason: ['revision_conflict'] } } } } as Awaited<ReturnType<typeof api.PUT>>);
+    render(<ClassEditor template={template} options={options} tags={[]} onSaved={vi.fn()} onClose={vi.fn()}/>);
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect((await screen.findByRole('alert')).textContent).not.toMatch(/booked members/);
+  });
+  const coachSelects: [string, (coaches: ScheduleOptions['coaches'], roles: StaffRole[]) => ReactElement][] = [
+    ['weekly class editor', coaches => <ClassEditor template={template} options={{ ...options, coaches }} tags={[]} onSaved={vi.fn()} onClose={vi.fn()}/>],
+    ['session coach swap', (coaches, roles) => <SessionDetail session={session} options={{ ...options, coaches }} roles={roles} enabledModules={[]} onSaved={vi.fn()}/>],
+    ['session edit form', coaches => <SessionForm session={session} options={{ ...options, coaches }} tags={[]} siblings={[]} onSaved={vi.fn()} onCancel={vi.fn()}/>],
+  ];
+  it.each(coachSelects)('explains where coaches come from under the %s, with a Staff link for owners and admins', (_name, view) => {
+    for (const role of ['owner', 'admin'] as const) {
+      bootstrap([role]); render(view([], [role]));
+      const hint = screen.getByText(coachesHelp);
+      const select = screen.getAllByLabelText('Coach').find(element => element.tagName === 'SELECT')!;
+      expect(select.getAttribute('aria-describedby')).toBe(hint.parentElement!.id);
+      const link = screen.getByRole('link', { name: 'Open Staff' });
+      expect(link.getAttribute('href')).toBe('/admin/staff');
+      // A new tab keeps the open form's unsaved input.
+      expect(link.getAttribute('target')).toBe('_blank');
+      expect(link.className).toMatch(/min-h-11/);
+      cleanup();
+    }
+    bootstrap(['coach']); render(view([], ['coach']));
+    expect(screen.getByText(coachesHelp)).toBeDefined();
+    expect(screen.queryByRole('link', { name: 'Open Staff' })).toBeNull();
+    cleanup(); bootstrap(['owner']); render(view([{ id: programId, name: 'A coach' }], ['owner']));
+    expect(screen.queryByText(coachesHelp)).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Open Staff' })).toBeNull();
+    expect(screen.getAllByLabelText('Coach').find(element => element.tagName === 'SELECT')!.hasAttribute('aria-describedby')).toBe(false);
   });
 });

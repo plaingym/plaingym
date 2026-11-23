@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, gte, ilike, inArray, isNotNull, isNull, lt, or, type SQL } from 'drizzle-orm';
+import { and, asc, eq, gt, gte, ilike, inArray, isNotNull, isNull, lt, or, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { forGym, classBookings, members, classTags, classTemplates, classTemplatePrograms, classTemplateTags, classSessions, classSessionPrograms, classSessionTags, programs, staffProfiles, staffRoles, revisionGuard, assertRevised, writeAudit, RevisionConflictError, type Transaction } from '@plaingym/db';
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
@@ -105,6 +105,27 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
   const audit = async (tx: Transaction, context: MutationContext, action: string, id: string, before: unknown, after: unknown) => {
     await writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind, ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}), action: 'schedule.' + action, targetType: 'schedule', targetId: id, before, after, occurredAt: clock.now() });
   };
+  /**
+   * Gives a template's upcoming, scheduled sessions that still hold its previous capacity the new one, through the
+   * session capacity path: one row lock each (after the template's), booking reconciliation and one capacity audit.
+   * A session with its own capacity keeps it. Reconciliation refuses a capacity below a session's booked count, which
+   * rolls back the whole template save.
+   */
+  async function applyTemplateCapacity(tx: Transaction, context: MutationContext, templateId: string, previous: number | null, capacity: number | null) {
+    const now = clock.now();
+    const sessions = await tx.select().from(classSessions).where(and(eq(classSessions.templateId, templateId), eq(classSessions.status, 'scheduled'),
+      gt(classSessions.startsAt, now), previous === null ? isNull(classSessions.capacity) : eq(classSessions.capacity, previous)))
+      .orderBy(asc(classSessions.id)).for('update');
+    if (!sessions.length) return;
+    const rules = await readBookingRules(tx, context.gymId);
+    for (const session of sessions) {
+      const guard = revisionGuard(classSessions.revision, session.revision);
+      const afterRow = assertRevised(await tx.update(classSessions).set({ capacity, revision: guard.next })
+        .where(and(eq(classSessions.id, session.id), guard.matches)).returning());
+      await reconcileSessionBookings(tx, afterRow, context, now, rules);
+      await audit(tx, context, 'session.capacity', session.id, await sessionSnapshot(tx, session), await sessionSnapshot(tx, afterRow));
+    }
+  }
   /** Generates a template's missing sessions within the horizon, in the caller's transaction. */
   async function materializeTemplate(tx: Transaction, gymId: string, id: string, timezone: string, now: Date): Promise<number> {
     const [row] = await tx.select().from(classTemplates).where(eq(classTemplates.id, id)).for('update'); if (!row) return 0;
@@ -209,6 +230,7 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
         const afterRow = assertRevised(await tx.update(classTemplates).set({ ...fields, revision: guard.next }).where(and(eq(classTemplates.id, id), guard.matches)).returning());
         await mappings(tx, 'template', context.gymId, id, { programIds, tagIds }, clock.now()); const after = await templateView(tx, afterRow);
         await audit(tx, context, 'template.updated', id, before, after);
+        if (afterRow.capacity !== row.capacity) await applyTemplateCapacity(tx, context, id, row.capacity, afterRow.capacity);
         await materializeTemplate(tx, context.gymId, id, timezone, clock.now()); return after;
       }));
     },

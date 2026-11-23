@@ -14,6 +14,8 @@ see what is described in [security-model.md](security-model.md).
    members book it in the portal, and when it is full they can join its waitlist
    through the cancellation cutoff.
    A session with no capacity needs no booking, and the portal shows "No booking needed".
+   Changing a weekly class's capacity also changes its upcoming sessions that still
+   have the old capacity; a session given a different capacity keeps it.
 2. **Booking rules.** In **Settings → Class and booking rules**, set:
    * **Booking window (days)**: how many calendar days before the class date booking
      opens, from midnight in your gym's timezone (`0` opens it on the day);
