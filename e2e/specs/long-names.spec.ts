@@ -330,9 +330,10 @@ test('the portal schedule wraps class and member names with no break opportunity
   const loading = page.getByText('Loading classes…', { exact: true });
   await expect(loading).toHaveCount(0);
   await expect(page.getByText(name, { exact: true })).toBeVisible();
-  await expect(page.getByRole('list', { name: 'Household places' }).getByText(`${longMember.firstName} ${longMember.lastName}`, { exact: true })).toBeVisible();
-  // The full layout check (axe, touch targets, horizontal scroll).
   await accessibleLayout(page, info, 'portal schedule');
+  await page.getByText(name, { exact: true }).click();
+  await expect(page.getByRole('list', { name: 'Household places' }).getByText(`${longMember.firstName} ${longMember.lastName}`, { exact: true })).toBeVisible();
+  await accessibleLayout(page, info, 'portal class dialog');
 });
 
 test('portal progress shows a program with no rank yet, at 360 px and on desktop', async ({ page, sandboxes }, info) => {

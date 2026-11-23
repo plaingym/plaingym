@@ -1,28 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useSyncExternalStore } from 'react';
 import type { ClassSession } from '@plaingym/shared/contracts';
 import { cn } from '../../lib/utils.js';
 import { Badge } from '../../components/ui/table.js';
 import { calendarDate, shiftDate } from './calendar.js';
 import { sessionTimes, text, type ScheduleOptions } from './session.js';
+import { WeekLayout } from './week-layout.js';
 
-const wide = '(min-width: 1024px)';
-/** Whether the screen is at least `lg` wide, where seven columns fit beside the sidebar. Narrower screens (and environments without media queries) get the agenda. */
-export function useWideScreen() {
-  return useSyncExternalStore((notify) => {
-    const query = typeof window.matchMedia === 'function' ? window.matchMedia(wide) : null;
-    query?.addEventListener('change', notify);
-    return () => query?.removeEventListener('change', notify);
-  }, () => typeof window.matchMedia === 'function' && window.matchMedia(wide).matches, () => false);
-}
-export function dayLabel(date: string, style: 'long' | 'short' = 'long') {
-  // Calendar dates carry no zone: format them at noon UTC so the label is the same everywhere.
-  return new Intl.DateTimeFormat(undefined, { timeZone: 'UTC', weekday: style, month: 'short', day: 'numeric' }).format(new Date(date + 'T12:00:00Z'));
-}
+export { dayLabel, useWideScreen } from './week-layout.js';
+
 interface ViewProps { week: string; today: string; sessions: readonly ClassSession[]; options: ScheduleOptions; onOpen: (session: ClassSession) => void }
 function days({ week, sessions, options }: ViewProps) {
   return Array.from({ length: 7 }, (_, day) => shiftDate(week, day)).map((date) => ({ date,
-    sessions: sessions.filter((session) => calendarDate(new Date(session.startsAt), options.timezone) === date)
+    items: sessions.filter((session) => calendarDate(new Date(session.startsAt), options.timezone) === date)
       .sort((left, right) => Date.parse(left.startsAt) - Date.parse(right.startsAt)) }));
 }
 function SessionButton({ session, options, onOpen, compact = false }: { session: ClassSession; options: ScheduleOptions; onOpen: (session: ClassSession) => void; compact?: boolean }) {
@@ -38,19 +27,17 @@ function SessionButton({ session, options, onOpen, compact = false }: { session:
       {session.kind === 'open_mat' && <Badge tone="muted">{text('open_mat')}</Badge>}</span>
   </button>;
 }
+function ScheduleLayout({ wide, ...props }: ViewProps & { wide: boolean }) {
+  return <WeekLayout days={days(props)} today={props.today} wide={wide}
+    itemKey={session => session.id}
+    renderItem={(session, compact) => <SessionButton session={session} options={props.options} onOpen={props.onOpen} compact={compact} />}
+    agendaLabel={text('agenda')} todayLabel={text('today')} emptyDayLabel={wide ? undefined : text('noSessionsDay')} />;
+}
 /** The phone layout: one list of the week, day by day. */
 export function AgendaView(props: ViewProps) {
-  return <ol className="space-y-5" aria-label={text('agenda')}>{days(props).map(({ date, sessions }) => <li key={date}>
-    <h2 className="mb-2 flex items-center gap-2 text-base font-semibold">{dayLabel(date)}{date === props.today && <Badge>{text('today')}</Badge>}</h2>
-    {sessions.length ? <ul className="space-y-2">{sessions.map((session) => <li key={session.id}><SessionButton session={session} options={props.options} onOpen={props.onOpen}/></li>)}</ul>
-      : <p className="text-sm text-muted-foreground">{text('noSessionsDay')}</p>}
-  </li>)}</ol>;
+  return <ScheduleLayout {...props} wide={false} />;
 }
 /** Seven columns, from `lg`. */
 export function WeekView(props: ViewProps) {
-  return <div className="grid grid-cols-7 gap-2">{days(props).map(({ date, sessions }) => <section key={date} aria-label={dayLabel(date)}
-    className={cn('min-w-0 space-y-2 rounded-xl border border-border p-2', date === props.today && 'border-primary')}>
-    <h2 className="text-sm font-semibold">{dayLabel(date, 'short')}</h2>
-    {sessions.map((session) => <SessionButton key={session.id} session={session} options={props.options} onOpen={props.onOpen} compact/>)}
-  </section>)}</div>;
+  return <ScheduleLayout {...props} wide />;
 }

@@ -12,7 +12,7 @@ const id = (n: number) => `00000000-0000-7000-8000-${String(n).padStart(12, '0')
 const gym = id(1), household = id(2), parent = id(3), child = id(4), userId = id(5), program = id(6), first = id(7), second = id(8);
 const bootstrap = { gym: { id: gym, name: 'A long gym name that must fit on a phone', timezone: 'UTC', currency: 'USD', enabledModules: [] },
   session: { userId, displayName: 'Test User', roles: [], member: true }, login: { password: true, magicLink: false } };
-const day = 86_400_000, start = Math.ceil(Date.now() / day) * day;
+const day = 86_400_000, start = Date.parse('2026-11-17T00:00:00Z');
 const at = (offset: number) => new Date(start + offset).toISOString();
 let role: 'payer' | 'member' = 'payer';
 const bookings = new Map<string, { id: string; memberId: string; sessionId: string; status: 'booked' | 'waitlisted' }>();
@@ -20,7 +20,7 @@ bookings.set('locked', { id: id(20), memberId: parent, sessionId: id(11), status
 const sessions = [
   { id: id(10), name: 'Fundamentals with a long class name that wraps on a phone', starts: 18 * 3_600_000, capacity: 12, places: 3, cancelBefore: 17 * 3_600_000 },
   { id: id(11), name: 'Early class', starts: 2 * 3_600_000 + 1, capacity: 10, places: 0, cancelBefore: -day },
-  { id: id(12), name: 'Open training', starts: day + 19 * 3_600_000, capacity: null, places: null, cancelBefore: day + 18 * 3_600_000 },
+  { id: id(12), name: 'OpenTraining'.padEnd(56, 'x'), starts: day + 19 * 3_600_000, capacity: null, places: null, cancelBefore: day + 18 * 3_600_000 },
   { id: id(13), name: 'Later full class', starts: 20 * 3_600_000, capacity: 10, places: 0, cancelBefore: 19 * 3_600_000 },
 ];
 const members = () => role === 'payer' ? [{ id: parent, name: 'Pat Parent' }, { id: child, name: 'Casey Parent-Longname' }] : [{ id: child, name: 'Casey Parent-Longname' }];
@@ -73,37 +73,82 @@ const server = createServer(async (req, res) => {
   if (path.startsWith('/portal/sw.js') || path.startsWith('/portal/manifest')) { res.statusCode = 404; res.end(); return; }
   res.setHeader('Content-Type', 'text/html'); res.end(await readFile(resolve(dist, 'index.html')));
 });
-await new Promise<void>(done => server.listen(0, '127.0.0.1', done)); const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing port');
+const loopback = process.env.E2E_LOOPBACK ?? '127.0.0.1';
+await new Promise<void>(done => server.listen(0, loopback, done)); const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing port');
 const profile = await mkdtemp(resolve(output, 'profile-'));
 if (!profile.startsWith(output + sep)) throw new Error('Unexpected profile directory');
-const origin = `http://127.0.0.1:${address.port}`;
+const origin = `http://${loopback}:${address.port}`;
 const browser = await chromium.launchPersistentContext(profile, { channel: process.env.E2E_BROWSER_CHANNEL ?? 'msedge', headless: true });
 const errors: string[] = [];
 try {
   const page = await browser.newPage(); page.on('pageerror', (error: Error) => errors.push(error.message));
+  await page.clock.setFixedTime(new Date(start - 3_600_000));
   for (const width of [360, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     const check = async (name: string) => {
+      // Measure the final colors after a booking control transitions back to its enabled state.
+      await page.evaluate(async () => {
+        await new Promise<void>(done => requestAnimationFrame(() => done()));
+        const animations = document.getAnimations().filter(animation => animation.playState === 'running'
+          && Number.isFinite(Number(animation.effect?.getComputedTiming().endTime)));
+        await Promise.allSettled(animations.map(animation => animation.finished));
+      });
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), name).toBe(true);
-      expect(await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('button,input,select,a')].filter(element => !element.classList.contains('sr-only') && element.getClientRects().length && element.getBoundingClientRect().height < 44).map(element => element.textContent)), name).toEqual([]);
-      expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze()).violations, name).toEqual([]);
+      expect(await page.evaluate(() => {
+        const root = document.querySelector('dialog:modal') ?? document;
+        return [...root.querySelectorAll<HTMLElement>('button,input,select,a[href]')].filter(element => {
+          const { width, height } = element.getBoundingClientRect();
+          return width > 0 && height > 0 && (width < 44 || height < 44) && !element.classList.contains('sr-only');
+        }).map(element => element.textContent || element.getAttribute('aria-label'));
+      }), name).toEqual([]);
+      expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze()).violations, name).toEqual([]);
       await page.screenshot({ path: resolve(output, `${name}-${width}.png`), fullPage: true });
     };
     role = 'payer'; bookings.clear(); bookings.set('locked', { id: id(20), memberId: parent, sessionId: id(11), status: 'booked' }); code = null;
     await page.goto(origin + '/portal/schedule');
     await expect(page.getByRole('heading', { name: 'Class schedule' })).toBeVisible();
-    await expect(page.getByText(/cancellation cutoff has passed/)).toBeVisible();
+    const dialog = page.getByRole('dialog');
+    const close = dialog.getByRole('button', { name: 'Close', exact: true });
+    const early = page.getByRole('button', { name: /^Early class, / });
+    const fundamentals = page.getByRole('button', { name: /^Fundamentals with a long class name/ });
+    const later = page.getByRole('button', { name: /^Later full class, / });
+    if (width === 360) await expect(page.getByRole('list', { name: 'Class schedule' }).locator(':scope > li')).toHaveCount(2);
+    else await expect(page.getByRole('main').getByRole('region')).toHaveCount(7);
+    await early.click();
+    await expect(dialog.getByText(/cancellation cutoff has passed/)).toBeVisible();
+    await close.click();
     await page.getByLabel('Booking for').selectOption(child);
-    await page.getByRole('button', { name: /^Book Fundamentals with a long class name/ }).focus();
+    await fundamentals.focus();
     await page.keyboard.press('Enter');
-    await expect(page.getByText('Casey Parent-Longname is booked.')).toBeVisible();
-    await expect(page.getByRole('button', { name: /^Join the waitlist: Early class for Casey/ })).toHaveCount(0);
-    await expect(page.getByText('The waitlist is closed. The cancellation cutoff has passed.')).toBeVisible();
-    await page.getByRole('button', { name: /^Join the waitlist: Later full class for Casey/ }).click();
-    await expect(page.getByText(/on the waitlist at position 2/)).toBeVisible();
+    await dialog.getByRole('button', { name: /^Book Fundamentals with a long class name/ }).focus();
+    await page.keyboard.press('Enter');
+    await expect(dialog.getByText('Casey Parent-Longname is booked.')).toBeVisible();
+    await expect(dialog.getByRole('button', { name: /^Cancel booking: Fundamentals/ })).toBeEnabled();
+    await close.click();
+    await expect(fundamentals).toBeFocused();
+    await expect(fundamentals).toHaveAccessibleName(/: Booked$/);
+    await early.click();
+    await expect(dialog.getByRole('button', { name: /^Join the waitlist:/ })).toHaveCount(0);
+    await expect(dialog.getByText('The waitlist is closed. The cancellation cutoff has passed.')).toBeVisible();
+    await close.click();
+    await later.click();
+    await dialog.getByRole('button', { name: /^Join the waitlist: Later full class for Casey/ }).click();
+    await expect(dialog.getByText(/on the waitlist at position 2/)).toBeVisible();
+    await expect(dialog.getByRole('button', { name: /^Leave the waitlist: Later full class/ })).toBeEnabled();
+    await check('schedule-dialog');
+    await close.click();
+    await expect(later).toHaveAccessibleName(/: Waitlist — position 2$/);
     await check('schedule-payer');
-    await page.getByRole('button', { name: /^Cancel booking: Fundamentals with a long class name/ }).click();
-    await expect(page.getByText(/place for Casey Parent-Longname is cancelled/)).toBeVisible();
+    await fundamentals.focus();
+    await page.keyboard.press('Enter');
+    await dialog.getByRole('button', { name: /^Cancel booking: Fundamentals with a long class name/ }).focus();
+    await page.keyboard.press('Enter');
+    await expect(dialog.getByText(/place for Casey Parent-Longname is cancelled/)).toBeVisible();
+    await expect(dialog.getByRole('button', { name: /^Book Fundamentals/ })).toBeEnabled();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('dialog')).toHaveCount(0);
+    await expect(fundamentals).toBeFocused();
+    await expect(fundamentals).toHaveAccessibleName(/: Places left: 3$/);
     await page.goto(origin + '/portal/checkin');
     await expect(page.getByText(/no active check-in code/)).toBeVisible();
     await check('checkin-empty');

@@ -175,6 +175,7 @@ it.each(['book', 'cancel', 'regenerate'] as const)('keeps the %s action state on
     return undefined;
   }, { context: payer, householdLists: () => new Promise(resolve => { release = resolve; }) });
   if (action === 'regenerate') await user.click(await screen.findByRole('button', { name: 'Replace this code' }));
+  else await user.click(await screen.findByRole('button', { name: /^Fundamentals, / }));
   const name = action === 'regenerate' ? 'Replace code' : action === 'book' ? 'Book Fundamentals for Pat' : 'Cancel booking: Fundamentals for Pat';
   const button = await screen.findByRole('button', { name });
   await user.click(button);

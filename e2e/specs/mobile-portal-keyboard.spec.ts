@@ -39,14 +39,23 @@ for (const { name: size, viewport } of viewports) {
     await student.browser(context);
     await page.setViewportSize(viewport);
     await page.goto(sandbox.origin + '/portal/schedule');
-    await showPortalClass(page, page.getByRole('button', { name: new RegExp('^Book ' + session.name + ' for ') }));
-    await keyboardActivate(page, page.getByRole('button', { name: new RegExp('^Book ' + session.name + ' for ') }));
+    const card = page.getByRole('button', { name: new RegExp('^' + session.name + ', ') });
+    await showPortalClass(page, card);
+    await keyboardActivate(page, card);
+    const classDialog = page.getByRole('dialog', { name: session.name, exact: true });
+    await keyboardActivate(page, classDialog.getByRole('button', { name: new RegExp('^Book ' + session.name + ' for ') }));
     const cancel = page.getByRole('button', { name: new RegExp('^Cancel booking: ' + session.name + ' for ') });
     await expect(cancel).toBeVisible();
     await expect(page.getByRole('status').filter({ hasText: /is booked/ })).toBeVisible();
     await keyboardActivate(page, cancel);
     await expect(page.getByRole('status').filter({ hasText: /is cancelled/ })).toBeVisible();
     await accessibleThemes(page, info, size + '-keyboard-booking');
+    await page.keyboard.press('Escape');
+    await expect(page.locator('dialog')).toHaveCount(0);
+    await expect.poll(() => card.evaluate(element => ({
+      focused: element === document.activeElement,
+      activeElement: document.activeElement?.tagName,
+    }))).toEqual({ focused: true, activeElement: 'BUTTON' });
 
     await page.goto(sandbox.origin + '/portal/household');
     const edit = page.getByRole('button', { name: 'Edit details', exact: true }).first();

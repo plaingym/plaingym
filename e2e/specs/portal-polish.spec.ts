@@ -18,7 +18,7 @@ for (const width of [360, 1280]) {
     await accessibleLayout(page, info, 'password-help-' + width);
     await info.attach('password-help-' + width, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
   });
-  test(`portal pages use one content width and clear states at ${width}px`, async ({ page }, info) => {
+  test(`portal pages use consistent content widths and clear states at ${width}px`, async ({ page }, info) => {
     await page.setViewportSize({ width, height: 800 });
     const startsAt = new Date().toISOString();
     await page.route('**/api/**', async route => {
@@ -62,7 +62,8 @@ for (const width of [360, 1280]) {
       await expect(content.getByRole('alert')).toHaveCount(0);
       const measured = (await content.boundingBox())!.width;
       contentWidth ??= measured;
-      expect(measured).toBe(contentWidth);
+      if (path === '/schedule' && width >= 1024) expect(measured).toBeGreaterThan(contentWidth);
+      else expect(measured).toBe(contentWidth);
       if (path === '/schedule') await expect(content.getByText('Cancelled', { exact: true })).toHaveCount(1);
       if (path === '/billing') {
         await expect(content.getByRole('button', { name: 'Use a card instead' })).toBeEnabled();

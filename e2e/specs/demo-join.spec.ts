@@ -2,7 +2,7 @@
 import { randomBytes } from 'node:crypto';
 import AxeBuilder from '@axe-core/playwright';
 import type { Browser, Locator, Page, TestInfo } from '@playwright/test';
-import { test, expect, Client, demoClient, clientAddress, localDate, showWeek, wall, type Person, type Program, type RecordId } from '../support.js';
+import { test, expect, Client, demoClient, clientAddress, localDate, showPortalClass, showWeek, wall, type Person, type Program, type RecordId } from '../support.js';
 import { accessibleLayout, horizontalOverflow } from '../responsive.js';
 import { deliverStripeEvent, fakeStripe, outboxIds, outboxLink, stripeOrigin } from '../portal.js';
 
@@ -36,18 +36,11 @@ async function sign(canvas: Locator, page: Page) {
   await page.mouse.up();
 }
 /** A seeded class in the portal schedule's current or next Monday-based calendar week. */
-async function portalClass(page: Page, button: string | RegExp) {
-  // A name stays strict (one button); a pattern may match several, such as each class the student waits for.
-  const named = page.getByRole('button', { name: button, exact: typeof button === 'string' });
-  const target = typeof button === 'string' ? named : named.first(), loading = page.getByText('Loading classes…', { exact: true });
-  await expect(page.getByRole('heading', { name: 'Class schedule', exact: true })).toBeVisible();
-  await expect(loading).toHaveCount(0);
-  if (!await target.isVisible()) {
-    await page.getByRole('button', { name: 'Next week', exact: true }).click();
-    await expect(loading).toHaveCount(0);
-    await expect(target).toBeVisible();
-  }
-  return target;
+async function openPortalClass(page: Page, name: string) {
+  const card = page.getByRole('button').filter({ has: page.getByText(name, { exact: true }) });
+  await showPortalClass(page, card);
+  await card.click();
+  return page.getByRole('dialog', { name, exact: true });
 }
 function newVisitor(): Visitor {
   const lastName = 'Visitor' + randomBytes(3).toString('hex');
@@ -253,21 +246,25 @@ test('a joined visitor books, is promoted from the waitlist, checks in by QR cod
     // Book the class starting soon, then join the full class's waitlist.
     await page.goto(sandbox.origin + '/portal/schedule');
     await expect(page.getByRole('heading', { name: 'Class schedule', exact: true })).toBeVisible();
-    await (await portalClass(page, `Book ${soon.name} for ${visitor.fullName}`)).click();
+    const booked = await openPortalClass(page, soon.name);
+    await booked.getByRole('button', { name: `Book ${soon.name} for ${visitor.fullName}`, exact: true }).click();
     // The class starts within the cancellation cutoff, so the place shows as booked without a cancel action.
-    const booked = page.getByRole('listitem').filter({ has: page.getByText(soon.name, { exact: true }) });
     await expect(booked.getByRole('list', { name: 'Household places', exact: true })).toHaveText(new RegExp(`^${visitor.fullName}\\s*Booked$`));
     await page.goto(sandbox.origin + '/portal/schedule');
-    await (await portalClass(page, `Join the waitlist: ${full.name} for ${visitor.fullName}`)).click();
-    await expect(page.getByRole('button', { name: `Leave the waitlist: ${full.name} for ${visitor.fullName}`, exact: true })).toBeVisible();
-    await expect(page.getByText('Waitlist — position 1', { exact: true })).toBeVisible();
+    const waitlisted = await openPortalClass(page, full.name);
+    await waitlisted.getByRole('button', { name: `Join the waitlist: ${full.name} for ${visitor.fullName}`, exact: true }).click();
+    await expect(waitlisted.getByRole('button', { name: `Leave the waitlist: ${full.name} for ${visitor.fullName}`, exact: true })).toBeVisible();
+    await expect(waitlisted.getByText('Waitlist — position 1', { exact: true })).toBeVisible();
+    await bothWidths(page, info, 'portal-class-dialog');
+    await waitlisted.getByRole('button', { name: 'Close', exact: true }).click();
     await bothWidths(page, info, 'portal-schedule');
 
     // Staff cancel the held place; the waitlist promotes the visitor.
     await owner.json(`/api/bookings/${held.id}/cancel`, 'POST', {});
     await expect.poll(async () => {
       await page.goto(sandbox.origin + '/portal/schedule');
-      return (await portalClass(page, `Cancel booking: ${full.name} for ${visitor.fullName}`).catch(() => undefined)) !== undefined;
+      const dialog = await openPortalClass(page, full.name);
+      return dialog.getByRole('button', { name: `Cancel booking: ${full.name} for ${visitor.fullName}`, exact: true }).isVisible();
     }, { timeout: 60_000, message: 'The waitlist promotes the visitor' }).toBe(true);
 
     // The portal shows a QR check-in code; the sandbox kiosk scans it from its camera.
@@ -312,10 +309,15 @@ test("the portal schedule's booking actions keep their visible text in their acc
   await page.setViewportSize(phone);
   await page.goto(sandbox.origin + '/portal/schedule');
   // The seeded student holds booked places and a waitlist place, in the class after the next Competition Training: this week or next, by the day.
-  await expect(await portalClass(page, /^Leave the waitlist: /)).toBeVisible();
+  const card = page.getByRole('button', { name: /: Waitlist(?: — position \d+)?$/ }).first();
+  await showPortalClass(page, card);
   const result = await new AxeBuilder({ page }).withRules(['label-content-name-mismatch']).analyze();
   const mismatched = result.violations.flatMap(violation => violation.nodes.map(node => node.html));
   expect(mismatched).toEqual([]);
+  await card.click();
+  await expect(page.getByRole('button', { name: /^Leave the waitlist: / })).toBeVisible();
+  const dialogResult = await new AxeBuilder({ page }).withRules(['label-content-name-mismatch']).analyze();
+  expect(dialogResult.violations.flatMap(violation => violation.nodes.map(node => node.html))).toEqual([]);
 });
 
 /** A kiosk tablet whose camera sees the portal's QR image: the kiosk decodes real frames, as from a phone screen. */

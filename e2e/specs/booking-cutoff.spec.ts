@@ -53,6 +53,7 @@ for (const width of [360, 1280]) {
       });
       if (view === 'portal') {
         await page.goto(gymOrigin + '/portal/schedule');
+        await page.getByRole('button', { name: /^Midday practice, / }).click();
         await expect(page.getByRole('button', { name: /Join the waitlist:/ })).toBeVisible();
       } else if (view === 'member') {
         await page.goto(gymOrigin + `/admin/members/${memberId}#memberTabs.bookings`);

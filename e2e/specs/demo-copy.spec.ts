@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { test, expect, Client, clientAddress } from '../support.js';
+import { test, expect, Client, clientAddress, showPortalClass } from '../support.js';
 import { accessibleLayout } from '../responsive.js';
 
 test.use({ trace: 'off', screenshot: 'off' });
@@ -18,19 +18,22 @@ for (const { role, width, pagePath } of [
     await page.waitForURL(url => url.pathname === (role === 'student' ? '/portal' : '/admin'));
     await page.goto('https://showcase.demo.localhost' + pagePath);
     await expect(page.getByRole('button', { name: 'Make my own copy', exact: true })).toBeVisible();
-    // Exercise each application's client error path; ordinary browser fetch is never replaced.
-    const refused = page.waitForResponse(response => response.request().method() === 'POST' && response.status() === 403);
+    let action;
     if (role === 'owner') {
       await page.getByLabel('Tag name', { exact: true }).fill('Showcase copy check');
-      await page.getByRole('button', { name: 'Create tag', exact: true }).click();
+      action = page.getByRole('button', { name: 'Create tag', exact: true });
     } else {
-      const action = page.getByRole('button', { name: /^(Book|Join the waitlist|Cancel booking|Leave the waitlist)/ }).first();
-      // Wait for this week's sessions to render before deciding the week has no bookable one.
-      const thisWeek = await action.waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false);
-      if (!thisWeek) await page.getByRole('button', { name: 'Next week', exact: true }).click();
-      await action.click();
+      const card = page.getByRole('button', { name: /: (Places left: .+|Full — waitlist open)$/ }).first();
+      await showPortalClass(page, card);
+      await card.click();
+      action = page.getByRole('dialog').getByRole('button', { name: /^(Book|Join the waitlist)/ });
     }
-    expect((await refused).status()).toBe(403);
+    // Exercise each application's client error path; ordinary browser fetch is never replaced.
+    const [refused] = await Promise.all([
+      page.waitForResponse(response => response.request().method() === 'POST' && response.status() === 403),
+      action.click(),
+    ]);
+    expect(refused.status()).toBe(403);
     const prompt = page.getByRole('dialog', { name: 'Shared demo', exact: true });
     await expect(prompt).toBeVisible();
     await accessibleLayout(page, info, 'demo-copy-' + width);

@@ -9,7 +9,8 @@ const refusal = 'You need an unexpired class credit or an active or trial member
 for (const width of [360, 1280]) {
   test(`portal credit expiry and booking refusal at ${width}px`, async ({ page }, info) => {
     await page.setViewportSize({ width, height: 900 });
-    const startsAt = new Date(Date.now() + 86400_000).toISOString();
+    const today = '2026-11-11T12:00:00Z', startsAt = '2026-11-12T12:00:00Z';
+    await page.clock.setFixedTime(new Date(today));
     await page.route('**/api/**', async route => {
       const path = new URL(route.request().url()).pathname;
       const answer = (data: unknown, pagination?: object) => route.fulfill({ json: { householdId, data, ...(pagination ? { pagination } : {}) } });
@@ -24,7 +25,7 @@ for (const width of [360, 1280]) {
       if (path === '/api/portal/schedule/members') return answer([{ id: memberId, name: 'Alex Rivera' }]);
       if (path === '/api/portal/schedule') return answer([{
         id: id(5), name: 'Fundamentals', startsAt, endsAt: new Date(Date.parse(startsAt) + 3600_000).toISOString(),
-        coachId: null, capacity: 10, status: 'scheduled', revision: 1, bookingOpensAt: new Date(Date.now() - 86400_000).toISOString(),
+        coachId: null, capacity: 10, status: 'scheduled', revision: 1, bookingOpensAt: today,
         cancelBefore: startsAt, placesLeft: 4, bookings: [],
       }], { limit: 100, offset: 0, total: 1 });
       if (path === '/api/portal/bookings') return route.fulfill({ status: 409, json: { error: { code: 'conflict', message: refusal, details: { reason: ['noCredits'] } } } });
@@ -37,6 +38,7 @@ for (const width of [360, 1280]) {
     await accessibleLayout(page, info, 'credit-expiry');
     await info.attach('credit-expiry-' + width, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
     await page.goto(gymOrigin + '/portal/schedule');
+    await page.getByRole('button', { name: /^Fundamentals, / }).click();
     await page.getByRole('button', { name: 'Book Fundamentals for Alex Rivera', exact: true }).click();
     await expect(page.getByText(refusal)).toBeVisible();
     await accessibleLayout(page, info, 'credit-refusal');

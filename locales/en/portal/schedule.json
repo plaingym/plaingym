@@ -37,5 +37,10 @@
   "locked": "The cancellation cutoff has passed. Contact the gym to change this booking.",
   "bookedSaved": "{name} is booked.",
   "waitlistSaved": "{name} is on the waitlist at position {rank}.",
-  "cancelledSaved": "The place for {name} is cancelled."
+  "cancelledSaved": "The place for {name} is cancelled.",
+  "startedBadge": "Started",
+  "opensBadge": "Opens {when}",
+  "noClassesDay": "No classes",
+  "closeDialog": "Close",
+  "openClass": "{session}, {time}: {status}"
 }

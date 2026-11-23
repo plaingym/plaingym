@@ -2,7 +2,7 @@
 import { mkdir, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import type { Browser, BrowserContext, Page } from '@playwright/test';
-import { test, expect, Client, demoClient, gymOrigin, password, type RecordId, type Sandbox } from '../support.js';
+import { test, expect, Client, demoClient, gymOrigin, password, showPortalClass, type RecordId, type Sandbox } from '../support.js';
 import { sizes } from '../responsive.js';
 import { Capture, closeDialog, openContext, openDialog, outputRoot, recordButtons, recordVideo, resetManifest, settle, uxPass } from '../ux-pass/capture.js';
 import { adminScreens, updateStates, type AdminScreen } from '../ux-pass/screens.js';
@@ -339,9 +339,10 @@ test('the demo sandbox: populated admin, portal, kiosk, signed links, public pag
     }
     await capture.step(portal, 'schedule-class', async () => {
       await visit(portal, origin + '/portal/schedule');
-      const book = portal.getByRole('button', { name: /^(Book|Join the waitlist|Cancel booking)/ }).first();
-      if (!await book.isVisible()) await portal.getByRole('button', { name: 'Next week', exact: true }).click();
-      await portal.getByRole('button', { name: /^(Book|Join the waitlist)/ }).first().click();
+      const card = portal.getByRole('button', { name: /: (Places left: .+|Full — waitlist open)$/ }).first();
+      await showPortalClass(portal, card);
+      await card.click();
+      await portal.getByRole('dialog').getByRole('button', { name: /^(Book|Join the waitlist)/ }).click();
       await settle(portal);
     });
   } finally { await studentContext.close(); }

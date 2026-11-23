@@ -2,7 +2,7 @@
 // @vitest-environment jsdom
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { answer, portalTestCache, storedFor, stubHouseholdLists } from '../household/test-cache.test-helper.js';
@@ -35,9 +35,17 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 function view(node: ReactNode) {
   const cache = portalTestCache('gym', 'user', 'household', { defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={cache}>{node}</QueryClientProvider>);
+  return { ...render(<QueryClientProvider client={cache}>{node}</QueryClientProvider>), cache };
 }
 const page = () => view(<PortalSchedulePage client={client as unknown as PortalClient} now={() => now} />);
+const cardName = (name: string) => ({ name: (label: string) => label.startsWith(name + ', ') });
+const openClass = async (user: ReturnType<typeof userEvent.setup>, name = session.name) => {
+  await user.click(await screen.findByRole('button', cardName(name)));
+  return within(screen.getByRole('dialog', { name }));
+};
+function screenWidth(wide: boolean) {
+  vi.stubGlobal('matchMedia', () => ({ matches: wide, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+}
 
 describe('portal schedule actions', () => {
   it('offers cancel only through the cutoff and booking only once the window opens', () => {
@@ -62,6 +70,54 @@ describe('portal schedule actions', () => {
   });
 });
 describe('portal schedule page', () => {
+  it('shows seven day columns with today highlighted and one compact card per class', async () => {
+    screenWidth(true);
+    const fixtures: [Partial<PortalScheduleSession> & { name: string }, string][] = [
+      [{ name: 'Bookable' }, 'Places left: 4'],
+      [{ name: 'Full with a waitlist', placesLeft: 0 }, 'Full — waitlist open'],
+      [{ name: 'Closed', placesLeft: 0, cancelBefore: '2026-10-29T15:00:00Z' }, 'Full'],
+      [{ name: 'Booked', bookings: [{ ...booking, memberId: parent }] }, 'Booked'],
+      [{ name: 'Waiting', bookings: [{ ...booking, memberId: parent, status: 'waitlisted', waitlistPosition: 2, queueRank: 2 }] }, 'Waitlist — position 2'],
+      [{ name: 'Soon', bookingOpensAt: '2026-10-30T15:00:00Z' }, 'Opens Oct 30, 2026, 3:00 PM'],
+      [{ name: 'In progress', startsAt: '2026-10-29T15:00:00Z', endsAt: '2026-10-29T17:00:00Z' }, 'Started'],
+      [{ name: 'Called off', status: 'cancelled' }, 'Cancelled'],
+      [{ name: 'Drop-in', capacity: null, placesLeft: null }, 'No booking needed'],
+      [{ name: 'Past cutoff', cancelBefore: '2026-10-29T15:00:00Z', bookings: [{ ...booking, memberId: parent }] }, 'Booked'],
+    ];
+    client.schedule.mockResolvedValue(answer(fixtures.map(([overrides], index) => ({ ...session, id: String(index), ...overrides }))));
+    page();
+    const today = await screen.findByRole('region', { name: 'Thursday, October 29' });
+    expect(today.classList.contains('border-primary')).toBe(true);
+    expect(screen.getAllByRole('region')).toHaveLength(7);
+    expect(screen.getAllByText('No classes')).toHaveLength(5);
+    const cards = screen.getAllByRole('region').flatMap(day => within(day).queryAllByRole('button'));
+    expect(cards).toHaveLength(fixtures.length);
+    for (const [{ name }, badge] of fixtures) {
+      const card = screen.getByRole('button', cardName(name));
+      expect(card.getAttribute('aria-label')).toMatch(/\d:\d\d.*:/);
+      expect(card.getAttribute('aria-label')?.endsWith(badge)).toBe(true);
+      expect(card.querySelectorAll('.rounded-full')).toHaveLength(1);
+      expect(card.querySelector('.rounded-full')?.textContent).toBe(badge);
+    }
+    expect(within(screen.getByRole('button', cardName('Called off'))).getByText('Called off').classList.contains('line-through')).toBe(true);
+  });
+  it('groups and sorts gym-local dates in the phone agenda, with classes opening in a dialog', async () => {
+    screenWidth(false);
+    bootstrapTimezone.value = 'America/New_York';
+    try {
+      client.schedule.mockResolvedValue(answer([
+        { ...session, startsAt: '2026-10-30T02:00:00Z', endsAt: '2026-10-30T03:00:00Z' },
+        { ...session, id: 'early', name: 'Earlier class', startsAt: '2026-10-29T20:00:00Z', endsAt: '2026-10-29T21:00:00Z' },
+        { ...session, id: 'later', name: 'Later class', startsAt: '2026-10-31T02:00:00Z', endsAt: '2026-10-31T03:00:00Z' },
+      ]));
+      page();
+      const agenda = await screen.findByRole('list', { name: 'Class schedule' });
+      expect(within(agenda).getAllByRole('heading').map(heading => heading.textContent)).toEqual(['Thursday, October 29Today', 'Friday, October 30']);
+      expect(within(agenda).getAllByRole('button').map(button => button.getAttribute('aria-label')?.split(', ')[0])).toEqual(['Earlier class', 'Fundamentals', 'Later class']);
+      const dialog = await openClass(userEvent.setup());
+      expect(dialog.getByRole('button', { name: 'Book Fundamentals for Pat Parent' })).toBeDefined();
+    } finally { bootstrapTimezone.value = 'UTC'; }
+  });
   it('rolls the shown week over at gym-local midnight without a focus event', async () => {
     vi.useFakeTimers();
     bootstrapTimezone.value = 'America/New_York';
@@ -106,12 +162,13 @@ describe('portal schedule page', () => {
     client.schedule.mockResolvedValue(answer([
       { ...session, cancelBefore: new Date(firstCutoff).toISOString(), bookings: [{ ...booking, memberId: parent }] },
       { ...session, id: 'second', name: 'Advanced', cancelBefore: new Date(nextCutoff).toISOString(), bookings: [{ ...booking, memberId: parent }] },
-      { ...session, id: 'cancelled', status: 'cancelled', cancelBefore: new Date(now.getTime() + 1_000).toISOString() },
+      { ...session, id: 'cancelled', name: 'Cancelled class', status: 'cancelled', cancelBefore: new Date(now.getTime() + 1_000).toISOString() },
     ]));
     const timeout = vi.spyOn(window, 'setTimeout'), clear = vi.spyOn(window, 'clearTimeout'), interval = vi.spyOn(window, 'setInterval');
     try {
       const result = view(<PortalSchedulePage client={client as unknown as PortalClient} now={readNow}/>);
-      await screen.findByRole('button', { name: /Cancel booking: Fundamentals/ });
+      const user = userEvent.setup();
+      const dialog = await openClass(user);
       const timers = timeout.mock.calls.filter(([, delay]) => delay === 5_001);
       expect(timers).toHaveLength(1);
       expect(timeout.mock.calls.some(([, delay]) => delay === 10_001 || delay === 1_001)).toBe(false);
@@ -119,16 +176,19 @@ describe('portal schedule page', () => {
       // Render at the inclusive cutoff, then cross it before the effect reads the clock.
       instant = new Date(firstCutoff); crossDuringEffect = true;
       act(() => { (timers[0]![0] as () => void)(); });
-      expect(screen.getByRole('button', { name: /Cancel booking: Fundamentals/ })).toBeDefined();
+      expect(dialog.getByRole('button', { name: /Cancel booking: Fundamentals/ })).toBeDefined();
       const catchup = timeout.mock.calls.filter(([, delay]) => delay === 0).at(-1);
       expect(catchup).toBeDefined();
       act(() => { (catchup![0] as () => void)(); });
-      expect(screen.queryByRole('button', { name: /Cancel booking: Fundamentals/ })).toBeNull();
-      expect(screen.getByRole('button', { name: /Cancel booking: Advanced/ })).toBeDefined();
       expect(timeout.mock.calls.filter(([, delay]) => delay === 5_000)).toHaveLength(1);
+      expect(dialog.queryByRole('button', { name: /Cancel booking: Fundamentals/ })).toBeNull();
+      expect(dialog.getByText(/cancellation cutoff has passed/)).toBeDefined();
+      await user.click(dialog.getByRole('button', { name: 'Close' }));
+      const advanced = await openClass(user, 'Advanced');
+      expect(advanced.getByRole('button', { name: /Cancel booking: Advanced/ })).toBeDefined();
       instant = new Date(nextCutoff + 1);
       act(() => { window.dispatchEvent(new Event('focus')); });
-      expect(screen.queryByRole('button', { name: /Cancel booking: Advanced/ })).toBeNull();
+      expect(advanced.queryByRole('button', { name: /Cancel booking: Advanced/ })).toBeNull();
       result.unmount();
       expect(clear).toHaveBeenCalled();
       const calls = timeout.mock.calls.length;
@@ -147,17 +207,19 @@ describe('portal schedule page', () => {
     try {
       const result = view(<PortalSchedulePage client={client as unknown as PortalClient} now={() => instant} />);
       await act(() => vi.advanceTimersByTimeAsync(50));
+      fireEvent.click(screen.getByRole('button', cardName('Fundamentals')));
+      const dialog = within(screen.getByRole('dialog', { name: 'Fundamentals' }));
       const cancelButton = { name: /Cancel booking: Fundamentals/ };
-      expect(screen.getByRole('button', cancelButton)).toBeDefined();
+      expect(dialog.getByRole('button', cancelButton)).toBeDefined();
 
       instant = new Date(cutoff + 1);
       hidden.mockReturnValue(true);
       act(() => { document.dispatchEvent(new Event('visibilitychange')); });
-      expect(screen.getByRole('button', cancelButton)).toBeDefined();
+      expect(dialog.getByRole('button', cancelButton)).toBeDefined();
 
       hidden.mockReturnValue(false);
       act(() => { document.dispatchEvent(new Event('visibilitychange')); });
-      expect(screen.queryByRole('button', cancelButton)).toBeNull();
+      expect(dialog.queryByRole('button', cancelButton)).toBeNull();
 
       const registration = listen.mock.calls.filter(([event]) => event === 'visibilitychange').at(-1);
       expect(registration).toBeDefined();
@@ -174,10 +236,11 @@ describe('portal schedule page', () => {
   it('shows a full class without a waitlist action after the cutoff', async () => {
     client.schedule.mockResolvedValue(answer([{ ...session, placesLeft: 0 }]));
     view(<PortalSchedulePage client={client as unknown as PortalClient} now={() => new Date(Date.parse(session.cancelBefore) + 1)} />);
-    expect(await screen.findByText('The waitlist is closed. The cancellation cutoff has passed.')).toBeDefined();
-    expect(screen.getByText('Full')).toBeDefined();
-    expect(screen.queryByText('Full — waitlist open')).toBeNull();
-    expect(screen.queryByRole('button', { name: /Join the waitlist/ })).toBeNull();
+    const dialog = await openClass(userEvent.setup());
+    expect(dialog.getByText('The waitlist is closed. The cancellation cutoff has passed.')).toBeDefined();
+    expect(dialog.getByText('Full')).toBeDefined();
+    expect(dialog.queryByText('Full — waitlist open')).toBeNull();
+    expect(dialog.queryByRole('button', { name: /Join the waitlist/ })).toBeNull();
     expect(client.book).not.toHaveBeenCalled();
   });
   it('keeps places and both waitlist messages in English in a German browser', async () => {
@@ -189,44 +252,74 @@ describe('portal schedule page', () => {
       const waiting = { ...booking, memberId: parent, status: 'waitlisted', queueRank: 2400 };
       client.schedule.mockResolvedValue(answer([{ ...session, placesLeft: 1200, bookings: [waiting] }, { ...session, id: 'full', name: 'Full class', placesLeft: 0 }]));
       client.book.mockResolvedValue({ ...waiting, queueRank: 3600 });
+      const user = userEvent.setup();
       page();
-      expect(await screen.findByText('Places left: 1,200')).toBeDefined();
-      expect(screen.getByText('Waitlist — position 2,400')).toBeDefined();
-      await userEvent.setup().click(screen.getByRole('button', { name: 'Join the waitlist: Full class for Pat Parent' }));
-      expect(await screen.findByText('Pat Parent is on the waitlist at position 3,600.')).toBeDefined();
+      const waitingClass = await openClass(user);
+      expect(waitingClass.getByText('Places left: 1,200')).toBeDefined();
+      expect(waitingClass.getByText('Waitlist — position 2,400')).toBeDefined();
+      await user.click(waitingClass.getByRole('button', { name: 'Close' }));
+      const fullClass = await openClass(user, 'Full class');
+      await user.click(fullClass.getByRole('button', { name: 'Join the waitlist: Full class for Pat Parent' }));
+      expect(await fullClass.findByText('Pat Parent is on the waitlist at position 3,600.')).toBeDefined();
     } finally { numbers.mockRestore(); }
   });
   it('omits unknown waitlist positions in the booking and confirmation', async () => {
     const waiting = { ...booking, memberId: parent, status: 'waitlisted', queueRank: null };
     client.schedule.mockResolvedValue(answer([{ ...session, bookings: [waiting] }, { ...session, id: 'full', name: 'Full class', placesLeft: 0 }]));
     client.book.mockResolvedValue(waiting);
+    const user = userEvent.setup();
     page();
     expect(await screen.findByText('Waitlist')).toBeDefined();
     expect(screen.queryByText(/position 0/)).toBeNull();
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Join the waitlist: Full class for Pat Parent' }));
-    expect(await screen.findByText('Pat Parent is on the waitlist.')).toBeDefined();
+    const dialog = await openClass(user, 'Full class');
+    await user.click(dialog.getByRole('button', { name: 'Join the waitlist: Full class for Pat Parent' }));
+    expect(await dialog.findByText('Pat Parent is on the waitlist.')).toBeDefined();
   });
   it('a parent books a place for a child and sees the household places', async () => {
     const user = userEvent.setup(); page();
-    await screen.findByText('Fundamentals');
+    const card = await screen.findByRole('button', cardName('Fundamentals'));
     expect(client.schedule).toHaveBeenCalledWith('2026-10-26T00:00:00.000Z', '2026-11-02T00:00:00.000Z');
     expect(screen.getByText('Week of Monday, October 26')).toBeDefined();
-    await user.selectOptions(screen.getByLabelText('Booking for'), child);
+    const picker = screen.getByLabelText('Booking for');
+    await user.selectOptions(picker, child);
+    const dialog = await openClass(user);
     client.schedule.mockResolvedValue(answer([{ ...session, placesLeft: 3, bookings: [booking] }]));
-    await user.click(screen.getByRole('button', { name: 'Book Fundamentals for Casey Parent' }));
-    await screen.findByText('Casey Parent is booked.');
+    await user.click(dialog.getByRole('button', { name: 'Book Fundamentals for Casey Parent' }));
+    await dialog.findByText('Casey Parent is booked.');
+    expect(client.book).toHaveBeenCalledTimes(1);
     expect(client.book).toHaveBeenCalledWith(payer, child, id, 'household');
-    const places = await screen.findByRole('list', { name: 'Household places' });
+    const places = await dialog.findByRole('list', { name: 'Household places' });
     expect(within(places).getByText('Casey Parent')).toBeDefined();
-    expect(screen.getByRole('button', { name: 'Cancel booking: Fundamentals for Casey Parent' })).toBeDefined();
+    expect(dialog.getByRole('button', { name: 'Cancel booking: Fundamentals for Casey Parent' })).toBeDefined();
+    expect(within(card).getByText('Booked')).toBeDefined();
+    await user.click(dialog.getByRole('button', { name: 'Close' }));
+    expect(screen.getByRole('status').textContent).toBe('Casey Parent is booked.');
+    await openClass(user);
+    fireEvent.change(picker, { target: { value: parent } });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(within(card).getByText('Places left: 3')).toBeDefined();
+  });
+  it('keeps a booking result from showing inside another class dialog', async () => {
+    client.schedule.mockResolvedValue(answer([session, { ...session, id: 'second', name: 'Advanced' }]));
+    const user = userEvent.setup(); page();
+    const first = await openClass(user);
+    await user.click(first.getByRole('button', { name: 'Book Fundamentals for Pat Parent' }));
+    await first.findByText('Pat Parent is booked.');
+    await user.click(first.getByRole('button', { name: 'Close' }));
+    expect(screen.getByRole('status').textContent).toBe('Pat Parent is booked.');
+    const second = await openClass(user, 'Advanced');
+    expect(second.queryByText('Pat Parent is booked.')).toBeNull();
   });
   it('lets class and member names with no break opportunity wrap instead of widening the page', async () => {
-    const long = 'U'.padEnd(56, 'x');
-    client.members.mockResolvedValue(answer([{ id: parent, name: 'Pat Parent' }, { id: child, name: long }]));
-    client.schedule.mockResolvedValue(answer([{ ...session, name: long + 'c', bookings: [booking] }]));
+    const long = 'U'.padEnd(56, 'x'), longMember = 'M' + long;
+    screenWidth(false);
+    client.members.mockResolvedValue(answer([{ id: parent, name: 'Pat Parent' }, { id: child, name: longMember }]));
+    client.schedule.mockResolvedValue(answer([{ ...session, name: long, bookings: [booking] }]));
     page();
-    // jsdom has no layout; the 360 px overflow itself is checked in the End-to-end suite (demo-join.spec.ts).
-    for (const element of [await screen.findByText(long + 'c'), within(await screen.findByRole('list', { name: 'Household places' })).getByText(long)]) {
+    const cardName = await screen.findByText(long);
+    const dialog = await openClass(userEvent.setup(), long);
+    // Browser checks measure overflow at 360 px and on desktop.
+    for (const element of [cardName, dialog.getByRole('heading', { name: long }), dialog.getByText(longMember)]) {
       expect(breaksAnywhere(element)).toBe(true);
     }
   });
@@ -235,28 +328,47 @@ describe('portal schedule page', () => {
       { ...session, id: 'second', name: 'Advanced', placesLeft: 0 }]));
     client.book.mockRejectedValue(new ApiError(409, 'request_failed'));
     const user = userEvent.setup(); page();
-    await screen.findByText(/cancellation cutoff has passed/);
-    expect(screen.queryByRole('button', { name: /Cancel booking: Fundamentals/ })).toBeNull();
-    await user.click(screen.getByRole('button', { name: 'Join the waitlist: Advanced for Pat Parent' }));
-    await screen.findByText(/This change isn't available any more/);
+    const locked = await openClass(user);
+    expect(locked.getByText(/cancellation cutoff has passed/)).toBeDefined();
+    expect(locked.queryByRole('button', { name: /Cancel booking: Fundamentals/ })).toBeNull();
+    await user.click(locked.getByRole('button', { name: 'Close' }));
+    const advanced = await openClass(user, 'Advanced');
+    await user.click(advanced.getByRole('button', { name: 'Join the waitlist: Advanced for Pat Parent' }));
+    await advanced.findByText(/This change isn't available any more/);
   });
   it('an adult member has no picker and books only for themself', async () => {
     client.context.mockResolvedValue(answer({ role: 'member', memberId: child }));
     client.members.mockResolvedValue(answer([{ id: child, name: 'Casey Parent' }]));
     const user = userEvent.setup(); page();
-    await screen.findByText('Fundamentals');
+    const dialog = await openClass(user);
     expect(screen.queryByLabelText('Booking for')).toBeNull();
-    await user.click(screen.getByRole('button', { name: 'Book Fundamentals for Casey Parent' }));
+    await user.click(dialog.getByRole('button', { name: 'Book Fundamentals for Casey Parent' }));
     expect(client.book).toHaveBeenCalledWith({ role: 'member', memberId: child }, child, id, 'household');
   });
   it('moves between weeks without going into the past', async () => {
     const user = userEvent.setup(); page();
-    await screen.findByText('Fundamentals');
+    const next = await screen.findByRole('button', { name: 'Next week' });
+    await openClass(user);
     expect((screen.getByRole('button', { name: 'Previous week' }) as HTMLButtonElement).disabled).toBe(true);
     client.schedule.mockResolvedValue(answer([]));
-    await user.click(screen.getByRole('button', { name: 'Next week' }));
+    fireEvent.click(next);
     await screen.findByText('No classes this week');
     expect(client.schedule).toHaveBeenLastCalledWith('2026-11-02T00:00:00.000Z', '2026-11-09T00:00:00.000Z');
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+  it('closes the dialog when a refetch removes the class and keeps it closed when the class returns', async () => {
+    const { cache } = page();
+    await openClass(userEvent.setup());
+    const reload = async (sessions: PortalScheduleSession[]) => {
+      client.schedule.mockResolvedValue(answer(sessions));
+      await act(async () => cache.invalidateQueries({ predicate: query => query.queryKey.includes('schedule') }));
+    };
+    await reload([{ ...session, startsAt: '2026-11-02T18:00:00Z', endsAt: '2026-11-02T19:00:00Z' }]);
+    await screen.findByText('No classes this week');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await reload([session]);
+    await screen.findByRole('button', cardName('Fundamentals'));
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
   it('never shows a schedule answered for another household than the open one, and reads the household lists again', async () => {
     const reads = stubHouseholdLists(), cache = portalTestCache('gym', 'user', 'household', { defaultOptions: { queries: { retry: false } } });
@@ -273,7 +385,8 @@ it('shows the translated credit refusal instead of the generic booking conflict'
   const message = 'You need an unexpired class credit or an active or trial membership to book or join the waitlist. Please contact the front desk.';
   client.book.mockRejectedValue(new BookingConflictError(message));
   const user = userEvent.setup(); page();
-  await user.click(await screen.findByRole('button', { name: 'Book Fundamentals for Pat Parent' }));
-  expect(await screen.findByText(message)).toBeDefined();
+  const dialog = await openClass(user);
+  await user.click(dialog.getByRole('button', { name: 'Book Fundamentals for Pat Parent' }));
+  expect(await dialog.findByText(message)).toBeDefined();
   expect(screen.queryByText(/This change isn't available/)).toBeNull();
 });

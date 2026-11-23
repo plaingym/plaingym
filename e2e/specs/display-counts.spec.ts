@@ -8,7 +8,8 @@ const householdId = id(3), memberId = id(4), sessionId = id(5), invoiceId = id(6
 for (const width of [360, 1280]) {
   test(`keeps portal counts English in a German browser at ${width}px`, async ({ page }, info) => {
     await page.setViewportSize({ width, height: 900 });
-    const startsAt = new Date(Date.now() + 86_400_000).toISOString();
+    const today = '2026-11-11T12:00:00Z', startsAt = '2026-11-12T12:00:00Z';
+    await page.clock.setFixedTime(new Date(today));
     const invoice = { id: invoiceId, number: 1200, kind: 'one_off', status: 'paid', dueOn: '2026-11-01', amountCents: 2500,
       currency: 'USD', paidAt: '2026-11-01T12:00:00Z' };
     await page.route('**/api/**', async route => {
@@ -24,7 +25,7 @@ for (const width of [360, 1280]) {
       if (path === '/api/portal/schedule/members') return answer([{ id: memberId, name: 'Alex Rivera' }]);
       if (path === '/api/portal/schedule') return answer([{
         id: sessionId, name: 'Evening fundamentals', startsAt, endsAt: new Date(Date.parse(startsAt) + 3600_000).toISOString(),
-        coachId: null, capacity: 5000, status: 'scheduled', revision: 1, bookingOpensAt: new Date(Date.now() - 86_400_000).toISOString(),
+        coachId: null, capacity: 5000, status: 'scheduled', revision: 1, bookingOpensAt: today,
         cancelBefore: startsAt, placesLeft: 1200, bookings: [{ id: id(9), memberId, sessionId, createdAt: new Date().toISOString(),
           status: 'waitlisted', waitlistPosition: 2400, queueRank: 2400, cancelledAt: null }],
       }], { limit: 100, offset: 0, total: 1 });
@@ -43,8 +44,12 @@ for (const width of [360, 1280]) {
       await page.goto(gymOrigin + '/portal' + path);
       if (path === '') await expect(page.getByText('Unsigned waivers: 4,800')).toBeVisible();
       if (path === '/schedule') {
-        await expect(page.getByText('Places left: 1,200')).toBeVisible();
-        await expect(page.getByText('Waitlist — position 2,400')).toBeVisible();
+        const card = page.getByRole('button', { name: /^Evening fundamentals, / });
+        await expect(card).toHaveAccessibleName(/Waitlist — position 2,400$/);
+        await card.click();
+        const dialog = page.getByRole('dialog', { name: 'Evening fundamentals' });
+        await expect(dialog.getByText('Places left: 1,200')).toBeVisible();
+        await expect(dialog.getByText('Waitlist — position 2,400')).toBeVisible();
       }
       if (path === '/billing') {
         await expect(page.getByText('3,600 classes left')).toBeVisible();

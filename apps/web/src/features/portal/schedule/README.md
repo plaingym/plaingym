@@ -9,7 +9,10 @@ The server decides every permission; the pages only choose which allowed path to
 call (the payer uses the household-member booking paths, an adult member the
 self paths).
 
-The schedule shows one gym-local week at a time, starting on Monday and grouped by day. A class offers
+The schedule shows one gym-local week at a time, starting on Monday. It displays
+seven day columns from the `lg` breakpoint and a list of days with classes on
+phones. Each class card shows the time, name and one status badge for the
+selected member. Open the card to see household places and booking actions. A class offers
 Book or Join the waitlist once its booking window opens, and Cancel or Leave the
 waitlist only until its `cancelBefore` instant; after that it says the cutoff has
 passed. A full class stops offering Join the waitlist after that instant; a free
@@ -36,6 +39,6 @@ node apps/server/node_modules/tsx/dist/cli.mjs apps/web/src/features/portal/sche
 
 It serves the built app with fixture API replies, uses headless Edge (or
 `E2E_BROWSER_CHANNEL`) at 360 px and 1280 px, books, waitlists and cancels for a
-child, creates and replaces a check-in code, pages attendance, and checks
+child in the class dialog, creates and replaces a check-in code, pages attendance, and checks
 overflow, 44 px touch targets and axe WCAG A/AA. Screenshots are saved under
 `coverage/portal/schedule-browser`.
