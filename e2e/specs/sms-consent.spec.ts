@@ -19,6 +19,9 @@ for (const width of [360, 1280]) test('SMS choices on staff, portal and join scr
   await expect(page.getByRole('button', { name: 'Withdraw notices consent' }).first()).toBeVisible();
   await expect(page.getByRole('region', { name: 'Text message consent' })).toHaveCount(2);
   await expect(page.getByText('Only the member or a payer managing their profile can give announcements consent.')).toBeVisible();
+  // The member's phone is also the billing phone: each panel names the other record's own consent.
+  await expect(page.getByText('This is also the household billing phone. Its billing notices consent is off.')).toBeVisible();
+  await expect(page.getByText(`This is also SMS Child ${width}'s own phone. Their notices consent is on.`)).toBeVisible();
   await check(page, info, 'sms-staff-' + width);
 
   const invitation = await owner.json<{ data: { invitationUrl: string } }>(`/api/households/${home.id}/portal-invitations`, 'POST', { email, delivery: 'print', scope: 'payer' });
@@ -36,6 +39,8 @@ for (const width of [360, 1280]) test('SMS choices on staff, portal and join scr
   await page.getByRole('button', { name: 'Agree to notices', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Agree to notices', exact: true })).toHaveCount(0);
   await expect(householdName).toHaveValue(draftName);
+  await expect(page.getByText('This is also the household billing phone. Its billing notices consent is on.')).toBeVisible();
+  await expect(page.getByText(`This is also SMS Child ${width}'s own phone. Their notices consent is on.`)).toBeVisible();
   await check(page, info, 'sms-portal-payer-' + width);
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByText('Saved.', { exact: true })).toBeVisible();

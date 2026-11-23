@@ -13,7 +13,7 @@ import { useDialogSaved } from '../../components/ui/dialog.js';
 import { memberRequest } from './api.js';
 import { Field, Panel, ErrorMessage, text, useDraft, useMemberSave } from './common.js';
 import { basisPointsToPercent, percentToBasisPoints } from '../billing/discounts/percent.js';
-import { StaffSmsConsent } from './sms-consent.js';
+import { samePhoneAs, StaffSmsConsent } from './sms-consent.js';
 
 export function HouseholdsManager({ gymId }: { gymId: string }) {
   const [search, setSearch] = useState(''), [offset, setOffset] = useState(0), [selected, setSelected] = useState('');
@@ -55,12 +55,14 @@ export function HouseholdForm({ household, onSaved }: { household?: c.Household;
     <Button type="submit" className="w-full sm:w-auto" disabled={state.busy}>{text(household ? 'save' : 'createHousehold')}</Button>
   </form>;
 }
-export function HouseholdDetails({ householdId, gymId, onDeleted }: { householdId: string; gymId: string; onDeleted?: () => void }) {
+/** With `member` (a member's profile), the billing consent panel says when the member's own phone is this number. */
+export function HouseholdDetails({ householdId, gymId, onDeleted, member }: { householdId: string; gymId: string; onDeleted?: () => void; member?: c.Member }) {
   const query = useQuery({ queryKey: ['members', gymId, 'household', householdId], queryFn: ({ signal }) => memberRequest(c.householdResponseSchema, `/api/households/${householdId}`, 'GET', undefined, signal) });
   const billing = useQuery({ queryKey: ['members', gymId, 'billing', householdId], queryFn: ({ signal }) => memberRequest(c.householdBillingSettingsResponseSchema, `/api/households/${householdId}/billing-settings`, 'GET', undefined, signal) });
   return <Panel title={text('household')}><ErrorMessage error={query.error}/>{query.isPending && <LoadingState label={text('loading')}/>}{query.data && <>
     <HouseholdForm household={query.data.data}/>
-    <StaffSmsConsent record={query.data.data} household/>
+    <StaffSmsConsent record={query.data.data} household
+      samePhone={samePhoneAs(query.data.data, member, { other: 'member', name: member ? `${member.firstName} ${member.lastName}` : '' })}/>
     <PinForm household={query.data.data}/>
     {billing.data && <BillingForm billing={billing.data.data}/>}
     {onDeleted && <DeleteHousehold household={query.data.data} onDeleted={onDeleted}/>}

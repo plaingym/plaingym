@@ -21,7 +21,7 @@ import { ErrorMessage, Panel, StatusBadge, text, useDraft, useMemberSave } from 
 import { MemberForm } from './member-form.js';
 import { HouseholdDetails } from './households.js';
 import { MemberTabActivity } from './tab-activity.js';
-import { StaffSmsConsent } from './sms-consent.js';
+import { samePhoneAs, StaffSmsConsent } from './sms-consent.js';
 
 function tabFromHash() {
   try { return decodeURIComponent(window.location.hash.slice(1)) || undefined; } catch { return undefined; }
@@ -54,7 +54,10 @@ export function MemberProfile({ memberId }: { memberId: string }) {
 function Profile({ memberId, gymId, roles, enabledModules }: { memberId: string; gymId: string; roles: readonly StaffRole[]; enabledModules: ReadonlySet<string> }) {
   const client = useQueryClient();
   const query = useQuery({ queryKey: ['members', gymId, memberId], queryFn: ({ signal }) => memberRequest(c.memberResponseSchema, `/api/members/${memberId}`, 'GET', undefined, signal) });
-  const member = query.data?.data, manage = canStaff(roles, 'members.manage');
+  const member = query.data?.data, manage = canStaff(roles, 'members.manage'), householdId = member?.householdId;
+  // The same cached read HouseholdDetails shows, so the member's panel can say when the number is also the billing phone.
+  const household = useQuery({ queryKey: ['members', gymId, 'household', householdId], enabled: manage && !!householdId,
+    queryFn: ({ signal }) => memberRequest(c.householdResponseSchema, `/api/households/${householdId}`, 'GET', undefined, signal) });
   return <Page>
     <Link to="/admin/members" className="-my-2 inline-flex min-h-11 items-center gap-1 text-sm font-medium underline underline-offset-4"><span aria-hidden="true">‹</span>{text('backToMembers')}</Link>
     {query.isPending ? <LoadingState label={text('loading')}/> : query.isError ? <ErrorState message={text('loadFailed')} onRetry={() => void query.refetch()}/> : member && <>
@@ -71,9 +74,9 @@ function Profile({ memberId, gymId, roles, enabledModules }: { memberId: string;
             <p className="text-sm">{contact.phone}{contact.email && ' · ' + contact.email}</p></li>)}</ul>
             : <p className="text-sm text-muted-foreground">{text('noContacts')}</p>}
         </>}</Panel>
-        {manage && <StaffSmsConsent record={member}/>}
+        {manage && <StaffSmsConsent record={member} samePhone={samePhoneAs(member, household.data?.data, { other: 'household' })}/>}
         <Photo member={member} manage={manage}/><MemberTags gymId={gymId} memberId={memberId} manage={canStaff(roles, 'tags.manage')}/>
-      </div><div className="min-w-0 space-y-6">{manage && <HouseholdDetails key={member.householdId} gymId={gymId} householdId={member.householdId}/>}
+      </div><div className="min-w-0 space-y-6">{manage && <HouseholdDetails key={member.householdId} gymId={gymId} householdId={member.householdId} member={member}/>}
         {canStaff(roles, 'medical.read') && <MedicalNotes gymId={gymId} memberId={memberId} manage={manage}/>}
       </div></div>}/>
       {(canStaff(roles, 'members.delete') || (!member.anonymizedAt && canStaff(roles, 'members.anonymize'))) &&

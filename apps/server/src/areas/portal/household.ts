@@ -23,9 +23,19 @@ const contact = (row: StoredContact): PortalEmergencyContact => ({ name: row.nam
 const stored = (row: PortalEmergencyContact): StoredContact => ({ name: row.name, phone: row.phone, email: row.email ?? null,
   relationship: row.relationship?.trim() || null });
 
-function project(row: Awaited<ReturnType<HouseholdQueries['members']>>[number], country?: string | null) {
+type OptedOut = ReadonlyMap<string, string>;
+const noOptOuts: OptedOut = new Map();
+/** The STOP date is read in the same household transaction as the rows, for rows with a phone, and shown only for a valid number. */
+const optedOutFor = (queries: HouseholdQueries, type: 'member' | 'household', rows: readonly { id: string; phone: string | null }[]) => {
+  const ids = rows.filter(row => row.phone).map(row => row.id);
+  return ids.length ? queries.smsOptedOut(type, ids) : Promise.resolve(noOptOuts);
+};
+function sms<T extends { phoneE164: string | null }>(state: T, id: string, optedOut: OptedOut) {
+  return { ...state, optedOutAt: state.phoneE164 ? optedOut.get(id) ?? null : null };
+}
+function project(row: Awaited<ReturnType<HouseholdQueries['members']>>[number], country: string | null | undefined, optedOut: OptedOut) {
   return portalMemberSchema.parse({ id: row.id, firstName: row.firstName, lastName: row.lastName, email: row.email, phone: row.phone,
-    sms: smsState(row, row.phone, country),
+    sms: sms(smsState(row, row.phone, country), row.id, optedOut),
     dateOfBirth: row.dateOfBirth, photoKey: row.photoKey, status: row.status, revision: row.revision,
     emergencyContacts: ('emergencyContacts' in row ? row.emergencyContacts as StoredContact[] | null : null)?.map(contact) ?? [] });
 }
@@ -64,13 +74,20 @@ export function createPortalHouseholdService(options: {
   const phoneCountry = (gymId: string, phones: readonly (string | null)[]) =>
     readPhoneCountry(phones, async () => (await settings.get(gymId)).country);
   async function member(identity: PortalIdentity, id: string) {
-    const [row] = await read(identity, queries => queries.member(id));
-    return row ? project(row, await phoneCountry(identity.gymId, [row.phone])) : notFound();
+    const { row, optedOut } = await read(identity, async queries => {
+      const rows = await queries.member(id);
+      return { row: rows[0], optedOut: await optedOutFor(queries, 'member', rows) };
+    });
+    return row ? project(row, await phoneCountry(identity.gymId, [row.phone]), optedOut) : notFound();
   }
   async function household(identity: PortalIdentity) {
-    const [row] = await read(identity, queries => queries.household());
+    const { row, optedOut } = await read(identity, async queries => {
+      const rows = await queries.household();
+      return { row: rows[0], optedOut: await optedOutFor(queries, 'household', rows) };
+    });
     if (!row) notFound();
-    return portalHouseholdSchema.parse({ ...withoutSmsColumns(row), sms: smsState(row, row.phone, await phoneCountry(identity.gymId, [row.phone])),
+    return portalHouseholdSchema.parse({ ...withoutSmsColumns(row),
+      sms: sms(smsState(row, row.phone, await phoneCountry(identity.gymId, [row.phone])), row.id, optedOut),
       address: Object.fromEntries(Object.entries(row.address ?? {}).filter(([, value]) => typeof value === 'string')) });
   }
   const actor = (identity: PortalIdentity) => ({ gymId: identity.gymId, actor: { kind: 'user' as const, userId: identity.userId } });
@@ -82,10 +99,15 @@ export function createPortalHouseholdService(options: {
     },
     async list(identity: PortalIdentity, input: Pagination) {
       const query = paginationSchema.parse(input), context = await households.requirePayer(identity, 'household.read');
-      const rows = (await read(identity, queries => queries.members())).filter(row => context.visibleMemberIds.includes(row.id))
-        .sort((a, b) => a.lastName.localeCompare(b.lastName) || a.firstName.localeCompare(b.firstName) || a.id.localeCompare(b.id));
-      const page = rows.slice(query.offset, query.offset + query.limit), country = await phoneCountry(identity.gymId, page.map(row => row.phone));
-      return { data: page.map(row => project(row, country)), pagination: { limit: query.limit, offset: query.offset, total: rows.length } };
+      const { rows, page, optedOut } = await read(identity, async queries => {
+        const rows = (await queries.members()).filter(row => context.visibleMemberIds.includes(row.id))
+          .sort((a, b) => a.lastName.localeCompare(b.lastName) || a.firstName.localeCompare(b.firstName) || a.id.localeCompare(b.id));
+        // A page holds at most 100 members, so their STOP dates come from one batched read.
+        const page = rows.slice(query.offset, query.offset + query.limit);
+        return { rows, page, optedOut: await optedOutFor(queries, 'member', page) };
+      });
+      const country = await phoneCountry(identity.gymId, page.map(row => row.phone));
+      return { data: page.map(row => project(row, country, optedOut)), pagination: { limit: query.limit, offset: query.offset, total: rows.length } };
     },
     /** Payers edit their own profile and children's profiles; status, memberships and check-in credentials are not fields here. */
     async updateMember(identity: PortalIdentity, memberId: string, input: PortalMemberUpdateRequest, timezone: string) {

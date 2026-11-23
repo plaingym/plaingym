@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import '@hono/zod-openapi';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { auditEvents, households, householdUsers, memberships, members as memberRows } from '@plaingym/db';
 // eslint-disable-next-line no-restricted-imports -- Initialize the default app-role pools for the production registrations; no raw queries.
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
@@ -26,6 +26,10 @@ function app(f: PortalFixture, principal: Principal, production = false) {
     members: createMembersService({ scope: db.forGym, clock }), clock });
   return portalApp(db, f, principal, production ? areaContributions.routes ?? [] : createPortalHouseholdProfileRoutes(service), clock);
 }
+/** A record's number-changed audits from one change source, oldest first. */
+const numberChanges = (gymId: string, type: 'member' | 'household', targetId: string, source: string) => db.forGym(gymId, async tx =>
+  (await tx.select().from(auditEvents).where(and(eq(auditEvents.action, type + '.sms_number_changed'), eq(auditEvents.targetId, targetId)))
+    .orderBy(asc(auditEvents.id))).filter(row => (row.after as { changeSource?: string } | null)?.changeSource === source));
 const json = async <T>(response: Response, schema: { parse(value: unknown): T }) => { expect(response.status).toBe(200); return schema.parse(await response.json()); };
 /** Every household route for a member ID, with a valid body, so a denial cannot be a validation error. */
 function memberRoutes(memberId: string, revision = 1) {
@@ -54,7 +58,11 @@ describe('portal household routes', () => {
         expect(formatted.data.sms.notices?.source).toBe('portal');
         expect(formatted.data.sms.announcements?.source).toBe('portal'); revision = formatted.data.revision;
         const changed = await json(await send(server, 'PATCH', `/api/portal/members/${person.id}`, { revision, phone: '202-555-0199' }), contracts.updateMember.response);
-        expect(changed.data.sms).toEqual({ phoneValid: true, phoneE164: '+12025550199', notices: null, announcements: null });
+        expect(changed.data.sms).toEqual({ phoneValid: true, phoneE164: '+12025550199', notices: null, announcements: null, optedOutAt: null });
+        // The reformatted number kept its consent; only the new number is audited as a number change, without the phone.
+        const changes = await numberChanges(f.gymId, 'member', person.id, 'portal');
+        expect(changes).toEqual([expect.objectContaining({ actorKind: 'user', actorUserId: f.payerUser.id, after: { changeSource: 'portal' } })]);
+        expect(JSON.stringify(changes)).not.toMatch(/555-?0123|555-?0199|1202555/);
       } else {
         expect((await send(server, 'PATCH', `/api/portal/members/${person.id}`, { revision, phone: '202-555-0199' })).status).toBe(404);
       }
@@ -75,13 +83,19 @@ describe('portal household routes', () => {
     const off = await json(await send(payer, 'PUT', path, { consent: false, revision: on.data.revision }), contracts.changeHouseholdSmsConsent.response);
     expect(off.data.sms.notices).toBeNull();
     const again = await json(await send(payer, 'PUT', path, { consent: true, revision: off.data.revision }), contracts.changeHouseholdSmsConsent.response);
+    const before = (await numberChanges(f.gymId, 'household', f.household.id, 'portal')).length;
     const formatted = await json(await send(payer, 'PATCH', '/api/portal/household', { phone: '+1 (202) 555-0123', revision: again.data.revision }), contracts.updateHousehold.response);
     expect(formatted.data.sms.notices?.source).toBe('portal');
+    expect(await numberChanges(f.gymId, 'household', f.household.id, 'portal')).toHaveLength(before);
     const changed = await json(await send(payer, 'PATCH', '/api/portal/household', { phone: '+12025550199', revision: formatted.data.revision }), contracts.updateHousehold.response);
     expect(changed.data.sms.notices).toBeNull();
+    const changes = await numberChanges(f.gymId, 'household', f.household.id, 'portal');
+    expect(changes).toHaveLength(before + 1);
+    expect(changes.at(-1)).toMatchObject({ actorKind: 'user', actorUserId: f.payerUser.id, after: { changeSource: 'portal' } });
+    expect(JSON.stringify(changes)).not.toMatch(/555-?0123|555-?0199|1202555/);
     const other = app(f, otherPayerPrincipal(f));
     const otherRead = await json(await other.request('/api/portal/household'), contracts.household.response);
-    expect(otherRead.data.sms).toEqual({ phoneValid: false, phoneE164: null, notices: null });
+    expect(otherRead.data.sms).toEqual({ phoneValid: false, phoneE164: null, notices: null, optedOutAt: null });
     expect((await send(other, 'PUT', path, { consent: true, revision: 1 })).status).toBe(400);
     const logs = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'household.sms_consent_changed')));
     expect(logs).toHaveLength(4); expect(JSON.stringify(logs.map(log => [log.before, log.after]))).not.toContain('1202555');

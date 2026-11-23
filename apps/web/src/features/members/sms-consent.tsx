@@ -7,12 +7,22 @@ import { useBootstrap } from '../../app/context.js';
 import { t } from '../../lib/i18n.js';
 import { Button } from '../../components/ui/button.js';
 import { Alert } from '../../components/ui/alert.js';
+import { dateLabel } from '../../lib/instant.js';
 import { memberRequest } from './api.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('members/sms:' + key, values);
+/** The other record (a member or their household) that holds this same number, and its own notices consent. */
+export type SamePhone = { other: 'household' | 'member'; name?: string; notices: boolean };
+type SmsRecord = { sms: Household['sms'] | Member['sms'] };
+/** A shared-number line only when both records hold the same valid number; consent stays each record's own. */
+export function samePhoneAs(own: SmsRecord, other: SmsRecord | undefined, describe: Omit<SamePhone, 'notices'>): SamePhone | undefined {
+  return own.sms.phoneE164 && other?.sms.phoneE164 === own.sms.phoneE164 ? { ...describe, notices: !!other.sms.notices } : undefined;
+}
 /** A choice is saved immediately; withdrawal takes one tap, independently for each kind. */
-export function SmsConsentControls({ sms, gymName, staff = false, disabled = false, grantBlockedHint, onChange }: {
+export function SmsConsentControls({ sms, gymName, staff = false, disabled = false, grantBlockedHint, timezone, samePhone, onChange }: {
   sms: Household['sms'] | Member['sms']; gymName: string; staff?: boolean; disabled?: boolean; grantBlockedHint?: string;
+  /** The gym's timezone, for the date a number replied STOP. */
+  timezone?: string; samePhone?: SamePhone | undefined;
   onChange(kind: 'notices' | 'announcements', consent: boolean): Promise<unknown>;
 }) {
   const [saving, setSaving] = useState(false), [error, setError] = useState(false);
@@ -28,6 +38,11 @@ export function SmsConsentControls({ sms, gymName, staff = false, disabled = fal
     <h3 className="font-semibold">{text('title')}</h3>
     {!sms.phoneValid && <p className="text-sm text-muted-foreground">{text('invalidPhone')}</p>}
     {sms.phoneE164 && <p className="break-all text-sm">{sms.phoneE164}</p>}
+    {sms.optedOutAt && <p className="break-words text-sm">{text('optedOut', { date: dateLabel(sms.optedOutAt, timezone), gym: gymName })}</p>}
+    {sms.optedOutAt && staff && <p className="break-words text-sm text-muted-foreground">{text('optedOutStaff')}</p>}
+    {samePhone && sms.phoneE164 && <p className="break-words text-sm text-muted-foreground">
+      {samePhone.other === 'household' ? text('sameAsHousehold_' + (samePhone.notices ? 'on' : 'off'))
+        : text('sameAsMember_' + (samePhone.notices ? 'on' : 'off'), { name: samePhone.name ?? '' })}</p>}
     {kinds.map(kind => {
       const consent = consentFor(kind);
       return <div key={kind} className="space-y-2">
@@ -44,9 +59,10 @@ export function SmsConsentControls({ sms, gymName, staff = false, disabled = fal
     {error && <Alert variant="error" role="alert">{text('failed')}</Alert>}
   </section>;
 }
-export function StaffSmsConsent({ record, household = false }: { record: Member | Household; household?: boolean }) {
-  const bootstrap = useBootstrap(), cache = useQueryClient();
-  return <SmsConsentControls sms={record.sms} gymName={bootstrap.data?.gym.name ?? ''} staff
+export function StaffSmsConsent({ record, household = false, samePhone }: { record: Member | Household; household?: boolean; samePhone?: SamePhone | undefined }) {
+  const bootstrap = useBootstrap(), cache = useQueryClient(), timezone = bootstrap.data?.gym.timezone;
+  return <SmsConsentControls sms={record.sms} gymName={bootstrap.data?.gym.name ?? ''} staff samePhone={samePhone}
+    {...(timezone ? { timezone } : {})}
     onChange={async (kind, consent) => {
       await (household
         ? memberRequest(c.householdResponseSchema, `/api/households/${record.id}/sms-consent`, 'PUT', { consent, revision: record.revision })

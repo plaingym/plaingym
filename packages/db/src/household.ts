@@ -4,7 +4,7 @@ import { alias, type AnyPgColumn, type PgTable } from 'drizzle-orm/pg-core';
 import type { Transaction } from './client.js';
 import { writeAudit } from './audit.js';
 import {
-  attendances, classBookings, classSessions, classSessionPrograms, classSessionTags, householdUsers, households, invoiceLineItems, invoices,
+  attendances, auditEvents, classBookings, classSessions, classSessionPrograms, classSessionTags, householdUsers, households, invoiceLineItems, invoices,
   announcementOptOuts, classCreditEntries, memberRanks, members, memberships, paymentMethods, payments, refunds, signedLinks, waiverSignatures, waiverTemplates,
 } from './schema/index.js';
 
@@ -217,6 +217,28 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
     member: async (id: string) => {
       requireAccess(grant.members.kind !== 'none');
       return tx.select(memberFields).from(members).where(and(memberPredicate, eq(members.id, id)));
+    },
+    /**
+     * When each granted record's number last replied STOP: the newest opt-out, consent-change or number-change audit
+     * of that record (latest `occurred_at`, then the larger ID), kept only when it is the opt-out. Members are limited to
+     * the grant's members; the household needs household-profile access and only the grant's own household counts.
+     * IDs outside the grant are left out. Only the date leaves the audit row. One statement, at most 100 IDs.
+     */
+    smsOptedOut: async (type: 'member' | 'household', ids: readonly string[]): Promise<ReadonlyMap<string, string>> => {
+      if (ids.length > 100) throw new RangeError('At most 100 records per opt-out read');
+      const dates = new Map<string, string>();
+      if (!ids.length || (type === 'household' && !grant.householdProfile)) return dates;
+      const allowed = type === 'member'
+        ? inArray(auditEvents.targetId, tx.select({ id: members.id }).from(members).where(and(memberPredicate, inArray(members.id, [...ids]))))
+        : and(eq(auditEvents.targetId, grant.householdId), inArray(auditEvents.targetId, [...ids]));
+      const optedOut = type + '.sms_opted_out';
+      const rows = await tx.selectDistinctOn([auditEvents.targetId], {
+        targetId: auditEvents.targetId, action: auditEvents.action, occurredAt: auditEvents.occurredAt,
+      }).from(auditEvents).where(and(eq(auditEvents.gymId, grant.gymId), eq(auditEvents.targetType, type), allowed,
+        inArray(auditEvents.action, [optedOut, type + '.sms_consent_changed', type + '.sms_number_changed'])))
+        .orderBy(auditEvents.targetId, desc(auditEvents.occurredAt), desc(auditEvents.id));
+      for (const row of rows) if (row.action === optedOut) dates.set(row.targetId, row.occurredAt.toISOString());
+      return dates;
     },
     household: async () => {
       requireAccess(grant.householdProfile, 'payer_access_required');

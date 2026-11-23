@@ -20,6 +20,7 @@ import { unscheduled } from '../billing/memberships.plan-change.js';
 import { endDiscount } from '../billing/discounts/apply.js';
 import { lockMemberForWrite, memberWriteScope, smsState, smsPhoneChange, readPhoneCountry, withoutSmsColumns, clearedMemberSms, clearedHouseholdSms, auditSmsCleared, auditSmsConsent, type SmsSource } from './member-write.js';
 import { readGymSettings } from '../settings/settings.js';
+import { readSmsOptedOut } from './sms-opt-out.js';
 
 /** The queue and gym timezone an erasure's cleanup jobs are inserted with. */
 export interface ErasureQueue { jobs: Pick<Jobs, 'enqueue'>; timezone: string }
@@ -119,7 +120,8 @@ export function createMembersService(options: MembersOptions = {}) {
       });
     },
     async getMember(gymId: string, id: string) { return scope(gymId, async (tx) => {
-      const row = await getMemberRow(tx, id); return member(row, await phoneCountry(tx, gymId, [row.phone]));
+      const row = await getMemberRow(tx, id), read = member(row, await phoneCountry(tx, gymId, [row.phone]));
+      return { ...read, sms: { ...read.sms, optedOutAt: read.sms.phoneE164 ? await readSmsOptedOut(tx, 'member', id) : null } };
     }); },
     async createMember(context: MutationContext, input: c.CreateMemberRequest) {
       const data = c.createMemberRequestSchema.parse(input);
@@ -388,7 +390,8 @@ export function createMembersService(options: MembersOptions = {}) {
       });
     },
     async getHousehold(gymId: string, id: string) { return scope(gymId, async (tx) => {
-      const row = await getHouseholdRow(tx, id); return household(row, await phoneCountry(tx, gymId, [row.phone]));
+      const row = await getHouseholdRow(tx, id), read = household(row, await phoneCountry(tx, gymId, [row.phone]));
+      return { ...read, sms: { ...read.sms, optedOutAt: read.sms.phoneE164 ? await readSmsOptedOut(tx, 'household', id) : null } };
     }); },
     async createHousehold(context: MutationContext, input: c.CreateHouseholdRequest) {
       const data = c.createHouseholdRequestSchema.parse(input);

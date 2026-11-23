@@ -13,6 +13,23 @@ Changing a member's phone clears both choices in that transaction; changing the
 billing phone clears its notices choice. Each change audits the kind, previous
 and new consent, and source without recording a phone.
 
+When the provider refuses a text because the number replied STOP, `MemberSms`
+clears consent on every member and household with that number and audits
+`member.sms_opted_out` / `household.sms_opted_out`. `GET /api/members/{memberId}`
+and `GET /api/households/{householdId}` then report `sms.optedOutAt`, the time of
+that opt-out, read by `readSmsOptedOut` (`sms-opt-out.ts`) inside the request's
+gym transaction: it is the newest opt-out, consent-change or number-change audit
+for the record when that audit is an opt-out, and null once consent is recorded
+again or the number changes. The portal's household, member and payer's member
+list reads report the same date through the household query `smsOptedOut`, inside
+the request's household transaction and limited to the login's grant. Staff list
+reads, the people export and imports omit the field. The staff and portal consent
+panels show the date in the gym's timezone; the staff panels also ask staff to
+confirm the person replied START before recording verbal consent again. When a member's
+own number is also their household's billing phone, the staff and portal panels
+each say so with the other record's notices consent; consent stays with each
+record.
+
 `sms-recipients.ts` owns notice recipient selection. Call `householdNoticePhones`
 or `memberNoticePhones` inside a gym transaction. Results group by `phoneE164`;
 `memberIds` and `householdIds` identify whom the notice covers. Pass the separate
@@ -54,15 +71,17 @@ credentials. Medical writes require both `members.manage` and `medical.read`.
 SMS consent belongs to `phone_e164`. Staff, portal and people-import phone edits
 use `smsPhoneChange` in `member-write.ts`. Reformatting the same normalized number
 keeps consent. An edit to a different or invalid number clears consent and writes
-the consent audits in the same transaction. Join normalizes the new phone and records
+the consent audits in the same transaction, followed by one
+`member.sms_number_changed` / `household.sms_number_changed` audit holding only
+the change source (`auditSmsCleared`). Join normalizes the new phone and records
 only explicit choices. Consent writes check the revision. Repeating a choice
 leaves the revision and audit history unchanged when the normalized number still
 matches. A withdrawal refreshes a stale normalized number and clears all consent
 stored against it, even if the requested choice is already off. A withdrawal
 with no stored consent leaves the record unchanged. When a household grants
-notices on a different normalized number with existing consent, it writes two
-audit entries with the same time: the old consent clearing, then the fresh grant
-from empty consent. Both commit with the new number and consent in a single
+notices on a different normalized number with existing consent, it writes three
+audit entries with the same time: the old consent clearing, the number change,
+then the fresh grant from empty consent. All three commit with the new number and consent in a single
 revision. Staff, portal and
 join read the gym's country only when at least one phone needs it for national
 parsing.

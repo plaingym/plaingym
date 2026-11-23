@@ -374,6 +374,16 @@ are permanent. The aggregation uses one SQL snapshot and returns no ledger rows,
 sales, invoices or money. Payers see their current household members and adult
 non-payers see only their linked member. Signed links cannot use this read.
 
+`smsOptedOut(type, ids)` takes `'member'` or `'household'` and at most 100 IDs, and returns a
+map from ID to the time that record's number replied STOP. It reads, in one statement, the
+newest `<type>.sms_opted_out`, `<type>.sms_consent_changed` or `<type>.sms_number_changed`
+audit of each record (latest `occurred_at`, then the larger ID) and keeps the record only
+when that audit is the opt-out. The staff read `readSmsOptedOut` in
+`apps/server/src/areas/members/sms-opt-out.ts` uses the same actions and order. Members are
+limited to the grant's members; the household needs household-profile access and only the
+grant's own household counts. IDs outside the grant are left out, never an error, and only
+the date leaves the audit row.
+
 The portal reads a household's history as pages and single lookups: `bookingPage`,
 `booking`, `sessionBookings`, `attendancePage`, `attendanceCount`, `attendedPrograms`,
 `rankHistory`, `membershipPage`, `signaturePage`, `signature`, `signedTemplates`,

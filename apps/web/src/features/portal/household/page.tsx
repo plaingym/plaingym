@@ -17,7 +17,7 @@ import { Page, PageHeader, PageSection } from '../../../components/ui/page.js';
 import { Badge, StackedItem, StackedList } from '../../../components/ui/table.js';
 import { EmptyState, ErrorState, LoadingState } from '../../../components/ui/states.js';
 import { conflict, gymToday, knownMinor, usePortalContext, usePortalScope, type PortalScope } from './api.js';
-import { SmsConsentControls } from '../../members/sms-consent.js';
+import { samePhoneAs, SmsConsentControls, type SamePhone } from '../../members/sms-consent.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('portal/household:' + key, values);
 
@@ -64,7 +64,7 @@ function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope
     <PageHeader title={text(payer ? 'title' : 'profileTitle')} description={text(payer ? 'description' : 'profileDescription')} />
     {/* A failed refetch keeps its data, so the form and its draft stay. */}
     {payer && (household.data ? <HouseholdForm key={household.data.id} household={household.data} scope={scope} gymName={gymName}
-      saved={saved} setSaved={setSaved} refetch={() => household.refetch({ throwOnError: true })} />
+      timezone={timezone} samePhone={householdSamePhone(household.data, members.data)} saved={saved} setSaved={setSaved} refetch={() => household.refetch({ throwOnError: true })} />
       : household.isPending || scope.settling ? <LoadingState /> : <ErrorState onRetry={() => void household.refetch()} />)}
     <PageSection title={text(payer ? 'members' : 'profile')}>
       {members.isPending || (!members.data && scope.settling) ? <LoadingState /> : members.isError && <ErrorState onRetry={() => void members.refetch()} />}
@@ -85,6 +85,7 @@ function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope
               {item.relationship && <span className="text-muted-foreground"> · {item.relationship}</span>} · {item.phone}{item.email && ` · ${item.email}`}</li>)}</ul></div>}
           <Memberships memberId={member.id} scope={scope} />
           {(member.id === context.memberId || editable(member)) && <SmsConsentControls sms={member.sms} gymName={gymName} disabled={pending}
+            timezone={timezone} samePhone={samePhoneAs(member, household.data, { other: 'household' })}
             onChange={async (kind, consent) => {
               if (!startMemberAction(member.id)) return;
               try {
@@ -126,8 +127,13 @@ const householdContact = ({ name, email, phone, address }: PortalHousehold) => (
 const normalizeHousehold = (value: ReturnType<typeof householdContact>) => ({
   name: value.name.trim(), email: value.email?.trim() || null, phone: normalizedPhone(value.phone), address: normalizeAddress(value.address),
 });
-function HouseholdForm({ household, scope, gymName, saved, setSaved, refetch }: {
-  household: PortalHousehold; scope: PortalScope; gymName: string; saved: 'saved' | 'unchanged' | null;
+/** The billing phone's panel names the first listed member whose own phone is the same number. */
+function householdSamePhone(household: PortalHousehold, members: readonly PortalMember[] | undefined) {
+  const member = members?.find(item => samePhoneAs(household, item, { other: 'member' }));
+  return member && samePhoneAs(household, member, { other: 'member', name: `${member.firstName} ${member.lastName}` });
+}
+function HouseholdForm({ household, scope, gymName, timezone, samePhone, saved, setSaved, refetch }: {
+  household: PortalHousehold; scope: PortalScope; gymName: string; timezone: string; samePhone: SamePhone | undefined; saved: 'saved' | 'unchanged' | null;
   setSaved(value: 'saved' | 'unchanged' | null): void; refetch(): Promise<unknown>;
 }) {
   const cache = useQueryClient();
@@ -198,7 +204,7 @@ function HouseholdForm({ household, scope, gymName, saved, setSaved, refetch }: 
     <p className="text-sm text-muted-foreground">{text('billingNote')}</p>
     <Button type="submit" disabled={busy}>{text('save')}</Button>
   </form></Card>
-    <SmsConsentControls sms={household.sms} gymName={gymName} disabled={busy} {...(phoneChanged ? { grantBlockedHint: text('savePhoneBeforeConsent') } : {})}
+    <SmsConsentControls sms={household.sms} gymName={gymName} disabled={busy} timezone={timezone} samePhone={samePhone} {...(phoneChanged ? { grantBlockedHint: text('savePhoneBeforeConsent') } : {})}
       onChange={async (_kind, consent) => {
         if (startAction()) await changeConsent.mutateAsync(consent);
       }}/>

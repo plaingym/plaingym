@@ -12,6 +12,8 @@ const nullableTextSchema = z.string().nullable();
 export const smsConsentSchema = z.strictObject({ at: instantSchema, source: z.enum(['join', 'portal', 'staff']) });
 export const householdSmsSchema = z.strictObject({
   phoneValid: z.boolean(), phoneE164: z.string().nullable(), notices: smsConsentSchema.nullable(),
+  // When the number last replied STOP; set on single-record reads and the portal payer's member list, never in staff lists.
+  optedOutAt: instantSchema.nullable().optional(),
 });
 export const memberSmsSchema = householdSmsSchema.extend({ announcements: smsConsentSchema.extend({ source: z.enum(['join', 'portal']) }).nullable() });
 export const changeSmsConsentRequestSchema = z.strictObject({
