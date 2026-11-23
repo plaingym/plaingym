@@ -12,6 +12,7 @@
   "pending": "Please wait...",
   "failed": "Unable to sign in. Check your details and try again.",
   "rateLimited": "Too many attempts. Please wait before trying again.",
+  "emailUnavailable": "The gym's email isn't working right now, so no sign-in link was sent. Try again later or sign in another way.",
   "unavailable": "Sign-in is currently unavailable. Contact your gym for help.",
   "loadFailed": "Unable to load your gym. Please try again.",
   "retry": "Try again",

@@ -98,12 +98,12 @@ describe('per-gym SMTP with an install-wide fallback', () => {
     expect(await smtp.status(gymA)).toEqual({ source: 'gym', unreadable: false });
     expect(await smtp.status(gymB)).toEqual({ source: 'install', unreadable: false });
     expect(await smtp.config(gymA)).toEqual({ host: own.host, port: 587, security: 'starttls', from: own.from,
-      auth: { user: 'gym-a', pass: 'gym-a-secret' } });
+      auth: { user: 'gym-a', pass: 'gym-a-secret' }, report: expect.any(Function) });
   });
   it('falls back to the install\'s SMTP_* settings, never another gym\'s', async () => {
     const smtp = createSmtpResolver({ key, env, scope: database.forGym });
     expect(await smtp.config(gymB)).toEqual({ host: 'smtp.install.example', port: 2525, security: 'starttls',
-      from: 'noreply@install.example', auth: { user: 'install', pass: 'install-secret' } });
+      from: 'noreply@install.example', auth: { user: 'install', pass: 'install-secret' }, report: expect.any(Function) });
     expect(await smtp.configured(gymB)).toBe(true);
   });
   it('reports no email when neither the gym nor the install has SMTP', async () => {
@@ -126,7 +126,8 @@ describe('per-gym SMTP with an install-wide fallback', () => {
     const gymId = uuidv7();
     await factory('gyms', gymId, { smtpConfig: encryptSecret(key, { secretClass: 'smtp_config', owner: gymId }, JSON.stringify({ ...own, newerKey: true })) });
     const smtp = createSmtpResolver({ key, env: {}, scope: database.forGym });
-    expect(await smtp.config(gymId)).toEqual({ host: own.host, port: own.port, security: own.security, from: own.from, auth: { user: own.username, pass: own.password } });
+    expect(await smtp.config(gymId)).toEqual({ host: own.host, port: own.port, security: own.security, from: own.from, auth: { user: own.username, pass: own.password },
+      report: expect.any(Function) });
     expect(() => encryptSmtpConfig(key, gymId, { ...own, newerKey: true } as typeof own)).toThrow();
   });
   it('validates the install settings', () => {

@@ -11,6 +11,7 @@ import { sourceUrl } from '../../core/source-link.js';
 import { restoreStagingDirectory } from '../../core/maintenance-credentials.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { createSmtpResolver } from '../settings/smtp.js';
+import { readEmailSendFailure } from '../settings/email-status.js';
 import { createSmsResolver } from '../settings/sms.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { createGoogleClientResolver } from '../settings/google-login.js';
@@ -76,15 +77,20 @@ export function createStatusProviders(options: StatusOptions = {}) {
       const { source, unreadable } = await resolver.status(context.gymId);
       const configured = source !== null;
       // The wizard writes a handful of step rows; the latest email row is among the newest of these few actions.
-      const rows = await scope(context.gymId, (tx) => tx.select({ action: auditEvents.action, after: auditEvents.after, occurredAt: auditEvents.occurredAt })
-        .from(auditEvents).where(inArray(auditEvents.action, emailTestActions)).orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(50));
+      const { rows, sendFailure } = await scope(context.gymId, async (tx) => ({
+        rows: await tx.select({ action: auditEvents.action, after: auditEvents.after, occurredAt: auditEvents.occurredAt })
+          .from(auditEvents).where(inArray(auditEvents.action, emailTestActions)).orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(50),
+        // The last real send's failure, until a send works or the settings change (`settings/email-status.ts`).
+        sendFailure: await readEmailSendFailure(tx, context.gymId),
+      }));
       const test = latestEmailTest(rows, source === 'gym');
-      return { id: 'smtp', status: unreadable || test?.failed ? 'warning' : configured ? 'healthy' : 'not_configured', checkedAt: context.clock.now().toISOString(),
+      return { id: 'smtp', status: unreadable || test?.failed || sendFailure ? 'warning' : configured ? 'healthy' : 'not_configured', checkedAt: context.clock.now().toISOString(),
         details: { configured, lastTestAt: test?.at ?? null },
         message: [
           configured ? statusMessage(source === 'gym' ? 'smtpGym' : 'smtpInstall') : !unreadable && statusMessage('smtpMissing'),
           unreadable && statusMessage('smtpUnreadable'),
           test?.failed && statusMessage('smtpTestFailed'),
+          sendFailure && statusMessage('smtpLastFailed.' + sendFailure.failure),
         ].filter(Boolean).join(' ') };
     }),
     healthProvider('sms', async context => {

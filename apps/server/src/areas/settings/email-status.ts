@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+import { and, desc, eq, gt, inArray, or } from 'drizzle-orm';
+import { auditEvents, forGym, writeAudit, type Transaction } from '@plaingym/db';
+import type { Clock } from '@plaingym/shared';
+import { smtpTestFailureSchema, type SmtpTestFailure } from '@plaingym/shared/contracts';
+import { clock as defaultClock } from '../../core/clock.js';
+import { logWarn } from '../../core/log.js';
+import { emailServiceFailure } from '../../infra/email/failure.js';
+import type { SmtpConfig } from '../../infra/email/index.js';
+
+/** The gym's email state, recorded only when it changes: a send failed through the service's fault, or one worked again. */
+export const emailStatusActions = ['email.delivery_failed', 'email.delivery_recovered'] as const;
+/** Changes to the gym's email settings that make an earlier failure stale. Setup step 5 is the email step. */
+const settingsActions = ['integrations.email_saved', 'integrations.email_removed'] as const;
+const setupStepAction = 'setup.step_completed', emailSetupStep = 5;
+
+const savedAtEmailStep = (after: unknown) => {
+  const step = after as { step?: unknown; test?: unknown } | null;
+  return step?.step === emailSetupStep && step.test !== 'not_sent';
+};
+type SmtpSettings ={ port: number; security: 'starttls' | 'tls' | 'plain' };
+type Report = NonNullable<SmtpConfig['report']>;
+type Row = { id: string; action: string; after: unknown; occurredAt: Date };
+
+async function newestStatus(tx: Transaction, gymId: string): Promise<Row | undefined> {
+  const [row] = await tx.select({ id: auditEvents.id, action: auditEvents.action, after: auditEvents.after, occurredAt: auditEvents.occurredAt })
+    .from(auditEvents).where(and(eq(auditEvents.gymId, gymId), inArray(auditEvents.action, [...emailStatusActions])))
+    .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
+  return row;
+}
+
+/**
+ * The gym's last send failure, while it stands: the newest `email.delivery_failed` row, unless a send worked since
+ * (`email.delivery_recovered`) or the email settings changed since (saved or removed in Settings, or saved at setup's email step).
+ */
+export async function readEmailSendFailure(tx: Transaction, gymId: string): Promise<{ failure: SmtpTestFailure; at: string } | null> {
+  const newest = await newestStatus(tx, gymId);
+  if (newest?.action !== 'email.delivery_failed') return null;
+  const failure = smtpTestFailureSchema.safeParse((newest.after as { failure?: unknown } | null)?.failure);
+  if (!failure.success) return null;
+  const newer = or(gt(auditEvents.occurredAt, newest.occurredAt), and(eq(auditEvents.occurredAt, newest.occurredAt), gt(auditEvents.id, newest.id)));
+  const later = await tx.select({ action: auditEvents.action, after: auditEvents.after }).from(auditEvents)
+    .where(and(eq(auditEvents.gymId, gymId), inArray(auditEvents.action, [...settingsActions, setupStepAction]), newer));
+  // Skipping setup's email step (`test: 'not_sent'`) saves no settings, so it leaves the failure standing.
+  if (later.some((row) => row.action !== setupStepAction || savedAtEmailStep(row.after))) return null;
+  return { failure: failure.data, at: newest.occurredAt.toISOString() };
+}
+
+/**
+ * Builds the `SmtpConfig.report` for one gym's sends. A failure is recorded only when it is the sending service's
+ * (`emailServiceFailure`), and only when it isn't already the failure shown; a working send is recorded only after a
+ * recorded failure. Each record is one short transaction of its own, after the send. The row holds the failure class
+ * only, never a recipient, reply or credential. A failed record is logged and never reaches the send.
+ */
+export function createEmailStatusRecorder(options: { scope?: typeof forGym; clock?: Clock } = {}) {
+  const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
+  return (gymId: string, settings: SmtpSettings): Report => async (outcome) => {
+    const failure = outcome.ok ? null : emailServiceFailure(outcome.error, settings);
+    if (!outcome.ok && failure === null) return;
+    try {
+      await scope(gymId, async (tx) => {
+        if (failure !== null) {
+          if ((await readEmailSendFailure(tx, gymId))?.failure === failure) return;
+          await writeAudit(tx, { gymId, actorKind: 'system', action: 'email.delivery_failed', targetType: 'gym', targetId: gymId,
+            after: { failure }, occurredAt: clock.now() });
+        } else if ((await newestStatus(tx, gymId))?.action === 'email.delivery_failed') {
+          await writeAudit(tx, { gymId, actorKind: 'system', action: 'email.delivery_recovered', targetType: 'gym', targetId: gymId,
+            after: null, occurredAt: clock.now() });
+        }
+      });
+    } catch (error) {
+      logWarn('email.status_record_failed', { error: error instanceof Error ? error.name : typeof error });
+    }
+  };
+}

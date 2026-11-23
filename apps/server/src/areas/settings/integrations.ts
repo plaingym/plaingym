@@ -31,6 +31,7 @@ import { latestTestSwitchId, stripeTestClearedAction as testClearedAction } from
 import { testCleared } from '../billing/transitions/store.js';
 import { cardImportAudits, linkedCustomer, testCards } from './integrations.query.js';
 import { encryptSmtpConfig, readSmtpSchema, sendSmtpTest, smtpFromEnvironment, storedSmtpFromRequest, type SendSmtpTest } from './smtp.js';
+import { readEmailSendFailure } from './email-status.js';
 import { createGoogleClientResolver, encryptGoogleConfig, readGoogleConfig, requireGoogleClient, type CheckGoogle } from './google-login.js';
 import { readStoredSecret } from './unreadable-secret.js';
 import { requireBackupDestination, type CheckBackupDestination } from './backup-destination.js';
@@ -127,7 +128,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
       host: smtp?.host ?? null, port: smtp?.port ?? null, security: smtp?.security ?? null, from: smtp?.from ?? null };
   }
   const signIn = (emailConfigured: boolean) => ({ password: passwordLogin(options.config, emailConfigured), magicLink: emailConfigured });
-  async function email(gym: Gym, userId: string): Promise<EmailIntegration> {
+  async function email(gym: Gym, userId: string, lastSendFailure: EmailIntegration['lastSendFailure'] = null): Promise<EmailIntegration> {
     const smtp = gymSmtp(gym);
     const { host, port, security, from } = emailAudit(gym, smtp);
     // The section reports the settings mail actually goes through: an unreadable stored value falls back.
@@ -142,7 +143,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     const removeBlocked = afterRemove !== null && now.magicLink && !afterRemove.magicLink
       && !(afterRemove.password && await options.hasPassword(userId)) && !googleConfigured;
     return { source, host, port, security, from, signIn: now, signInAfterSave: signIn(true),
-      signInAfterRemove: afterRemove, removeBlocked, unreadable: !!gym.smtpConfig && !smtp, googleConfigured };
+      signInAfterRemove: afterRemove, removeBlocked, unreadable: !!gym.smtpConfig && !smtp, googleConfigured, lastSendFailure };
   }
   /** Card payments recorded through Stripe that no switch marked as test mode. */
   const liveCardPayments = and(or(isNotNull(payments.paymentIntentId), isNotNull(payments.chargeId)),
@@ -369,15 +370,16 @@ export function createIntegrationsService(options: IntegrationsOptions) {
       retentionBudgetBytes: Number(gym.backupRetentionBytes ?? defaultRetentionBytes) };
   }
   async function present(gymId: string, userId: string): Promise<Integrations> {
-    const { gym, config, reference, test } = await scope(gymId, async (tx) => {
+    const { gym, config, reference, test, sendFailure } = await scope(gymId, async (tx) => {
       const [row] = await readGym(tx, gymId);
       if (!row) throw new AppError('not_found', 'Gym not found');
       const stored = readStripeConfig(options.key, row.stripeConfig, gymId), found = await stripeReference(tx, gymId);
       return { gym: row, config: stored, reference: found,
-        test: stored?.mode === 'test' && found !== null && !sandbox ? await testData(tx, gymId) : null };
+        test: stored?.mode === 'test' && found !== null && !sandbox ? await testData(tx, gymId) : null,
+        sendFailure: await readEmailSendFailure(tx, gymId) };
     });
     const imported = importedOnly(config, reference);
-    return { email: await email(gym, userId), sms: sms.present(gym),
+    return { email: await email(gym, userId, sendFailure), sms: sms.present(gym),
       payments: { configured: config !== null, mode: config?.mode ?? null, webhookRegistered: Boolean(config?.endpointId),
         accountLocked: reference !== null && !imported, testData: test, importedCustomersOnly: imported },
       backups: backups(gym), sandbox, integrationsEditable, revision: gym.revision };

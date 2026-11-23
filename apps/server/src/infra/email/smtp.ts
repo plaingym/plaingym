@@ -5,6 +5,7 @@ import nodemailer, { type Transport, type Transporter } from 'nodemailer';
 import SMTPConnection from 'nodemailer/lib/smtp-connection/index.js';
 import type SMTPTransport from 'nodemailer/lib/smtp-transport/index.js';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
+import { logWarn } from '../../core/log.js';
 import { DeliveryError, listUnsubscribeUrl, type Email, type EmailMessage, type EmailResult } from './index.js';
 import { publicAddresses, SmtpHostRefusedError, type HostCheck } from './smtp-host.js';
 
@@ -18,6 +19,11 @@ export interface SmtpConfig {
   readonly replyTo?: string;
   /** A server a tenant named: connect only to a public address, resolved and checked once per session (`smtp-host.ts`). */
   readonly publicHostOnly?: boolean;
+  /**
+   * Told how each send through the transport ended: accepted, or refused with a classified `DeliveryError`. Called
+   * outside any transaction; an error it throws is logged and never changes what `sendEmail` returns or throws.
+   */
+  readonly report?: (outcome: { ok: true } | { ok: false; error: DeliveryError }) => Promise<void>;
 }
 
 const invalidHeader = (value: string) => !value.trim() || /[\r\n\0]/.test(value);
@@ -198,6 +204,7 @@ export class SmtpEmail implements Email {
   readonly #session: SessionConfig;
   readonly #from: string;
   readonly #replyTo: string | undefined;
+  readonly #report: SmtpConfig['report'];
 
   constructor(config: SmtpConfig, testing: { sessionLimitMs?: number; hostCheck?: HostCheck } = {}) {
     const { disableFileAccess, disableUrlAccess, ...options } = smtpOptions(config);
@@ -210,6 +217,7 @@ export class SmtpEmail implements Email {
     this.#transport = nodemailer.createTransport(smtpTransport(this.#session), { disableFileAccess, disableUrlAccess });
     this.#from = config.from;
     this.#replyTo = config.replyTo;
+    this.#report = config.report;
   }
 
   /** Throws DeliveryError: `not_accepted` only when no recipient can have received the message. */
@@ -235,13 +243,26 @@ export class SmtpEmail implements Email {
         } : {}),
       });
     } catch (error) {
-      if (error instanceof DeliveryError) throw error;
+      if (error instanceof DeliveryError) {
+        // A classified session error or a refused host: the transport's own outcome, so it is reported.
+        await this.#reportOutcome({ ok: false, error });
+        throw error;
+      }
       // Only composition fails outside the transport, before any connection is opened.
       throw new DeliveryError('not_accepted', 'Email message could not be composed', { cause: error });
     }
     if (!result.accepted.length || result.rejected.length)
       throw new DeliveryError('unknown', 'SMTP server accepted the message for only some recipients');
+    await this.#reportOutcome({ ok: true });
     return { status: 'sent', messageId: result.messageId };
+  }
+
+  /** Never lets the report change the send's result or error; only the error's name is logged. */
+  async #reportOutcome(outcome: Parameters<NonNullable<SmtpConfig['report']>>[0]): Promise<void> {
+    if (!this.#report) return;
+    try { await this.#report(outcome); } catch (error) {
+      logWarn('email.status_report_failed', { error: error instanceof Error ? error.name : typeof error });
+    }
   }
 
   /** Connect, negotiate TLS and authenticate without delivering a message. */

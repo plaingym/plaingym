@@ -13,6 +13,8 @@ import { TestClock } from '../../core/clock.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { encryptSmtpConfig } from '../settings/smtp.js';
+import { createEmailStatusRecorder } from '../settings/email-status.js';
+import { DeliveryError } from '../../infra/email/index.js';
 import { encryptSmsConfig } from '../settings/sms.js';
 import { encryptGoogleConfig } from '../settings/google-login.js';
 import { PostgresJobStatsQuery } from '../../infra/jobs/postgres.js';
@@ -152,6 +154,23 @@ describe('built-in providers', () => {
       after: { test: 'failed' }, occurredAt: new Date('2026-10-21T11:00:00Z') }));
     expect(await tile('smtp', bare, { env: { ...env, SMTP_HOST: 'fallback.private', SMTP_FROM: 'install@example.test' } }))
       .toMatchObject({ status: 'healthy', details: { configured: true, lastTestAt: null }, message: expect.stringContaining("install's") });
+  });
+  it('warns about the last email the sending service refused, until a send works', async () => {
+    const id = uuidv7(), smtp = { host: 'sending.host', port: 587, security: 'starttls', from: 'owner@example.test', username: 'u', password: 'p' } as const;
+    await factory('gyms', id, { smtpConfig: encryptSmtpConfig(key, id, smtp) });
+    const sendClock = new TestClock('2026-11-21T09:00:00Z'), report = createEmailStatusRecorder({ scope: database.forGym, clock: sendClock })(id, smtp);
+    await report({ ok: false, error: new DeliveryError('not_accepted', 'SMTP authentication failed', { cause: { code: 'EAUTH', responseCode: 535 } }) });
+    const failed = await tile('smtp', id);
+    expect(failed).toMatchObject({ status: 'warning', details: { configured: true, lastTestAt: null } });
+    expect(failed.message).toContain('own SMTP');
+    expect(failed.message).toContain('the service rejected the login');
+    // Another gym's failure says nothing about this one.
+    expect((await tile('smtp', gymA)).message).not.toContain('The last email failed');
+    sendClock.advance(60_000);
+    await report({ ok: true });
+    const recovered = await tile('smtp', id);
+    expect(recovered).toMatchObject({ status: 'healthy', details: { configured: true, lastTestAt: null } });
+    expect(recovered.message).not.toContain('the service rejected the login');
   });
   it('reports Google sign-in: the install’s client, the gym’s own, none, and a malformed variable by name and reason', async () => {
     const single = { ...env, TENANCY: 'single' };

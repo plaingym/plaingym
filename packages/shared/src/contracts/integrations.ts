@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { z } from 'zod';
 import type { EndpointContract } from './definition.js';
-import { revisionSchema } from './common.js';
+import { instantSchema, revisionSchema } from './common.js';
 import type { RoutePermission } from '../permissions.js';
 import { googleClientCheckSchema, googleClientValueSchema, googleEnvironmentProblemSchema, setupS3CredentialsSchema, setupSmtpRequestSchema, restrictedKeyPattern, smtpTestFailureSchema } from './setup.js';
 
@@ -19,6 +19,8 @@ export const signInMethodsSchema = z.strictObject({ password: z.boolean(), magic
  * removing them would leave the signed-in owner no way to sign in (no email links, no password of their own and no Google client).
  * `googleConfigured` is resolved only while the gym has stored SMTP settings of its own, since only then do the removal
  * check and its guidance use it; it is false otherwise.
+ * `lastSendFailure` is the gym's sending service's last failure (its class and when), until a send works or the settings
+ * change; null when there is none. Optional, so a page from a newer release still reads an older server's answer.
  */
 export const emailIntegrationSchema = z.strictObject({
   source: z.enum(['gym', 'install', 'none']),
@@ -27,6 +29,7 @@ export const emailIntegrationSchema = z.strictObject({
   security: z.enum(['starttls', 'tls', 'plain']).nullable(), from: z.string().nullable(),
   signIn: signInMethodsSchema, signInAfterSave: signInMethodsSchema, signInAfterRemove: signInMethodsSchema.nullable(),
   removeBlocked: z.boolean(),
+  lastSendFailure: z.strictObject({ failure: smtpTestFailureSchema, at: instantSchema }).nullable().optional(),
 });
 /** SMS credentials are write-only. Only single-gym installs expose the provider base URL. */
 export const smsIntegrationSchema = z.strictObject({

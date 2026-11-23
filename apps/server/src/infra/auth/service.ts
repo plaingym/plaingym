@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { betterAuth, type BetterAuthPlugin } from 'better-auth';
 import { magicLink } from 'better-auth/plugins';
+import { APIError } from 'better-auth/api';
 import { drizzleAdapter } from '@better-auth/drizzle-adapter';
 import { randomBytes } from 'node:crypto';
 import { isIP } from 'node:net';
@@ -11,6 +12,8 @@ import { portalClaimCodeSchema } from '@plaingym/shared/contracts';
 import type { Auth, Session } from './index.js';
 import { passwordLogin, type AuthConfig } from './config.js';
 import { passwordAdapter } from './password.js';
+import { emailServiceFailure } from '../email/failure.js';
+import { logWarn } from '../../core/log.js';
 import { accountLimitedPaths, reserveAccountAttempt, releaseAccountAttempt, gymAddressStorage, signInLimits, type AccountReservation, type SignInRule } from './account-limit.js';
 
 export interface ResolvedAuthGym {
@@ -55,6 +58,8 @@ export interface AuthServiceOptions {
 }
 /** The only post-login destination besides the admin: completing a portal claim the user proved by email. */
 export const portalClaimCallbackPath = '/portal/claim';
+/** A sign-in link request answers 503 with this code when the gym's sending service failed (`emailServiceFailure`). */
+export const emailUnavailableCode = 'EMAIL_UNAVAILABLE';
 const validClaimCode = (code: string) => portalClaimCodeSchema.safeParse(code).success;
 function portalClaimCallback(value: string | null, origin: URL): string | null {
   if (!value) return null;
@@ -141,7 +146,17 @@ export function createAuthService(options: AuthServiceOptions) {
           sendMagicLink: async ({ email, url }) => {
             assertNoTransaction('auth.sendMagicLink');
             if (!options.sendMagicLink) throw new Error('Magic-link delivery is not configured');
-            await options.sendMagicLink({ email: email.toLowerCase(), url, gymId: gym.gymId });
+            try {
+              await options.sendMagicLink({ email: email.toLowerCase(), url, gymId: gym.gymId });
+            } catch (error) {
+              // The gym's sending service failed, whoever asked: Better Auth sends for every address, so this answer
+              // says nothing about whether the address has an account. The original error stays the (unsent) cause.
+              const failure = emailServiceFailure(error);
+              if (failure === null) throw error;
+              // Better Auth logs an APIError by its message alone; name the class (never the reply or the address) here.
+              logWarn('auth.magic_link_email_unavailable', { gymId: gym.gymId, failure });
+              throw new APIError('SERVICE_UNAVAILABLE', { code: emailUnavailableCode, message: 'Email unavailable', cause: error });
+            }
           },
         }), ...(accountLimit ? [accountLimit] : []), ...(google ? options.google?.plugins?.(gym) ?? [] : [])],
       });
@@ -171,10 +186,15 @@ export function createAuthService(options: AuthServiceOptions) {
           if (!options.sendMagicLink) throw new Error('Magic-link delivery is not configured');
           if (claimCode !== undefined && !validClaimCode(claimCode)) throw new Error('Invalid portal claim code');
           const callbackURL = claimCode === undefined ? new URL('/login', origin).href : new URL(portalClaimCallbackPath + '?claim=' + claimCode, origin).href;
-          await auth.api.signInMagicLink({
-            headers: { origin: origin.origin, 'x-plaingym-client-ip': gym.clientIp },
-            body: { email: email.trim().toLowerCase(), callbackURL },
-          });
+          try {
+            await auth.api.signInMagicLink({
+              headers: { origin: origin.origin, 'x-plaingym-client-ip': gym.clientIp },
+              body: { email: email.trim().toLowerCase(), callbackURL },
+            });
+          } catch (error) {
+            // Callers here handle the delivery error itself, as before the sign-in page's answer existed.
+            throw error instanceof APIError && error.body?.code === emailUnavailableCode && error.cause !== undefined ? error.cause : error;
+          }
         },
         async checkedSession(request: Request): Promise<BoundSession | null> {
           const session = await readSession(request);

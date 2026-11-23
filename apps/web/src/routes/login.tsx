@@ -24,6 +24,12 @@ const returnedErrors: Record<string, string> = {
   new_user_signup_disabled: 'shell/shell:linkNoAccount',
   failed_to_create_user: 'shell/shell:linkFailed', failed_to_create_session: 'shell/shell:linkFailed', user_not_found: 'shell/shell:linkFailed',
 };
+/** A 503 to an email-link request means the gym's sending service failed, whoever asked; anything else keeps the generic text. */
+function loginError(error: unknown, mode: 'password' | 'magic' | undefined): string {
+  if (!(error instanceof ApiError)) return 'shell/shell:failed';
+  if (error.status === 429) return 'shell/shell:rateLimited';
+  return error.status === 503 && mode === 'magic' ? 'shell/shell:emailUnavailable' : 'shell/shell:failed';
+}
 function LoginPage() {
   const showcase = useDemoMode() === 'showcase';
   const discovery = useDemoDiscoveryStatus();
@@ -119,7 +125,7 @@ function LoginPage() {
           {methods.password && <div className="space-y-2"><Label htmlFor="login-password">{t('shell/shell:password')}</Label>
             <Input id="login-password" type="password" autoComplete="current-password" aria-describedby="password-help" value={password} onChange={(e) => setPassword(e.target.value)} disabled={login.isPending || google.isPending} />
             <p id="password-help" className="text-sm text-muted-foreground">{t('shell/shell:forgotPassword')}</p></div>}
-          {login.isError && <Alert variant="error" focusOnReveal>{t(login.error instanceof ApiError && login.error.status === 429 ? 'shell/shell:rateLimited' : 'shell/shell:failed')}</Alert>}
+          {login.isError && <Alert variant="error" focusOnReveal>{t(loginError(login.error, login.variables))}</Alert>}
           {methods.password && <Button type="submit" value="password" className="w-full" disabled={login.isPending || google.isPending || !password}>{t(login.isPending ? 'shell/shell:pending' : 'shell/shell:passwordSubmit')}</Button>}
           {methods.magicLink && <><p className="text-sm text-muted-foreground">{t('shell/shell:magicHint')}</p>
             <Button type="submit" value="magic" variant="outline" className="w-full" disabled={login.isPending || google.isPending}>{t('shell/shell:magicSubmit')}</Button></>}

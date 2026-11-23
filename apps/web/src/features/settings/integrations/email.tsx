@@ -5,6 +5,7 @@ import { useState, type FormEvent } from 'react';
 import { saveEmailIntegrationResponseSchema, type EmailIntegration, type SignInMethods } from '@plaingym/shared/contracts';
 import { api } from '../../../lib/api.js';
 import { t } from '../../../lib/i18n.js';
+import { useGymTime } from '../../../lib/instant.js';
 import { Button } from '../../../components/ui/button.js';
 import { Dialog, DialogActions, DialogCancel } from '../../../components/ui/dialog.js';
 import { FormMessage } from '../../../components/ui/alert.js';
@@ -36,6 +37,7 @@ function Field({ name, type = 'text', value, required = true, onChange, hint }: 
  */
 export function EmailIntegrationSection({ email, editable, state }: { email: EmailIntegration; editable: boolean; state: ReturnType<typeof useIntegrations> }) {
   const [busy, setBusy] = useState<'save' | 'remove' | null>(null), [message, setMessage] = useState<Message | null>(null);
+  const { instantLabel } = useGymTime();
   const [host, setHost] = useState(email.source === 'gym' ? email.host ?? '' : ''), [open, setOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const saveChangesSignIn = !same(email.signIn, email.signInAfterSave);
@@ -78,6 +80,8 @@ export function EmailIntegrationSection({ email, editable, state }: { email: Ema
       ? text('email.sourceGym', { host: email.host ?? '', port: email.port ?? '', security: label('security_' + (email.security ?? 'starttls')), from: email.from ?? '' })
       : label(email.source === 'install' ? 'sourceInstall' : 'sourceNone')}</p>
     <p className="text-sm text-muted-foreground">{text('email.signIn', { methods: methods(email.signIn) })}</p>
+    {email.lastSendFailure && <p role="alert" className="wrap-anywhere text-sm">
+      {text('email.lastFailed_' + email.lastSendFailure.failure, { at: instantLabel(email.lastSendFailure.at) })}</p>}
     {editable && email.source === 'gym' && email.googleConfigured && <p className="text-sm text-muted-foreground">{label('googleRemovalRule')}</p>}
     <FormMessage message={message}/>
     {editable && <>

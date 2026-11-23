@@ -2,11 +2,14 @@
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { forGym, gyms } from '@plaingym/db';
+import type { Clock } from '@plaingym/shared';
 import type { SmtpTestFailure } from '@plaingym/shared/contracts';
 import { SmtpEmail, type EmailMessage, type SmtpConfig } from '../../infra/email/index.js';
+import { smtpTestFailure } from '../../infra/email/failure.js';
 import { decryptSecret, encryptSecret } from '../../core/secrets.js';
 import { tenancyMode } from '../../core/tenancy.js';
 import { readStoredSecret } from './unreadable-secret.js';
+import { createEmailStatusRecorder } from './email-status.js';
 
 /** The gym's own sending service, stored encrypted in `gyms.smtp_config_encrypted`. */
 export const storedSmtpSchema = z.strictObject({
@@ -31,40 +34,8 @@ export function storedSmtpFromRequest(input: { host: string; port: number; secur
 }
 export type SendSmtpTest = (config: SmtpConfig, message: EmailMessage) => Promise<void>;
 
-const certificateErrorCodes = new Set(['DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN']);
-const enhancedStatus = /^\d{3}[ -]([245]\.\d{1,3}\.\d{1,3})\b/;
-/**
- * Use transport error codes, response numbers and the reply's leading enhanced status code only. Reply text can
- * contain sensitive values. `settings` lets a timeout on port 465 with STARTTLS name the likely TLS mismatch.
- */
-export function smtpTestFailure(error: unknown, settings?: { port: number; security: 'starttls' | 'tls' | 'plain' }): SmtpTestFailure {
-  const codes = new Set<string>(), responseCodes = new Set<number>(), enhancedStatuses = new Set<string>();
-  for (let depth = 0; depth < 4 && error !== null && typeof error === 'object'; depth++) {
-    const current = error as Record<string, unknown>;
-    // A thrown value can itself throw on property access, including a reply's getter. Read each safely so a reply
-    // getter cannot hide the transport code that already names the cause.
-    const read = (key: string): unknown => { try { return current[key]; } catch { return undefined; } };
-    const code = read('code'), originalCode = read('originalCode'), responseCode = read('responseCode'), response = read('response');
-    if (typeof code === 'string') codes.add(code);
-    if (typeof originalCode === 'string') codes.add(originalCode);
-    if (typeof responseCode === 'number') responseCodes.add(responseCode);
-    if (typeof response === 'string') {
-      const status = enhancedStatus.exec(response)?.[1];
-      if (status) enhancedStatuses.add(status);
-    }
-    error = read('cause');
-  }
-  for (const code of codes) {
-    if (code === 'ETLS' || code === 'EPROTO' || code.startsWith('ERR_SSL_') || code.startsWith('ERR_TLS_')
-      || code.startsWith('CERT_') || code.startsWith('UNABLE_TO_') || certificateErrorCodes.has(code)) return 'tls';
-  }
-  if (codes.has('EAUTH')) return 'authentication';
-  if (codes.has('EENVELOPE') && (responseCodes.has(530) || ((responseCodes.has(550) || responseCodes.has(554))
-    && (enhancedStatuses.has('5.7.0') || enhancedStatuses.has('5.7.1'))))) return 'authentication';
-  if (codes.has('EENVELOPE') || codes.has('EMESSAGE') || codes.has('EREQUIRETLS')) return 'sender_refused';
-  if (settings?.port === 465 && settings.security === 'starttls' && (codes.has('ETIMEDOUT') || codes.has('ECONNECTION'))) return 'tls';
-  return 'connection';
-}
+// The classifier lives with the email module, which the sign-in page and the send-status record also use.
+export { smtpTestFailure };
 
 /**
  * Sends `message` outside any transaction. Returns null on acceptance or a safe failure class. The original error
@@ -91,12 +62,16 @@ export function smtpFromEnvironment(env: NodeJS.ProcessEnv = process.env): SmtpC
 export interface SmtpResolver {
   /** Reads the gym value once, including whether a stored value could not be read. */
   status(gymId: string): Promise<{ source: 'gym' | 'install' | null; unreadable: boolean }>;
-  /** The gym's own SMTP settings when saved, otherwise the install's, otherwise null. */
+  /**
+   * The gym's own SMTP settings when saved, otherwise the install's, otherwise null. Either carries a `report` that
+   * records the gym's email state from each send (`email-status.ts`).
+   */
   config(gymId: string): Promise<SmtpConfig | null>;
   configured(gymId: string): Promise<boolean>;
 }
-export function createSmtpResolver(options: { key: Buffer; env?: NodeJS.ProcessEnv; scope?: typeof forGym }): SmtpResolver {
+export function createSmtpResolver(options: { key: Buffer; env?: NodeJS.ProcessEnv; scope?: typeof forGym; clock?: Clock }): SmtpResolver {
   const scope = options.scope ?? forGym, fallback = smtpFromEnvironment(options.env);
+  const recorder = createEmailStatusRecorder({ scope, ...(options.clock ? { clock: options.clock } : {}) });
   // On a multi-gym install a gym's own server is a tenant's choice; the install's own never is.
   const tenantHosts = tenancyMode((options.env ?? process.env).TENANCY) === 'multi';
   const storedConfig = (gymId: string) => scope(gymId, async (tx) => (await tx.select({ smtp: gyms.smtpConfig }).from(gyms).where(eq(gyms.id, gymId)))[0]?.smtp);
@@ -109,7 +84,8 @@ export function createSmtpResolver(options: { key: Buffer; env?: NodeJS.ProcessE
   }
   async function config(gymId: string): Promise<SmtpConfig | null> {
     const own = await ownConfig(gymId);
-    return own ? fromStored(own, tenantHosts) : fallback;
+    const resolved = own ? fromStored(own, tenantHosts) : fallback;
+    return resolved && { ...resolved, report: recorder(gymId, { port: resolved.port, security: resolved.security ?? 'starttls' }) };
   }
   return { config, async status(gymId) {
     const stored = await storedConfig(gymId);

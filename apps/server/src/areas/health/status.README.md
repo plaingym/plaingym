@@ -141,7 +141,7 @@ mode, during a restore, or without maintenance configuration; requests also need
 the install's configured backup gym to match the requester.
 No bucket names, filesystem paths, job errors, or SMTP credentials enter responses.
 
-The SMTP check validates configuration rather than attempting a send. It uses
+The SMTP check attempts no send of its own. It uses
 `SmtpResolver.status(gymId)`, one read and decrypt, to report gym versus install
 configuration. Unreadable gym settings produce a warning about the saved settings.
 When mail can fall back to the install's SMTP settings, the same tile names that
@@ -156,6 +156,11 @@ without a test field count the same way; explicit wizard skips do not count. Rem
 settings clears earlier tests. The install's own `SMTP_*` settings are never tested
 here, so a gym using them shows no test, even after a failed test of settings it never
 saved.
+Real sends report too: while the gym's last email failed through its sending service
+(`readEmailSendFailure`, `areas/settings/email-status.ts`), the tile is a warning and its
+message adds the failure's class (`smtpLastFailed.<class>`: connection, secure connection,
+refused login, or refused sender), whichever settings were in use. A send that works, or
+a change to the email settings, clears it; `details` don't change.
 
 Malformed install Google variables are reported to single-gym owners only. With a
 working stored client the Google tile reports that client in use and warns about

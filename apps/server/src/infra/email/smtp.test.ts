@@ -6,6 +6,7 @@ import { uuidv7 } from '@plaingym/db';
 import { createServer } from 'node:net';
 import { DeliveryError, deliveryAcceptance, SmtpEmail, smtpOptions, type SmtpConfig } from './index.js';
 import { captureSmtp } from './test-smtp.js';
+import { setLogSink } from '../../core/log.js';
 
 const database = useTestDatabase();
 let capture: Awaited<ReturnType<typeof captureSmtp>>;
@@ -228,5 +229,54 @@ describe('delivery classification', () => {
   it('treats any error other than a DeliveryError as unknown', () => {
     expect(deliveryAcceptance(new Error('lost'))).toBe('unknown');
     expect(deliveryAcceptance(new DeliveryError('not_accepted', 'refused'))).toBe('not_accepted');
+  });
+});
+
+describe('send outcome report', () => {
+  type Outcome = Parameters<NonNullable<SmtpConfig['report']>>[0];
+  const reporting = (config: SmtpConfig) => {
+    const outcomes: Outcome[] = [];
+    return { outcomes, email: new SmtpEmail({ ...config, report: async (outcome) => { outcomes.push(outcome); } }) };
+  };
+  it('reports an accepted send once, and a refused login once with its delivery error', async () => {
+    const authenticated = await captureSmtp({ user: 'smtp-user', pass: 'test-password' });
+    const config = { host: '127.0.0.1', port: authenticated.port, security: 'plain', from: 'owner@example.test' } as const;
+    const good = reporting({ ...config, auth: { user: 'smtp-user', pass: 'test-password' } });
+    const bad = reporting({ ...config, auth: { user: 'smtp-user', pass: 'wrong' } });
+    try {
+      await expect(good.email.sendEmail(message)).resolves.toMatchObject({ status: 'sent' });
+      expect(good.outcomes).toEqual([{ ok: true }]);
+      const error = await bad.email.sendEmail(message).catch((failure: unknown) => failure);
+      expect(error).toMatchObject({ acceptance: 'not_accepted', cause: { code: 'EAUTH' } });
+      expect(bad.outcomes).toHaveLength(1);
+      expect(bad.outcomes[0]).toMatchObject({ ok: false });
+      expect((bad.outcomes[0] as { error: unknown }).error).toBe(error);
+      // Verifying the connection reports nothing.
+      await expect(bad.email.verifyConnection()).rejects.toMatchObject({ acceptance: 'not_accepted' });
+      expect(bad.outcomes).toHaveLength(1);
+    } finally { good.email.close(); bad.email.close(); await authenticated.close(); }
+  });
+  it('reports nothing for an invalid header or unsubscribe address, refused before connecting', async () => {
+    const { outcomes, email: sender } = reporting({ host: '127.0.0.1', port: capture.port, security: 'plain', from: 'owner@example.test' });
+    try {
+      await expect(sender.sendEmail({ ...message, to: 'member@example.test\r\nBcc: other@example.test' })).rejects.toMatchObject({ acceptance: 'not_accepted' });
+      await expect(sender.sendEmail({ ...message, listUnsubscribe: 'http://gym.example.test/l/token' })).rejects.toMatchObject({ acceptance: 'not_accepted' });
+      expect(outcomes).toEqual([]);
+    } finally { sender.close(); }
+  });
+  it('never lets a failing report change the result or the error, and logs only its name', async () => {
+    const logs: string[] = [], previous = setLogSink((line) => logs.push(line));
+    const failing = async () => { throw new Error('report failed for member@example.test'); };
+    const sender = new SmtpEmail({ host: '127.0.0.1', port: capture.port, security: 'plain', from: 'owner@example.test', report: failing });
+    const refused = await captureSmtp({ user: 'smtp-user', pass: 'test-password' });
+    const bad = new SmtpEmail({ host: '127.0.0.1', port: refused.port, security: 'plain', from: 'owner@example.test',
+      auth: { user: 'smtp-user', pass: 'wrong' }, report: failing });
+    try {
+      await expect(sender.sendEmail(message)).resolves.toMatchObject({ status: 'sent', messageId: expect.stringMatching(/@/) });
+      await expect(bad.sendEmail(message)).rejects.toMatchObject({ name: 'DeliveryError', acceptance: 'not_accepted', cause: { code: 'EAUTH' } });
+      const warnings = logs.map((line) => JSON.parse(line) as Record<string, unknown>).filter((line) => line.event === 'email.status_report_failed');
+      expect(warnings).toEqual([expect.objectContaining({ error: 'Error' }), expect.objectContaining({ error: 'Error' })]);
+      expect(logs.join('\n')).not.toContain('member@example.test');
+    } finally { setLogSink(previous); sender.close(); bad.close(); await refused.close(); }
   });
 });

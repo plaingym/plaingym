@@ -8,6 +8,7 @@ import { createRegistries } from '../../../lib/registries.js';
 import { IntegrationsSettings } from './section.js';
 import { integrations, refusal, renderSection, reply, serve, settings } from './fixtures.test-helper.js';
 import { holdTimeouts, stalledRequests } from '../save-timeout.test-helper.js';
+import { instantLabel } from '../../../lib/instant.js';
 const client = vi.hoisted(() => ({ GET: vi.fn(), PUT: vi.fn(), POST: vi.fn(), DELETE: vi.fn() }));
 vi.mock('../../../lib/api.js', async original => ({ ...await original<typeof import('../../../lib/api.js')>(), api: client, createApiClient: () => client }));
 
@@ -36,6 +37,25 @@ async function confirmRemoval(user: ReturnType<typeof userEvent.setup>, name = n
   await user.click(await screen.findByRole('button', { name }));
   await user.click(within(screen.getByRole('dialog')).getByRole('button', { name }));
 }
+
+describe('Settings → Email: the last send failure', () => {
+  const at = '2026-11-21T09:30:00.000Z';
+  it('names the failure and when it happened, in the gym\'s timezone', async () => {
+    current = { ...gymEmail, email: { ...gymEmail.email, lastSendFailure: { failure: 'authentication', at } } };
+    renderSection();
+    const when = instantLabel(at, 'America/Los_Angeles');
+    const alert = await screen.findByText(`The last email, at ${when}, failed: the service rejected the login. Test and save the current password below.`);
+    expect(alert.getAttribute('role')).toBe('alert');
+  });
+  it.each([null, undefined])('shows nothing when there is none (%s)', async (lastSendFailure) => {
+    // The fixture has no such field, as an older server's answer.
+    expect(gymEmail.email).not.toHaveProperty('lastSendFailure');
+    current = lastSendFailure === null ? { ...gymEmail, email: { ...gymEmail.email, lastSendFailure } } : gymEmail;
+    renderSection();
+    expect(await screen.findByText(/Sends through your own SMTP/)).toBeDefined();
+    expect(screen.queryByText(/The last email/)).toBeNull();
+  });
+});
 
 describe('Settings → Email', () => {
   it('names unreadable stored settings while showing the actual fallback', async () => {

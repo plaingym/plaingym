@@ -7,6 +7,7 @@ import { createMemoryHistory } from '@tanstack/react-router';
 import { App } from '../app.js';
 import { createAppRouter } from '../app/router.js';
 import type { ShellBootstrap, ShellServices } from '../app/services.js';
+import { ApiError } from '../lib/api.js';
 
 const discovery = vi.hoisted(() => ({ mode: 'disabled' as 'disabled' | 'sandbox' | 'showcase', link: (_body: unknown) => Response.json({}, { status: 404 }),
   // Replaces the answer for the current mode, to hold or fail discovery.
@@ -65,6 +66,33 @@ describe('a sign-in that came back with an error', () => {
   ])('keeps the Google messages for the Google code %s', async (code, message) => {
     start('/login?error=' + code);
     expect((await screen.findByRole('alert')).textContent).toMatch(message);
+  });
+});
+
+describe('an email-link request that fails', () => {
+  async function ask(error: Error, login: ShellBootstrap['login'] = anonymous.login) {
+    const shell = services();
+    shell.loadBootstrap = vi.fn().mockResolvedValue({ ...anonymous, login });
+    shell.requestMagicLink = vi.fn().mockRejectedValue(error);
+    shell.signInWithPassword = vi.fn().mockRejectedValue(error);
+    render(<App services={shell} router={createAppRouter(createMemoryHistory({ initialEntries: ['/login'] }))} />);
+    await userEvent.type(await screen.findByLabelText('Email address'), 'owner@gym.test');
+    return shell;
+  }
+  it.each([
+    [503, "The gym's email isn't working right now, so no sign-in link was sent. Try again later or sign in another way."],
+    [500, 'Unable to sign in. Check your details and try again.'],
+    [429, 'Too many attempts. Please wait before trying again.'],
+  ])('explains a %i answer', async (status, message) => {
+    await ask(new ApiError(status, status === 503 ? 'EMAIL_UNAVAILABLE' : 'error'));
+    await userEvent.click(screen.getByRole('button', { name: /link/i }));
+    expect((await screen.findByRole('alert')).textContent).toBe(message);
+  });
+  it('keeps the generic text for a password sign-in that answers 503', async () => {
+    await ask(new ApiError(503, 'unavailable'), { password: true, magicLink: true });
+    await userEvent.type(screen.getByLabelText('Password'), 'a-password-123');
+    await userEvent.click(screen.getByRole('button', { name: /^sign in$/i }));
+    expect((await screen.findByRole('alert')).textContent).toBe('Unable to sign in. Check your details and try again.');
   });
 });
 

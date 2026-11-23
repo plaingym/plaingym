@@ -60,6 +60,14 @@ describe('integration settings contracts', () => {
     // Only key creation shows the new private key, once.
     expect(createBackupKeyResponseSchema.safeParse({ data: { privateKey: 'AGE-SECRET-KEY-1EXAMPLE', publicKey: 'age1example', integrations } }).success).toBe(true);
   });
+  it('reads the last send failure when present, and an older server\'s email section without it', () => {
+    expect(integrationsSchema.parse(integrations).email).not.toHaveProperty('lastSendFailure');
+    const at = '2026-11-21T09:30:00.000Z';
+    for (const lastSendFailure of [null, { failure: 'authentication', at }])
+      expect(integrationsSchema.parse({ ...integrations, email: { ...integrations.email, lastSendFailure } }).email.lastSendFailure).toEqual(lastSendFailure);
+    for (const lastSendFailure of [{ failure: 'recipient_refused', at }, { failure: 'authentication', at, reply: '535 rejected' }, { failure: 'tls', at: 'yesterday' }])
+      expect(integrationsSchema.safeParse({ ...integrations, email: { ...integrations.email, lastSendFailure } }).success).toBe(false);
+  });
   it('returns Google sign-in without its client secret and takes both values on a save', () => {
     const google = { source: 'gym', editable: true, clientId: 'client.apps.googleusercontent.com', clientSecretSet: true, removeBlocked: false, revision: 4 };
     expect(googleLoginSchema.parse(google)).toEqual({ ...google, unreadable: false });
