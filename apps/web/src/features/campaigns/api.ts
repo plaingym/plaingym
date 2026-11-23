@@ -2,14 +2,10 @@
 import { parseResponse } from '../../lib/response.js';
 import { linksContracts, membersContracts, type CampaignRecipientState, type CreateLinkCampaignRequest, type Household,
   type HouseholdsNeedingCardResponse } from '@plaingym/shared/contracts';
-import { api, ApiError } from '../../lib/api.js';
+import { api, checked as checkedResult } from '../../lib/api.js';
 
 function checked<T>(result: { response: Response; data?: T; error?: unknown }): T {
-  if (!result.response.ok || result.data === undefined) {
-    const error = result.error as { error?: { code?: unknown } } | undefined;
-    throw new ApiError(result.response.status, error?.error?.code === 'invalid_request' ? 'invalid_request' : 'request_failed');
-  }
-  return result.data;
+  return checkedResult(result, body => (body as { error?: { code?: unknown } } | undefined)?.error?.code === 'invalid_request' ? 'invalid_request' : 'request_failed');
 }
 export const campaignClient = {
   async needsCard(households: Household[]) {

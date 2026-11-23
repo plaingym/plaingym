@@ -1,20 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { announcementsContracts, ranksContracts, staffContracts, type AnnouncementDraft, type AnnouncementSmsTest, type SendAnnouncement } from '@plaingym/shared/contracts';
-import { api, ApiError } from '../../lib/api.js';
+import { api, checked } from '../../lib/api.js';
 import { parseResponse } from '../../lib/response.js';
 
-async function checked<T>(result: { response: Response; data?: T; error?: unknown }): Promise<T> {
-  if (!result.response.ok || result.data === undefined) {
-    // The typed client has already consumed the response body. Read its parsed error.
-    const body = result.error;
-    const error = body && typeof body === 'object' && 'error' in body ? body.error : undefined;
-    const details = error && typeof error === 'object' && 'details' in error ? error.details : undefined;
-    const reason = details && typeof details === 'object' && 'reason' in details ? details.reason : undefined;
-    throw new ApiError(result.response.status, 'request_failed',
-      Array.isArray(reason) && reason.every(value => typeof value === 'string') ? reason : []);
-  }
-  return result.data;
-}
 function draftBody<T extends AnnouncementDraft>(input: T) {
   const { sms, ...rest } = input;
   return { ...rest, ...(sms ? { sms } : {}) };

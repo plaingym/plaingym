@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { billingContracts, settingsContracts, membersContracts, type ApplyPlanPriceChangeRequest, type EndpointContract, type ListResponse } from '@plaingym/shared/contracts';
 import { minorUnitStep } from '@plaingym/shared/money';
-import { ApiError, readApiError, reportApiRefusal } from '../../../lib/api.js';
+import { ApiError, readRefusal } from '../../../lib/api.js';
 import { parseResponse } from '../../../lib/response.js';
 
 /** Only the price-change endpoint's bounded, expected client errors may display its message. */
@@ -31,14 +31,12 @@ export async function billingRequest<C extends EndpointContract>(contract: C,
     headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   if (!response.ok) {
-    await reportApiRefusal(response);
-    const error = await readApiError(response, contract.path === billingContracts.applyPlanPriceChange.path
+    const refusal = await readRefusal(response, contract.path === billingContracts.applyPlanPriceChange.path
       && contract.method === billingContracts.applyPlanPriceChange.method
       ? [{ status: 400, code: 'invalid_request' }, { status: 404, code: 'not_found' }] : []);
-    const code = error.message && priceChangeRefusal(response.status, error.message);
-    if (code && error.message) throw new PriceChangeError(response.status, code, error.message, error.reasons);
-    throw new ApiError(response.status, response.status === 409 ? 'conflict' : 'request_failed',
-      error.reasons);
+    const code = refusal.message && priceChangeRefusal(response.status, refusal.message);
+    if (code && refusal.message) throw new PriceChangeError(response.status, code, refusal.message, refusal.reasons);
+    throw refusal.error(response.status === 409 ? 'conflict' : 'request_failed');
   }
   return parseResponse(contract.response, await response.json()) as ReturnType<C['response']['parse']>;
 }

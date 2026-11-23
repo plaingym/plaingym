@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { parseResponse } from '../../lib/response.js';
 import { ranksContracts, membersContracts, type ListResponse } from '@plaingym/shared/contracts';
-import { ApiError, apiErrorReasons, reportApiRefusal } from '../../lib/api.js';
+import { refusalError } from '../../lib/api.js';
 
 export async function allPages<T>(load: (offset: number) => Promise<ListResponse<T>>): Promise<T[]> {
   const rows: T[] = [];
@@ -25,10 +25,7 @@ export function createRanksClient(fetcher: typeof fetch = fetch) {
     const response = await fetcher(path, { method: contract.method.toUpperCase(), credentials: 'same-origin', redirect: 'error', cache: 'no-store',
       headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-    if (!response.ok) {
-      await reportApiRefusal(response);
-      throw new ApiError(response.status, 'request_failed', await apiErrorReasons(response));
-    }
+    if (!response.ok) throw await refusalError(response, 'request_failed');
     return parseResponse(contract.response, await response.json()) as ReturnType<typeof ranksContracts[K]['response']['parse']>;
   }
   return {
@@ -42,10 +39,7 @@ export function createRanksClient(fetcher: typeof fetch = fetch) {
     members: () => allPages(async (offset) => {
       const contract = membersContracts.listMembers;
       const response = await fetcher(contract.path + '?limit=100&offset=' + offset, { credentials: 'same-origin', redirect: 'error', cache: 'no-store' });
-      if (!response.ok) {
-        await reportApiRefusal(response);
-        throw new ApiError(response.status, 'request_failed', await apiErrorReasons(response));
-      }
+      if (!response.ok) throw await refusalError(response, 'request_failed');
       return parseResponse(contract.response, await response.json());
     }),
   };

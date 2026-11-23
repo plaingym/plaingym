@@ -111,7 +111,7 @@ confirmation; revision conflicts use the reload flow. An archive confirmation th
 hits a revision conflict closes and refreshes the catalog, offering reload when
 the editor is still open.
 
-The catalog and invoice transports use `readApiError` from `lib/api.ts` to
-read structured reason codes. User messages come from locale keys; arbitrary
+The catalog and invoice transports use `readRefusal` from `lib/api.ts` to
+read structured reason codes and report a 403 once. User messages come from locale keys; arbitrary
 server messages are never displayed. Price-change apply also displays bounded messages for
 expected client refusals, such as an effective date that has passed; server errors stay generic.

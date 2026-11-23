@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { parseResponse } from '../../lib/response.js';
 import { setupContracts, ranksContracts } from '@plaingym/shared/contracts';
-import { ApiError, apiErrorReasons, reportApiRefusal } from '../../lib/api.js';
+import { readRefusal, refusalError } from '../../lib/api.js';
 
-/** The server's refusal codes (`details`), never its message. */
-async function refusalCodes(response: Response): Promise<string[]> {
-  const body = await response.json().catch(() => null) as { error?: { details?: Record<string, unknown> } } | null;
-  return Object.values(body?.error?.details ?? {}).flat().filter((code) => typeof code === 'string');
+/** The server's refusal codes (`details`) in a parsed error body, never its message. */
+function refusalCodes(body: unknown): string[] {
+  const details = (body as { error?: { details?: Record<string, unknown> } } | null | undefined)?.error?.details;
+  return Object.values(details ?? {}).flat().filter((code) => typeof code === 'string');
 }
 export function createSetupClient(fetcher: typeof fetch = fetch) {
   function setupToken(): string | null {
@@ -32,27 +32,21 @@ export function createSetupClient(fetcher: typeof fetch = fetch) {
         ...(body ? { body: JSON.stringify(body) } : {}),
       });
       if (!response.ok) {
-        await reportApiRefusal(response);
-        throw new ApiError(response.status, 'request_failed', await refusalCodes(response));
+        const refusal = await readRefusal(response);
+        throw refusal.error('request_failed', refusalCodes(refusal.body));
       }
       if (name === 'finish') sessionStorage.removeItem('setup.token');
       return parseResponse(contract.response, await response.json()).data as ReturnType<typeof setupContracts[K]['response']['parse']>['data'];
     },
     async catalog() {
       const response = await fetcher(ranksContracts.catalog.path, { credentials: 'same-origin', redirect: 'error' });
-      if (!response.ok) {
-        await reportApiRefusal(response);
-        throw new ApiError(response.status, 'request_failed', await apiErrorReasons(response));
-      }
+      if (!response.ok) throw await refusalError(response, 'request_failed');
       return parseResponse(ranksContracts.catalog.response, await response.json()).data;
     },
     async magicLink(email: string) {
       const response = await fetcher('/api/auth/sign-in/magic-link', { method: 'POST', credentials: 'same-origin', redirect: 'error',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, callbackURL: '/setup', errorCallbackURL: '/setup' }) });
-      if (!response.ok) {
-        await reportApiRefusal(response);
-        throw new ApiError(response.status, 'request_failed', await apiErrorReasons(response));
-      }
+      if (!response.ok) throw await refusalError(response, 'request_failed');
     },
   };
 }

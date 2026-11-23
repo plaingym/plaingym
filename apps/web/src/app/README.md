@@ -17,8 +17,14 @@ Shell translations use `locales/en/shell/shell.json` in the catalog generated fr
 
 API refusal listeners are notified once at the response boundary: the typed
 client's middleware and the JSON transport report structured HTTP 403 reasons;
-custom fetch clients use `reportApiRefusal`. `ApiError` construction and `checked`
-only build or throw errors. Mapping an error does not open the demo copy prompt.
+custom fetch clients throw `await refusalError(response, code)` (or use
+`readRefusal` for allowed messages and custom reasons), which reads the refused
+body once and notifies at most once per response, whichever helpers read it.
+`reportApiRefusal` stays for clients that throw their own plain errors.
+`ApiError` construction and `checked` only build or throw errors, and a source
+check (`lib/api.sources.test.ts`) fails when a client builds an `ApiError` from a
+response status itself; the bookings client is its one listed exception and still
+reports through `reportApiRefusal`. Mapping an error does not open the demo copy prompt.
 
 The mobile-first admin shell (`admin-shell.tsx`) has a sticky two-line header with the gym name, then who is signed in (name and roles, the name truncating before the roles). Navigation opens in a menu on phones and moves focus into it. Escape, a press outside, or navigating closes it. Escape returns focus to the button. Navigation sits in a sticky sidebar from `md`, and the shell supplies the page gutters around `main`. Pages follow the UI conventions in [`../../README.md`](../../README.md).
 

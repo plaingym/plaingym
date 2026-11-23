@@ -1,21 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { waiverContracts, waiverDocumentResponseSchema } from '@plaingym/shared/contracts';
 import { billingRequest } from '../billing/catalog/api.js';
-import { readApiError, reportApiRefusal } from '../../lib/api.js';
+import { readRefusal, reportApiRefusal } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 export class WaiverRequestError extends Error {}
 export function createWaiversClient(fetcher: typeof fetch = fetch) {
   const transport: typeof fetch = async (url, init) => {
     const response = await fetcher(url, init);
     if (response.status === 409 || response.status === 403 || response.status === 429 || (response.status === 400 && String(url).startsWith('/api/waivers/template'))) {
-      const { message } = await readApiError(response, [
+      const { message } = await readRefusal(response, [
         { status: 400, code: 'invalid_request' }, { status: 409, code: 'conflict' }, { status: 429, code: 'rate_limited' },
         { status: 403, code: 'forbidden', message: t('demo/demo:uploadsDisabled') },
       ]);
-      if (message) {
-        await reportApiRefusal(response);
-        throw new WaiverRequestError(message);
-      }
+      if (message) throw new WaiverRequestError(message);
     }
     return response;
   };
