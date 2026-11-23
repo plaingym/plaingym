@@ -232,8 +232,10 @@ wider screens) groups **Sign in as** (the three roles and the joined members),
 **Go to** (start page, admin, member portal, kiosk, the join page when the sandbox
 takes joins, the website when it's on, outbox) and **About this demo**. From
 **Go to**, **Gym admin** and **Demo outbox** sign a signed-out visitor in as the
-owner, and **Member portal** signs them in as the student. Visitors with a
-session keep their current identity when following these links. Each hint
+owner, and **Member portal** signs them in as the student. A visitor signed in
+as the owner or an admin keeps that identity when following these links; any
+other signed-in visitor is signed in as the owner by **Gym admin** and **Demo
+outbox**, and keeps their session for **Member portal**. Each hint
 shows only where it is used: the sample household on the kiosk's Name and PIN search,
 the test card on the start page's join step, and the outbox note on a private
 copy's `/login` page after requesting a sign-in link. The showcase's `/login`

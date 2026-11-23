@@ -265,6 +265,48 @@ it.each(protectedDestinations)('signs in from %s as the seeded %s', async (name,
   expect(calls.map(([, init]) => init.method)).toEqual(['POST']);
   expect(calls.map(([, init]) => JSON.parse(String(init.body)))).toEqual([{ role }]);
 });
+it.each([
+  ['Gym admin', '/admin'],
+  ['Demo outbox', '/admin/outbox'],
+] as const)('switches a coach to the owner for %s', async (name, href) => {
+  const assign = vi.fn();
+  vi.stubGlobal('location', { ...window.location, assign });
+  loadBootstrap.mockResolvedValue({
+    ...signedOutBootstrap, session: { userId: 'coach', displayName: 'Coach', roles: ['coach'], member: false },
+  });
+  serve({ login: async () => Response.json({ data: { redirect: '/admin' } }) });
+  start();
+  const goTo = within(within(await openMenu()).getByRole('navigation', { name: 'Go to' }));
+  expect((await goTo.findByRole('link', { name: 'Member portal' })).getAttribute('href')).toBe('/portal');
+  expect(goTo.getByRole('button', { name: 'Gym admin' })).toBeDefined();
+  expect(goTo.getByRole('button', { name: 'Demo outbox' })).toBeDefined();
+  fireEvent.click(goTo.getByRole('button', { name }));
+  await waitFor(() => expect(assign).toHaveBeenCalledExactlyOnceWith(href));
+  const calls = fetcher.mock.calls.filter(([path]) => path === '/api/demo/login');
+  expect(calls.map(([, init]) => [init.method, JSON.parse(String(init.body))])).toEqual([['POST', { role: 'owner' }]]);
+});
+it('offers owner sign-in controls to a member while keeping the portal link', async () => {
+  loadBootstrap.mockResolvedValue({
+    ...signedOutBootstrap, session: { userId: 'member', displayName: 'Member', roles: [], member: true },
+  });
+  serve();
+  start();
+  const goTo = within(within(await openMenu()).getByRole('navigation', { name: 'Go to' }));
+  expect((await goTo.findByRole('link', { name: 'Member portal' })).getAttribute('href')).toBe('/portal');
+  for (const name of ['Gym admin', 'Demo outbox']) {
+    expect((goTo.getByRole<HTMLButtonElement>('button', { name })).disabled).toBe(false);
+  }
+});
+it.each(['owner', 'admin'] as const)('keeps admin destinations as links for an %s session', async role => {
+  loadBootstrap.mockResolvedValue({
+    ...signedOutBootstrap, session: { userId: 'staff', displayName: 'Staff', roles: [role], member: false },
+  });
+  serve();
+  start();
+  const goTo = within(within(await openMenu()).getByRole('navigation', { name: 'Go to' }));
+  expect((await goTo.findByRole('link', { name: 'Gym admin' })).getAttribute('href')).toBe('/admin');
+  expect(goTo.getByRole('link', { name: 'Demo outbox' }).getAttribute('href')).toBe('/admin/outbox');
+});
 it('disables guarded destinations during bootstrap and offers links when it fails', async () => {
   let fail!: (reason: Error) => void;
   loadBootstrap.mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
@@ -320,6 +362,7 @@ it('shares one sign-in state between the menu and a page inside the shell, and r
   fireEvent.click(within(menu).getByRole('button', { name: 'Close demo menu' }));
   const bar = screen.getByRole('complementary', { name: 'Demo controls' });
   expect(within(bar).getByRole('alert').textContent).toContain('The demo is unavailable');
+  expect(screen.getAllByRole('alert')).toHaveLength(1);
   expect((screen.getByRole('button', { name: 'Page sign-in' }) as HTMLButtonElement).disabled).toBe(false);
 });
 it('disables every sign-in while one is pending and restores them after a failure', async () => {

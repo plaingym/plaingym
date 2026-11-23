@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { instantLabel } from '../../lib/instant.js';
 import { parseResponse } from '../../lib/response.js';
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useRouterState } from '@tanstack/react-router';
 import { demoEntryResponse, demoMenuResponse, demoHandoffResponse, type DemoLoginTarget, type DemoRole } from '@plaingym/shared/contracts';
@@ -30,7 +30,28 @@ export const useDemoSandbox = () => { const mode = useDemoMode(); return mode ==
 export type DemoDiscoveryStatus = 'pending' | 'error' | 'ready';
 const DiscoveryStatusContext = createContext<DemoDiscoveryStatus>('ready');
 export const useDemoDiscoveryStatus = () => useContext(DiscoveryStatusContext);
+
+const DemoErrorPlacement = createContext<{
+  menuOpen: boolean;
+  setMenuOpen(open: boolean): void;
+  cards: number;
+  addCard(): () => void;
+}>({ menuOpen: false, setMenuOpen: () => {}, cards: 0, addCard: () => () => {} });
+
+/** Register the page's sign-in error card and let the menu show the error while it is open. */
+export function useDemoErrorCard(): boolean {
+  const { menuOpen, addCard } = useContext(DemoErrorPlacement);
+  useEffect(() => addCard(), [addCard]);
+  return !menuOpen;
+}
+
 export function DemoShell({ children }: { children: ReactNode }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [cards, setCards] = useState(0);
+  const addCard = useCallback(() => {
+    setCards(count => count + 1);
+    return () => setCards(count => count - 1);
+  }, []);
   // Capture before a child route's login guard can redirect and discard the fragment.
   const [kioskToken, setKioskToken] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get('kioskToken'));
   const [tokenSaveFailed, setTokenSaveFailed] = useState(false);
@@ -101,7 +122,8 @@ export function DemoShell({ children }: { children: ReactNode }) {
     setKioskToken(null);
   }, [activeSandbox, kioskToken, tokenSaveAttempt]);
   const status: DemoDiscoveryStatus = discovery.isError || expired ? 'error' : discovery.isPending ? 'pending' : 'ready';
-  return <DemoContext.Provider value={status === 'error' ? undefined : mode}><DiscoveryStatusContext.Provider value={status}><LoginContext.Provider value={login}>
+  return <DemoErrorPlacement.Provider value={{ menuOpen, setMenuOpen, cards, addCard }}>
+    <DemoContext.Provider value={status === 'error' ? undefined : mode}><DiscoveryStatusContext.Provider value={status}><LoginContext.Provider value={login}>
     {tokenSaveFailed && <div className="space-y-3 p-4"><Alert key={tokenSaveAttempt} variant="error" focusOnReveal role="alert">{t('kiosk/kiosk:retrySaveError')}</Alert>
       <Button type="button" onClick={() => setTokenSaveAttempt(value => value + 1)}>{t('shell/shell:retry')}</Button></div>}
     {(discovery.isError || expired) && <div className="p-4" role="alert">
@@ -111,7 +133,8 @@ export function DemoShell({ children }: { children: ReactNode }) {
       {handoffSaveFailed && <Button type="button" onClick={() => setHandoffSaveAttempt(value => value + 1)}>{t('shell/shell:retry')}</Button>}</div> : <LoadingState />
       : <><CopyPrompt showcase={mode?.mode === 'showcase'} /><DemoNotice /><DemoEntry />
         {kioskToken && (discovery.isPending || activeSandbox) ? (tokenSaveFailed ? null : <LoadingState />) : children}</>}
-  </LoginContext.Provider></DiscoveryStatusContext.Provider></DemoContext.Provider>;
+    </LoginContext.Provider></DiscoveryStatusContext.Provider></DemoContext.Provider>
+  </DemoErrorPlacement.Provider>;
 }
 export function DemoEntry() {
   return useContext(DemoContext)?.mode === 'entry' ? <aside aria-label={t('demo/demo:entryTitle')} className="border-b border-border bg-secondary p-4 sm:p-6">
@@ -187,20 +210,21 @@ export function DemoSignInButtons({ members = [], className }: { members?: reado
   </div>;
 }
 const shortTime = (iso: string) => new Date(iso).toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' });
-/** One slim row above every page of a sandbox: what this is, when it ends, and the demo menu. A role-login error shows in the row. */
+/** One slim row above every page of a sandbox with its expiry, menu and fallback for a sign-in error. */
 export function DemoNotice() {
   const mode = useContext(DemoContext), expires = mode?.mode === 'sandbox' || mode?.mode === 'showcase' ? mode.expiresAt : undefined;
-  const { error } = useDemoLogin(), [open, setOpen] = useState(false);
+  const { error } = useDemoLogin();
+  const { menuOpen, setMenuOpen, cards } = useContext(DemoErrorPlacement);
   if (!expires) return null;
   return <aside className="border-b border-border bg-secondary px-4" aria-label={t('demo/demo:controls')}>
     <div className="mx-auto flex min-h-11 max-w-6xl items-center justify-between gap-3">
       <p className="min-w-0 text-sm leading-tight"><span className="font-semibold">{t(mode?.mode === 'showcase' ? 'demo/demo:sharedTitle' : 'demo/demo:sandbox')}</span>
         {mode?.mode === 'sandbox' && <>{' · '}<span className="text-muted-foreground">{t('demo/demo:barExpires', { time: shortTime(expires) })}</span></>}</p>
-      <Button type="button" variant="outline" size="sm" className="shrink-0 whitespace-nowrap" aria-haspopup="dialog" onClick={() => setOpen(true)}>{t('demo/demo:menu')}</Button>
+      <Button type="button" variant="outline" size="sm" className="shrink-0 whitespace-nowrap" aria-haspopup="dialog" onClick={() => setMenuOpen(true)}>{t('demo/demo:menu')}</Button>
     </div>
-    {error && !open && <div className="mx-auto max-w-6xl pb-2"><Alert variant="error" focusOnReveal>{t('demo/demo:error')}</Alert></div>}
+    {error && !menuOpen && cards === 0 && <div className="mx-auto max-w-6xl pb-2"><Alert variant="error" focusOnReveal>{t('demo/demo:error')}</Alert></div>}
     {mode?.mode === 'showcase' && <div className="mx-auto flex max-w-6xl flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between"><p className="text-sm">{t('demo/demo:copyHelp')}</p><CreateCopyButton /></div>}
-    {open && <DemoMenu expires={mode?.mode === 'showcase' ? undefined : expires} onClose={() => setOpen(false)} />}
+    {menuOpen && <DemoMenu expires={mode?.mode === 'showcase' ? undefined : expires} onClose={() => setMenuOpen(false)} />}
   </aside>;
 }
 /** The demo's navigation: a bottom sheet on phones and a side panel on wider screens, on the shared dialog. */
@@ -208,7 +232,9 @@ function DemoMenu({ expires, onClose }: { expires: string | undefined; onClose: 
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const menu = useDemoMenu(), join = useDemoJoin(), { login, pending, error } = useDemoLogin();
   const bootstrap = useBootstrap();
-  const signedOut = bootstrap.isSuccess && !bootstrap.data.session;
+  const session = bootstrap.data?.session;
+  const ownerSession = !!session && (session.roles.includes('owner') || session.roles.includes('admin'));
+  const signedOut = bootstrap.isSuccess && !session;
   const within = (path: string) => pathname === path || pathname.startsWith(path + '/');
   const destinations: [string, string, boolean, DemoRole?][] = [
     ['/demo', 'startPage', pathname === '/demo'], ['/admin', 'admin', within('/admin') && !within('/admin/outbox'), 'owner'],
@@ -227,7 +253,7 @@ function DemoMenu({ expires, onClose }: { expires: string | undefined; onClose: 
       </section>
       <nav className={section} aria-labelledby="demo-menu-go-to"><h3 id="demo-menu-go-to" className={heading}>{t('demo/demo:goTo')}</h3>
         <ul className="space-y-2">{destinations.map(([href, key, current, role]) => <li key={href}>
-          {role && (bootstrap.isPending || signedOut)
+          {role && (bootstrap.isPending || signedOut || (role === 'owner' && bootstrap.isSuccess && !ownerSession))
             ? <DemoMenuControl current={current} disabled={bootstrap.isPending || pending}
                 onClick={() => { void login(role, href.startsWith('/admin/') ? href as `/admin/${string}` : undefined); }}>{t(`demo/demo:${key}`)}</DemoMenuControl>
             : <DemoMenuLink href={href} current={current}>{t(`demo/demo:${key}`)}</DemoMenuLink>}

@@ -6,14 +6,17 @@ import { Alert } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
 import { ApiError, createJsonTransport } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
-import { DemoSignInButtons, useDemoMode, useDemoSandbox } from './notice.js';
+import { DemoSignInButtons, useDemoErrorCard, useDemoLogin, useDemoSandbox } from './notice.js';
 const request = createJsonTransport();
 
+/** LoginPage renders this only on the showcase. */
 export function DemoShowcaseSignIn() {
-  if (useDemoMode() !== 'showcase') return null;
+  const { error } = useDemoLogin();
+  const showHere = useDemoErrorCard();
   return <div className="space-y-4">
     <p className="text-sm">{t('demo/demo:showcaseSignIn')}</p>
     <DemoSignInButtons />
+    {error && showHere && <Alert variant="error" focusOnReveal>{t('demo/demo:error')}</Alert>}
   </div>;
 }
 

@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import messages from '../../../../locales/en/demo/demo.json' with { type: 'json' };
+
 /** Server-rendered intake pages reuse the same destination-host exchange as the SPA. */
 export const publicCopyScript = String.raw`async function demoCopyPrompt(response) {
   if (response.status !== 403) return false;
@@ -24,6 +26,14 @@ export const publicCopyScript = String.raw`async function demoCopyPrompt(respons
       const page = ['/join', '/trial', '/drop-in'].includes(location.pathname) ? location.pathname : '/demo';
       const request = async (path, body) => {
         const result = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+        if (result.status === 429) {
+          const retryAfter = result.headers.get('Retry-After');
+          const seconds = retryAfter !== null && /^\d+$/.test(retryAfter) ? Number(retryAfter) : 0;
+          if (Number.isSafeInteger(seconds) && seconds >= 1) {
+            throw Object.assign(new Error('Copy limit reached'), { minutes: Math.max(1, Math.ceil(seconds / 60)) });
+          }
+          throw Object.assign(new Error('Copy capacity reached'), { capacity: true });
+        }
         if (!result.ok) throw new Error('Copy failed');
         return (await result.json()).data;
       };
@@ -46,7 +56,12 @@ export const publicCopyScript = String.raw`async function demoCopyPrompt(respons
       const destination = new URL('/demo', data.origin);
       destination.hash = new URLSearchParams({ copyToken: data.handoffToken }).toString();
       location.assign(destination.href);
-    } catch { status.textContent = 'We could not create your copy. Please try again.'; button.disabled = false; }
+    } catch (error) {
+      if (error?.minutes) status.textContent = ${JSON.stringify(messages.copyLimitError)}.replace('{minutes}', String(error.minutes));
+      else if (error?.capacity) status.textContent = ${JSON.stringify(messages.capacityError)};
+      else status.textContent = 'We could not create your copy. Please try again.';
+      button.disabled = false;
+    }
   });
   dialog.append(title, description, button, status, close); document.body.append(dialog); dialog.showModal();
   return true;

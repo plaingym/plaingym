@@ -9,6 +9,7 @@ reload. The next link opens the repository configured for the install. Old
 entry-host `/demo` links redirect to the product page. On the showcase, choose
 **Make my own copy** in the demo bar to edit a private sandbox. If you reach
 the per-network hourly limit, that button shows how many minutes to wait.
+The copy dialog on `/join`, `/trial` and `/drop-in` shows the same wait.
 Copies expire after two idle hours and at most 24 hours after allocation.
 Each private copy keeps its start page at `/demo`, ending with the current deletion
 time and a reminder that using the copy moves that time later, up to 24 hours
@@ -40,8 +41,9 @@ use a test Stripe key ([going-live.md](going-live.md#1-try-it-in-test-mode-optio
   which also goes to the start page, the admin, the member portal, the kiosk, the join
   page, the gym's website (when it's on) and the outbox. If you're signed out,
   **Gym admin** and **Demo outbox** sign you in as the owner, and **Member portal**
-  signs you in as the student. If you're signed in, the links use your current
-  session. The sample kiosk members check in by full name and PIN `2468`. The
+  signs you in as the student. If you're signed in as the owner or an admin, the
+  links use your current session; as anyone else, **Gym admin** and **Demo outbox**
+  sign you in as the owner. The sample kiosk members check in by full name and PIN `2468`. The
   kiosk's name search shows one.
 * **No outside effects.** Emails and texts are captured in an in-app **outbox** the owner
   and admins can read. On a private copy's `/login` page, **Open my sign-in link**

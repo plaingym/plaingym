@@ -21,6 +21,7 @@ check succeeds. The page checks again every five minutes while active, and
 **Try again** in the demo error repeats the check immediately. When the
 per-network hourly limit refuses a new copy, **Make my own copy**
 in the showcase's demo bar shows how many minutes to wait before trying again.
+The copy dialog on `/join`, `/trial` and `/drop-in` shows the same wait.
 
 Optional settings accepted by the installer and saved in its protected `.env`:
 
