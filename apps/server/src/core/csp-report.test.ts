@@ -61,7 +61,7 @@ describe('CSP violation reports', () => {
     expect(response.status).toBe(204);
     expect(await response.text()).toBe('');
     expect(events()).toEqual([{ time: expect.any(String), level: 'info', event: 'csp.violation', format: 'reports+json',
-      directive: 'script-src-elem', blocked: 'https://cdn.example.test', path: '/l/:token' }]);
+      directive: 'script-src-elem', blocked: 'https://cdn.example.test', source: 'https://gym.example.test', path: '/l/:token' }]);
   });
   it('logs a legacy report-uri report', async () => {
     const response = await post(JSON.stringify({ 'csp-report': {
@@ -71,7 +71,44 @@ describe('CSP violation reports', () => {
     } }), 'application/csp-report; charset=utf-8');
     expect(response.status).toBe(204);
     expect(events()).toMatchObject([{ event: 'csp.violation', format: 'csp-report', directive: 'img-src',
-      blocked: 'https://img.example.test:8443', path: '/admin/members/:id/billing' }]);
+      blocked: 'https://img.example.test:8443', source: 'unknown', path: '/admin/members/:id/billing' }]);
+  });
+  it('logs the source script\'s origin, never its path or query', async () => {
+    const response = await post(reportingBody({
+      documentURL: 'https://gym.example.test/',
+      blockedURL: 'https://static.cloudflareinsights.com',
+      effectiveDirective: 'script-src',
+      sourceFile: 'https://static.cloudflareinsights.com/beacon.min.js?token=abc',
+    }));
+    expect(response.status).toBe(204);
+    expect(events()).toMatchObject([{ event: 'csp.violation', source: 'https://static.cloudflareinsights.com' }]);
+    expect(lines[0]).not.toContain('beacon.min.js');
+    expect(lines[0]).not.toContain('token');
+  });
+  it('logs a legacy report\'s source-file as its origin', async () => {
+    await post(JSON.stringify({ 'csp-report': {
+      'document-uri': 'https://gym.example.test/admin',
+      'blocked-uri': 'https://cdn.example.test/a.js',
+      'effective-directive': 'script-src',
+      'source-file': 'https://o1.example.test/assets/app.js',
+    } }), 'application/csp-report');
+    expect(events()).toMatchObject([{ event: 'csp.violation', source: 'https://o1.example.test' }]);
+  });
+  it('logs unknown for a missing or empty source file and keywords as themselves', async () => {
+    await post(reportingBody({ documentURL: 'https://gym.example.test/', blockedURL: 'inline', effectiveDirective: 'script-src' }));
+    await post(JSON.stringify({ 'csp-report': {
+      'document-uri': 'https://gym.example.test/portal',
+      'blocked-uri': 'inline',
+      'effective-directive': 'script-src',
+      'source-file': '',
+    } }), 'application/csp-report');
+    await post(JSON.stringify({ 'csp-report': {
+      'document-uri': 'https://gym.example.test/portal',
+      'blocked-uri': 'inline',
+      'effective-directive': 'script-src',
+      'source-file': 'inline',
+    } }), 'application/csp-report');
+    expect(events().map(({ source }) => source)).toEqual(['unknown', 'unknown', 'inline']);
   });
   it('falls back to the violated directive and reports keywords and schemes instead of paths', async () => {
     await post(JSON.stringify({ 'csp-report': { 'document-uri': 'https://gym.example.test/portal', 'blocked-uri': 'inline', 'violated-directive': 'style-src-attr \'self\'' } }), 'application/csp-report');

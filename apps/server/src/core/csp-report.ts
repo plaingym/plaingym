@@ -38,7 +38,10 @@ export function reportedDirective(...candidates: unknown[]): string {
   return 'unknown';
 }
 
-/** A blocked resource as its origin (web URLs), its scheme (`data:`, `blob:`) or one of the CSP keywords. Never a path or query. */
+/**
+ * A reported URL (the blocked resource or the source file) as its origin (web URLs), its scheme (`data:`, `blob:`) or one
+ * of the CSP keywords. Never a path or query.
+ */
 export function reportedResource(value: unknown): string {
   if (typeof value !== 'string' || !value.trim()) return 'unknown';
   const text = value.trim().slice(0, 2048);
@@ -67,22 +70,24 @@ export function reportedDocumentPath(value: unknown): string {
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
-interface Violation { readonly directive: string; readonly blocked: string; readonly path: string }
+interface Violation { readonly directive: string; readonly blocked: string; readonly source: string; readonly path: string }
 
-/** `application/csp-report`: `{ "csp-report": { "document-uri", "blocked-uri", "effective-directive", ... } }`. */
+/** `application/csp-report`: `{ "csp-report": { "document-uri", "blocked-uri", "effective-directive", "source-file", ... } }`. */
 function legacyViolations(body: unknown): Violation[] {
   const report = isRecord(body) ? body['csp-report'] : undefined;
   if (!isRecord(report)) return [];
   return [{ directive: reportedDirective(report['effective-directive'], report['violated-directive']),
-    blocked: reportedResource(report['blocked-uri']), path: reportedDocumentPath(report['document-uri']) }];
+    blocked: reportedResource(report['blocked-uri']), source: reportedResource(report['source-file']),
+    path: reportedDocumentPath(report['document-uri']) }];
 }
 
-/** `application/reports+json`: an array of `{ type, url, body: { documentURL, blockedURL, effectiveDirective, ... } }`. */
+/** `application/reports+json`: an array of `{ type, url, body: { documentURL, blockedURL, effectiveDirective, sourceFile, ... } }`. */
 function reportingViolations(body: unknown): Violation[] {
   return (Array.isArray(body) ? body : [body]).filter((entry) => isRecord(entry) && entry.type === 'csp-violation' && isRecord(entry.body))
     .map((entry) => (entry as { body: Record<string, unknown> }).body)
     .map((report) => ({ directive: reportedDirective(report.effectiveDirective, report.violatedDirective),
-      blocked: reportedResource(report.blockedURL), path: reportedDocumentPath(report.documentURL) }));
+      blocked: reportedResource(report.blockedURL), source: reportedResource(report.sourceFile),
+      path: reportedDocumentPath(report.documentURL) }));
 }
 
 const formats = {
@@ -154,7 +159,7 @@ function reportBudget(options: CspReportOptions): MiddlewareHandler<RequestEnvir
  * The violation report endpoint for the app's Content-Security-Policy, mounted before tenancy like the other install
  * routes: it resolves no gym, and uses a hostname snapshot instead (`reportBudget`). It is public and stateless: it
  * stores nothing, never echoes a body, and logs one `csp.violation` line per report holding only the directive, the
- * blocked resource's origin or keyword and the document's sanitized path.
+ * blocked resource's origin or keyword, the source's origin, scheme or keyword and the document's sanitized path.
  * Whatever the body holds, a request within the body cap and the limits answers 204.
  */
 export function mountCspReports(app: OpenAPIHono<RequestEnvironment>, authorize: PermissionMiddleware, options: CspReportOptions = {}): void {
@@ -169,7 +174,8 @@ export function mountCspReports(app: OpenAPIHono<RequestEnvironment>, authorize:
       if (Buffer.byteLength(text) <= cspReportBytes)
         try { violations = format.read(JSON.parse(text)); } catch { /* A malformed body is dropped. */ }
       for (const violation of violations.slice(0, maxReportsPerRequest))
-        logInfo('csp.violation', { format: format.name, directive: violation.directive, blocked: violation.blocked, path: violation.path });
+        logInfo('csp.violation', { format: format.name, directive: violation.directive, blocked: violation.blocked,
+          source: violation.source, path: violation.path });
     }
     return context.body(null, 204);
   }).mount(app, authorize);

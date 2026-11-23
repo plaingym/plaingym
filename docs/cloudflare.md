@@ -60,6 +60,16 @@ setting (Bot Fight Mode, Under Attack mode, a WAF or rate-limiting rule) may be 
 it: allow `/.well-known/plaingym-origin` and run the installer again with the same options.
 The server is installed either way; only the setup link waits for that check.
 
+If `sudo docker compose logs app` shows `csp.violation` lines naming
+`https://static.cloudflareinsights.com` (as `blocked` or as `source`), Cloudflare's proxy
+is adding its Web Analytics script to the app's pages. The app's security policy blocks it,
+and nothing else is affected. To stop the lines, turn off Web Analytics' automatic setup
+for this site in Cloudflare's dashboard, or ignore them. A `connect-src` line whose
+`blocked` is the install's own address can come from a request that something between the
+browser and the server redirected to another site: browsers report a redirected request
+under the address it started from. Check the line's `source` and any Cloudflare rule that
+redirects or challenges the app's pages.
+
 ## If you proxy the record after installing
 
 Run the installer again with the same options, so the app trusts Cloudflare's header; until

@@ -71,11 +71,13 @@ never echoes a body. It reads
 one gets the usual 400 from the body limit) and logs one `csp.violation` line per
 report, up to five per request, holding only the format, the effective directive
 (a known name or `other`), the blocked resource's origin, scheme (`data:`) or keyword
-(`inline`), and the document's path. In that path a signed link's token becomes
+(`inline`), the origin, scheme or keyword of the script that caused it (`source`),
+and the document's path. In that path a signed link's token becomes
 `/l/:token` and every segment that is not one of the app's own route words (`admin`,
 `members`, `invoices`, ...) becomes `:id`, so IDs, tokens and names never appear; the
-query, fragment, host, samples, referrers, source files and the raw body are never
-logged. Any other body or content type is ignored. Every budget is counted in memory,
+document's query, fragment and host, samples, referrers, source file paths and the raw
+body are never logged. The blocked and source origins can be the install's own address,
+since a gym's own script or page is often the source. Any other body or content type is ignored. Every budget is counted in memory,
 so a report, admitted or dropped, costs no database read and no restore-gate lease;
 the route never runs the tenant resolver. Each client may send 30 requests a minute.
 Each gym admits 300 a minute, so one gym's reports never use another's budget: in

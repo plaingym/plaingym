@@ -528,6 +528,9 @@ Details: `apps/server/src/infra/auth/README.md`.
   In production only the gym's default hostname from the resolver gets
   `Strict-Transport-Security` in multi mode; aliases do not. Single mode uses the
   configured HTTPS install origin (one year, no `includeSubDomains`).
+  A proxy that adds its own scripts to pages, such as Cloudflare's Web Analytics,
+  causes violation reports that the policy blocks harmlessly (see `cloudflare.md`);
+  the policy doesn't allow them.
 * **Validation.** Every route's input is parsed with its shared Zod contract
   before the handler runs.
 
