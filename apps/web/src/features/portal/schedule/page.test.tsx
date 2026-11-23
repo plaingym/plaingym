@@ -263,6 +263,45 @@ describe('portal schedule page', () => {
       expect(await fullClass.findByText('Pat Parent is on the waitlist at position 3,600.')).toBeDefined();
     } finally { numbers.mockRestore(); }
   });
+  it('shows the wide column headings in the app language in a German browser', async () => {
+    screenWidth(true);
+    const NativeDateTimeFormat = Intl.DateTimeFormat;
+    const dates = vi.spyOn(Intl, 'DateTimeFormat').mockImplementation(function (locale, options) {
+      return new NativeDateTimeFormat(locale ?? 'de-DE', options);
+    });
+    try {
+      client.schedule.mockResolvedValue(answer([session]));
+      page();
+      await screen.findByRole('button', cardName(session.name));
+      expect(screen.getByRole('heading', { name: 'Mon, Oct 26' })).toBeDefined();
+      expect(screen.queryByRole('heading', { name: /Mo\./ })).toBeNull();
+    } finally { dates.mockRestore(); }
+  });
+  it('leaves focus on the opener card after a refused booking in the dialog is dismissed', async () => {
+    client.schedule.mockResolvedValue(answer([{ ...session, placesLeft: 0 }]));
+    client.book.mockRejectedValue(new ApiError(409, 'request_failed'));
+    const scrolled = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrolled;
+    try {
+      const user = userEvent.setup(); page();
+      const dialog = await openClass(user);
+      await user.click(dialog.getByRole('button', { name: /Join the waitlist/ }));
+      await dialog.findByText(/This change isn't available any more/);
+      scrolled.mockClear();
+      fireEvent(screen.getByRole('dialog'), new Event('cancel', { cancelable: true }));
+      const card = await screen.findByRole('button', cardName(session.name));
+      await waitFor(() => expect(document.activeElement).toBe(card));
+      expect(document.activeElement?.getAttribute('role')).not.toBe('alert');
+      expect(scrolled).not.toHaveBeenCalled();
+    } finally { Element.prototype.scrollIntoView = original; }
+  });
+  it('keeps focus in the dialog, not on an alert, when a class opens', async () => {
+    client.schedule.mockResolvedValue(answer([session]));
+    const user = userEvent.setup(); page();
+    await openClass(user);
+    expect(document.activeElement?.getAttribute('role')).not.toBe('alert');
+  });
   it('omits unknown waitlist positions in the booking and confirmation', async () => {
     const waiting = { ...booking, memberId: parent, status: 'waitlisted', queueRank: null };
     client.schedule.mockResolvedValue(answer([{ ...session, bookings: [waiting] }, { ...session, id: 'full', name: 'Full class', placesLeft: 0 }]));

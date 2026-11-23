@@ -85,6 +85,9 @@ export function PortalSchedulePage({ client = portalClient, now = currentTime }:
   const [selection, setSelection] = useState<{ id: string; weekStart: string; memberId: string }>();
   const cardPrefix = useId();
   const restoreFocusTo = useRef<string>(null);
+  const revealedMessage = useRef<typeof message>(undefined);
+  // Runs after the Alert's own effect, so the message counts as revealed once it has been shown.
+  useEffect(() => { revealedMessage.current = message; });
   useEffect(() => {
     if (selection || restoreFocusTo.current === null) return;
     document.getElementById(restoreFocusTo.current)?.focus({ preventScroll: true });
@@ -146,7 +149,9 @@ export function PortalSchedulePage({ client = portalClient, now = currentTime }:
   const busy = change.isPending && change.variables?.session.id === session?.id;
   const run = (kind: 'book' | 'cancel', booking?: MemberBooking) => session && context.data && member && !busy
     && change.mutate({ action: kind, session, context: context.data, member, ...(booking ? { booking } : {}) });
-  const result = message && <Alert variant={message.tone === 'error' ? 'error' : 'info'} focusOnReveal>{message.text}</Alert>;
+  // Only a message that is new takes focus; the same message moving between the page and the dialog doesn't.
+  const isNewMessage = message !== revealedMessage.current;
+  const result = message && <Alert variant={message.tone === 'error' ? 'error' : 'info'} focusOnReveal={isNewMessage}>{message.text}</Alert>;
   function moveWeek(offset: number) {
     setSelection(undefined);
     setWeek(value => Math.max(0, value + offset));
@@ -172,6 +177,7 @@ export function PortalSchedulePage({ client = portalClient, now = currentTime }:
           : <WeekLayout days={days} today={today} wide={wide} hideEmptyDays
             agendaLabel={text('title')} todayLabel={t('schedule/schedule:today')} emptyDayLabel={text('noClassesDay')}
             formatDay={date => dateLabel.format(localMidnight(date, timezone))}
+            formatShortDay={date => dateFormatter('dayShort', timezone).format(localMidnight(date, timezone))}
             itemKey={item => item.id} renderItem={item => {
               const badge = classBadge(actionFor(item), item, whenLabel), time = timeRange(item);
               return <button type="button" id={cardId(item.id)} aria-haspopup="dialog" data-name-wrap=""

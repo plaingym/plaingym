@@ -29,15 +29,17 @@ interface WeekLayoutProps<T> {
   emptyDayLabel?: string | undefined;
   hideEmptyDays?: boolean;
   formatDay?: (date: string) => string;
+  /** The wide layout's column heading; defaults to the browser-language short label. */
+  formatShortDay?: (date: string) => string;
 }
 
 /** Display the same days as week columns or a day-by-day agenda. */
 export function WeekLayout<T>({ days, today, wide, renderItem, itemKey, agendaLabel, todayLabel,
-  emptyDayLabel, hideEmptyDays, formatDay = dayLabel }: WeekLayoutProps<T>) {
+  emptyDayLabel, hideEmptyDays, formatDay = dayLabel, formatShortDay = date => dayLabel(date, 'short') }: WeekLayoutProps<T>) {
   const emptyDay = emptyDayLabel && <p className="text-sm text-muted-foreground">{emptyDayLabel}</p>;
   if (wide) return <div className="grid grid-cols-7 gap-2">{days.map(({ date, items }) => <section key={date} aria-label={formatDay(date)}
     className={cn('min-w-0 space-y-2 rounded-xl border border-border p-2', date === today && 'border-primary')}>
-    <h2 className="text-sm font-semibold">{dayLabel(date, 'short')}</h2>
+    <h2 className="text-sm font-semibold">{formatShortDay(date)}</h2>
     {items.length ? items.map(item => <Fragment key={itemKey(item)}>{renderItem(item, true)}</Fragment>) : emptyDay}
   </section>)}</div>;
 

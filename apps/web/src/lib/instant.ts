@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useBootstrap } from '../app/context.js';
 
-type Style = 'instant' | 'date' | 'time' | 'month' | 'fullDate' | 'day';
+type Style = 'instant' | 'date' | 'time' | 'month' | 'fullDate' | 'day' | 'dayShort';
 const options: Record<Style, Intl.DateTimeFormatOptions> = {
   fullDate: { dateStyle: 'full' }, day: { weekday: 'long', month: 'long', day: 'numeric' },
+  dayShort: { weekday: 'short', month: 'short', day: 'numeric' },
   instant: { dateStyle: 'medium', timeStyle: 'short' }, date: { dateStyle: 'medium' },
   time: { hour: 'numeric', minute: '2-digit' }, month: { month: 'long', year: 'numeric' },
 };
