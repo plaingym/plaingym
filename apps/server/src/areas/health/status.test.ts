@@ -409,7 +409,7 @@ describe('built-in providers', () => {
 
 const examples: Record<HealthTile['id'], NonNullable<HealthTile['details']>> = {
   invoice_effects: { exhausted: 0 },
-  last_backup: { latestRestorableAt: clock.now().toISOString(), ageSeconds: 0, overdue: false, noneUnderCurrentKey: false, pruningHeld: false, damagedGuardSnapshot: null, missingGuardSnapshot: null, retainedBytes: 1, retentionBudgetBytes: 1000, pruningStopped: false, keyReminder: true },
+  last_backup: { latestRestorableAt: clock.now().toISOString(), ageSeconds: 0, overdue: false, noneUnderCurrentKey: false, pruningHeld: false, damagedGuardSnapshot: null, missingGuardSnapshot: null, destinationFailure: null, retainedBytes: 1, retentionBudgetBytes: 1000, pruningStopped: false, keyReminder: true },
   failed_jobs: { failed: 0, pending: 0, running: 0, oldestFailureAt: null, failedVersion: 'none' }, smtp: { configured: true, lastTestAt: null },
   disk: { uploads: { totalBytes: 100, availableBytes: 50 }, backupStaging: null, sameFilesystem: false }, version: { version: '0.1.0', sourceUrl: 'https://example.test/source' },
   stripe_webhooks: { lastReceivedAt: null, lastProcessedAt: null, pending: 0, failed: 0 },

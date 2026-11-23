@@ -86,6 +86,9 @@ After a restore, `gyms.settings.backupPruningHeld` holds both snapshot pruning
 and explicit pruning (including its upload sweep) while new snapshots continue,
 until the bucket reaches the retention budget and the snapshot's budget check fails.
 The Last backup tile reports `pruningHeld` separately from an inventory failure.
+An inventory failure the destination caused names its class in `destinationFailure`
+(`credentials_rejected`, `bucket_missing` or `endpoint_unreachable`, from the error's
+status and code only) with its own message; any other failure keeps the pruning-stopped one.
 Its warning names the hold and explains that new snapshots stop at the retention budget;
 it replaces the healthy and capacity messages but not the missing or overdue snapshot ones.
 The snapshot named by an active `SCHEMA_ROLLBACK_FLOOR` / `SCHEMA_SNAPSHOT` guard
@@ -106,6 +109,10 @@ lane so a slow snapshot doesn't block the gym's regular jobs; both endpoints req
 `settings.manage` (owners/admins). The request UUID, job and audit commit in one
 short gym transaction. Pending/running requests refuse a second UUID, retries of
 the current UUID return its state, and a failed job is reflected back into that state.
+A failed request stores its cause class in `failure` (`credentials_rejected`,
+`bucket_missing`, `endpoint_unreachable` or `other`, never the error's text), which the
+`backup.failed` audit also records; a stored class this release doesn't know reads as
+`other`, and a missing one as null.
 Stored manual state strips unknown fields and treats unknown statuses as finished;
 unreadable manual state cannot block the owner's hold release. Idle polls read the
 gym once and skip failed-job recovery; queued/running polls re-read only if recovery

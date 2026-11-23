@@ -88,7 +88,12 @@ If the guard still names a snapshot that is absent from both complete and damage
 inventory, the tile reports it as missing and keeps warning, including after pruning.
 Pruning first validates all
 reference lists and referenced blob sizes. Each run is recorded in `backup_runs`
-before anything is uploaded, and runs hold the backup lock, so a prefix with no
+before anything is uploaded. A run that fails is marked `failed` with its cause
+class in `error` (`credentials_rejected`, `bucket_missing`, `endpoint_unreachable`
+or `other`, from the error's HTTP status and code, never its text), even when
+the cleanup of its uncommitted objects fails too. That cleanup deletes the reference
+list first and stops at the first refused delete, so a list that may have been
+published never outlives the objects it names. Runs hold the backup lock, so a prefix with no
 reference list whose run never succeeded is an abandoned publication: pruning
 deletes it and the blobs no committed snapshot references. A committed snapshot
 with a missing object is an interrupted deletion when the retention policy would

@@ -172,5 +172,11 @@
   "backups.noPending": "Generate a new backup key first.",
   "backups.start": "Generate a new key instead",
   "backups.unreachable": "The storage destination refused the request. Check the endpoint, region, bucket and access keys; nothing was changed.",
+  "backups.changeCredentials": "Change storage credentials",
+  "backups.credentialsHint": "Use this after rotating the storage access key. The endpoint, bucket, backup key and existing snapshots stay the same.",
+  "backups.replaceCredentials": "Check and save credentials",
+  "backups.checking": "Checking…",
+  "backups.credentialsReplaced": "Backups now use the new storage credentials. The destination, backup key and snapshots are unchanged.",
+  "backups.credentialsUnreachable": "The storage destination refused the new credentials. Check the access key ID and secret; nothing was changed.",
   "email.portNotAllowed": "Use an SMTP port: 25, 465, 587 or 2525."
 }

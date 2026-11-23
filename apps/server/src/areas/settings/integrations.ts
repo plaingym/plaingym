@@ -7,6 +7,7 @@ import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { gymProjection, presentGym } from './settings.js';
 import { backupDestinationSchema, type BackupsIntegration, type ConfirmBackupKeyRequest, type CreateBackupKeyRequest, type EmailIntegration,
+  type ReplaceBackupCredentialsRequest,
   type Integrations, type RemoveEmailIntegrationRequest, type SaveEmailIntegrationRequest, type SaveStripeIntegrationRequest, type SmtpTestFailure, type StripeTestData,
   type GoogleLogin, type RemoveGoogleLoginRequest, type SaveGoogleLoginRequest,
   type SaveSmsIntegrationRequest, type RemoveSmsIntegrationRequest, type UpdateSmsDailyCapRequest, updateBankDebitsRequestSchema,
@@ -677,6 +678,32 @@ export function createIntegrationsService(options: IntegrationsOptions) {
       // The change is saved either way; a snapshot that can't be queued now is taken by the next hourly run.
       try { await options.requestSnapshot?.('settings:' + context.gymId + ':' + saved.revision); }
       catch (error) { logError('settings.backup_snapshot_request_failed', { gymId: context.gymId }, error); }
+      return present(context.gymId, userId);
+    },
+
+    /**
+     * Replaces only the stored storage access key, after the destination accepts it. The endpoint, bucket, backup key,
+     * blob key, retention budget, a pending key and the snapshots stay as they are; the next snapshot reads the new key.
+     */
+    async replaceBackupCredentials(context: MutationContext, input: ReplaceBackupCredentialsRequest): Promise<Integrations> {
+      assertBackups();
+      const userId = userOf(context);
+      const gym = await assertCurrent(context.gymId, input.revision);
+      const notConfigured = () => new AppError('conflict', 'Set up backups first', { accessKeyId: ['not_configured'] });
+      const current = backups(gym);
+      if (!current?.configured || !current.destination) throw notConfigured();
+      const checked = { ...current.destination, accessKeyId: input.accessKeyId, secretAccessKey: input.secretAccessKey };
+      await requireBackupDestination(checked, context.gymId, options.checkDestination);
+      const { s3Config } = backupColumns(options.key, context.gymId, checked);
+      await save(context, input.revision, async (before) => {
+        // The probe ran outside the transaction: never store credentials checked against another destination.
+        const stored = backups(before);
+        if (!stored?.configured || stored.destination?.endpoint !== checked.endpoint || stored.destination.region !== checked.region
+          || stored.destination.bucket !== checked.bucket) throw notConfigured();
+        // The key ID and secret are never audited.
+        return { set: { s3Config }, action: 'integrations.backup_credentials_replaced',
+          before: { destination: stored.destination }, after: (after) => ({ destination: backups(after)?.destination ?? null }) };
+      });
       return present(context.gymId, userId);
     },
   };

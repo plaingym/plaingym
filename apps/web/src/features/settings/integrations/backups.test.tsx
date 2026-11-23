@@ -115,6 +115,66 @@ describe('Settings → Backups', () => {
     expect(screen.getByText(/readable only with that key until retention removes them.*no longer manages the old one/)).toBeDefined();
     expect(screen.getByRole('button', { name: 'Change destination or key' })).toBeDefined();
   });
+  it('replaces only the storage credentials, keeping the destination and key', async () => {
+    current = configured;
+    client.PUT.mockImplementation(async () => { current = { ...configured, revision: 5 }; return reply(200, { data: current }); });
+    const user = userEvent.setup(); renderSection();
+    await user.click(await screen.findByRole('button', { name: 'Change storage credentials' }));
+    const form = screen.getByRole('form', { name: 'Change storage credentials' });
+    expect([...form.querySelectorAll('input')].map((input) => input.id))
+      .toEqual(['integrations-backup-credentials-accessKeyId', 'integrations-backup-credentials-secretAccessKey']);
+    expect(within(form).getByText(/backup key and existing snapshots stay the same/)).toBeDefined();
+    // Opening the other form closes this one, and back.
+    await user.click(screen.getByRole('button', { name: 'Change destination or key' }));
+    expect(screen.queryByRole('form', { name: 'Change storage credentials' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Change storage credentials' }));
+    expect(screen.queryByRole('form', { name: 'Change destination or key' })).toBeNull();
+    const replace = screen.getByRole('form', { name: 'Change storage credentials' });
+    await user.type(within(replace).getByLabelText('Storage access key ID'), 'rotated-id');
+    await user.type(within(replace).getByLabelText('Storage secret access key'), 'rotated-secret');
+    const healthReads = () => client.GET.mock.calls.filter(([path]) => path === '/api/health').length;
+    await waitFor(() => expect(healthReads()).toBeGreaterThan(0));
+    const readsBefore = healthReads();
+    await user.click(within(replace).getByRole('button', { name: 'Check and save credentials' }));
+    expect(client.PUT).toHaveBeenCalledExactlyOnceWith('/api/settings/integrations/backups/credentials', { signal: expect.any(AbortSignal),
+      body: { revision: 3, accessKeyId: 'rotated-id', secretAccessKey: 'rotated-secret' } });
+    expect((await screen.findByText(/Backups now use the new storage credentials/)).getAttribute('role')).toBe('status');
+    // The last-snapshot line is read again with the new credentials, though its destination and key stayed.
+    await waitFor(() => expect(healthReads()).toBeGreaterThan(readsBefore));
+    expect(screen.queryByRole('form', { name: 'Change storage credentials' })).toBeNull();
+    expect(client.POST).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain('rotated-secret');
+  });
+  it('keeps the credentials form open when the destination refuses them', async () => {
+    current = configured;
+    client.PUT.mockResolvedValue(refusal(400, 'destination', 'unreachable'));
+    const user = userEvent.setup(); renderSection();
+    await user.click(await screen.findByRole('button', { name: 'Change storage credentials' }));
+    const form = screen.getByRole('form', { name: 'Change storage credentials' });
+    await user.type(within(form).getByLabelText('Storage access key ID'), 'wrong-id');
+    await user.type(within(form).getByLabelText('Storage secret access key'), 'wrong-secret');
+    await user.click(within(form).getByRole('button', { name: 'Check and save credentials' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('The storage destination refused the new credentials. Check the access key ID and secret; nothing was changed.');
+    expect(screen.getByRole('form', { name: 'Change storage credentials' })).toBeDefined();
+  });
+  it.each([['not set up', integrations], ['waiting for a new key', pending]] as const)('offers no credentials change while backups are %s', async (_, shown) => {
+    current = shown; renderSection();
+    expect(await screen.findByRole('heading', { name: 'Backups' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Change storage credentials' })).toBeNull();
+  });
+  it('shows the retention budget in English digits under another default locale', async () => {
+    const Original = Intl.NumberFormat;
+    const german = vi.spyOn(Intl, 'NumberFormat').mockImplementation(function (locales?: Intl.LocalesArgument, options?: Intl.NumberFormatOptions) {
+      return new Original(locales ?? 'de-DE', options);
+    } as unknown as typeof Intl.NumberFormat);
+    try {
+      current = configured; renderSection();
+      expect(await screen.findByText(/Retention budget: 8 GB/)).toBeDefined();
+      cleanup();
+      current = { ...configured, backups: { ...configured.backups!, retentionBudgetBytes: 8_500_000_000 } }; renderSection();
+      expect(await screen.findByText(/Retention budget: 8\.5 GB/)).toBeDefined();
+    } finally { german.mockRestore(); }
+  });
   it('says a destination that refused its credentials changed nothing', async () => {
     client.POST.mockResolvedValue(refusal(400, 'destination', 'unreachable'));
     const user = userEvent.setup(); renderSection();

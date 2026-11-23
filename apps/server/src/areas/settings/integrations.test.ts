@@ -33,6 +33,7 @@ const key = Buffer.alloc(32, 7), origin = 'https://gym.invalid';
 const env = { AUTH_SECRET: 'integration-settings-secret-with-32-characters', TENANCY: 'single', AUTH_PASSWORD_LOGIN: 'auto' };
 const installEnv = { ...env, SMTP_HOST: 'smtp.install.invalid', SMTP_FROM: 'install@example.test' };
 const smtpPassword = 'smtp-password-never-shown', storageSecret = 'storage-secret-never-shown', storageKeyId = 'storage-id-never-shown';
+const rotatedSecret = 'rotated-secret-never-shown', rotatedKeyId = 'rotated-id-never-shown';
 const sendTest = vi.fn(async () => { assertNoTransaction('integrations SMTP test'); });
 const withPassword = new Set<string>();
 const hasPassword = vi.fn(async (userId: string) => withPassword.has(userId));
@@ -97,7 +98,7 @@ describe('integration settings permissions', () => {
   it.each(staffRoles)('lets only owners read and change integrations (%s)', async (role) => {
     const app = server({ role }), allowed = role === 'owner';
     expect((await call(app, 'GET', '')).status).toBe(allowed ? 200 : 403);
-    for (const [method, path] of [['PUT', '/email'], ['DELETE', '/email'], ['PUT', '/stripe'], ['POST', '/backups'], ['POST', '/backups/confirm']] as const)
+    for (const [method, path] of [['PUT', '/email'], ['DELETE', '/email'], ['PUT', '/stripe'], ['POST', '/backups'], ['POST', '/backups/confirm'], ['PUT', '/backups/credentials']] as const)
       expect((await call(app, method, path, {})).status, method + ' ' + path).toBe(allowed ? 400 : 403);
     expect(sendTest).not.toHaveBeenCalled();
   });
@@ -107,6 +108,7 @@ describe('integration settings permissions', () => {
     expect((await call(app, 'PUT', '/email', email(before.revision))).status).toBe(403);
     expect((await call(app, 'PUT', '/stripe', { revision: before.revision, restrictedKey: 'rk_test_crossgym' })).status).toBe(403);
     expect((await call(app, 'POST', '/backups', { revision: before.revision, destination: destination('cross') })).status).toBe(403);
+    expect((await call(app, 'PUT', '/backups/credentials', { revision: before.revision, accessKeyId: 'cross-id', secretAccessKey: 'cross-secret' })).status).toBe(403);
     expect(sendTest).not.toHaveBeenCalled();
     expect(await row(gymB)).toEqual(before);
   });
@@ -698,12 +700,59 @@ describe('Settings → Backups', () => {
     expect(JSON.stringify(status)).not.toContain('newerKey');
     await database.forGym(gymA, (tx) => tx.update(gyms).set({ settings: before.settings, backupDestination: before.backupDestination }).where(eq(gyms.id, gymA)));
   });
+  it('replaces only the storage credentials once the destination accepts them, keeping the key, snapshots and a pending change', async () => {
+    const current = await read();
+    const created = createBackupKeyResponseSchema.parse((await call(server(), 'POST', '/backups', { revision: current.revision, destination: destination('fourth') })).json).data;
+    const before = await row();
+    checkDestination.mockClear(); requestSnapshot.mockClear();
+    const replaced = await call(server(), 'PUT', '/backups/credentials', { revision: before.revision, accessKeyId: rotatedKeyId, secretAccessKey: rotatedSecret });
+    expect(replaced.status).toBe(200);
+    expect(checkDestination).toHaveBeenCalledExactlyOnceWith({ endpoint: 'https://s3.example.test', region: 'auto', bucket: 'second',
+      accessKeyId: rotatedKeyId, secretAccessKey: rotatedSecret }, gymA);
+    expect(integrationsResponseSchema.parse(replaced.json).data.backups).toMatchObject({ configured: true, destination: { bucket: 'second' },
+      publicKey: before.backupPublicKey, pending: { destination: { bucket: 'fourth' }, publicKey: created.publicKey } });
+    // Snapshots read these columns each run: only the credentials changed, so the next one uses them with the same key and series.
+    const after = await row();
+    expect(JSON.parse(decryptSecret(key, { secretClass: 's3_config', owner: gymA }, after.s3Config!))).toEqual({ accessKeyId: rotatedKeyId, secretAccessKey: rotatedSecret });
+    expect(after).toMatchObject({ backupDestination: before.backupDestination, backupPublicKey: before.backupPublicKey, backupBlobKey: before.backupBlobKey,
+      backupRetentionBytes: before.backupRetentionBytes, settings: before.settings, revision: before.revision + 1 });
+    expect(requestSnapshot).not.toHaveBeenCalled();
+    const audits = await database.forGym(gymA, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'integrations.backup_credentials_replaced')));
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.after).toMatchObject({ destination: { bucket: 'second' }, revision: after.revision });
+    for (const secret of [rotatedKeyId, rotatedSecret, storageKeyId, storageSecret]) expect(JSON.stringify(audits)).not.toContain(secret);
+  });
+  it('saves nothing when the destination refuses the new credentials or the revision is stale', async () => {
+    const before = await row(), audits = async () => (await database.forGym(gymA, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.targetId, gymA)))).length;
+    const count = await audits();
+    checkDestination.mockRejectedValueOnce(new Error('SignatureDoesNotMatch ' + rotatedSecret));
+    const refused = await call(server(), 'PUT', '/backups/credentials', { revision: before.revision, accessKeyId: 'other-id', secretAccessKey: 'other-secret' });
+    expect(refused.status).toBe(400);
+    expect(refused.json?.error?.details).toEqual({ destination: ['unreachable'] });
+    checkDestination.mockClear();
+    const stale = await call(server(), 'PUT', '/backups/credentials', { revision: before.revision - 1, accessKeyId: 'other-id', secretAccessKey: 'other-secret' });
+    expect(stale.status).toBe(409);
+    expect(checkDestination).not.toHaveBeenCalled();
+    const after = await row();
+    expect({ s3Config: after.s3Config, revision: after.revision }).toEqual({ s3Config: before.s3Config, revision: before.revision });
+    expect(await audits()).toBe(count);
+  });
+  it('refuses to replace credentials before backups are set up', async () => {
+    const before = await row(gymB);
+    checkDestination.mockClear();
+    const refused = await call(server({ gymId: gymB }), 'PUT', '/backups/credentials', { revision: before.revision, accessKeyId: 'other-id', secretAccessKey: 'other-secret' });
+    expect(refused.status).toBe(409);
+    expect(refused.json?.error?.details).toEqual({ accessKeyId: ['not_configured'] });
+    expect(checkDestination).not.toHaveBeenCalled();
+    expect(await row(gymB)).toEqual(before);
+  });
   it('has no backups section in multi-gym mode', async () => {
     const multiEnv = { ...installEnv, TENANCY: 'multi', AUTH_PASSWORD_LOGIN: 'off', GYM_INTEGRATIONS: 'gym' };
     const multi = server({ gymId: gymB, routesService: createIntegrationsService({ ...base, env: multiEnv, config: authConfig(multiEnv) }) });
     const status = await read(multi);
     expect(status.backups).toBeNull();
     expect((await call(multi, 'POST', '/backups', { revision: status.revision, destination: destination('multi') })).status).toBe(404);
+    expect((await call(multi, 'PUT', '/backups/credentials', { revision: status.revision, accessKeyId: 'other-id', secretAccessKey: 'other-secret' })).status).toBe(404);
     // A tenant's test connection goes only to SMTP ports, so it can't probe the install's other services.
     const probe = await call(multi, 'PUT', '/email', email(status.revision, { port: 5432 }));
     expect(probe.status).toBe(400);
@@ -786,7 +835,7 @@ describe('integration settings in a sandbox and in logs', () => {
     const config = (await stripeOf())!;
     const audits = await database.forGym(gymA, (tx) => tx.select().from(auditEvents));
     const text = seen.filter((body) => !body.includes('"privateKey"')).join('\n') + JSON.stringify(audits);
-    for (const secret of [smtpPassword, storageSecret, storageKeyId, config.apiKey, config.webhookSecret, 'AGE-SECRET-KEY-', 'gym-user', 'rk_test_', 'whsec_'])
+    for (const secret of [smtpPassword, storageSecret, storageKeyId, rotatedSecret, rotatedKeyId, config.apiKey, config.webhookSecret, 'AGE-SECRET-KEY-', 'gym-user', 'rk_test_', 'whsec_'])
       expect(text, secret).not.toContain(secret);
     // Only the key creation response carries the new private key.
     expect(seen.filter((body) => body.includes('AGE-SECRET-KEY-')).every((body) => body.includes('"privateKey"'))).toBe(true);

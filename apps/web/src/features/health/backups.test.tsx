@@ -27,7 +27,7 @@ describe('backup actions shared by Settings and Health', () => {
   it.each([200, 409, 500])('retains an uncertain request only until a definite HTTP answer (%s)', async status => {
     POST.mockImplementationOnce(async () => ({ response: new Response(null, { status }), data: {} }));
     POST.mockImplementationOnce(async (_path: string, input: { body: { requestId: string } }) => {
-      state = { ...state, manual: { requestId: input.body.requestId, status: 'queued', requestedAt: now, completedAt: null, snapshotId: null } };
+      state = { ...state, manual: { requestId: input.body.requestId, status: 'queued', requestedAt: now, completedAt: null, snapshotId: null, failure: null } };
       return ok({ data: state });
     });
     start();
@@ -43,13 +43,13 @@ describe('backup actions shared by Settings and Health', () => {
     POST.mockRejectedValueOnce(new Error('network error'));
     POST.mockImplementationOnce(async () => ({ response: new Response(null, { status: 409 }) }));
     POST.mockImplementationOnce(async (_path: string, input: { body: { requestId: string } }) => {
-      state = { ...state, manual: { requestId: input.body.requestId, status: 'queued', requestedAt: now, completedAt: null, snapshotId: null } };
+      state = { ...state, manual: { requestId: input.body.requestId, status: 'queued', requestedAt: now, completedAt: null, snapshotId: null, failure: null } };
       return ok({ data: state });
     });
     const { cache } = start();
     fireEvent.click(await screen.findByRole('button', { name: 'Back up now' }));
     await screen.findByText(/Unable to confirm the backup request/);
-    state.manual = { requestId: uuid(8), status: 'failed', requestedAt: now, completedAt: now, snapshotId: null };
+    state.manual = { requestId: uuid(8), status: 'failed', requestedAt: now, completedAt: now, snapshotId: null, failure: null };
     await cache.invalidateQueries({ queryKey: ['health', uuid(1)] });
     fireEvent.click(screen.getByRole('button', { name: 'Back up now' }));
     await waitFor(() => expect(POST).toHaveBeenCalledTimes(2));
@@ -62,7 +62,7 @@ describe('backup actions shared by Settings and Health', () => {
   it('queues one request, disables while queued, and shows the completed snapshot ID and time', async () => {
     const { cache } = start();
     POST.mockImplementation(async (_path: string, input: { body: { requestId: string } }) => {
-      state = { ...state, manual: { requestId: input.body.requestId, status: 'queued', requestedAt: now, completedAt: null, snapshotId: null } };
+      state = { ...state, manual: { requestId: input.body.requestId, status: 'queued', requestedAt: now, completedAt: null, snapshotId: null, failure: null } };
       return ok({ data: state });
     });
     fireEvent.click(await screen.findByRole('button', { name: 'Back up now' }));
@@ -101,7 +101,7 @@ describe('backup actions shared by Settings and Health', () => {
   it('retries an uncertain response with the same request ID without showing private server errors', async () => {
     POST.mockRejectedValueOnce(new Error('private server configuration'));
     POST.mockImplementationOnce(async (_path: string, input: { body: { requestId: string } }) => {
-      state = { ...state, manual: { requestId: input.body.requestId, status: 'queued', requestedAt: now, completedAt: null, snapshotId: null } };
+      state = { ...state, manual: { requestId: input.body.requestId, status: 'queued', requestedAt: now, completedAt: null, snapshotId: null, failure: null } };
       return ok({ data: state });
     });
     start();
@@ -111,5 +111,22 @@ describe('backup actions shared by Settings and Health', () => {
     await screen.findByText('Your backup is queued.');
     expect(POST.mock.calls[0]?.[1]).toEqual(POST.mock.calls[1]?.[1]);
     expect(document.body.textContent).not.toContain('private server configuration');
+  });
+  it.each([
+    ['credentials_rejected', 'Your backup failed: the storage destination rejected the access key. Replace the storage credentials in Settings → Integrations → Backups.'],
+    ['bucket_missing', "Your backup failed: the bucket doesn't exist. Check the bucket name in Settings → Integrations → Backups."],
+    ['endpoint_unreachable', "Your backup failed: the storage endpoint couldn't be reached. Check the endpoint address and try again."],
+    ['other', 'Your backup failed. Check backup settings and System health before trying again.'],
+    [null, 'Your backup failed. Check backup settings and System health before trying again.'],
+  ] as const)('names the %s cause of a failed backup', async (failure, text) => {
+    state.manual = { requestId: uuid(9), status: 'failed', requestedAt: now, completedAt: now, snapshotId: null, failure };
+    state.pruningHeld = false;
+    start();
+    expect((await screen.findByText(text)).getAttribute('role')).toBe('status');
+  });
+  it('says what pruning keeps and deletes before the owner confirms', async () => {
+    start();
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm the old server is gone' }));
+    expect(screen.getByText(/keeps 24 hourly, 7 nightly and 4 weekly snapshots.*deletes the other snapshots in this bucket/)).toBeDefined();
   });
 });

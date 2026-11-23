@@ -14,6 +14,8 @@ import type { BackupKind, Manifest, Snapshot, UploadReference } from './backups.
 import { guardSnapshot, inventory, pruneUnlocked, UnverifiedInventory, type RunStatuses } from './backups.retention.js';
 import { PostgresMaintenance } from './backups.database.js';
 import { SnapshotContentError } from './backups.content.js';
+import { backupFailureCause } from './backups.failure.js';
+import { logError } from '../../core/log.js';
 
 export interface BackupOptions {
   readonly database: PostgresMaintenance;
@@ -43,7 +45,7 @@ export class BackupService {
     // Every retry opens the encrypted staging file anew; the store aborts failed multipart sessions.
     for (let attempt = 1; ; attempt++) {
       try { return await this.options.store.putObject(key, fileStream(path)); }
-      catch { if (attempt >= 3) throw new Error('Backup object upload failed'); }
+      catch (error) { if (attempt >= 3) throw new Error('Backup object upload failed', { cause: error }); }
     }
   }
   async snapshot(kind: BackupKind = 'manual'): Promise<Snapshot> {
@@ -130,14 +132,21 @@ export class BackupService {
             uploadBytes: BigInt(pending.reduce((n, p) => n + p.size, 0)) }).where(eq(backupRuns.id, id));
         });
         return snapshot;
-      } catch {
+      } catch (error) {
         // A failed prefix is removed under the same lock. Orphan blobs can be collected by the next safe prune.
-        if (!committed) for (const name of ['references.json', 'manifest.age', 'database.age']) await o.store.deleteObject(prefix + name);
+        // Cleanup is best-effort: the destination that refused the upload may refuse the deletes too, and the run
+        // must still be marked failed with its cause class (never the upstream text). It stops at the first refused
+        // delete, so a reference list that may have been published never outlives the objects it names.
+        if (!committed) {
+          try { for (const name of ['references.json', 'manifest.age', 'database.age']) await o.store.deleteObject(prefix + name); }
+          catch { /* the prefix stays for the next safe prune */ }
+        }
+        const cause = backupFailureCause(error);
         await this.scope.forSystem(async (tx) => {
-          await tx.update(backupRuns).set({ status: 'failed', completedAt: o.clock.now(),
-            error: 'Snapshot failed; inspect backup configuration, staging space, and destination' }).where(eq(backupRuns.id, id));
+          await tx.update(backupRuns).set({ status: 'failed', completedAt: o.clock.now(), error: cause }).where(eq(backupRuns.id, id));
         });
-        throw new Error('Snapshot failed');
+        logError('backup.snapshot_failed', { runId: id, kind, cause }, error);
+        throw new Error('Snapshot failed', { cause: error });
       } finally { await rm(staging, { recursive: true, force: true }); }
     });
   }

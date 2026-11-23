@@ -283,6 +283,12 @@ in the admin shows the last successful backup and any failure.
 **Keep the private key safe.** It is shown once, in setup or when you replace it
 under **Settings**. Without it, the backups can't be opened by anyone.
 
+After rotating the bucket's access key, use **Change storage credentials** under
+**Settings → Integrations → Backups**: it checks the new key against the same bucket and
+keeps the backup key and the existing snapshots. A failed backup and the Last backup tile
+say when the destination rejected the access key, the bucket doesn't exist, or the
+endpoint couldn't be reached.
+
 Before a risky change, choose **Back up now** on the **System health → Last backup**
 tile (owners and admins), or in **Settings → Integrations** (owners).
 It queues a manual snapshot, shows progress, then the completed time and snapshot

@@ -132,6 +132,10 @@ export const createBackupKeyResponseSchema = z.strictObject({ data: z.strictObje
   privateKey: privateKeySchema, publicKey: recipientSchema, integrations: integrationsSchema,
 }) });
 export const confirmBackupKeyRequestSchema = z.strictObject({ revision: revisionSchema, privateKey: privateKeySchema });
+/** Replaces only the stored storage access key; the destination, backup key and snapshots stay the same. */
+export const replaceBackupCredentialsRequestSchema = z.strictObject({
+  revision: revisionSchema, accessKeyId: z.string().min(1), secretAccessKey: z.string().min(1),
+});
 
 /**
  * Google sign-in for this gym. `source` is `install` when the instance's configuration (`GOOGLE_CLIENT_ID` and
@@ -174,6 +178,8 @@ export const integrationsContracts = {
     body: createBackupKeyRequestSchema, response: createBackupKeyResponseSchema },
   confirmBackupKey: { method: 'post', path: '/api/settings/integrations/backups/confirm', permission: own,
     body: confirmBackupKeyRequestSchema, response: integrationsResponseSchema },
+  replaceBackupCredentials: { method: 'put', path: '/api/settings/integrations/backups/credentials', permission: own,
+    body: replaceBackupCredentialsRequestSchema, response: integrationsResponseSchema },
   getGoogle: { method: 'get', path: '/api/settings/integrations/google', permission: own, response: googleLoginResponseSchema },
   saveGoogle: { method: 'put', path: '/api/settings/integrations/google', permission: own,
     body: saveGoogleLoginRequestSchema, response: googleLoginResponseSchema },
@@ -196,6 +202,7 @@ export type RemoveEmailIntegrationRequest = z.infer<typeof removeEmailIntegratio
 export type SaveStripeIntegrationRequest = z.infer<typeof saveStripeIntegrationRequestSchema>;
 export type CreateBackupKeyRequest = z.infer<typeof createBackupKeyRequestSchema>;
 export type ConfirmBackupKeyRequest = z.infer<typeof confirmBackupKeyRequestSchema>;
+export type ReplaceBackupCredentialsRequest = z.infer<typeof replaceBackupCredentialsRequestSchema>;
 export type GoogleLogin = z.infer<typeof googleLoginSchema>;
 export type SaveGoogleLoginRequest = z.infer<typeof saveGoogleLoginRequestSchema>;
 export type RemoveGoogleLoginRequest = z.infer<typeof removeGoogleLoginRequestSchema>;

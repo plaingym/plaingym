@@ -201,4 +201,26 @@ describe('manual backups and restore pruning confirmation', () => {
     expect((await f.request('owner', nowPath, { requestId: uuidv7() })).status).toBe(200);
     await f.queue.runNext();
   });
+  const rejected = { name: 'Unauthorized', $metadata: { httpStatusCode: 401 } };
+  it.each([
+    ['credentials_rejected', new Error('Snapshot failed', { cause: new Error('Backup object upload failed', { cause: rejected }) })],
+    ['other', new Error('disk full')],
+  ] as const)('stores and audits the %s cause of a failed manual backup without its text', async (failure, error) => {
+    const f = await fixture(), requestId = uuidv7();
+    f.snapshot.mockRejectedValueOnce(error);
+    await f.control.request({ gymId: f.gymId, userId: f.user.id }, requestId);
+    await f.queue.runNext();
+    expect((await f.control.get(f.gymId)).manual).toMatchObject({ requestId, status: 'failed', failure });
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'backup.failed')));
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.after).toEqual({ snapshotId: null, failure });
+    expect(JSON.stringify(audits[0]!.after)).not.toContain(error.message);
+  });
+  it.each([['future_class', 'other'], [undefined, null]] as const)('reads a stored failure %s as %s', async (stored, expected) => {
+    const f = await fixture();
+    await db.forGym(f.gymId, tx => tx.update(gyms).set({ settings: { manualBackup: { requestId: uuidv7(), status: 'failed',
+      requestedAt: f.clock.now().toISOString(), completedAt: f.clock.now().toISOString(), snapshotId: null,
+      ...(stored === undefined ? {} : { failure: stored }) } } }).where(eq(gyms.id, f.gymId)));
+    expect((await f.control.get(f.gymId)).manual).toMatchObject({ status: 'failed', failure: expected });
+  });
 });

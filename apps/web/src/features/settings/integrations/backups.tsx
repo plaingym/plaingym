@@ -20,13 +20,14 @@ const label = (key: string) => text('backups.' + key);
  * Giving up sooner would leave the server saving a pending key whose private half this page never receives.
  */
 export const destinationCheckTimeoutMs = 2 * 60_000;
-const gigabytes = (bytes: number) => new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(bytes / 1e9) + ' GB';
+// English digits beside the English unit, whatever the browser's locale.
+const gigabytes = (bytes: number) => new Intl.NumberFormat('en', { maximumFractionDigits: 1 }).format(bytes / 1e9) + ' GB';
 /** What the health check knows about the last snapshot: undefined while it loads or when it couldn't be checked. */
 export type LastSnapshot = { at: string | null; noneUnderCurrentKey: boolean } | 'unknown' | undefined;
-function Field({ name, type = 'text', value, text: shown }: { name: string; type?: string; value?: string | undefined; text?: string }) {
+function Field({ name, type = 'text', value, text: shown, idPrefix = 'integrations-backup-' }: { name: string; type?: string; value?: string | undefined; text?: string; idPrefix?: string }) {
   return <div className="grid min-w-0 gap-2">
-    <Label htmlFor={'integrations-backup-' + name}>{shown ?? label(name)}</Label>
-    <Input id={'integrations-backup-' + name} name={name} type={type} required defaultValue={value} autoComplete={type === 'password' ? 'new-password' : 'off'}/>
+    <Label htmlFor={idPrefix + name}>{shown ?? label(name)}</Label>
+    <Input id={idPrefix + name} name={name} type={type} required defaultValue={value} autoComplete={type === 'password' ? 'new-password' : 'off'}/>
   </div>;
 }
 /**
@@ -36,7 +37,7 @@ function Field({ name, type = 'text', value, text: shown }: { name: string; type
 export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { backups: BackupsIntegration; lastSnapshot: LastSnapshot; state: ReturnType<typeof useIntegrations> }) {
   const { instantLabel } = useGymTime();
   const cache = useQueryClient();
-  const [busy, setBusy] = useState(false), [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false), [open, setOpen] = useState(false), [credentialsOpen, setCredentialsOpen] = useState(false);
   const [created, setCreated] = useState<{ privateKey: string; publicKey: string } | null>(null);
   const [message, setMessage] = useState<{ kind: 'status' | 'alert'; text: string } | null>(null);
   const run = async (action: () => Promise<void>) => {
@@ -68,6 +69,22 @@ export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { ba
         : reply.reason === 'no_pending_key' ? label('noPending') : refusedText(reply) });
     });
   };
+  /** Only the access key changes, after the destination accepts it: the destination, backup key and snapshots stay. */
+  const replaceCredentials = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget), field = (name: string) => String(form.get(name) ?? '');
+    void run(async () => {
+      const reply = await state.change((revision, signal) => api.PUT('/api/settings/integrations/backups/credentials', { signal,
+        body: { revision, accessKeyId: field('accessKeyId'), secretAccessKey: field('secretAccessKey') } }), integrationsOf, { timeoutMs: destinationCheckTimeoutMs });
+      if (reply.status < 300) {
+        setCredentialsOpen(false); setMessage({ kind: 'status', text: label('credentialsReplaced') });
+        // The last-snapshot line is keyed by destination and key, which stay: read it again with the new credentials.
+        await cache.invalidateQueries({ queryKey: ['settings', 'integrations', 'health'] });
+        if (state.gymId) await cache.invalidateQueries({ queryKey: ['health', state.gymId] });
+      }
+      else setMessage({ kind: 'alert', text: reply.reason === 'unreachable' ? label('credentialsUnreachable') : refusedText(reply) });
+    });
+  };
   const pending = backups.pending;
   return <div className="grid min-w-0 gap-4">
     <h3 className="text-base font-semibold">{label('title')}</h3>
@@ -90,11 +107,22 @@ export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { ba
         <CheckboxField required label={label('savedKey')}/>
         <div className="flex flex-col gap-3 sm:flex-row">
           <Button type="submit">{busy ? confirmKeyLabels.checking() : confirmKeyLabels.submit()}</Button>
-          <Button type="button" variant="outline" onClick={() => { setCreated(null); setOpen(true); }}>{label('start')}</Button>
+          <Button type="button" variant="outline" onClick={() => { setCreated(null); setCredentialsOpen(false); setOpen(true); }}>{label('start')}</Button>
         </div>
       </fieldset>
     </form></ConfirmKeySection>}
-    {!pending && !open && <div><Button type="button" variant="outline" onClick={() => { setMessage(null); setOpen(true); }}>{label(backups.configured ? 'change' : 'setUp')}</Button></div>}
+    {!pending && (!open || backups.configured) && <div className="flex flex-col gap-3 sm:flex-row">
+      {!open && <Button type="button" variant="outline" onClick={() => { setMessage(null); setCredentialsOpen(false); setOpen(true); }}>{label(backups.configured ? 'change' : 'setUp')}</Button>}
+      {backups.configured && !credentialsOpen && <Button type="button" variant="outline" onClick={() => { setMessage(null); setOpen(false); setCredentialsOpen(true); }}>{label('changeCredentials')}</Button>}
+    </div>}
+    {credentialsOpen && backups.configured && !pending && <form onSubmit={replaceCredentials} aria-label={label('changeCredentials')}>
+      <fieldset disabled={busy} className="grid min-w-0 gap-4">
+        <p className="text-sm text-muted-foreground">{label('credentialsHint')}</p>
+        <Field name="accessKeyId" idPrefix="integrations-backup-credentials-"/>
+        <Field name="secretAccessKey" type="password" idPrefix="integrations-backup-credentials-"/>
+        <div className="flex flex-col gap-3 sm:flex-row"><Button type="submit">{label(busy ? 'checking' : 'replaceCredentials')}</Button></div>
+      </fieldset>
+    </form>}
     {open && <form onSubmit={generate} aria-label={label(backups.configured ? 'change' : 'setUp')}>
       <fieldset disabled={busy} className="grid min-w-0 gap-4">
         <p className="text-sm text-muted-foreground">{label('hint')}</p>

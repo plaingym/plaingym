@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { auditEvents, forGym, gyms, writeAudit } from '@plaingym/db';
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
-import { manualBackupSchema, type BackupControl, type ManualBackup } from '@plaingym/shared/contracts';
+import { backupFailureCauseSchema, manualBackupSchema, type BackupControl, type BackupFailureCause, type ManualBackup } from '@plaingym/shared/contracts';
 import { clock as systemClock } from '../../core/clock.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { tenancyMode } from '../../core/tenancy.js';
@@ -13,6 +13,7 @@ import { PostgresJobs } from '../../infra/jobs/postgres.js';
 import { RestoreGate } from './restore.gate.js';
 import { dirname } from 'node:path';
 import { isBackupsUnconfigured, loadBackupConfig } from './restore.config.js';
+import { backupFailureCause } from './backups.failure.js';
 
 export const manualBackupJob = 'health.backup.manual';
 const t = createTranslator(locales.en ?? {});
@@ -25,7 +26,9 @@ const manualOf = (row: Row): ManualBackup | null => {
   const stored = value as Record<string, unknown>;
   // Rollbacks can leave fields or finished statuses this release does not know.
   const status = ['queued', 'running', 'succeeded', 'failed'].includes(String(stored.status)) ? stored.status : 'failed';
-  const parsed = manualBackupSchema.strip().safeParse({ ...stored, status });
+  const failure = stored.failure === undefined || stored.failure === null ? null
+    : backupFailureCauseSchema.options.includes(stored.failure as BackupFailureCause) ? stored.failure : 'other';
+  const parsed = manualBackupSchema.strip().safeParse({ ...stored, status, failure });
   return parsed.success ? parsed.data : null;
 };
 export function createBackupControl(options: {
@@ -94,7 +97,7 @@ export function createBackupControl(options: {
         const [used] = await tx.select({ id: auditEvents.id }).from(auditEvents)
           .where(and(eq(auditEvents.action, 'backup.requested'), eq(auditEvents.targetId, requestId))).limit(1);
         if (used) throw new AppError('conflict', t('health/backups:alreadyFinished'));
-        const manual: ManualBackup = { requestId, status: 'queued', requestedAt: clock.now().toISOString(), completedAt: null, snapshotId: null };
+        const manual: ManualBackup = { requestId, status: 'queued', requestedAt: clock.now().toISOString(), completedAt: null, snapshotId: null, failure: null };
         const [saved] = await tx.update(gyms).set({ settings: { ...settingsOf(row), manualBackup: manual }, updatedAt: clock.now() })
           .where(eq(gyms.id, actor.gymId)).returning();
         await queue.enqueue(manualBackupJob, { requestId }, { gymId: actor.gymId, timezone: row.timezone,
@@ -120,13 +123,13 @@ export function createBackupControl(options: {
       });
     },
     async run(gymId: string, requestId: string, snapshot: () => Promise<{ id: string }>): Promise<void> {
-      const update = (status: ManualBackup['status'], snapshotId: string | null = null) => scope(gymId, async tx => {
+      const update = (status: ManualBackup['status'], snapshotId: string | null = null, failure: BackupFailureCause | null = null) => scope(gymId, async tx => {
         const row = await read(tx, gymId, true), manual = manualOf(row);
         if (manual?.requestId !== requestId || manual.status === 'succeeded') return false;
-        await tx.update(gyms).set({ settings: { ...settingsOf(row), manualBackup: { ...manual, status, snapshotId,
+        await tx.update(gyms).set({ settings: { ...settingsOf(row), manualBackup: { ...manual, status, snapshotId, failure,
           completedAt: status === 'running' ? null : clock.now().toISOString() } }, updatedAt: clock.now() }).where(eq(gyms.id, gymId));
         if (status !== 'running') await writeAudit(tx, { gymId, actorKind: 'system', action: 'backup.' + status,
-          targetType: 'backup', targetId: requestId, after: { snapshotId }, occurredAt: clock.now() });
+          targetType: 'backup', targetId: requestId, after: status === 'failed' ? { snapshotId, failure } : { snapshotId }, occurredAt: clock.now() });
         return true;
       });
       if (!await update('running')) return;
@@ -135,7 +138,8 @@ export function createBackupControl(options: {
         if (await isRestoring() || !await ready(gymId)) throw new Error('Backups unavailable or restore in progress');
         result = await snapshot();
       }
-      catch (error) { await update('failed'); throw error; }
+      // Only the cause class is stored and audited; the error's text can quote the destination.
+      catch (error) { await update('failed', null, backupFailureCause(error)); throw error; }
       // Retry only bookkeeping: publication must never run twice for a transient success-write failure.
       for (let attempt = 0; ; attempt++) {
         try { await update('succeeded', result.id); return; }

@@ -854,6 +854,14 @@
   },
   {
     "method": "PUT",
+    "path": "/api/settings/integrations/backups/credentials",
+    "permission": {
+      "kind": "staff",
+      "capability": "integrations.manage"
+    }
+  },
+  {
+    "method": "PUT",
     "path": "/api/settings/integrations/email",
     "permission": {
       "kind": "staff",

@@ -13,6 +13,8 @@ export const healthTileIdSchema = z.enum(healthTileIds);
 export const healthStatusSchema = z.enum(['healthy', 'warning', 'error', 'not_configured', 'unavailable']);
 const count = z.int().nonnegative();
 const common = { status: healthStatusSchema, checkedAt: instantSchema.nullable(), message: z.string() };
+/** Why a backup destination call failed, classified from the error's status and code; never upstream text. */
+export const backupFailureCauseSchema = z.enum(['credentials_rejected', 'bucket_missing', 'endpoint_unreachable', 'other']);
 export const backupHealthDetailsSchema = z.strictObject({
   latestRestorableAt: instantSchema.nullable(), ageSeconds: count.nullable(), overdue: z.boolean(),
   /** A verified destination has no complete snapshot known to use the current recipient. False when the check failed. */
@@ -20,6 +22,8 @@ export const backupHealthDetailsSchema = z.strictObject({
   pruningHeld: z.boolean().default(false),
   damagedGuardSnapshot: idSchema.nullable().default(null),
   missingGuardSnapshot: idSchema.nullable().default(null),
+  /** The inventory check failed for a known destination cause; null when it passed or failed otherwise. */
+  destinationFailure: backupFailureCauseSchema.nullable().default(null),
   retainedBytes: count, retentionBudgetBytes: count, pruningStopped: z.boolean(), keyReminder: z.boolean(),
 });
 export const failedJobsHealthDetailsSchema = z.strictObject({
@@ -149,6 +153,7 @@ const manageIntegrations = { kind: 'staff', capability: 'integrations.manage' } 
 export const manualBackupSchema = z.strictObject({
   requestId: idSchema, status: z.enum(['queued', 'running', 'succeeded', 'failed']),
   requestedAt: instantSchema, completedAt: instantSchema.nullable(), snapshotId: idSchema.nullable(),
+  failure: backupFailureCauseSchema.nullable().default(null),
 });
 export const backupControlSchema = z.strictObject({
   available: z.boolean(), configured: z.boolean(), pruningHeld: z.boolean(), revision: revisionSchema,
@@ -164,6 +169,7 @@ export const backupControlContracts = {
 } as const satisfies Record<string, EndpointContract>;
 export type BackupControl = z.infer<typeof backupControlSchema>;
 export type ManualBackup = z.infer<typeof manualBackupSchema>;
+export type BackupFailureCause = z.infer<typeof backupFailureCauseSchema>;
 /** Owners only, like the email, payment and backup settings. */
 export const autoUpdateContracts = {
   get: { method: 'get', path: '/api/health/auto-update', permission: manageIntegrations, response: autoUpdateSettingsResponseSchema },

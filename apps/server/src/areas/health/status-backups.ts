@@ -6,6 +6,11 @@ import { createS3Client, S3BackupObjectStore, type BackupObjectStore } from '../
 import { isBackupsUnconfigured, loadBackupConfig, type InstallBackupConfig } from './restore.config.js';
 import { guardSnapshot, inventory, prunePlan, UnverifiedInventory } from './backups.retention.js';
 import { healthProvider, statusMessage } from './status.js';
+import { backupFailureCause, type BackupFailureCause } from './backups.failure.js';
+
+const causeMessages: Record<Exclude<BackupFailureCause, 'other'>, string> = {
+  credentials_rejected: 'backupCredentialsRejected', bucket_missing: 'backupBucketMissing', endpoint_unreachable: 'backupEndpointUnreachable',
+};
 
 export function createBackupHealthProvider(options: {
   env?: NodeJS.ProcessEnv;
@@ -61,13 +66,15 @@ export function createBackupHealthProvider(options: {
           : damagedGuardSnapshot ? 'backupDamagedGuardHeadline' : missingGuardSnapshot ? 'backupMissingGuardHeadline' : 'backupHealthy'),
         details: { latestRestorableAt: latest?.startedAt.toISOString() ?? null, ageSeconds, overdue,
           noneUnderCurrentKey: !latest, retainedBytes, retentionBudgetBytes: settings.budgetBytes, pruningStopped: false,
-          pruningHeld: settings.pruningHeld ?? false, damagedGuardSnapshot, missingGuardSnapshot, keyReminder: true } };
-    } catch {
+          pruningHeld: settings.pruningHeld ?? false, damagedGuardSnapshot, missingGuardSnapshot, destinationFailure: null, keyReminder: true } };
+    } catch (error) {
       // The authenticated inventory is also pruning's safety check. Do not claim a snapshot is restorable when it fails.
-      return { id: 'last_backup', status: 'error', checkedAt, message: statusMessage('backupPruningStopped'),
+      // A destination that refused the check names its cause class; anything else is an unverifiable inventory.
+      const cause = backupFailureCause(error), destinationFailure = cause === 'other' ? null : cause;
+      return { id: 'last_backup', status: 'error', checkedAt, message: statusMessage(destinationFailure ? causeMessages[destinationFailure] : 'backupPruningStopped'),
         details: { latestRestorableAt: null, ageSeconds: null, overdue: true, retainedBytes: 0,
           noneUnderCurrentKey: false, retentionBudgetBytes: settings.budgetBytes, pruningStopped: true,
-          pruningHeld: settings.pruningHeld ?? false, damagedGuardSnapshot, missingGuardSnapshot, keyReminder: true } };
+          pruningHeld: settings.pruningHeld ?? false, damagedGuardSnapshot, missingGuardSnapshot, destinationFailure, keyReminder: true } };
     } finally { destination.close(); }
   });
 }

@@ -201,7 +201,10 @@ completed setup. You work on the server over SSH.
    **Resume backup pruning**. Until then the bucket grows, and once it reaches the retention
    budget new snapshots fail. If the backup key was lost, or you want a new one, replace it
    under **Settings → Integrations**; pruning stays held until the owner
-   confirms the old server is gone.
+   confirms the old server is gone. A restored install uses the storage credentials stored in
+   the snapshot. If they changed since (a rotated access key, say), replace them with
+   **Change storage credentials** under **Settings → Integrations → Backups** before relying
+   on backups; this keeps the backup key and the existing snapshots.
 5. **Only one install should run the gym.** Shut the old server down now (see above).
 
 ## When rollback is refused

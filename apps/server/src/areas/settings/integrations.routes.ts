@@ -32,7 +32,7 @@ function gymResource(entry: RouteRegistration): RouteRegistration {
 export function createIntegrationsRoutes(service?: IntegrationsService): RouteRegistration[] {
   const current = () => service ?? integrationsService();
   const cap = settingsContracts.updateSmsDailyCap;
-  const { get, saveEmail, removeEmail, saveSms, removeSms, saveStripe, createBackupKey, confirmBackupKey, getGoogle, saveGoogle, removeGoogle } = integrationsContracts;
+  const { get, saveEmail, removeEmail, saveSms, removeSms, saveStripe, createBackupKey, confirmBackupKey, replaceBackupCredentials, getGoogle, saveGoogle, removeGoogle } = integrationsContracts;
   const bankDebits = { path: '/api/settings/payments/bank-debits', permission: saveStripe.permission } as const;
   return [
     gymResource(route({ ...bankDebits, method: 'get', responses: response(z.object({ data: z.object({ unavailableAt: instantSchema.nullable() }) }), 'Latest outstanding bank payment refusal') },
@@ -63,6 +63,8 @@ export function createIntegrationsRoutes(service?: IntegrationsService): RouteRe
       }),
     route({ ...confirmBackupKey, request: body(confirmBackupKey.body), responses: response(confirmBackupKey.response, 'The integrations with the confirmed backup key') },
       async (c) => c.json({ data: await current().confirmBackupKey(owner(c), c.req.valid('json')) }, 200)),
+    route({ ...replaceBackupCredentials, request: body(replaceBackupCredentials.body), responses: response(replaceBackupCredentials.response, 'The integrations with the new storage credentials') },
+      async (c) => c.json({ data: await current().replaceBackupCredentials(owner(c), c.req.valid('json')) }, 200)),
     route({ ...getGoogle, responses: response(getGoogle.response, 'Google sign-in for this gym, never the client secret') }, async (c) => {
       const context = owner(c);
       return c.json({ data: await current().getGoogle(context.gymId, context.actor.userId) }, 200);

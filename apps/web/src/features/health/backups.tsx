@@ -2,7 +2,7 @@
 import { useGymTime } from '../../lib/instant.js';
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { backupControlContracts, backupControlResponseSchema } from '@plaingym/shared/contracts';
+import { backupControlContracts, backupControlResponseSchema, type BackupFailureCause } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
 import { parseResponse } from '../../lib/response.js';
 import { t } from '../../lib/i18n.js';
@@ -12,6 +12,10 @@ import { CheckboxField } from '../../components/ui/select.js';
 import { Dialog } from '../../components/ui/dialog.js';
 
 const label = (key: string, values?: Record<string, string | number>) => t('health/backups:' + key, values);
+/** A failed manual backup names a destination cause the owner can fix; any other failure keeps the general text. */
+const failedMessages: Record<Exclude<BackupFailureCause, 'other'>, string> = {
+  credentials_rejected: 'failedCredentials', bucket_missing: 'failedBucket', endpoint_unreachable: 'failedEndpoint',
+};
 /** Shared by Settings and the Last backup tile; cache and pending requests belong to this gym. */
 export function BackupActions({ gymId, owner, onConfirmed }: { gymId: string; owner: boolean; onConfirmed?: () => void }) {
   const { instantLabel } = useGymTime();
@@ -54,6 +58,7 @@ export function BackupActions({ gymId, owner, onConfirmed }: { gymId: string; ow
     </Alert>}
     {state.manual && <p role="status" className="text-sm [overflow-wrap:anywhere]">{state.manual.status === 'succeeded'
       ? label('succeeded', { time: instantLabel(state.manual.completedAt!), id: state.manual.snapshotId! })
+      : state.manual.status === 'failed' && state.manual.failure && state.manual.failure !== 'other' ? label(failedMessages[state.manual.failure])
       : label(state.manual.status)}</p>}
     {now.isError && <Alert variant="error" focusOnReveal>{label('requestFailed')}</Alert>}
     <Button type="button" variant="outline" disabled={busy || !state.configured} onClick={() => now.mutate()}>{label(busy ? 'busy' : 'now')}</Button>
@@ -61,6 +66,7 @@ export function BackupActions({ gymId, owner, onConfirmed }: { gymId: string; ow
     {confirming !== null && <Dialog title={label('review')} description={label('confirmDescription')} closeLabel={label('cancel')}
       dismissible={!confirm.isPending} onClose={() => setConfirming(null)}>
       <div className="space-y-4 p-4 sm:p-6">
+        <p className="text-sm">{label('confirmRetention')}</p>
         <CheckboxField label={label('confirmCheck')} checked={checked} onChange={event => setChecked(event.target.checked)}/>
         {confirm.isError && <Alert variant="error" focusOnReveal>{label('confirmFailed')}</Alert>}
         <Button type="button" className="w-full sm:w-auto" disabled={!checked || confirm.isPending} onClick={() => confirm.mutate()}>{label('confirm')}</Button>

@@ -65,6 +65,8 @@ function detailRows(tile: ShownHealthTile): [key: string, label: string, value: 
   // A null oldest failure means no failed jobs remain, not an unknown time, so the row is left out. The failed jobs
   // version is an opaque digest for Acknowledge failed jobs, not something to read.
   return Object.entries(tile.details).filter(([key, value]) => key !== 'keyReminder' && key !== 'noneUnderCurrentKey' && key !== 'pruningHeld' && key !== 'damagedGuardSnapshot' && key !== 'missingGuardSnapshot'
+    // The tile's message already names a destination failure's cause.
+    && key !== 'destinationFailure'
     && !(tile.id === 'failed_jobs' && key === 'failedVersion')
     && !(versions && (key === 'fromVersion' || key === 'toVersion') && value === null)
     && !(tile.id === 'failed_jobs' && key === 'oldestFailureAt' && value === null))

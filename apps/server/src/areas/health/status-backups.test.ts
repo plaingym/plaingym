@@ -163,7 +163,27 @@ describe('last-backup health', () => {
     if (fault === 'bad-mac') await store.putObject(prefix + 'references.json', bytesStream('{"payload":"bad","mac":"' + 'a'.repeat(64) + '"}'));
     if (fault === 'missing-blob') await store.putObject(prefix + 'references.json', referenceStream({ ...record,
       uploads: [{ blob: 'blobs/' + 'a'.repeat(64) + '.age', protectedHash: 'b'.repeat(64), encrypted: { sha256: 'c'.repeat(64), size: 10 } }] }, settings.blobKey));
-    expect(await read()).toMatchObject({ status: 'error', details: { pruningStopped: true, latestRestorableAt: null } });
+    expect(await read()).toMatchObject({ status: 'error', details: { pruningStopped: true, latestRestorableAt: null, destinationFailure: null } });
+  });
+  it('names a destination that rejects the storage credentials, without its error text', async () => {
+    await snapshot();
+    const rejected = Object.assign(new Error('upstream says private-access is invalid'), { name: 'Unauthorized', $metadata: { httpStatusCode: 401 } });
+    vi.spyOn(store, 'listObjects').mockRejectedValue(rejected);
+    const tile = await read();
+    expect(tile).toMatchObject({ status: 'error', message: expect.stringContaining('rejected the storage credentials'),
+      details: { pruningStopped: true, latestRestorableAt: null, destinationFailure: 'credentials_rejected' } });
+    expect(JSON.stringify(tile)).not.toMatch(/upstream|private-/);
+  });
+  it.each([['an unverified inventory', new retention.UnverifiedInventory('Pruning stopped')], ['any other error', new Error('disk full')]])(
+    'keeps the pruning-stopped message for %s', async (_, error) => {
+      await snapshot();
+      vi.spyOn(store, 'listObjects').mockRejectedValue(error);
+      expect(await read()).toMatchObject({ status: 'error', message: expect.stringContaining('inventory could not be verified'),
+        details: { pruningStopped: true, destinationFailure: null } });
+    });
+  it('reports no destination failure for a healthy destination', async () => {
+    await snapshot();
+    expect(await read()).toMatchObject({ status: 'healthy', details: { destinationFailure: null } });
   });
   it('never opens install history or storage for an unconfigured or different gym', async () => {
     expect(await read(null)).toMatchObject({ status: 'not_configured', details: null });
