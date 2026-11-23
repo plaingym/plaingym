@@ -4,7 +4,7 @@ import { FakePayments } from './index.js';
 import { StripePayments } from './stripe.js';
 import { StripeFixtures } from './stripe-fixtures.js';
 import { customerCardRedactionContract } from './payments.contract.js';
-import type { ObjectData, PaymentTransport } from './transport.js';
+import type { ObjectData, PaymentTransport, ProviderRequest } from './transport.js';
 import { recordingTransport, replayTransport } from './transport.js';
 import { FixtureRecorder } from './recording.js';
 import { setLogSink } from '../../core/log.js';
@@ -148,4 +148,112 @@ it('refuses a foreign card returned by an inconsistent provider list', async () 
   } };
   await expect(new StripePayments(gymId, { transport, webhookSecret: 'fixture-secret' }).redactCustomer(customerId)).rejects.toThrow('another customer');
   expect(fixture.cards()[102]!.details).toEqual(details);
+});
+
+// A pre-authorized debit account, which Stripe won't leave without a billing name and email, beside a card.
+const padPath = '/v1/payment_methods/pm_pad';
+const blank = { name: '', email: '', phone: '', address: '' };
+const placeholders = { name: 'Erased member', email: 'erased-member@example.com', phone: '', address: '' };
+const redacted = { name: 'Erased member', email: 'erased-member@example.com', phone: null, address: null };
+function padStripe(wrap?: (input: ProviderRequest, next: PaymentTransport['request']) => Promise<ObjectData>) {
+  const transport = new StripeFixtures(gymId);
+  transport.objects.set('cus_pad', { id: 'cus_pad', object: 'customer', name: 'Household', metadata: { gym_id: gymId } });
+  transport.objects.set('pm_pad', { id: 'pm_pad', object: 'payment_method', type: 'acss_debit', created: transport.now, customer: 'cus_pad',
+    acss_debit: { last4: '6789', bank_name: 'STRIPE TEST BANK' }, billing_details: structuredClone(details) });
+  transport.objects.set('pm_pad_card', { id: 'pm_pad_card', object: 'payment_method', type: 'card', created: transport.now, customer: 'cus_pad',
+    card: { brand: 'visa', last4: '4242', exp_month: 12, exp_year: 2030 }, billing_details: structuredClone(details) });
+  const seen: ProviderRequest[] = [];
+  const request: PaymentTransport['request'] = async input => {
+    seen.push(structuredClone(input));
+    return wrap ? wrap(input, next => transport.request(next)) : transport.request(input);
+  };
+  const payments = new StripePayments(gymId, { transport: { request }, webhookSecret: 'fixture-secret' });
+  const method = (methodId: string) => transport.objects.get(methodId)!;
+  return { payments, transport, method, posts: () => seen.filter(item => item.method === 'POST').map(item => ({ path: item.path, params: item.params })) };
+}
+function withLogs<T>(lines: string[], run: () => Promise<T>): Promise<T> {
+  const previous = setLogSink(line => lines.push(line));
+  return run().finally(() => setLogSink(previous));
+}
+
+it('refuses a blank name, then a blank email, on a pre-authorized debit account but not on a card', async () => {
+  const { transport, method } = padStripe();
+  const write = (path: string, billing: Record<string, string>) =>
+    transport.request({ method: 'POST', path, params: { billing_details: billing } });
+  await expect(write(padPath, blank)).rejects.toMatchObject({ statusCode: 400, code: 'parameter_missing', param: 'billing_details[name]' });
+  expect(method('pm_pad').billing_details).toEqual(details);
+  await expect(write(padPath, { name: 'Erased member', email: '' }))
+    .rejects.toMatchObject({ statusCode: 400, code: 'parameter_missing', param: 'billing_details[email]' });
+  expect(method('pm_pad').billing_details).toEqual(details);
+  await write(padPath, placeholders);
+  expect(method('pm_pad').billing_details).toEqual(redacted);
+  await write('/v1/payment_methods/pm_pad_card', blank);
+  expect(method('pm_pad_card').billing_details).toEqual({ name: null, email: null, phone: null, address: null });
+});
+
+it('redacts a customer whose debit account needs placeholders and sends nothing on a second run', async () => {
+  const { payments, method, posts } = padStripe(), lines: string[] = [];
+  await withLogs(lines, () => payments.redactCustomer('cus_pad'));
+  expect(method('pm_pad')).toMatchObject({ customer: 'cus_pad', billing_details: redacted });
+  expect(method('pm_pad_card')).toMatchObject({ customer: 'cus_pad', billing_details: { name: null, email: null, phone: null, address: null } });
+  expect(posts().filter(item => item.path === padPath))
+    .toEqual([{ path: padPath, params: { billing_details: blank } }, { path: padPath, params: { billing_details: placeholders } }]);
+  const before = posts().length;
+  await withLogs(lines, () => payments.redactCustomer('cus_pad'));
+  expect(posts()).toHaveLength(before);
+  expect(lines.join('')).not.toContain(details.email);
+  expect(lines.join('')).not.toContain(details.name);
+});
+
+it('writes the placeholders before detaching a debit account on erasure, once', async () => {
+  const { payments, method, posts } = padStripe(), lines: string[] = [];
+  await withLogs(lines, () => payments.detachPaymentMethod('pm_pad', { redactBillingDetails: true }));
+  expect(method('pm_pad')).toMatchObject({ customer: null, billing_details: redacted });
+  expect(posts()).toEqual([{ path: padPath, params: { billing_details: blank } }, { path: padPath, params: { billing_details: placeholders } },
+    { path: padPath + '/detach', params: {} }]);
+  await withLogs(lines, () => payments.detachPaymentMethod('pm_pad', { redactBillingDetails: true }));
+  expect(posts()).toHaveLength(3);
+  expect(lines.join('')).not.toContain(details.email);
+  expect(lines.join('')).not.toContain(details.name);
+});
+
+it('retries only the detach of a debit account that already holds the placeholders', async () => {
+  let fail = true;
+  const { payments, method, posts } = padStripe((input, next) => {
+    if (input.method === 'POST' && input.path === padPath + '/detach' && fail) {
+      fail = false; return Promise.reject(Object.assign(new Error('Stripe outage'), { statusCode: 500 }));
+    }
+    return next(input);
+  });
+  await expect(payments.detachPaymentMethod('pm_pad', { redactBillingDetails: true })).rejects.toThrow('Stripe outage');
+  expect(method('pm_pad')).toMatchObject({ customer: 'cus_pad', billing_details: redacted });
+  const before = posts().length;
+  await payments.detachPaymentMethod('pm_pad', { redactBillingDetails: true });
+  expect(posts().slice(before)).toEqual([{ path: padPath + '/detach', params: {} }]);
+  expect(method('pm_pad').customer).toBeNull();
+});
+
+it('stops when the placeholder write is refused', async () => {
+  const { payments, method, posts } = padStripe((input, next) => {
+    const billing = (input.params?.billing_details ?? {}) as { name?: string };
+    if (input.method === 'POST' && input.path === padPath && billing.name === 'Erased member')
+      return Promise.reject(Object.assign(new Error('Permission denied'), { statusCode: 403 }));
+    return next(input);
+  });
+  await expect(payments.detachPaymentMethod('pm_pad', { redactBillingDetails: true })).rejects.toThrow('Check the Stripe permission for Payment Methods');
+  expect(posts().some(item => item.path.endsWith('/detach'))).toBe(false);
+  expect(method('pm_pad')).toMatchObject({ customer: 'cus_pad', billing_details: details });
+  await expect(payments.redactCustomer('cus_pad')).rejects.toThrow('Check the Stripe permission for Payment Methods');
+  expect(method('pm_pad').billing_details).toEqual(details);
+});
+
+it('rethrows any other refusal of the blank write without a placeholder write or detach', async () => {
+  const refusal = Object.assign(new Error('Invalid empty phone'), { statusCode: 400, code: 'parameter_invalid_empty', param: 'billing_details[phone]' });
+  const { payments, method, posts } = padStripe((input, next) => {
+    if (input.method === 'POST' && input.path === padPath) return Promise.reject(refusal);
+    return next(input);
+  });
+  await expect(payments.detachPaymentMethod('pm_pad', { redactBillingDetails: true })).rejects.toBe(refusal);
+  expect(posts()).toEqual([{ path: padPath, params: { billing_details: blank } }]);
+  expect(method('pm_pad').customer).toBe('cus_pad');
 });

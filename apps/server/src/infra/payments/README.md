@@ -307,16 +307,34 @@ card revocation remains in place while the queued detach job retries.
 (a staff card removal passes no options): Stripe
 [updates only an attached card](https://docs.stripe.com/api/payment_methods/update),
 so before detaching it clears the card's billing name, email, phone and address (an
-empty string clears each) when it holds any. A failed clearing is raised before the
-detach, so the retry still finds the card attached; a card that is already detached
-keeps what it holds, since it can no longer be updated.
+empty string clears each) when it holds any. A method Stripe won't leave without a
+billing name or email (a pre-authorized debit account, refused with `parameter_missing`
+on `billing_details[name]` or `[email]`) gets the fixed placeholders instead: the name
+`Erased member`, the email `erased-member@example.com`, and a blank phone and address;
+it is then detached. A method holding nothing, or only these placeholders, counts as
+redacted and gets no further write. A failed clearing or placeholder write is raised
+before the detach, so the retry still finds the card attached; a card that is already
+detached keeps what it holds, since it can no longer be updated.
 
 `clearCustomerEmail(id, { householdId, emailDigest, secret, paymentMethodIds })` handles
-erasing a payer while other household members remain. It returns whether an address
-matched and was cleared (false for a no-match, missing or deleted customer). It clears only the customer
+erasing a payer while other household members remain. It returns `{ matched, placeholderMethods, failedMethods }`:
+`matched` says whether an address matched and was cleared (false for a no-match, missing or deleted customer). It clears only the customer
 email and every specified card's billing email that match the digest of the
 trimmed, lowercased erased address. It preserves names and other billing fields,
-and keeps the cards attached. The digest is a versioned HMAC under a key derived
+and keeps the cards attached. A card Stripe won't leave without an email (a
+pre-authorized debit account) gets the placeholder `erased-member@example.com`
+instead, its name unchanged. A debit account already holding that placeholder counts
+as cleared (even when the erased address itself normalizes to it), so a retry writes
+nothing and doesn't count as a match. `placeholderMethods` lists the specified
+`acss_debit` methods holding the placeholder when the call ends, whether this call or
+an earlier one wrote it; the caller retires them. A card or other method holding the
+same address follows the matching rule and is never listed. Each method is written on
+its own: a failed write adds the method to `failedMethods` and the call goes on to the
+next, so a debit account cleared earlier in the call is still listed. After a 401 or
+403 no further method is written, and every method left is listed as failed too.
+If the ownership check already found the placeholder on one of those debit accounts,
+it appears in both lists so the caller can retire it immediately. A
+failed customer write still throws. The fake always returns empty lists. The digest is a versioned HMAC under a key derived
 from `AUTH_SECRET`; `secret` is supplied only during execution, never in a job or
 audit, and fixture recording redacts it. Legacy jobs with a plain digest and
 `paymentMethodId` still drain. Before any write it refuses customer metadata naming
@@ -349,7 +367,10 @@ job carries that ID and retries when Stripe is unreachable. It uses the Customer
 **Write** permission that customer creation already needs. It also
 [lists attached payment methods](https://docs.stripe.com/api/payment_methods/list) of every type, 100 per page,
 and clears each method's billing name, email, phone and address without detaching it,
-using the existing Payment Methods **Write** permission. This covers dashboard-added
+using the existing Payment Methods **Write** permission. A method Stripe won't leave
+without a billing name or email (a pre-authorized debit account) gets the same
+placeholders as the erasure detach and stays attached; a method holding only the
+placeholders counts as cleared. This covers dashboard-added
 cards, bank accounts and revoked cards whose detach has not succeeded. A method
 tagged for another gym is skipped with an identifier-only warning. Tax IDs are deleted
 before payment-method cleanup. Authentication and permission failures stop

@@ -46,7 +46,7 @@ function handler(payments: FakePayments) {
     expect(gym).toBe(gymId);
     return payments.clearCustomerEmail(customerId, options);
   });
-  const job = createErasureJobs({ clearBillingEmail: clear, billingEmailSecret, scope: database.forGym }).find(job => job.id === clearBillingEmailJob)!;
+  const job = createErasureJobs({ clearBillingEmail: clear, billingEmailSecret, jobs: new FakeJobs(clock), scope: database.forGym }).find(job => job.id === clearBillingEmailJob)!;
   return { clear, run: (payload: unknown, gym = gymId) => job.handler(payload, { gymId: gym, jobId: 'clear-email', timezone: 'UTC', attempt: 1, clock }) };
 }
 
@@ -162,7 +162,7 @@ it('propagates a provider failure so the queue retries, and refuses an unwired c
   const payload = (await jobPayload(jobs, customerId))[0]!.payload;
   const clear = vi.fn(async () => { throw new Error('provider unavailable'); });
   const ctx = { gymId, jobId: 'retry', timezone: 'UTC', attempt: 1, clock };
-  const failing = createErasureJobs({ clearBillingEmail: clear, billingEmailSecret, scope: database.forGym }).find(job => job.id === clearBillingEmailJob)!;
+  const failing = createErasureJobs({ clearBillingEmail: clear, billingEmailSecret, jobs, scope: database.forGym }).find(job => job.id === clearBillingEmailJob)!;
   await expect(failing.handler(payload, ctx)).rejects.toThrow('provider unavailable');
   expect(await database.forGym(gymId, tx => tx.select().from(auditEvents).where(and(eq(auditEvents.action, billingEmailClearedAction),
     eq(auditEvents.targetId, (payload as { householdId: string }).householdId))))).toEqual([]);

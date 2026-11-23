@@ -53,8 +53,8 @@ export function customerEmailErasureContract(name: string, create: (fixture?: Em
   describe(name + ' billing email erasure', () => {
     it('clears matching emails once, preserving names and the attached card', async () => {
       const { payments, customerId, options, state } = create({ customerEmail: ' PAYER@Example.invalid ' });
-      expect(await payments.clearCustomerEmail(customerId, options)).toBe(true);
-      expect(await payments.clearCustomerEmail(customerId, options)).toBe(false);
+      expect((await payments.clearCustomerEmail(customerId, options)).matched).toBe(true);
+      expect((await payments.clearCustomerEmail(customerId, options)).matched).toBe(false);
       expect(state()).toEqual({ email: null, name: 'Household', cardEmail: null, cardName: 'Card holder', attached: true });
     });
     it.each([
@@ -63,7 +63,7 @@ export function customerEmailErasureContract(name: string, create: (fixture?: Em
       { customerEmail: 'replacement@example.invalid', cardEmail: 'payer@example.invalid' },
     ])('clears each field only if its address still matches: %j', async fixture => {
       const { payments, customerId, options, state } = create(fixture);
-      expect(await payments.clearCustomerEmail(customerId, options)).toBe(fixture.customerEmail === 'payer@example.invalid' || fixture.cardEmail === 'payer@example.invalid');
+      expect((await payments.clearCustomerEmail(customerId, options)).matched).toBe(fixture.customerEmail === 'payer@example.invalid' || fixture.cardEmail === 'payer@example.invalid');
       expect(state()).toMatchObject({ email: fixture.customerEmail === 'payer@example.invalid' ? null : fixture.customerEmail,
         cardEmail: fixture.cardEmail === 'payer@example.invalid' ? null : fixture.cardEmail });
     });

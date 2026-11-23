@@ -17,6 +17,16 @@ export const billingEmailMissingAction = 'members.erasure.billing_email_job_miss
 export const billingEmailResetAction = 'members.erasure.billing_email_reset';
 export const billingEmailAbandonedAction = 'members.erasure.billing_email_abandoned';
 
+/**
+ * Waits for, then holds until `tx` ends, the lock on one erasure's billing email outcome: the skip and the provider
+ * result both take it before rereading the erasure's outcomes, so overlapping attempts record one. It needs no row, so
+ * it holds after the household row is gone.
+ */
+export async function lockBillingEmailErasure(tx: Transaction, gymId: string, erasureId: string): Promise<void> {
+  // eslint-disable-next-line database/system-tables -- Transaction-scoped advisory lock only, with the gym and erasure ID bound as data.
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${'members.erasure.billing_email:' + gymId + ':' + erasureId}, 0))`);
+}
+
 /** A small durable reset history per queued marker, bounded by the recovery cap. */
 export function billingEmailResets(tx: Transaction, gymId: string, markerId: string, limit: number) {
   return tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.gymId, gymId),

@@ -52,7 +52,8 @@ it('retries a partially cleared customer after an outage without clearing a repl
     return transport.request(request);
   } };
   const payments = new StripePayments(gymId, { transport: failing, webhookSecret: 'fixture-secret' });
-  await expect(payments.clearCustomerEmail(customerId, options)).rejects.toThrow('Stripe outage');
+  // The card's failure is reported, not thrown: the caller retries.
+  expect(await payments.clearCustomerEmail(customerId, options)).toEqual({ matched: true, placeholderMethods: [], failedMethods: [paymentMethodId] });
   expect(state()).toMatchObject({ email: null, cardEmail: 'payer@example.invalid' });
   transport.objects.get(customerId)!.email = 'replacement@example.invalid';
   fail = false;
@@ -61,6 +62,103 @@ it('retries a partially cleared customer after an outage without clearing a repl
   expect(state()).toMatchObject({ email: 'replacement@example.invalid', cardEmail: null, attached: true });
   expect(transport.requests.filter(request => request.method === 'POST').map(request => request.params))
     .toEqual([{ email: '' }, { billing_details: { email: '' } }]);
+});
+
+/** `stripe()` with `pm_email` as a debit account and an extra `card` method `pm_card`, both holding `email`. */
+function debitStripe(email = 'payer@example.invalid') {
+  const provider = stripe({ customerEmail: email, cardEmail: email });
+  Object.assign(provider.transport.objects.get(paymentMethodId)!, { type: 'acss_debit', acss_debit: { last4: '6789' } });
+  provider.transport.objects.set('pm_card', { id: 'pm_card', object: 'payment_method', type: 'card', customer: customerId, metadata: { gym_id: gymId },
+    card: { brand: 'visa', last4: '4242', exp_month: 12, exp_year: 2030 }, billing_details: { email, name: 'Card holder' } });
+  const posts = () => provider.transport.requests.filter(request => request.method === 'POST');
+  const card = () => provider.transport.objects.get('pm_card')!.billing_details;
+  return { ...provider, posts, card, options: { ...options, paymentMethodId: undefined, paymentMethodIds: [paymentMethodId, 'pm_card'],
+    emailDigest: billingEmailDigest(email, secret) } };
+}
+
+it('writes the placeholder email to a debit account that must keep one, leaving its name, and reports it', async () => {
+  const { payments, state, posts, card, options: debitOptions } = debitStripe();
+  expect(await payments.clearCustomerEmail(customerId, debitOptions)).toEqual({ matched: true, placeholderMethods: [paymentMethodId], failedMethods: [] });
+  expect(state()).toMatchObject({ email: null, cardEmail: 'erased-member@example.com', cardName: 'Card holder', attached: true });
+  expect(card()).toEqual({ email: null, name: 'Card holder' });
+  const before = posts().length;
+  expect(await payments.clearCustomerEmail(customerId, debitOptions)).toEqual({ matched: false, placeholderMethods: [paymentMethodId], failedMethods: [] });
+  expect(posts()).toHaveLength(before);
+});
+
+it('treats the placeholder as cleared when the erased address normalizes to it', async () => {
+  const { payments, state, posts, options: debitOptions } = debitStripe(' Erased-Member@Example.com ');
+  expect(await payments.clearCustomerEmail(customerId, debitOptions)).toEqual({ matched: true, placeholderMethods: [paymentMethodId], failedMethods: [] });
+  expect(state()).toMatchObject({ email: null, cardEmail: 'erased-member@example.com', cardName: 'Card holder' });
+  const before = posts().length;
+  expect(await payments.clearCustomerEmail(customerId, debitOptions)).toEqual({ matched: false, placeholderMethods: [paymentMethodId], failedMethods: [] });
+  expect(posts()).toHaveLength(before);
+});
+
+it('reports no placeholder or failed methods from FakePayments', async () => {
+  const payments = new FakePayments(gymId);
+  payments.seedCustomer({ id: customerId, email: 'payer@example.invalid', householdId, gymId });
+  expect(await payments.clearCustomerEmail(customerId, options)).toEqual({ matched: true, placeholderMethods: [], failedMethods: [] });
+});
+
+/** Two debit accounts `pm_a` and `pm_b` on the customer, both holding the erased payer's email; `fail` decides which writes fail. */
+function twoDebits(fail: (path: string) => number | undefined) {
+  const transport = new StripeFixtures(gymId);
+  transport.objects.set(customerId, { id: customerId, object: 'customer', name: 'Household', email: 'payer@example.invalid',
+    metadata: { gym_id: gymId, household_id: householdId } });
+  for (const methodId of ['pm_a', 'pm_b'])
+    transport.objects.set(methodId, { id: methodId, object: 'payment_method', type: 'acss_debit', acss_debit: { last4: '6789' }, customer: customerId,
+      metadata: { gym_id: gymId }, billing_details: { email: 'payer@example.invalid', name: 'Account holder' } });
+  const failing: PaymentTransport = { async request(request) {
+    const statusCode = request.method === 'POST' ? fail(request.path) : undefined;
+    if (statusCode !== undefined) throw Object.assign(new Error('Stripe refused'), { statusCode });
+    return transport.request(request);
+  } };
+  const payments = new StripePayments(gymId, { transport: failing, webhookSecret: 'fixture-secret' });
+  const writes = (methodId: string) => transport.requests.filter(request => request.method === 'POST' && request.path === `/v1/payment_methods/${methodId}`);
+  const email = (methodId: string) => (transport.objects.get(methodId)!.billing_details as { email: string | null }).email;
+  return { payments, transport, writes, email,
+    options: { ...options, paymentMethodId: undefined, paymentMethodIds: ['pm_a', 'pm_b'] } };
+}
+
+it('keeps going past a method whose write fails, reporting it and the debit account it cleared', async () => {
+  const { payments, writes, email, options: debitOptions } = twoDebits(path => path === '/v1/payment_methods/pm_b' ? 500 : undefined);
+  expect(await payments.clearCustomerEmail(customerId, debitOptions)).toEqual({ matched: true, placeholderMethods: ['pm_a'], failedMethods: ['pm_b'] });
+  expect(email('pm_a')).toBe('erased-member@example.com');
+  expect(email('pm_b')).toBe('payer@example.invalid');
+  const before = writes('pm_a').length;
+  expect(await payments.clearCustomerEmail(customerId, debitOptions)).toEqual({ matched: false, placeholderMethods: ['pm_a'], failedMethods: ['pm_b'] });
+  expect(writes('pm_a')).toHaveLength(before);
+});
+
+it('writes no further method after a 403, reporting every method left', async () => {
+  const { payments, transport, email, options: debitOptions } = twoDebits(path => path === '/v1/payment_methods/pm_a' ? 403 : undefined);
+  expect(await payments.clearCustomerEmail(customerId, debitOptions)).toEqual({ matched: true, placeholderMethods: [], failedMethods: ['pm_a', 'pm_b'] });
+  expect(transport.requests.filter(request => request.method === 'POST' && request.path.startsWith('/v1/payment_methods/'))).toEqual([]);
+  expect(email('pm_b')).toBe('payer@example.invalid');
+});
+
+it.each([401, 403])('reports a later debit account already holding the placeholder after a %s', async status => {
+  const attemptedWrites: string[] = [];
+  const { payments, transport, options: debitOptions } = twoDebits(path => {
+    attemptedWrites.push(path);
+    return path === '/v1/payment_methods/pm_a' ? status : undefined;
+  });
+  transport.objects.get('pm_b')!.billing_details = { name: 'Account holder', email: 'erased-member@example.com' };
+  expect(await payments.clearCustomerEmail(customerId, debitOptions)).toEqual({
+    matched: true, placeholderMethods: ['pm_b'], failedMethods: ['pm_a', 'pm_b'],
+  });
+  expect(attemptedWrites).toEqual([`/v1/customers/${customerId}`, '/v1/payment_methods/pm_a']);
+});
+
+it('lists only a debit account holding the placeholder, never a card that holds the same address', async () => {
+  const { payments, transport, posts, card, options: debitOptions } = debitStripe();
+  // An earlier attempt left the placeholder on the debit account; the card held the address before this erasure.
+  (transport.objects.get(paymentMethodId)!.billing_details as { email: string }).email = 'erased-member@example.com';
+  (transport.objects.get('pm_card')!.billing_details as { email: string }).email = 'erased-member@example.com';
+  expect(await payments.clearCustomerEmail(customerId, debitOptions)).toEqual({ matched: true, placeholderMethods: [paymentMethodId], failedMethods: [] });
+  expect(posts().map(request => request.path)).toEqual([`/v1/customers/${customerId}`]);
+  expect(card()).toEqual({ email: 'erased-member@example.com', name: 'Card holder' });
 });
 
 it('accepts an untagged customer and leaves an already detached card alone', async () => {

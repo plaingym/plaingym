@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, eq } from 'drizzle-orm';
-import { classCreditEntries, forGym, households, writeAudit, type Transaction } from '@plaingym/db';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { auditEvents, classCreditEntries, forGym, households, paymentMethods, writeAudit, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { z } from 'zod';
-import type { JobRecovery, Jobs } from '../../infra/jobs/index.js';
+import { withJobTransaction, type JobRecovery, type Jobs } from '../../infra/jobs/index.js';
 import type { Uploads } from '../../infra/storage/index.js';
-import type { ClearCustomerEmail } from '../../infra/payments/index.js';
+import type { ClearCustomerEmail, ClearedCustomerEmail } from '../../infra/payments/index.js';
+import { detachJob } from '../billing/payments.mutations.js';
 import { logError, logInfo } from '../../core/log.js';
-import { billingEmailAbandonedAction, billingEmailClearedAction, billingEmailErasuresToRetry, billingEmailMissingAction, billingEmailNoMatchAction, billingEmailQueuedAction, billingEmailResets, billingEmailResetAction, billingEmailSkippedAction, customerRedactedAction, erasuresToRedact, redactionQueuedAction } from './erasure-redaction.query.js';
+import { billingEmailAbandonedAction, billingEmailClearedAction, billingEmailErasuresToRetry, billingEmailMissingAction, billingEmailNoMatchAction, billingEmailQueuedAction, billingEmailResets, billingEmailResetAction, billingEmailSkippedAction, customerRedactedAction, erasuresToRedact, lockBillingEmailErasure, redactionQueuedAction } from './erasure-redaction.query.js';
 
 /** The sole ledger update: erase free text while preserving the append-only credit history. */
 export async function eraseCreditReasons(tx: Transaction, memberId: string) {
@@ -23,27 +24,112 @@ const billingEmailPayload = z.object({ householdId: z.uuid(), customerId: z.stri
   erasureId: z.uuid().optional(), emailDigest: z.string().regex(/^(?:k1:)?[a-f0-9]{64}$/),
   paymentMethodIds: z.array(z.string().regex(/^(?:pm|card|ba|src)_[A-Za-z0-9_]+$/)).optional(),
   paymentMethodId: z.string().regex(/^(?:pm|card|ba|src)_[A-Za-z0-9_]+$/).optional() }); // Imported cards and already queued jobs keep legacy IDs.
-export type ClearBillingEmail = (gymId: string, customerId: string, options: ClearCustomerEmail) => Promise<boolean>;
+export type ClearBillingEmail = (gymId: string, customerId: string, options: ClearCustomerEmail) => Promise<ClearedCustomerEmail>;
 
-/** Recheck the local customer link before calling out; a reassigned customer is left alone. */
+/** The outcome audits (cleared, no match, skipped) already recorded on the household for one erasure. */
+async function erasureOutcomes(tx: Transaction, gymId: string, householdId: string, erasureId: string): Promise<ReadonlySet<string>> {
+  const rows = await tx.select({ action: auditEvents.action, after: auditEvents.after }).from(auditEvents)
+    .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.targetType, 'household'), eq(auditEvents.targetId, householdId),
+      inArray(auditEvents.action, [billingEmailClearedAction, billingEmailNoMatchAction, billingEmailSkippedAction])));
+  return new Set(rows.filter(row => (row.after as { erasure?: unknown } | null)?.erasure === erasureId).map(row => row.action));
+}
+
+const retiredReason = 'notice_email_erased';
+/** Whether this erasure already retired one of the household's debit accounts: its revocation audit names the erasure. */
+async function erasureRetired(tx: Transaction, gymId: string, householdId: string, erasureId: string): Promise<boolean> {
+  const rows = await tx.select({ after: auditEvents.after }).from(auditEvents)
+    .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.action, 'billing.card.revoked'), eq(auditEvents.targetType, 'payment_method'),
+      inArray(auditEvents.targetId, tx.select({ id: paymentMethods.id }).from(paymentMethods).where(eq(paymentMethods.householdId, householdId)))));
+  return rows.some(row => {
+    const after = row.after as { reason?: unknown; erasure?: unknown } | null;
+    return after?.reason === retiredReason && after.erasure === erasureId;
+  });
+}
+
+/**
+ * Recheck the local customer link before calling out; a reassigned customer is left alone. A method the clear leaves
+ * holding the placeholder email (the processor won't leave it blank) has no notice address for the household's debits:
+ * its local row is revoked, audited and queued for a plain detach, so no new charge attempt selects it (a charge the
+ * runner already released for confirmation can still confirm once). When the clear reports a method it couldn't write,
+ * the retirements still commit, no outcome audit is written, and the call throws so the job retries. With an erasure ID,
+ * a run after the erasure's cleared or skipped outcome is recorded writes nothing, and each outcome is recorded once:
+ * the skip and the provider result both take the erasure's lock and reread its outcomes before writing, and a skip is
+ * written only while the erasure has no outcome. A revocation names the erasure, so a retry that finds nothing left to
+ * clear after the retired account was detached still records the erasure as cleared.
+ */
 export async function clearErasedBillingEmail(payload: unknown, gymId: string, clear: ClearBillingEmail,
-  config: { secret: string; clock: Clock; scope?: typeof forGym }): Promise<void> {
+  config: { secret: string; clock: Clock; timezone: string; jobs?: Pick<Jobs, 'enqueue'> | undefined; scope?: typeof forGym }): Promise<void> {
   const { customerId, erasureId, ...options } = billingEmailPayload.parse(payload);
   if (options.emailDigest.startsWith('k1:') && !config.secret) throw new Error('Billing email erasure is not configured');
+  const jobs = config.jobs;
+  if (!jobs) throw new Error('Billing email erasure is not configured');
   const scope = config.scope ?? forGym;
+  // A replay of an erasure whose outcome is already recorded (its job ran again after committing) changes nothing.
+  const settled = (recorded: ReadonlySet<string>) => recorded.has(billingEmailClearedAction) || recorded.has(billingEmailSkippedAction);
+  if (erasureId && settled(await scope(gymId, tx => erasureOutcomes(tx, gymId, options.householdId, erasureId)))) {
+    logInfo('members.erasure.billing_email_replayed', { gymId, householdId: options.householdId });
+    return;
+  }
   const linked = await scope(gymId, tx => tx.select({ id: households.id }).from(households)
     .where(eq(households.stripeCustomerId, customerId)));
   if (linked.length !== 1 || linked[0]!.id !== options.householdId) {
     logInfo('members.erasure.billing_email_skipped_linked', { gymId, householdId: options.householdId });
-    await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: billingEmailSkippedAction,
-      targetType: 'household', targetId: options.householdId, after: { stripeCustomerId: customerId, ...(erasureId ? { erasure: erasureId } : {}) },
-      occurredAt: config.clock.now() }));
+    await scope(gymId, async tx => {
+      // An overlapping attempt of the same erasure may have recorded an outcome since the check above: under the
+      // erasure's lock, the skip is written only while the erasure has none. A legacy payload records one per run.
+      if (erasureId) {
+        await lockBillingEmailErasure(tx, gymId, erasureId);
+        if ((await erasureOutcomes(tx, gymId, options.householdId, erasureId)).size > 0) return;
+      }
+      await writeAudit(tx, { gymId, actorKind: 'system', action: billingEmailSkippedAction,
+        targetType: 'household', targetId: options.householdId, after: { stripeCustomerId: customerId, ...(erasureId ? { erasure: erasureId } : {}) },
+        occurredAt: config.clock.now() });
+    });
     return;
   }
-  const matched = await clear(gymId, customerId, { ...options, secret: config.secret });
-  await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: matched ? billingEmailClearedAction : billingEmailNoMatchAction,
-    targetType: 'household', targetId: options.householdId, after: { stripeCustomerId: customerId, ...(erasureId ? { erasure: erasureId } : {}) },
-    occurredAt: config.clock.now() }));
+  const { matched, placeholderMethods, failedMethods } = await clear(gymId, customerId, { ...options, secret: config.secret });
+  const complete = failedMethods.length === 0;
+  // One transaction for the outcome: the retirements and the household's outcome audit commit or roll back together, so
+  // recovery keeps retrying the erasure until both have. With a failed method no outcome audit is written, but the
+  // retirements commit and the job then fails, so its retry writes only the methods still left.
+  if (placeholderMethods.length > 0 || complete) await withJobTransaction(scope, gymId, async transaction => {
+    const { tx } = transaction;
+    // The erasure's lock first (the skip takes it too), then the household before its methods, as staff default changes
+    // lock them.
+    if (erasureId) await lockBillingEmailErasure(tx, gymId, erasureId);
+    await tx.select({ id: households.id }).from(households).where(eq(households.id, options.householdId)).for('update');
+    const recorded = erasureId ? await erasureOutcomes(tx, gymId, options.householdId, erasureId) : new Set<string>();
+    if (settled(recorded)) return;
+    // A debit account holding the placeholder email holds no erased address: when a run that wrote it rolled back (a
+    // failed detach enqueue, say), its recovery finds nothing left to match, and the erasure is still cleared. So is
+    // one whose retirement for this erasure committed earlier: once its detach has run, the provider no longer lists it.
+    const cleared = matched || placeholderMethods.length > 0
+      || (complete && erasureId !== undefined && await erasureRetired(tx, gymId, options.householdId, erasureId));
+    const outcome = cleared ? billingEmailClearedAction : billingEmailNoMatchAction;
+    if (placeholderMethods.length > 0) {
+      // Only this household's unrevoked rows: a retry finds them revoked, and the detach key queues no second job.
+      const rows = await tx.select({ id: paymentMethods.id }).from(paymentMethods)
+        .where(and(eq(paymentMethods.householdId, options.householdId), inArray(paymentMethods.processorId, [...placeholderMethods]),
+          isNull(paymentMethods.revokedAt))).orderBy(paymentMethods.id).for('update');
+      for (const row of rows) {
+        const now = config.clock.now();
+        await tx.update(paymentMethods).set({ revokedAt: now, isDefault: false }).where(eq(paymentMethods.id, row.id));
+        await writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.card.revoked', targetType: 'payment_method', targetId: row.id,
+          after: { reason: retiredReason, ...(erasureId ? { erasure: erasureId } : {}) }, occurredAt: now });
+        // A plain detach, like a staff removal: the method's name may be a surviving payer's.
+        await jobs.enqueue(detachJob, { paymentMethodId: row.id },
+          { gymId, timezone: config.timezone, idempotencyKey: `detach:${row.id}`, maxAttempts: 12 }, transaction);
+      }
+    }
+    // An erasure records each outcome once; a legacy payload (no erasure ID) records one per run.
+    if (complete && !recorded.has(outcome)) await writeAudit(tx, { gymId, actorKind: 'system', action: outcome,
+      targetType: 'household', targetId: options.householdId, after: { stripeCustomerId: customerId, ...(erasureId ? { erasure: erasureId } : {}) },
+      occurredAt: config.clock.now() });
+  });
+  if (!complete) {
+    logError('members.erasure.billing_email_incomplete', { gymId, householdId: options.householdId, failed: failedMethods.length });
+    throw new Error('Billing email erasure incomplete');
+  }
 }
 /** Marks deleted the photo and signature images an erasure released; committed with the erasure, under `release:<member ID>`. */
 export const releaseErasedFilesJob = 'members.erasure.release_files';

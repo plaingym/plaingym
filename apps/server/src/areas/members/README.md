@@ -113,9 +113,42 @@ the call cannot be made atomic with erasure. `configureMembers` accepts the
 gym-scoped `clearBillingEmail(gymId, customerId, options)` callback backed by
 `Payments.clearCustomerEmail`; an absent callback or HMAC secret fails the job so it retries.
 Already queued jobs with an unkeyed digest and one card ID still drain. The callback
-returns whether any address matched. A matching provider clear writes
-`members.erasure.billing_email_cleared` with customer and erasure IDs only; a no-match
+returns whether any address matched, which of the job's pre-authorized debit
+accounts hold the placeholder email `erased-member@example.com` (Stripe won't leave
+one without an email), and which methods it couldn't write (the provider still writes
+the others). A debit account holding the placeholder has no notice address left for
+the household's debits, so the job retires each one in one transaction: it locks the
+household, revokes the household's unrevoked row (no longer the default), writes
+`billing.card.revoked` with `reason: 'notice_email_erased'` (and the erasure ID, when
+the payload has one), and queues a plain
+`billing.payments.detach` (no `redactBillingDetails`: the name may be a surviving
+payer's) under `detach:<row ID>`. A card or other method holding the same address is
+never retired. No new charge attempt selects a retired account; a charge the billing
+runner already created and released from its final eligibility check before the
+revocation committed can still confirm once. Retiring
+its default leaves it with no active default, and its charges skip as `no_saved_card`
+while that is true. A member can set up a new method, staff can select an active
+method on file, or a finishing card import can promote one even if it adds no new
+methods. Retiring a non-default account keeps the household's default. A
+retry finds the rows revoked and changes nothing. The outcome audit below commits in
+the same transaction as the retirements. When a method couldn't be written, the job
+still commits the retirements, writes no outcome audit and fails with `Billing email
+erasure incomplete`, so it retries. The job needs the erasure job queue
+(`jobs`) and fails without it. A matching provider clear writes
+`members.erasure.billing_email_cleared` with customer and erasure IDs only, as does a
+run that finds one of the job's debit accounts already holding the placeholder (the
+recovery of a run that rolled back after its provider writes), and so does a run that
+finds nothing left to clear after this erasure already retired one of the household's
+debit accounts (its revocation names the erasure, so a clear that succeeded before an
+incomplete run is still recorded once after the account's detach has run); a no-match
 run writes `members.erasure.billing_email_no_match` and leaves its marker unresolved.
+Each outcome audit is written once per erasure ID: a run whose erasure already has its
+cleared or skipped audit writes nothing and makes no provider call, and a repeated
+no-match writes no second one. Overlapping attempts of one erasure (a reclaimed job
+lease, say) take a transaction-scoped advisory lock on the erasure ID before
+rereading its outcomes, on both the skip and the provider-result path, so the skip is
+written only while the erasure has no outcome, even when the household row is gone. A
+legacy payload without an erasure ID writes its outcome on each run.
 The job itself completed, so the sweep never runs it again; the marker resolves as
 `members.erasure.billing_email_job_missing` once retention removes the job.
 A failure writes no completion audit. A skipped reassigned customer writes
@@ -171,7 +204,9 @@ custom fields are cleared and its tax IDs deleted. Customer redaction also lists
 the billing name, email, phone and address of every attached card, including cards
 added in the provider dashboard and previously revoked cards still awaiting detach.
 It paginates and leaves the cards attached. The detach jobs carry `redactBillingDetails: true`, so each card's billing
-name, email, phone and address are cleared before the card is detached (Stripe updates only an attached card). A failed attempt
+name, email, phone and address are cleared before the card is detached (Stripe updates only an attached card). A method Stripe
+won't leave without a billing name or email (a pre-authorized debit account) gets the name `Erased member` and the email
+`erased-member@example.com` instead, in both the customer redaction and the detach. A failed attempt
 is logged with identifiers only and the erasure still succeeds, since its committed job retries it.
 
 Customers erased before the redaction covered every field are handled by `members.erasure.redact_earlier`, a daily job

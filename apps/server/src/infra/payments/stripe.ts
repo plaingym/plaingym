@@ -3,7 +3,7 @@ import Stripe from 'stripe';
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { clock as systemClock } from '../../core/clock.js';
-import { CustomerCreationInProgress, CustomerDeleted, ERASED_CUSTOMER_NAME, normalizeChargeOutcome, type DetachOptions, type Payments, type CreateCustomer, type CreateCharge, type CheckoutRequest,
+import { CustomerCreationInProgress, CustomerDeleted, ERASED_CUSTOMER_NAME, normalizeChargeOutcome, type ClearedCustomerEmail, type DetachOptions, type Payments, type CreateCustomer, type CreateCharge, type CheckoutRequest,
   type CheckoutSession, type CheckoutExpiry, type ChargeReference, type ChargeOutcome, type PaymentMetadata,
   type PaymentObjectReference, type PaymentObjectResult, type PaymentObject, type PaymentChange,
   type PaymentEvent, type Refund, type RefundRequest, type CustomerMatch, CardImportRefused, CardCursorRefused,
@@ -118,6 +118,25 @@ export function stripeTransport(apiKey: string, options: { testOnly?: boolean; d
 /** An address, shipping or similar object whose fields are all null holds nothing, so it counts as already cleared. */
 function holds(value: unknown): boolean {
   return typeof value === 'object' && value !== null ? Object.values(value).some(holds) : !!value;
+}
+/** Stripe won't leave some payment methods (a pre-authorized debit account) without a billing name and email, so erasure
+ * writes these fixed placeholders there instead of blanks. */
+const ERASED_METHOD_EMAIL = 'erased-member@example.com';
+const ERASED_METHOD_DETAILS = { name: ERASED_CUSTOMER_NAME, email: ERASED_METHOD_EMAIL, phone: '', address: '' };
+const BLANK_METHOD_DETAILS = { name: '', email: '', phone: '', address: '' };
+/** Billing details that hold nothing, or only the erasure placeholders, are already redacted. */
+function redactedDetails(value: unknown): boolean {
+  if (!holds(value)) return true;
+  if (typeof value !== 'object' || value === null) return false;
+  const { name, email, ...rest } = value as Record<string, unknown>;
+  return name === ERASED_CUSTOMER_NAME && email === ERASED_METHOD_EMAIL && !holds(rest);
+}
+/** Stripe's refusal to leave one of these billing fields blank on a payment method. */
+function detailRequired(error: unknown, fields: readonly string[]): boolean {
+  const value = error as { statusCode?: number; code?: string; param?: string; raw?: { code?: string; param?: string } } | null;
+  if (value?.statusCode !== 400 || (value.code ?? value.raw?.code) !== 'parameter_missing') return false;
+  const param = value.param ?? value.raw?.param;
+  return fields.some(field => param === 'billing_details[' + field + ']');
 }
 function absent(error: unknown): boolean {
   const value = error as { code?: string; statusCode?: number } | null;
@@ -510,8 +529,8 @@ export class StripePayments implements Payments {
     await this.#ownedCustomer(id(method.customer));
     // Stripe updates only an attached card, so erasure clears the billing details first. A failure here stops the detach:
     // the retry finds the card still attached, whereas a detached card could no longer be cleared.
-    if (options.redactBillingDetails && holds(method.billing_details)) {
-      try { await this.#post(path, { billing_details: { name: '', email: '', phone: '', address: '' } }); }
+    if (options.redactBillingDetails && !redactedDetails(method.billing_details)) {
+      try { await this.#redactMethodDetails(path); }
       catch (error) {
         if (absent(error)) return;
         // Updating a card needs the same Payment Methods permission as detaching it.
@@ -532,41 +551,74 @@ export class StripePayments implements Payments {
       if (current.customer) throw error;
     }
   }
-  async clearCustomerEmail(customerId: string, options: ClearCustomerEmail): Promise<boolean> {
+  async clearCustomerEmail(customerId: string, options: ClearCustomerEmail): Promise<ClearedCustomerEmail> {
     assertNoTransaction('payments.clearCustomerEmail');
     const path = this.#path('customers', customerId);
     const methodPaths = [...new Set([...(options.paymentMethodIds ?? []), ...(options.paymentMethodId ? [options.paymentMethodId] : [])])]
-      .map(methodId => this.#path('payment_methods', methodId));
+      .map(methodId => ({ methodId, path: this.#path('payment_methods', methodId) }));
     let customer: ObjectData;
     try { customer = await this.#get(path); }
-    catch (error) { if (absent(error)) return false; throw error; }
-    if (customer.deleted === true) return false;
+    catch (error) { if (absent(error)) return { matched: false, placeholderMethods: [], failedMethods: [] }; throw error; }
+    if (customer.deleted === true) return { matched: false, placeholderMethods: [], failedMethods: [] };
     const metadata = data(customer.metadata ?? {});
     if (metadata.gym_id !== undefined && metadata.gym_id !== this.gymId) throw new NotForGym('Customer belongs to another gym');
     if (metadata.household_id !== undefined && metadata.household_id !== options.householdId) throw new Error('Customer belongs to another household');
     // Validate every owner before the first write. Untagged imported customers are checked by the caller's local link.
-    const methods: { path: string; method: ObjectData }[] = [];
-    for (const methodPath of methodPaths) {
+    const methods: { methodId: string; path: string; method: ObjectData }[] = [];
+    for (const { methodId, path: methodPath } of methodPaths) {
       let method: ObjectData | undefined;
       try { method = await this.#get(methodPath); }
       catch (error) { if (!absent(error)) throw error; }
       if (method?.customer) {
         if (data(method.metadata ?? {}).gym_id !== undefined) this.#metadata(method);
         if (id(method.customer) !== customerId) throw new Error('Card belongs to another customer');
-        methods.push({ path: methodPath, method });
+        methods.push({ methodId, path: methodPath, method });
       }
     }
     // No idempotency key: every retry reads current fields and never replays a cached write over a replacement address.
     let matched = false;
+    const placeholderMethods: string[] = [];
+    const failedMethods: string[] = [];
     if (matchesBillingEmail(customer.email, options.emailDigest, options.secret)) {
       await this.#post(path, { email: '' }); matched = true;
     }
-    for (const { path: methodPath, method } of methods) {
-      if (matchesBillingEmail(data(method.billing_details ?? {}).email, options.emailDigest, options.secret)) {
-        await this.#post(methodPath, { billing_details: { email: '' } }); matched = true;
+    // Each method is written on its own: a failure is reported in failedMethods and the loop goes on, so a debit
+    // account cleared earlier in this call is still reported. A 401 or 403 stops every later write.
+    let refused = false;
+    for (const { methodId, path: methodPath, method } of methods) {
+      const debit = method.type === 'acss_debit';
+      const email = data(method.billing_details ?? {}).email;
+      const alreadyCleared = debit && email === ERASED_METHOD_EMAIL;
+      // Already cleared: an earlier call left the placeholder, even if the erased address normalizes to it.
+      if (alreadyCleared) placeholderMethods.push(methodId);
+      if (refused) { failedMethods.push(methodId); continue; }
+      if (alreadyCleared) continue;
+      if (!matchesBillingEmail(email, options.emailDigest, options.secret)) continue;
+      try {
+        try { await this.#post(methodPath, { billing_details: { email: '' } }); }
+        catch (error) {
+          // A method that must keep an email gets the placeholder; its name is left as it is.
+          if (!detailRequired(error, ['email'])) throw error;
+          await this.#post(methodPath, { billing_details: { email: ERASED_METHOD_EMAIL } });
+          if (debit) placeholderMethods.push(methodId);
+        }
+        matched = true;
+      } catch (error) {
+        const status = (error as { statusCode?: number } | null)?.statusCode;
+        logWarn('payments.email_clear.method_failed', { gymId: this.gymId, customerId, paymentMethodId: methodId, status: status ?? null });
+        failedMethods.push(methodId);
+        if (status === 401 || status === 403) refused = true;
       }
     }
-    return matched;
+    return { matched, placeholderMethods, failedMethods };
+  }
+  /** Blanks a payment method's billing details, or writes the placeholders when Stripe requires a name or email there. */
+  async #redactMethodDetails(path: string): Promise<void> {
+    try { await this.#post(path, { billing_details: BLANK_METHOD_DETAILS }); }
+    catch (error) {
+      if (!detailRequired(error, ['name', 'email'])) throw error;
+      await this.#post(path, { billing_details: ERASED_METHOD_DETAILS });
+    }
   }
   async redactCustomer(customerId: string): Promise<void> {
     assertNoTransaction('payments.redactCustomer');
@@ -615,8 +667,8 @@ export class StripePayments implements Payments {
               logWarn('payments.redaction.method_skipped_foreign', { gymId: this.gymId, customerId, paymentMethodId: id(method.id) });
               continue;
             }
-            if (holds(method.billing_details)) await this.#post(this.#path('payment_methods', id(method.id)),
-              { billing_details: { name: '', email: '', phone: '', address: '' } });
+            if (!redactedDetails(method.billing_details))
+              await this.#redactMethodDetails(this.#path('payment_methods', id(method.id)));
           } catch (error) {
             const status = (error as { statusCode?: number } | null)?.statusCode;
             if (status === 401 || status === 403) throw error;

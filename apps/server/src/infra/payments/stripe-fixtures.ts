@@ -164,6 +164,12 @@ export class StripeFixtures implements PaymentTransport {
         const details = { ...(object.billing_details as ObjectData | undefined), ...(params.billing_details as ObjectData | undefined) };
         // Stripe clears a field sent as an empty string.
         for (const [field, value] of Object.entries(details)) if (value === '') details[field] = null;
+        // Stripe won't leave a pre-authorized debit account without a billing name, then an email; a refusal changes nothing.
+        if (object.type === 'acss_debit') {
+          const missing = !details.name ? 'name' : !details.email ? 'email' : undefined;
+          if (missing) throw Object.assign(new Error('Missing required param: billing_details[' + missing + '].'),
+            { type: 'StripeInvalidRequestError', code: 'parameter_missing', param: 'billing_details[' + missing + ']', statusCode: 400 });
+        }
         object.billing_details = details; return object;
       }
       if (resource === 'webhook_endpoints' && !action) {

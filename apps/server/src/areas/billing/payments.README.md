@@ -181,7 +181,15 @@ That queues the same deduplicated detach job again before the immediate provider
 
 Erasing a household's last member revokes its active cards, clears its local
 Stripe customer ID, and holds open and past-due invoices for staff review in the
-erasure transaction. Other household members keep their cards and invoices.
+erasure transaction. Other household members keep their cards and invoices, except
+a pre-authorized debit account the payer email clear leaves holding the placeholder
+notice email: that one is revoked and detached (`areas/members/README.md`), so no new
+charge attempt selects it. A charge the runner already created and released from its
+final eligibility check before the revocation committed can still confirm once. If it was
+the default, collection skips as `no_saved_card` while the household lacks an active
+default. A member can set up a new method, staff can select an active method on file,
+or a finishing card import can promote one even when it adds no new methods.
+Retiring a non-default account keeps the existing default.
 The erasure transaction also queues the same detach jobs (flagged to clear the
 card's billing name, email, phone and address first), so they commit with it, and
 after commit the erasure route attempts every card detach; the runtime passes the shared `jobs` and `detachCard` to
