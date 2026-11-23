@@ -476,8 +476,9 @@ Details: `apps/server/src/infra/auth/README.md`.
   Failed work after reservation retains its allowance until each window ends;
   a refused reservation leaves remaining space available to smaller requests.
   Existing admissions can finish without spending this allowance. Drop-in and
-  join cleanup share one durable claim/storage/marker helper, resolving uploads
-  once per run and checking eligibility under household/member locks.
+  join cleanup share one durable claim/storage/marker helper, reusing a
+  successful uploads lookup for the rest of the run (the next candidate retries
+  a failed one) and checking eligibility under household/member locks.
   The nightly `public.drop_in.cleanup` batch job removes
   unsigned, unchanged drop-in admissions after their 24-hour window, including
   their automatic leads and households, then marks images through storage outside

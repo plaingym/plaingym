@@ -144,7 +144,8 @@ short busy-retry text, `reason: busy` and `Retry-After: 1`; a database outage fo
 normal error handling. Finishing an existing drop-in or join spends no new
 admission/byte allowance, so a flood cannot close an admitted visitor's form.
 Drop-in and join cleanup share the durable claim/storage/completion helper in
-`admission.cleanup.ts`, resolving storage once per run and retaining staff work
+`admission.cleanup.ts`, reusing a successful storage lookup for the rest of the run
+(the next candidate retries a failed one) and retaining staff work
 under the same household/member locks as the eligibility checks.
 
 Composition requires the runtime to call `configurePublicPages` with its existing
