@@ -7,7 +7,7 @@ import { auditEvents, households, invoices, paymentAttempts, payments, refunds, 
 import type { ChargeOutcome, CheckoutSession, PaymentObject, PaymentObjectReference, Payments } from '../../../infra/payments/index.js';
 import { invoiceLateProcessing, invoiceProcessing } from '../transitions/bank.js';
 import { applyChargeOutcome } from '../transitions/outcomes.js';
-import { createAbandoned, terminal, terminalInvoiceStatuses } from '../transitions/store.js';
+import { createAbandoned, effectCreated, terminal, terminalInvoiceStatuses } from '../transitions/store.js';
 import { createDisputeRefundWriter } from '../disputes-refunds.js';
 import { testModeDispute } from '../alerts/disputes.query.js';
 import { assertStripeSnapshot, latestTestSwitchId, stripeSwitchSnapshot, stripeWriteScope, StripeTestModeSwitched,
@@ -31,6 +31,23 @@ export const checkoutReviewAction = 'billing.runner.checkout_debit_unresolved';
 export const lateProcessingResolved = 'billing.invoice.late_processing_resolved';
 type Options = Omit<RunnerOptions, 'jobs'> & Required<Pick<RunnerOptions, 'scope' | 'clock'>>;
 type CheckoutDebit = { invoiceId: string; paymentIntentId: string; late: boolean };
+/**
+ * Of the processor refund IDs the processor answered don't exist, those billing has since released as missing: the row
+ * is `failed` and its `refund_missing` staff notice was created. A row still pending, or failed any other way, still
+ * needs the owner.
+ */
+async function releasedAsMissing(tx: Transaction, processorIds: ReadonlySet<string>) {
+  const released = new Set<string>();
+  for (const processorId of processorIds) {
+    const [row] = await tx.select({ id: refunds.id, status: refunds.status, paymentId: refunds.paymentId, invoiceId: payments.invoiceId })
+      .from(refunds).innerJoin(payments, eq(payments.id, refunds.paymentId)).where(eq(refunds.processorId, processorId));
+    if (row?.status !== 'failed') continue;
+    const notice = { kind: 'staff_notice', notice: 'refund_missing', invoiceId: row.invoiceId, paymentId: row.paymentId, refundId: row.id };
+    if ((await tx.select({ id: auditEvents.id }).from(auditEvents)
+      .where(and(eq(auditEvents.action, effectCreated), eq(auditEvents.after, notice))).limit(1)).length) released.add(processorId);
+  }
+  return released;
+}
 /**
  * The open disputes restore reads with the gym's key. One on a Stripe test-mode payment (marked by a switch to live) is in
  * the test account, which the live key can't read; the switch closed those it found. A dispute's own payment is recorded
@@ -375,6 +392,9 @@ export function createReconciliation(options: Options) {
             ...returns.flatMap(row => row.processorId ? [{ kind: 'refund' as const, id: row.processorId }] : []),
           ];
         });
+        // Refunds the processor answered don't exist. A later external refund in this pass can release such a row as
+        // missing, which the report checks before it keeps their issue.
+        const missingRefunds = new Set<string>();
         async function refresh(ref: PaymentObjectReference) {
           if (!provider) { issues.push({ ...ref, reason: notConfigured }); return; }
           let reason: string | undefined;
@@ -385,6 +405,8 @@ export function createReconciliation(options: Options) {
               done = await object(gymId, { kind: 'charge', object: outcome }, provider, switched);
             } else {
               const read = await provider.readPaymentObject(ref);
+              if (ref.kind === 'refund' && read.status === 'unknown' && read.missing === true)
+                missingRefunds.add(ref.id);
               done = read.status === 'found' && await object(gymId, read.value, provider, switched);
             }
             if (!done) reason = 'manual_resolution_required';
@@ -429,7 +451,10 @@ export function createReconciliation(options: Options) {
         for (const row of settling) if (!unresolvedInvoices.has(row.id)) issues.push({ kind: 'invoice', id: row.id, reason: 'unresolved' });
         const pendingRefunds = await scope(gymId, tx => tx.select({ id: refunds.id }).from(refunds).where(eq(refunds.status, 'pending')));
         issues.push(...pendingRefunds.map(row => ({ kind: 'refund', id: row.id, reason: 'unresolved' })));
-        const unique = [...new Map(issues.map(issue => [`${issue.kind}:${issue.id}`, issue])).values()];
+        const released = missingRefunds.size ? await scope(gymId, tx => releasedAsMissing(tx, missingRefunds)) : new Set<string>();
+        const kept = issues.filter(issue =>
+          !(issue.kind === 'refund' && issue.reason === 'manual_resolution_required' && released.has(issue.id)));
+        const unique = [...new Map(kept.map(issue => [`${issue.kind}:${issue.id}`, issue])).values()];
         await scope(gymId, async tx => {
           // Published only for the settings it read: no switch since the snapshot, and in a follow-up that found no
           // Stripe settings, still none (a first save makes the retry inspect the new account).

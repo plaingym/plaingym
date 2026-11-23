@@ -58,8 +58,10 @@ export function createRunnerJobs(read: () => ChargeRunner | undefined = () => co
       const snapshotAt = instantSchema.parse((payload as { snapshotAt?: unknown } | null)?.snapshotAt);
       const restoreId = idSchema.optional().parse((payload as { restoreId?: unknown } | null)?.restoreId);
       const after = z.string().min(1).max(200).optional().parse((payload as { after?: unknown } | null)?.after);
-      // A follow-up for a busy check decides under the lease whether it still needs to run: see `followUpRestore`.
-      const result = await lease(context.gymId, () => after
+      // A follow-up for a busy check, or a retry of the original job (an earlier attempt may have written a clear report
+      // before the queue reclaimed it), decides under the lease whether it still needs to run: see `followUpRestore`.
+      const decides = after !== undefined || context.attempt > 1;
+      const result = await lease(context.gymId, () => decides
         ? required().followUpRestore(context.gymId, new Date(snapshotAt), restoreId)
         : required().postRestore(context.gymId, new Date(snapshotAt), restoreId)).catch(error => {
         if (error instanceof RestoreCheckBusyError) return 'busy' as const;
@@ -72,7 +74,7 @@ export function createRunnerJobs(read: () => ChargeRunner | undefined = () => co
           { snapshotAt, ...(restoreId ? { restoreId } : {}), after: context.jobId }, new Date(context.clock.now().getTime() + 60_000));
         return;
       }
-      if (!result) return; // A follow-up with nothing left to check.
+      if (!result) return; // A follow-up or retry with nothing left to check.
       // Without Stripe a retry would find the same stored references; the report lists them for the owner, who connects
       // Stripe and checks again. A check that ran with Stripe and left issues retries.
       if (!result.readyForOwnerReview && result.stripeConfigured !== false)

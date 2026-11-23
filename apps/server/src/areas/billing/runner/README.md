@@ -44,7 +44,14 @@ check throws too, with no report and no further Stripe call, so the retry checks
 the current key; so do Stripe settings saved before its report by a follow-up that
 found none.
 A start it records keeps billing off until its report, and a report with issues
-retries as a first check's does. A busy rerun answers 409. The lease has no elapsed-time takeover and is released when the call finishes or its
+retries as a first check's does. A retried attempt of the original restore job
+(an earlier attempt failed, or the queue reclaimed it after it may already have
+written a clear report) runs as a follow-up does, deciding under the gym row lock
+whether it still needs to run: it succeeds with no check when billing is on, the
+restore isn't the latest, or the latest check is already clear for the saved Stripe
+mode. Only the first attempt and the go-live rerun skip that decision and start a
+new check even after a clear report; they still refuse while billing is on and leave
+a restore that isn't the latest unchecked. A busy rerun answers 409. The lease has no elapsed-time takeover and is released when the call finishes or its
 process exits. Abandoned audit markers do not reserve a check.
 
 Generation locks one household and its due memberships in each short transaction.
@@ -313,7 +320,11 @@ or Charge identity, so dashboard objects need no invoice metadata. A snapshot
 taken before an intent-ID commit can recover that ID on an unresolved reservation
 before applying its success. Stored intent IDs also match when optional invoice
 metadata is missing; conflicting metadata is rejected. Missing reservations, unmatched objects, unknown
-results and pending refunds stay in the review report. Enumeration errors fail
+results and pending refunds stay in the review report. A stored refund Stripe
+reported missing during a check no longer needs action once the same pass records
+its release as missing (the row `failed` with its `refund_missing` staff notice,
+when an external refund needs its room); one still pending, read uncertainly, or
+failed any other way stays in the report. Enumeration errors fail
 the pass. There is no search-based outcome inference or automatic billing resume.
 Refunds and disputes are recorded by the writer shared with webhook processing
 (`../disputes-refunds.ts`): another dispute already attached to the invoice is a
