@@ -456,6 +456,62 @@ describe('staff booking panels', () => {
       expect(client.members).toHaveBeenCalledWith('River');
     } finally { vi.useRealTimers(); }
   });
+  it('looks up once when a member is chosen, stays quiet, then looks up again only after the text changes', async () => {
+    vi.useFakeTimers();
+    const chosen = { id: 'chosen-member', firstName: 'Rivera', lastName: 'Ana' };
+    client.members.mockResolvedValue([chosen]);
+    try {
+      await act(async () => { render(<BookingRosterPanel sessionId={sessionId}/>); });
+      const combo = screen.getByRole('combobox', { name: 'Member' });
+      fireEvent.change(combo, { target: { value: 'Riv' } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+      expect(client.members).toHaveBeenCalledTimes(1);
+      expect(client.members).toHaveBeenCalledWith('Riv');
+      fireEvent.click(screen.getByRole('option', { name: 'Rivera Ana' }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(client.members).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole('alert')).toBeNull();
+      fireEvent.focus(combo);
+      expect(screen.queryByText('Loading...')).toBeNull();
+      expect(screen.queryByRole('listbox')).toBeNull();
+      expect(combo.getAttribute('aria-expanded')).toBe('false');
+      fireEvent.change(combo, { target: { value: 'Rivera Anax' } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+      expect(client.members).toHaveBeenCalledTimes(2);
+      expect(client.members).toHaveBeenLastCalledWith('Rivera Anax');
+    } finally { cleanup(); vi.useRealTimers(); }
+  });
+  it('does not surface a failed lookup for the chosen member label', async () => {
+    vi.useFakeTimers();
+    const chosen = { id: 'chosen-member', firstName: 'Rivera', lastName: 'Ana' };
+    client.members.mockImplementation((search: string) => search === 'Riv' ? Promise.resolve([chosen]) : Promise.reject(new Error('offline')));
+    try {
+      await act(async () => { render(<BookingRosterPanel sessionId={sessionId}/>); });
+      const combo = screen.getByRole('combobox', { name: 'Member' });
+      fireEvent.change(combo, { target: { value: 'Riv' } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+      fireEvent.click(screen.getByRole('option', { name: 'Rivera Ana' }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(client.members).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect((screen.getByRole('button', { name: 'Book a place' }) as HTMLButtonElement).disabled).toBe(false);
+    } finally { cleanup(); vi.useRealTimers(); }
+  });
+  it('never shows household empty wording for an empty query, one character or a failed lookup', async () => {
+    const user = userEvent.setup(); render(<BookingRosterPanel sessionId={sessionId}/>);
+    await screen.findByText('River Lee');
+    const combo = screen.getByRole('combobox', { name: 'Member' });
+    await user.click(combo);
+    expect(document.body.textContent).not.toContain('No matching households');
+    expect(screen.queryByRole('listbox')).toBeNull();
+    await user.type(combo, 'R');
+    expect(document.body.textContent).not.toContain('No matching households');
+    client.members.mockRejectedValueOnce(new Error('offline'));
+    await user.type(combo, 'i');
+    expect((await screen.findByRole('alert')).textContent).toContain('Could not update bookings');
+    expect(document.body.textContent).not.toContain('No matching households');
+    expect(screen.queryByRole('listbox')).toBeNull();
+  });
   it('ignores a superseded lookup so an older response cannot offer a member under newer text', async () => {
     const older = { ...member, id: 'older-member', firstName: 'River', lastName: 'Lee' };
     const newer = { ...member, id: 'newer-member', firstName: 'Lee', lastName: 'Park' };

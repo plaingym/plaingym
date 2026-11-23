@@ -169,7 +169,7 @@ function CancelBookingForm({ name, busy, error, onKeep, onConfirm }:
 function BookingForm({ memberId, sessionId, timezone, disabled, onSaved }: ExtensionViewProps & { timezone: string; disabled: boolean; onSaved(booking: ClassBooking): void }) {
   const id = useId(), [member, setMember] = useState(memberId ?? ''), [session, setSession] = useState(sessionId ?? '');
   const [query, setQuery] = useState(''), [lookup, setLookup] = useState<{ query: string; members: Member[]; failed?: string } | null>(null), [searching, setSearching] = useState(false);
-  const lookupSeq = useRef(0);
+  const lookupSeq = useRef(0), chosenLabel = useRef('');
   const [date, setDate] = useState(() => localDate(new Date(), timezone)), [sessions, setSessions] = useState<ClassSession[]>([]);
   const [allowWaitlist, setAllowWaitlist] = useState(true), [saving, setSaving] = useState(false), [loading, setLoading] = useState(false), [error, setError] = useState('');
   const selected = sessions.find(row => row.id === session);
@@ -178,6 +178,9 @@ function BookingForm({ memberId, sessionId, timezone, disabled, onSaved }: Exten
   useEffect(() => {
     if (memberId) return;
     const trimmed = query.trim(), seq = ++lookupSeq.current;
+    // Choosing a suggestion writes the member's own label into the box. That is not a new search:
+    // keep the last result and stay quiet until the text changes again.
+    if (member && chosenLabel.current && trimmed === chosenLabel.current) { setSearching(false); return; }
     setLookup(null);
     if (trimmed.length < 2) { setSearching(false); return; }
     setSearching(true);
@@ -191,7 +194,7 @@ function BookingForm({ memberId, sessionId, timezone, disabled, onSaved }: Exten
       }).finally(() => { if (seq === lookupSeq.current) setSearching(false); });
     }, 250);
     return () => { clearTimeout(timer); if (lookupSeq.current === seq) lookupSeq.current++; };
-  }, [query, memberId]);
+  }, [query, member, memberId]);
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
     const update = () => {
@@ -217,7 +220,8 @@ function BookingForm({ memberId, sessionId, timezone, disabled, onSaved }: Exten
   const trimmedQuery = query.trim();
   const currentLookup = lookup?.query === trimmedQuery ? lookup : null;
   const memberOptions = currentLookup ? currentLookup.members.map(row => ({ id: row.id, label: `${row.firstName} ${row.lastName}` })) : [];
-  const lookupPending = searching || (trimmedQuery.length >= 2 && !currentLookup);
+  const chosenMemberQuery = !!member && chosenLabel.current !== '' && trimmedQuery === chosenLabel.current;
+  const lookupPending = !chosenMemberQuery && (searching || (trimmedQuery.length >= 2 && !currentLookup));
   const noMemberMatches = !!currentLookup && !currentLookup.failed && currentLookup.members.length === 0;
   return <form className="min-w-0 space-y-4 rounded-xl border border-border p-4 sm:p-6" onSubmit={event => {
     event.preventDefault(); if (busy || !member || !session) return;
@@ -229,7 +233,11 @@ function BookingForm({ memberId, sessionId, timezone, disabled, onSaved }: Exten
     <h4 className="font-semibold">{text(memberId ? 'book' : 'addMember')}</h4>
     {error && <Alert variant="error" focusOnReveal>{error}</Alert>}
     {!memberId && <>
-      <Autocomplete label={text('member')} query={query} value={member} onQueryChange={setQuery} onChange={setMember}
+      <Autocomplete label={text('member')} query={query} value={member} emptyLabel={null}
+        onQueryChange={setQuery} onChange={id => {
+          setMember(id);
+          chosenLabel.current = id ? memberOptions.find(row => row.id === id)?.label ?? '' : '';
+        }}
         options={memberOptions} loading={lookupPending} disabled={busy}/>
       {currentLookup?.failed && <Alert variant="error">{currentLookup.failed}</Alert>}
       {noMemberMatches && <p role="status">{text('noMembers')}</p>}

@@ -40,6 +40,31 @@ it('supports pointer selection, arrows, Escape and blur without trapping focus',
   fireEvent.focus(combo); await user.click(screen.getByRole('option', { name: 'Rivera household' })); expect(selected).toHaveBeenLastCalledWith('1');
   await user.tab(); expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Save' }));
 });
+it('shows the default empty text, or the emptyLabel a caller passes', async () => {
+  const user = userEvent.setup();
+  const props = { label: 'Household', query: '', value: '', onQueryChange: () => undefined, onChange: () => undefined, options: [] as { id: string; label: string }[] };
+  const view = render(<Autocomplete {...props} />);
+  await user.click(screen.getByRole('combobox'));
+  expect(screen.getByRole('status').textContent).toBe('No matching households. Try another name.');
+  view.rerender(<Autocomplete {...props} emptyLabel="Nothing here" />);
+  expect(screen.getByRole('status').textContent).toBe('Nothing here');
+});
+it('hides the empty popup when emptyLabel is null but keeps options, the help text and arrow keys', async () => {
+  const user = userEvent.setup();
+  const props = { label: 'Member', query: '', value: '', onQueryChange: () => undefined, onChange: () => undefined };
+  const view = render(<Autocomplete {...props} options={[]} emptyLabel={null} />);
+  const combo = screen.getByRole('combobox');
+  await user.click(combo);
+  expect(combo.getAttribute('aria-expanded')).toBe('false');
+  expect(screen.queryByRole('listbox')).toBeNull();
+  expect(screen.queryByRole('status')).toBeNull();
+  view.rerender(<Autocomplete {...props} options={options} emptyLabel={null} />);
+  expect(combo.getAttribute('aria-expanded')).toBe('true');
+  expect(screen.getAllByRole('option')).toHaveLength(2);
+  expect(screen.getByRole('status').textContent).toBe('Use the arrow keys and Enter to select.');
+  await user.keyboard('{ArrowDown}');
+  expect(combo.getAttribute('aria-activedescendant')).toBe(screen.getByRole('option', { name: 'Smith household' }).id);
+});
 it('stays closed and ignores edits while disabled', () => {
   const query = vi.fn(), change = vi.fn();
   render(<Autocomplete label="Member" query="" value="" disabled onQueryChange={query} onChange={change} options={options} />);
