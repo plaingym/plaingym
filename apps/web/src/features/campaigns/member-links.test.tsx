@@ -169,6 +169,9 @@ it('loads only while the tab is open, and afresh each time it opens', async () =
   const { rerender } = render(tab(false));
   await new Promise(resolve => setTimeout(resolve, 0));
   expect(api.member).not.toHaveBeenCalled();
+  // A closed tab stays mounted on the member page, so it must not leave a loading status behind.
+  expect(screen.queryByRole('status')).toBeNull();
+  expect(document.querySelector('[data-loading]')).toBeNull();
   rerender(tab(true));
   await screen.findByLabelText('Purpose');
   rerender(tab(false));

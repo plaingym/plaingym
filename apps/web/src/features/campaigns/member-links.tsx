@@ -34,7 +34,8 @@ export function MemberLinksTab({ memberId }: ExtensionViewProps) {
   const household = useQuery({ queryKey: ['billing', gymId, 'household', homeId], queryFn: () => invoiceClient.household(homeId!), enabled: !!homeId && active, staleTime: 0 });
   const people = useQuery({ queryKey: ['billing', gymId, 'householdMembers', homeId], queryFn: () => invoiceClient.householdMembers(homeId!), enabled: !!homeId && active, staleTime: 0 });
   if (bootstrap.isPending) return <LoadingState/>;
-  if (!gymId || !memberId || !allowed) return null;
+  // A disabled query stays pending, so a closed tab must not show its loading state.
+  if (!gymId || !memberId || !allowed || !active) return null;
   if (member.isPending) return <LoadingState/>;
   if (member.isError) return <ErrorState onRetry={() => void member.refetch()}/>;
   if (member.data.anonymizedAt) return <PageSection title={text('title')}><Alert>{text('erased')}</Alert></PageSection>;
