@@ -15,6 +15,7 @@ import { parseCsv, autoMatch, MAX_CSV_BYTES, type CsvDocument } from './pipeline
 import { PipelineStore, type UploadsFor } from './pipeline.store.js';
 import { ImportPreparationChanged, MapperRegistry, type MapperContext, type PlannedRow } from './mappers/registry.js';
 import { createPeopleMapper } from './mappers/people.js';
+import { readGymSettings } from '../settings/settings.js';
 import { matMapper } from './mappers/mat.js';
 import { membershipsMapper } from './mappers/memberships.js';
 import { previewBudget, previewDeadline, PREVIEW_CLEANUP_MS, PREVIEW_TIMEOUT_MS, PREVIEW_LEASE_INTERVAL_MS,
@@ -132,15 +133,17 @@ export function createImportPipeline(options: PipelineOptions) {
   const summaryKey = (prefix: string, bucket: number) => `${prefix}/${bucket}/summary.json`;
   const fileKey = (prefix: string, generation: string, index: number) => `${prefix}/pages/${generation}/rows-${String(index).padStart(4, '0')}.json`;
   /**
-   * Changes whenever a real (not dry-run) import run of the gym is created or completes, or runs are removed by retention. It is in
-   * the stored key, so a preview computed before any of these is never found again: that covers every upload's previews (people
-   * before memberships) and runs that start or finish while a preview is computing. One aggregate over the gym's runs, which
-   * `import_runs_retention_idx` (`gym_id` first) bounds to that gym's few runs.
+   * Changes whenever a real (not dry-run) import run of the gym is created or completes, or runs are removed by retention, and
+   * whenever the gym's settings are saved (`gyms.revision`), which covers connecting or removing Stripe and changing the currency.
+   * It is in the stored key, so a preview computed before any of these is never found again: that covers every upload's previews
+   * (people before memberships) and runs that start or finish while a preview is computing. One aggregate over the gym's runs,
+   * which `import_runs_retention_idx` (`gym_id` first) bounds to that gym's few runs.
    */
   const importRevision = (gymId: string) => scope(gymId, async (tx) => {
     const [row] = await tx.select({ runs: count(), completed: count(importRuns.completedAt), created: max(importRuns.createdAt),
       finished: max(importRuns.completedAt) }).from(importRuns).where(and(eq(importRuns.gymId, gymId), eq(importRuns.dryRun, false)));
-    return [row?.runs ?? 0, row?.completed ?? 0, row?.created?.getTime() ?? 0, row?.finished?.getTime() ?? 0].join('.');
+    const { revision: settingsRevision } = await readGymSettings(tx, gymId);
+    return [row?.runs ?? 0, row?.completed ?? 0, row?.created?.getTime() ?? 0, row?.finished?.getTime() ?? 0, settingsRevision].join('.');
   });
   /**
    * Preview files are read with `get` alone, once `loadMeta` has found the upload live. `get` still serves a key marked deleted

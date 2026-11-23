@@ -22,8 +22,11 @@ domain data; dry runs write operational progress and safe issues to the run
 tables, without changing domain data or writing import audits.
 
 A preview is stored once per upload, plan (mapper, columns, duplicate policy),
-timezone and import revision, under the upload's own prefix
-(`<gym>/imports/uploads/<id>/preview/<key>/`, the key a hash of all four). The
+timezone, import revision and the gym's settings revision, under the upload's
+own prefix (`<gym>/imports/uploads/<id>/preview/<key>/`, the key a hash of all
+five). The gym's settings revision changes when Stripe is connected or removed,
+the currency changes or any other gym setting is saved, so a preview computed
+before such a save is never served after it. The
 first computation parses the CSV once and analyzes it chunk by chunk, writing the
 preview rows (issues are not stored: the response doesn't return them) to
 5,000-row files under a new `pages/<generation>/`, about 20 files for 100,000
@@ -121,8 +124,10 @@ columns update automatically with the source fields and are omitted from exports
 
 The import revision changes whenever a real (not dry-run) import run of the gym
 is created or completes, or retention removes runs: one aggregate over the gym's
-`import_runs`, bounded by `import_runs_retention_idx`. A preview computed before
-any of those is never found again. That covers previews of every upload (people
+`import_runs`, bounded by `import_runs_retention_idx`. It also changes whenever
+the gym's settings are saved (`gyms.revision`, read in the same transaction).
+A preview computed before any of those is never found again, and a ready ticket
+computed before one answers that the preview changed. That covers previews of every upload (people
 before memberships) and runs that start or finish while a preview is computing;
 `start` itself does no storage work after the run is committed and queued. Edits
 made by hand are not tracked, so a preview can be up to five minutes behind them.
