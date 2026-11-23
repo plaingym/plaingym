@@ -37,7 +37,7 @@ export function createPublicRoutes(supplied?: PublicRoutesOptions): readonly Rou
   const admissionBudget = rateLimit({ sharedKey: 'public.admissions', ipv6Prefix: 56, limit: 10, windowMs: 15 * 60_000 });
   async function intake<T>(ctx: Context<RequestEnvironment>, work: () => Promise<T>) {
     try { return await work(); }
-    catch (error) { throw refusal(error, ctx) ?? error; }
+    catch (error) { throw refusal(error, ctx)?.error ?? error; }
   }
   function refusal(error: unknown, ctx: Context<RequestEnvironment>) {
     const t = options().t ?? translator;
@@ -132,7 +132,7 @@ export function createPublicRoutes(supplied?: PublicRoutesOptions): readonly Rou
         const refused = refusal(error, ctx);
         if (refused)
           return ctx.html(intakePage({ ...(await config.service.config(context.gym.gymId)).data, kind, t: config.t ?? translator,
-            state: refused.details?.reason?.[0] === 'busy' ? 'retry' : 'limited' }), 429);
+            state: refused.state }), 429);
         if (!(error instanceof z.ZodError) && !(error instanceof AppError && error.code === 'invalid_request')) throw error;
         return ctx.html(intakePage({ ...(await config.service.config(context.gym.gymId)).data, kind, t: config.t ?? translator, state: 'failed' }), 400);
       }

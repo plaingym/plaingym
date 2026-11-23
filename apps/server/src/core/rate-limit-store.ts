@@ -61,17 +61,14 @@ export function createIntakeRateLimitStore(scope: typeof forSystem = forSystem, 
         return { allowed: false, resetAt: now + 1000, failed: true };
       }
     },
-    async consume({ gymId, routeKey, clientKey, now, windowMs, limit, amount }) {
+    async consume({ gymId, routeKey, clientKey, now, windowMs, limit }) {
       const start = Math.floor(now / windowMs) * windowMs, resetAt = start + windowMs;
-      if (amount !== undefined && (!Number.isSafeInteger(amount) || amount <= 0)) throw new Error('Invalid reservation amount');
-      if (amount !== undefined && amount > limit) return { allowed: false, resetAt };
       try {
         const [row] = await scope(tx => tx.insert(intakeRateLimits).values({
-          gymId, routeKey, clientKey, windowStart: new Date(start), expiresAt: new Date(resetAt), count: amount ?? 1,
+          gymId, routeKey, clientKey, windowStart: new Date(start), expiresAt: new Date(resetAt), count: 1,
         }).onConflictDoUpdate({
           target: [intakeRateLimits.gymId, intakeRateLimits.routeKey, intakeRateLimits.clientKey, intakeRateLimits.windowStart],
-          set: { count: amount === undefined ? sql`least(${intakeRateLimits.count} + 1, ${limit + 1})` : sql`${intakeRateLimits.count} + ${amount}` },
-          ...(amount === undefined ? {} : { setWhere: lte(intakeRateLimits.count, limit - amount) }),
+          set: { count: sql`least(${intakeRateLimits.count} + 1, ${limit + 1})` },
         }).returning({ count: intakeRateLimits.count }));
         return { allowed: row !== undefined && row.count <= limit, resetAt };
       } catch (error) {

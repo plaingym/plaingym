@@ -775,8 +775,9 @@ describe('public join pages through the production registrations', () => {
   it('applies the shared gym ceiling to JSON and native join creation without refusing an existing admission', async () => {
     const f = await fixture(), people = [adult()], email = 'existing-admission@example.invalid';
     const images = await f.admit(people, email, f.plan.id), store = createIntakeRateLimitStore(db.forSystem);
-    await store.consume({ gymId: f.gymId, routeKey: 'public.intake.signature_kib', clientKey: '*', now: f.clock.now().getTime(),
-      windowMs: publicIntakeLimits.windowMs, limit: publicIntakeLimits.signatureKiB, amount: publicIntakeLimits.signatureKiB });
+    const now = f.clock.now().getTime(), start = Math.floor(now / publicIntakeLimits.windowMs) * publicIntakeLimits.windowMs;
+    await store.reserve({ gymId: f.gymId, now, buckets: [{ routeKey: 'public.intake.signature_kib', amount: publicIntakeLimits.signatureKiB,
+      limit: publicIntakeLimits.signatureKiB, start, resetAt: start + publicIntakeLimits.windowMs }] });
     const reset = configureSharedRateLimits(store);
     try {
       const response = await f.post('/join/signatures', { planId: f.plan.id, contact: { name: 'Pat Payer', email: 'refused@example.invalid' }, honeypot: '',

@@ -75,28 +75,27 @@ export function createJoinCleanup(options: JoinCleanupOptions) {
       return home;
     },
     claim: async (tx, gymId, householdId, home, event) => {
-      const retain = () => false;
       const parsed = record.parse(event.after);
-      if (!home || home.revision !== 1) return retain();
+      if (!home || home.revision !== 1) return false;
       const people = await tx.select().from(members).where(eq(members.householdId, householdId)).for('update');
       // Staff may have adopted an abandoned prospect or attached records. Keep that work.
-      if (people.some(p => !parsed.memberIds.includes(p.id) || p.status !== 'prospect' || p.anonymizedAt || p.revision !== 1)) return retain();
-      if ((await tx.select({ id: waiverSignatures.id }).from(waiverSignatures).where(inArray(waiverSignatures.memberId, parsed.memberIds)).limit(1)).length) return retain();
+      if (people.some(p => !parsed.memberIds.includes(p.id) || p.status !== 'prospect' || p.anonymizedAt || p.revision !== 1)) return false;
+      if ((await tx.select({ id: waiverSignatures.id }).from(waiverSignatures).where(inArray(waiverSignatures.memberId, parsed.memberIds)).limit(1)).length) return false;
       // A lead row (a staff edit or logged contact on the Leads screen, or a check-in) is staff work on the prospect too,
       // and its foreign key would refuse the member's deletion. The member locks above hold off a new one.
-      if ((await tx.select({ id: leads.id }).from(leads).where(inArray(leads.memberId, parsed.memberIds)).limit(1)).length) return retain();
+      if ((await tx.select({ id: leads.id }).from(leads).where(inArray(leads.memberId, parsed.memberIds)).limit(1)).length) return false;
       const subscriptions = await tx.select().from(memberships).where(eq(memberships.householdId, householdId)).for('update');
-      if (subscriptions.some(m => m.status !== 'pending' || !parsed.memberIds.includes(m.memberId))) return retain();
+      if (subscriptions.some(m => m.status !== 'pending' || !parsed.memberIds.includes(m.memberId))) return false;
       // A join records its code's uses only after `public.join.submitting`, which excludes it above: a discount here is staff's,
       // and removing it would lose the use it took.
       if ((await tx.select({ id: membershipDiscounts.id }).from(membershipDiscounts).where(eq(membershipDiscounts.householdId, householdId)).limit(1)).length
         || (await tx.select({ id: householdUsers.id }).from(householdUsers).where(eq(householdUsers.householdId, householdId)).limit(1)).length
-        || (await tx.select({ id: paymentMethods.id }).from(paymentMethods).where(eq(paymentMethods.householdId, householdId)).limit(1)).length) return retain();
+        || (await tx.select({ id: paymentMethods.id }).from(paymentMethods).where(eq(paymentMethods.householdId, householdId)).limit(1)).length) return false;
       const links = await tx.select({ id: signedLinks.id }).from(signedLinks).where(eq(signedLinks.householdId, householdId)).for('update');
       const bills = await tx.select({ id: invoices.id }).from(invoices).where(eq(invoices.householdId, householdId)).for('update');
       // A join creates exactly one invoice. Additional staff billing makes this household ineligible.
-      if (bills.length > 1 || bills[0] && !await voidAbandonedJoinInvoice(tx, gymId, householdId, bills[0].id, clock)) return retain();
-      if (links.length && !bills.length) return retain();
+      if (bills.length > 1 || bills[0] && !await voidAbandonedJoinInvoice(tx, gymId, householdId, bills[0].id, clock)) return false;
+      if (links.length && !bills.length) return false;
       // Remove under the same locks as the eligibility check: a staff signature cannot race file deletion.
       await tx.update(invoiceLineItems).set({ membershipId: null }).where(eq(invoiceLineItems.householdId, householdId));
       await tx.delete(memberships).where(eq(memberships.householdId, householdId));

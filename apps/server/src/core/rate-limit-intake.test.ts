@@ -5,12 +5,42 @@ import { eq } from 'drizzle-orm';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { createIntakeRateLimitStore } from './rate-limit-store.js';
-import { cacheRefusals } from './rate-limit.js';
+import { AppError } from '@plaingym/shared';
+import { cacheRefusals, type IntakeReservationResult, type SharedRateLimitStore } from './rate-limit.js';
 import { createPublicIntakeCeiling, publicIntakeLimits } from './rate-limit-intake.js';
 import { setLogSink } from './log.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 const GiB = 1024 ** 3;
+it('requires every shared store to reserve, every refusal to name its bucket, and counts each consume as one', () => {
+  // @ts-expect-error A shared store without reserve would refuse every public admission.
+  const consumeOnly: SharedRateLimitStore = { async consume() { return { allowed: true, resetAt: 0 }; } };
+  // @ts-expect-error A refusal names its bucket unless the store failed.
+  const unnamed: IntakeReservationResult = { allowed: false, resetAt: 1 };
+  const store = createIntakeRateLimitStore(db.forSystem);
+  // @ts-expect-error consume has no weighted amount.
+  const weighted = () => store.consume({ gymId: null, routeKey: 'r', clientKey: 'c', now: 0, windowMs: 1000, limit: 10, amount: 2 });
+  expect([consumeOnly, unnamed, weighted].every(Boolean)).toBe(true);
+});
+
+it('reports a refusal naming no bucket of the reservation against the first one, once per window', async () => {
+  const now = 10_000, gymId = uuidv7(), input = { gymId, timezone: 'UTC', now, participants: 1, signatureBytes: 0 };
+  const store: SharedRateLimitStore = {
+    async consume() { return { allowed: true, resetAt: 0 }; },
+    async reserve() { return { allowed: false, resetAt: now + 5000, routeKey: 'unknown.bucket' }; },
+  };
+  const reserve = createPublicIntakeCeiling({ store });
+  const lines: string[] = [], previous = setLogSink(line => { lines.push(line); });
+  try {
+    for (let i = 0; i < 2; i++) {
+      const refused = await reserve(input).catch((error: unknown) => error);
+      expect(refused).toBeInstanceOf(AppError);
+      expect(refused).toMatchObject({ code: 'rate_limited', details: { reason: ['intake_ceiling'], resetAt: [String(now + 5000)] } });
+    }
+    expect(lines.map(line => JSON.parse(line))).toMatchObject([{ event: 'public.intake.ceiling_reached', gymId, resource: 'participants' }]);
+    expect(lines).toHaveLength(1);
+  } finally { setLogSink(previous); }
+});
 it.each(['database', 'local'] as const)('refuses just past the 1 GiB hourly ceiling without spending participants (%s)', async kind => {
   const gymId = uuidv7(); await factory('gyms', gymId);
   const reserve = createPublicIntakeCeiling({ ...(kind === 'database' ? { store: createIntakeRateLimitStore(db.forSystem) } : {}), participants: 2 });
