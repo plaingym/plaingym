@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { beforeEach, expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { asc, eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- EXPLAIN inspects the production query on the disposable database.
 import { sql } from 'drizzle-orm';
 import { auditEvents, stripeEvents, uuidv7 } from '@plaingym/db';
@@ -38,7 +38,8 @@ async function fixture(scope: typeof db.forGym = db.forGym) {
     await inbox.receive(gymId, body, provider.signWebhook(body));
   };
   const stored = async () => (await db.forGym(gymId, tx => tx.select().from(stripeEvents)))[0]!;
-  const audits = () => db.forGym(gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, webhookDispatchRetried)));
+  const audits = () => db.forGym(gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, webhookDispatchRetried))
+    .orderBy(asc(auditEvents.occurredAt)));
   const exhaust = async (beforeAttempt?: () => void) => {
     for (let attempt = 0; attempt < 10; attempt++) {
       beforeAttempt?.();
@@ -98,6 +99,52 @@ it('audits the five-reset limit once across concurrent sweeps and stops paging t
     pendingCount: 0, failedCount: 1, recentFailedCount: 0,
   });
   expect(await f.queue.runNext()).toBe(false);
+});
+
+it('reopens automatic recovery after a redelivery resets an exhausted dispatch', async () => {
+  const f = await fixture(); f.handler.mockRejectedValue(new Error('Unavailable'));
+  await f.deliver(); await f.exhaust();
+  const saved = await f.stored(), [failed] = await f.queue.failedJobs(webhookDispatchJob, [saved.id], { gymId: f.gymId });
+  const sweep = () => f.build().recoverFailed(f.gymId);
+  const paged = async () => (await db.forGym(f.gymId, tx => webhookRecoveryPage(tx, f.gymId))).map(row => row.id);
+  const closings = () => db.forGym(f.gymId, tx => tx.select().from(auditEvents)
+    .where(eq(auditEvents.action, webhookDispatchRecoveryExhausted)).orderBy(asc(auditEvents.occurredAt)));
+  const resetAfter = async (resets: number) => {
+    const delay = webhookRecoveryDelayMs * 2 ** resets;
+    f.clock.advance(delay - 1);
+    expect(await sweep()).toEqual({ recovered: 0, exhausted: 0 });
+    f.clock.advance(1);
+    expect(await sweep()).toEqual({ recovered: 1, exhausted: 0 });
+    expect((await f.audits()).at(-1)).toMatchObject({ targetId: saved.id, after: { jobId: failed!.jobId, delayMs: delay } });
+    await f.exhaust();
+  };
+  for (let reset = 0; reset < webhookRecoveryLimit; reset++) await resetAfter(reset);
+  expect(await sweep()).toEqual({ recovered: 0, exhausted: 1 });
+  expect(await closings()).toMatchObject([{ targetId: saved.id, after: { resets: webhookRecoveryLimit } }]);
+  // Closed: a job failed past every delay gets no reset, and the page leaves the event out.
+  f.clock.advance(100 * 86_400_000);
+  expect(await sweep()).toEqual({ recovered: 0, exhausted: 0 });
+  expect(await paged()).not.toContain(saved.id);
+  // The redelivery's reset comes after the exhaustion audit, so it reopens recovery as the first reset since then.
+  await f.deliver();
+  expect(await f.audits()).toHaveLength(webhookRecoveryLimit + 1);
+  expect(await paged()).toContain(saved.id);
+  await f.exhaust();
+  await resetAfter(1);
+  expect((await f.audits()).at(-1)).toMatchObject({ after: { delayMs: 1_800_000 } });
+  for (let reset = 2; reset < webhookRecoveryLimit; reset++) await resetAfter(reset);
+  const outcomes = await Promise.all([sweep(), sweep()]);
+  expect(outcomes.map(outcome => outcome.exhausted).sort()).toEqual([0, 1]);
+  const [first, second] = await closings();
+  expect(await closings()).toHaveLength(2);
+  expect(second).toMatchObject({ targetId: saved.id, after: { jobId: failed!.jobId, resets: webhookRecoveryLimit } });
+  expect(second!.occurredAt.getTime()).toBeGreaterThan(first!.occurredAt.getTime());
+  f.clock.advance(100 * 86_400_000);
+  const lookup = vi.spyOn(f.queue, 'failedJobs');
+  expect(await sweep()).toEqual({ recovered: 0, exhausted: 0 });
+  expect(lookup).not.toHaveBeenCalled();
+  expect(await paged()).not.toContain(saved.id);
+  expect(await f.audits()).toHaveLength(2 * webhookRecoveryLimit);
 });
 
 it('marks and recovers a terminal dispatch whose stored-event reads failed before the marker path', async () => {

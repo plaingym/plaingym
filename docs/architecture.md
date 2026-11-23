@@ -329,8 +329,8 @@ source of truth; Stripe is the processor. In outline:
 * **Webhook inbox** (`areas/billing/webhooks/`): verify the signature, store the
   event once, process it in a job. The hourly recovery sweep uses partial indexes
   on unprocessed events to find failed original dispatches with or without an error
-  marker. It audits the exhausted retry budget once per event and skips it in later
-  sweeps.
+  marker. It audits an exhausted retry budget once and skips the event in later
+  sweeps until a redelivery resets its dispatch, which reopens recovery.
 * **Signed links and campaigns** (`areas/links/`): pay, update-card, waiver and
   onboarding links, sent one at a time or as a campaign.
   Announcement unsubscribe links (`areas/announcements/unsubscribe.ts`) are
