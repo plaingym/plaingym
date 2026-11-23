@@ -155,7 +155,29 @@ gyms never affect this time.
 The tile stays in error while any unacknowledged failed jobs remain, however old
 the failure is. With none, the page leaves out the oldest failure row. A failed
 job whose effect was dismissed by a release that did not yet acknowledge jobs on
-Dismiss has no acknowledgment, so it stays counted until retention deletes it.
+Dismiss stays counted until someone acknowledges the job or retention deletes it.
+The tile gets `failedVersion` from `JobStats.failedVersion`. It contains an opaque digest
+of the unacknowledged jobs' IDs, failure times and failure counts (`jobs.failure_count`,
+which every failure raises and a retry never resets), or `none` when the set is empty.
+The page keeps this value hidden. While the tile counts failed jobs, owners and admins
+(`settings.manage`) see **Acknowledge failed jobs**. A tile from a server that predates
+the version (an older release, for example after a rollback) shows normally, with no
+Acknowledge action until the tiles come from a server that sends one. Confirming posts the tile's
+`checkedAt` as `through` and its `failedVersion`, both from when the dialog opened,
+to `POST /api/health/failed-jobs/acknowledge`. In one gym transaction the server
+locks the gym's unacknowledged failed jobs, computes the digest over the locked
+rows, and acknowledges exactly those jobs only when it matches. When the set
+changed (a job failed after the page was read, even one whose expired lease is
+recorded with an earlier failure time; a counted job was retried; or a counted job
+was retried in place and failed again under the same ID, even at the same recorded
+time), it answers 409
+`Failed jobs changed` and acknowledges nothing, so a failure after the page was read
+is never acknowledged by that read. The page refreshes the tiles.
+**Review Background jobs** closes the stale dialog so the owner can check the new
+count and open a fresh confirmation if failures remain. It doesn't run the jobs
+again; the answer is the number acknowledged, and a non-zero count writes one
+`health.failed_jobs.acknowledged` audit event (`acknowledged` and `through`) in the
+same transaction.
 Disk details report `uploads` and `backupStaging` separately, each with filesystem
 `totalBytes` and `availableBytes`, plus `sameFilesystem`: true only when a backup
 staging directory is configured on the same device as the uploads directory and the

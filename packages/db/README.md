@@ -187,6 +187,10 @@ timestamp when a pending bank payment enters processing.
 Migration `0039_job_acknowledged.sql` adds the nullable `jobs.acknowledged_at`
 timestamp. Existing jobs start without an acknowledgment.
 
+Migration `0040_job_failure_count.sql` adds `jobs.failure_count`, an integer that
+defaults to 0 and is never null. The queue adds one each time it fails a job and a
+retry never resets it. Existing jobs, failed ones included, start at 0.
+
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver

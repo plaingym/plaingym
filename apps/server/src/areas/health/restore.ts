@@ -4,8 +4,8 @@ import { RestoreFailure, s3Reason } from './restore.failure.js';
 import { mkdtemp, readdir, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { z } from 'zod';
-import { and, desc, eq } from 'drizzle-orm';
-import { auditEvents, gyms, writeAudit } from '@plaingym/db';
+import { and, desc, eq, ne } from 'drizzle-orm';
+import { auditEvents, backupRuns, gyms, writeAudit } from '@plaingym/db';
 // Restore infrastructure uses its dedicated maintenance connection, including in the standalone CLI.
 // eslint-disable-next-line no-restricted-imports
 import { openConnection, scopedDatabase } from '@plaingym/db/client';
@@ -21,16 +21,29 @@ import { manifestSchema, publicReferences, readReferences, snapshotPrefix, valid
 import type { Manifest } from './backups.format.js';
 import { verifyFile } from './backups.js';
 import { RestoreGate, readRestoreJournal, unfinishedRestorePhases } from './restore.gate.js';
+import { manualBackupJob } from './restore.backup-control.js';
 import { PostgresJobs } from '../../infra/jobs/postgres.js';
 import { SnapshotContentError } from './backups.content.js';
 import { decryptSnapshot, readSnapshotJson } from './restore.content.js';
+
+/**
+ * Whether the restored `jobs` table has its failure counter. A newer release can resume a restore that an older one
+ * stopped after rekeying, on a database its normal migration hasn't reached yet, so the steps below leave it out then.
+ */
+async function hasJobFailureCount(connection: Pick<ReturnType<typeof openConnection>, 'sql'>): Promise<boolean> {
+  const [column] = await connection.sql<{ present: boolean }[]>`select exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'jobs' and column_name = 'failure_count'
+  ) as present`;
+  return column?.present === true;
+}
 
 /** Durable, idempotent publication before the restore journal can become complete. */
 export async function enqueueRestoreReconciliation(database: PostgresMaintenance, snapshotAt: string, clock: Clock) {
   const connection = openConnection(database.url, 1);
   try {
     const scope = scopedDatabase(connection.db);
-    const queue = new PostgresJobs({ database: scope, clock });
+    const queue = new PostgresJobs({ database: scope, clock, failureCountColumn: await hasJobFailureCount(connection) });
     for (const gymId of await database.gymIds()) {
       const request = await scope.forGym(gymId, async tx => {
         const [gym] = await tx.select({ timezone: gyms.timezone }).from(gyms).where(eq(gyms.id, gymId));
@@ -49,6 +62,29 @@ export async function enqueueRestoreReconciliation(database: PostgresMaintenance
         gymId, timezone: request.timezone, idempotencyKey: `restore:${request.restoreId}`,
       });
     }
+  } finally { await connection.close(); }
+}
+
+/**
+ * A snapshot holds its own backup run, and a manual backup's job, as running. After the restore the snapshot's run
+ * counts as succeeded (this restore just verified it), any other running run failed, and a backup job the snapshot
+ * caught running failed and acknowledged. Changes only running rows, so a resumed restore can repeat it.
+ */
+export async function settleInterruptedBackups(database: PostgresMaintenance, snapshotId: string, clock: Clock) {
+  const connection = openConnection(database.url, 1);
+  try {
+    const scope = scopedDatabase(connection.db);
+    const runs = await scope.forSystem(async tx => {
+      const settled = await tx.update(backupRuns).set({ status: 'succeeded', completedAt: clock.now() })
+        .where(and(eq(backupRuns.id, snapshotId), eq(backupRuns.status, 'running'))).returning({ id: backupRuns.id });
+      const failed = await tx.update(backupRuns).set({ status: 'failed', completedAt: clock.now(),
+        error: 'Interrupted: the run was still in progress when this snapshot was taken' })
+        .where(and(ne(backupRuns.id, snapshotId), eq(backupRuns.status, 'running'))).returning({ id: backupRuns.id });
+      return settled.length + failed.length;
+    });
+    const jobs = await new PostgresJobs({ database: scope, clock }).failInterrupted([manualBackupJob, 'health.backup'],
+      { at: clock.now(), reason: 'Interrupted by the restored snapshot', countFailure: await hasJobFailureCount(connection) });
+    logInfo('restore.backups_settled', { runs, jobs });
   } finally { await connection.close(); }
 }
 
@@ -285,6 +321,7 @@ export class RestoreService {
       await save('uploads_switched');
     }
     if (state.phase === 'uploads_switched') {
+      await settleInterruptedBackups(o.database, manifest.id, o.clock);
       await enqueueRestoreReconciliation(o.database, manifest.startedAt, o.clock);
       o.checkpoint?.('billing_reconciliation_queued');
       await save('complete');

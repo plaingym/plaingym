@@ -274,6 +274,13 @@
       "when": 1795162486432,
       "tag": "0039_job_acknowledged",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1795367036166,
+      "tag": "0040_job_failure_count",
+      "breakpoints": true
     }
   ]
 }

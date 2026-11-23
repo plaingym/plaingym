@@ -33,8 +33,33 @@ describe('Operational read interfaces', () => {
       { gymId: null, status: 'failed', runAt: '2026-10-21T12:00:00Z' },
       { gymId: otherGym, status: 'failed', runAt: '2026-10-21T12:00:00Z' },
     ]);
-    expect(await fake.get(gym)).toEqual({ pending: 2, running: 1, succeeded: 0, failed: 1, oldestPendingAt: '2026-10-21T13:00:00+02:00', oldestFailureAt: '2026-10-21T12:00:00Z' });
-    expect(await new FakeJobStatsQuery().get(gym)).toEqual({ pending: 0, running: 0, succeeded: 0, failed: 0, oldestPendingAt: null, oldestFailureAt: null });
+    expect(await fake.get(gym)).toEqual({ pending: 2, running: 1, succeeded: 0, failed: 1, oldestPendingAt: '2026-10-21T13:00:00+02:00',
+      oldestFailureAt: '2026-10-21T12:00:00Z', failedVersion: `job-2:${Date.parse('2026-10-21T12:00:00Z')}:0` });
+    expect(await new FakeJobStatsQuery().get(gym)).toEqual({ pending: 0, running: 0, succeeded: 0, failed: 0, oldestPendingAt: null,
+      oldestFailureAt: null, failedVersion: 'none' });
+  });
+  it('versions the unacknowledged failed fixtures by their sorted IDs, failure times and failure counts', async () => {
+    const at = '2026-10-21T12:00:00Z', ms = Date.parse(at);
+    const failed = (id: string, acknowledged = false, runAt = at, failureCount?: number) =>
+      ({ id, gymId: gym, status: 'failed' as const, runAt, acknowledged, ...(failureCount === undefined ? {} : { failureCount }) });
+    expect((await new FakeJobStatsQuery([failed('b'), failed('a', false, at, 2), failed('c', true)]).get(gym)).failedVersion)
+      .toBe(`a:${ms}:2,b:${ms}:0`);
+    expect((await new FakeJobStatsQuery([failed('c', true)]).get(gym)).failedVersion).toBe('none');
+    // Two reads of an unchanged set agree; the same job failing again later, or again at the same time, changes it.
+    const first = (await new FakeJobStatsQuery([failed('a')]).get(gym)).failedVersion;
+    expect((await new FakeJobStatsQuery([failed('a')]).get(gym)).failedVersion).toBe(first);
+    expect((await new FakeJobStatsQuery([failed('a', false, at, 0)]).get(gym)).failedVersion).toBe(first);
+    expect((await new FakeJobStatsQuery([failed('a', false, '2026-10-21T12:00:01Z')]).get(gym)).failedVersion).not.toBe(first);
+    expect((await new FakeJobStatsQuery([failed('a', false, at, 1)]).get(gym)).failedVersion).not.toBe(first);
+    const long = await new FakeJobStatsQuery([failed('x'.repeat(40)), failed('y'.repeat(40))]).get(gym);
+    expect(long.failedVersion).toMatch(/^fnv-[0-9a-f]{8}$/);
+    expect((await new FakeJobStatsQuery([failed('y'.repeat(40)), failed('x'.repeat(40))]).get(gym)).failedVersion).toBe(long.failedVersion);
+    const later = await new FakeJobStatsQuery([failed('x'.repeat(40)), failed('y'.repeat(40), false, '2026-10-21T12:00:01Z')]).get(gym);
+    expect(later.failedVersion).toMatch(/^fnv-[0-9a-f]{8}$/);
+    expect(later.failedVersion).not.toBe(long.failedVersion);
+    const again = await new FakeJobStatsQuery([failed('x'.repeat(40)), failed('y'.repeat(40), false, at, 1)]).get(gym);
+    expect(again.failedVersion).toMatch(/^fnv-[0-9a-f]{8}$/);
+    expect(again.failedVersion).not.toBe(long.failedVersion);
   });
   it('chooses the oldest failed instant across offsets, independently of earlier pending and foreign jobs', async () => {
     const fake = new FakeJobStatsQuery([

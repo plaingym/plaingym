@@ -24,6 +24,11 @@ export const backupHealthDetailsSchema = z.strictObject({
 });
 export const failedJobsHealthDetailsSchema = z.strictObject({
   failed: count, pending: count, running: count, oldestFailureAt: instantSchema.nullable(),
+  /**
+   * An opaque digest of the unacknowledged failed jobs counted in `failed`, each by its ID, failure time and failure
+   * count; Acknowledge failed jobs sends it back.
+   */
+  failedVersion: z.string().min(1).max(64),
 });
 export const smtpHealthDetailsSchema = z.strictObject({ configured: z.boolean(), lastTestAt: instantSchema.nullable() });
 export const smsHealthDetailsSchema = z.strictObject({
@@ -114,6 +119,12 @@ export const exhaustedEffectsResponseSchema = z.strictObject({ data: z.array(exh
 export const effectActionRequestSchema = z.strictObject({ effectId: idSchema });
 export const effectActionResponseSchema = z.strictObject({ data: z.strictObject({ changed: z.boolean() }) });
 export type ExhaustedEffect = z.infer<typeof exhaustedEffectSchema>;
+/**
+ * Acknowledges exactly the failed jobs the Background jobs tile counted: `failedVersion` is the tile's digest of them, and
+ * `through` the tile's `checkedAt`, kept for the audit.
+ */
+export const acknowledgeFailedJobsRequestSchema = z.strictObject({ through: instantSchema, failedVersion: z.string().min(1).max(64) });
+export const acknowledgeFailedJobsResponseSchema = z.strictObject({ data: z.strictObject({ acknowledged: count }) });
 /** The most reports one dismissal names: the list holds at most 90 days of reports. */
 export const maxDismissedChargeRuns = 500;
 /**
@@ -173,6 +184,10 @@ export const healthContracts = {
     body: effectActionRequestSchema, response: effectActionResponseSchema },
   dismissEffect: { method: 'post', path: '/api/health/effect-failures/dismiss', permission: manageSettings,
     body: effectActionRequestSchema, response: effectActionResponseSchema },
+  acknowledgeFailedJobs: { method: 'post', path: '/api/health/failed-jobs/acknowledge', permission: manageSettings,
+    description: 'Acknowledges the failed jobs the Background jobs tile counted. When that set changed since `failedVersion` was read, '
+      + 'it answers 409 and acknowledges nothing.',
+    body: acknowledgeFailedJobsRequestSchema, response: acknowledgeFailedJobsResponseSchema },
 } as const satisfies Record<string, EndpointContract>;
 
 export type HealthTileId = z.infer<typeof healthTileIdSchema>;

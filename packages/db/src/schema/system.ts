@@ -13,6 +13,7 @@ export const jobs = pgTable('jobs', {
   maxAttempts: integer('max_attempts').notNull().default(5), status: text('status').notNull().default('pending'),
   lockedUntil: instant('locked_until'), lockToken: uuid('lock_token'), lastError: text('last_error'),
   acknowledgedAt: instant('acknowledged_at'),
+  failureCount: integer('failure_count').notNull().default(0),
   idempotencyKey: text('idempotency_key').notNull(),
   createdAt: instant('created_at').notNull().defaultNow(),
 }, (t) => [

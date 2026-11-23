@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { parseResponse } from '../../lib/response.js';
 import type { ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
-import { healthContracts, healthResponseSchema, healthTileIds, type HealthTile } from '@plaingym/shared/contracts';
+import { healthContracts, healthTileIds, type HealthTile } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../app/context.js';
 import { api } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
@@ -15,6 +14,7 @@ import { Page, PageHeader } from '../../components/ui/page.js';
 import { ChargeFailures } from './charge-failures.js';
 import { EffectFailures } from './effect-failures.js';
 import { BackupActions } from './backups.js';
+import { FailedJobsActions, parseHealthResponse, type ShownHealthTile } from './failed-jobs.js';
 
 const label = (key: string) => t('health/status:' + key);
 /** A size in bytes in the largest unit that keeps it at 1 or more (decimal units, as disks are sold). */
@@ -39,7 +39,7 @@ function detailValue(key: string, value: unknown, timezone?: string) {
  * The detail rows a tile shows. The Automatic updates tile labels its versions for what the attempt did (an up-to-date
  * check names only the running version, a rollback the version it tried) and leaves out a version the attempt has none of.
  */
-function detailRows(tile: HealthTile): [key: string, label: string, value: unknown][] {
+function detailRows(tile: ShownHealthTile): [key: string, label: string, value: unknown][] {
   if (!tile.details) return [];
   if (tile.id === 'sms') return Object.entries(tile.details).map(([key, value]) => [key, label('sms.field.' + key), value]);
   if (tile.id === 'disk') {
@@ -62,15 +62,17 @@ function detailRows(tile: HealthTile): [key: string, label: string, value: unkno
     ];
   }
   const versions = tile.id === 'automatic_updates' ? tile.details : null;
-  // A null oldest failure means no failed jobs remain, not an unknown time, so the row is left out.
+  // A null oldest failure means no failed jobs remain, not an unknown time, so the row is left out. The failed jobs
+  // version is an opaque digest for Acknowledge failed jobs, not something to read.
   return Object.entries(tile.details).filter(([key, value]) => key !== 'keyReminder' && key !== 'noneUnderCurrentKey' && key !== 'pruningHeld' && key !== 'damagedGuardSnapshot' && key !== 'missingGuardSnapshot'
+    && !(tile.id === 'failed_jobs' && key === 'failedVersion')
     && !(versions && (key === 'fromVersion' || key === 'toVersion') && value === null)
     && !(tile.id === 'failed_jobs' && key === 'oldestFailureAt' && value === null))
     .map(([key, value]) => [key, label(versions && (key === 'fromVersion' || key === 'toVersion') ? `field.${key}.${versions.result}` : 'field.' + key),
       tile.id === 'last_backup' && key === 'pruningStopped' ? tile.details!.pruningStopped || tile.details!.pruningHeld : value]);
 }
 /** Every tile uses the same presentation, including tiles supplied by other providers. */
-export function HealthTiles({ tiles, extras = {}, timezone }: { tiles: readonly HealthTile[]; extras?: Partial<Record<HealthTile['id'], ReactNode>>; timezone?: string }) {
+export function HealthTiles({ tiles, extras = {}, timezone }: { tiles: readonly ShownHealthTile[]; extras?: Partial<Record<HealthTile['id'], ReactNode>>; timezone?: string }) {
   const byId = new Map(tiles.map((tile) => [tile.id, tile]));
   return <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{healthTileIds.map((id) => {
     const tile = byId.get(id);
@@ -95,13 +97,14 @@ function HealthPanel({ gymId, owner, timezone }: { gymId: string; owner: boolean
   const query = useQuery({ queryKey: ['health', gymId], queryFn: async ({ signal }) => {
     const result = await api.GET(healthContracts.get.path, { signal, cache: 'no-store' });
     if (!result.response.ok) throw new Error('Health check failed');
-    return parseResponse(healthResponseSchema, result.data).data;
+    return parseHealthResponse(result.data);
   }, refetchInterval: 60_000 });
   // Inside the admin shell's main, like every other admin page: one main landmark and the same header.
   return <Page>
     <PageHeader title={label('title')} actions={<Button variant="outline" disabled={query.isFetching} onClick={() => void cache.invalidateQueries({ queryKey: ['health', gymId] })}>{label('refresh')}</Button>}/>
     {query.isPending ? <p role="status" data-loading>{label('loading')}</p> : query.isError ? <Alert variant="error">{label('loadFailed')}</Alert> : <HealthTiles tiles={query.data.tiles} timezone={timezone} extras={{
       last_backup: <BackupActions gymId={gymId} owner={owner}/>,
+      failed_jobs: <FailedJobsActions gymId={gymId} tile={query.data.tiles.find(tile => tile.id === 'failed_jobs')}/>,
       invoice_effects: <EffectFailures gymId={gymId} timezone={timezone} reporting={query.data.tiles.some(tile => tile.id === 'invoice_effects' && tile.status === 'error')}/>,
       last_charge_run: <ChargeFailures gymId={gymId} reporting={query.data.tiles.some((tile) => tile.id === 'last_charge_run' && tile.status === 'error')}/> }}/>}
   </Page>;

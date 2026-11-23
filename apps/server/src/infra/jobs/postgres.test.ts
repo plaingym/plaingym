@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
@@ -407,7 +408,7 @@ describe('Postgres enqueue and execution', () => {
     expect(await q.enqueueSystem('backup', {}, { timezone: 'UTC', idempotencyKey: 'once' })).toEqual(a);
     expect(await q.runNext()).toBe(true); expect(called).toBe(true);
     expect(await new PostgresJobStatsQuery(database).get(gymA)).toEqual({
-      pending: 0, running: 0, succeeded: 0, failed: 0, oldestPendingAt: null, oldestFailureAt: null,
+      pending: 0, running: 0, succeeded: 0, failed: 0, oldestPendingAt: null, oldestFailureAt: null, failedVersion: 'none',
     });
     expect(await database.forGym(gymA, (tx) => tx.select().from(jobs))).toEqual([]);
   });
@@ -660,9 +661,13 @@ describe('timezone scheduling and health statistics', () => {
     await q.enqueueSystem('install', {}, { timezone: 'UTC' });
     const stats = new PostgresJobStatsQuery(database);
     expect(await stats.get(gymA)).toEqual({ pending: 2, running: 0, succeeded: 1, failed: 1,
-      oldestPendingAt: '2026-01-01T00:00:00.000Z', oldestFailureAt: '2026-01-01T00:00:01.000Z' });
-    expect(await stats.get(gymB)).toMatchObject({ pending: 1, succeeded: 0, failed: 0 });
-    expect(await stats.get(uuidv7())).toEqual({ pending: 0, running: 0, succeeded: 0, failed: 0, oldestPendingAt: null, oldestFailureAt: null });
+      oldestPendingAt: '2026-01-01T00:00:00.000Z', oldestFailureAt: '2026-01-01T00:00:01.000Z',
+      // The version digests `id:run_at:failure_count`, the time in microseconds since the epoch. This row was failed
+      // by hand, so its failure count is still 0.
+      failedVersion: createHash('md5').update(`${d.jobId}:${Date.parse('2026-01-01T00:00:01.000Z') * 1000}:0`).digest('hex') });
+    expect(await stats.get(gymB)).toMatchObject({ pending: 1, succeeded: 0, failed: 0, failedVersion: 'none' });
+    expect(await stats.get(uuidv7())).toEqual({ pending: 0, running: 0, succeeded: 0, failed: 0, oldestPendingAt: null,
+      oldestFailureAt: null, failedVersion: 'none' });
     expect((await database.forGym(gymA, (tx) => tx.select().from(jobs))).every((r) => r.gymId === gymA)).toBe(true);
   });
   it('finds the earliest retained final failure for the gym and clears it when none remain', async () => {

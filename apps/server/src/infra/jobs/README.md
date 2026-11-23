@@ -51,11 +51,43 @@ counts once the next claim marks it failed. Its handler may still be running,
 so a retried job's handler needs the same idempotency as any other.
 `retryFailed` returns false for a job that is missing or has another status.
 
-All three methods accept an optional `JobTransaction` as their last argument,
-validated like `enqueue`'s. Invoice effect recovery takes its invoice lock in that
-transaction and uses the same handle for queue reads, resets or acknowledgments,
+The three recovery methods above accept an optional `JobTransaction` as their last
+argument, validated like `enqueue`'s. Invoice effect recovery takes its invoice lock
+in that transaction and uses the same handle for queue reads, resets or acknowledgments,
 and the staff audit. The fake stages writes until commit and reflects a staged
 reset in subsequent failed-job reads in that transaction.
+
+`PostgresJobs` has two more methods outside `JobRecovery`.
+`acknowledgeFailedVersion({ gymId, failedVersion, at }, transaction?)` acknowledges
+exactly the gym's unacknowledged failed jobs that `failedVersion` names.
+`JobStatsQuery.get(gymId)` returns that version in `JobStats.failedVersion`.
+A shared SQL fragment computes the MD5 digest of the gym's unacknowledged failures
+in job ID order, or returns `none` when the set is empty. Each entry is
+`id:run_at:failure_count`, with the time in microseconds since the epoch, independent
+of the session's time zone. Every failure sets `run_at` to the time it
+failed and adds one to `failure_count`: a final failure after the handler ran records
+the finish time, an expired final lease its expiry, and `failInterrupted` its `at`.
+`retryFailed` never resets the count, so two failures of one job differ even when they
+record the same time. A job that failed before the column existed starts at 0 and
+counts from its next failure. The method locks those jobs
+(`FOR UPDATE`, in ID order), computes the digest over the locked rows in the same
+statement, and returns `'changed'` without writing when it differs; otherwise it
+acknowledges exactly the locked IDs and returns `{ acknowledged }`. A job that failed
+after the version was read changes the digest, even when its failure time is earlier
+(an expired final lease is recorded at its expiry), and so does a job that
+`retryFailed` reset in place and that failed again under the same ID, at any time, so a failure
+after the read is never acknowledged by that read. The System health page's **Acknowledge failed
+jobs** action uses it. `failInterrupted(names, { at, reason })` runs in system context across every
+gym and install jobs: it marks every `running` job with one of those names failed and
+acknowledged, records `reason` as its error and clears its lease, and returns the
+count. A restore uses it for the backup jobs its snapshot caught running, which no
+worker holds in the restored database. Neither method changes jobs with any other
+status, and an acknowledged job stays visible to `failedJobs`. A newer release can
+resume a restore that an older one stopped after rekeying, before its normal migration
+adds `failure_count`, so the restore checks for the column first: it passes
+`failInterrupted` `countFailure: false` and builds its reconciliation queue with
+`failureCountColumn: false`, whose enqueue then names only the columns it sets. The
+migration that follows gives those rows `failure_count` 0.
 
 Install-level work uses `enqueueSystem` and `handleSystem`, with `gymId: null` in
 the handler context. These separate methods keep the gym-required `Jobs` contract

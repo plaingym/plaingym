@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { and, asc, eq, inArray, isNull, lt, notInArray, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, lt, notInArray, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { advisoryLockNamespace, advisoryLocks, forGym, forSystem, isConnectionError, jobs, jobScheduleCursors, uuidv7 } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
@@ -19,6 +19,18 @@ type Scope = { forGym: typeof forGym; forSystem: typeof forSystem };
 type Row = typeof jobs.$inferSelect;
 type Tx = Parameters<Parameters<typeof forSystem>[0]>[0];
 type Gym = Pick<JobOptions, 'gymId' | 'timezone'>;
+const unacknowledgedFailure = sql`${jobs.status} = 'failed' and ${jobs.acknowledgedAt} is null`;
+/**
+ * The failed jobs version: one digest of each job's ID, failure time and failure count, in ID order, or `none` for
+ * no rows. Every failure sets `run_at` to the time it failed and adds one to `failure_count`, which a retry never
+ * resets, so a job retried in place that fails again changes the version even when both failures record the same
+ * time. The time is in microseconds since the epoch, so the session's time zone doesn't change it. The stats read and
+ * the acknowledgment both compute it with this fragment, so a version from the tile matches only the same failures.
+ */
+const failedVersionOf = (id: SQLWrapper, runAt: SQLWrapper, failureCount: SQLWrapper, filter?: SQL) =>
+  sql<string>`coalesce(md5(string_agg(${id}::text || ':' || (extract(epoch from ${runAt}) * 1000000)::bigint::text || ':' || ${failureCount}::text, ',' order by ${id})${filter ? sql` filter (where ${filter})` : sql``}), 'none')`;
+/** Every update that fails a job adds one, so successive failures of one job never look alike. */
+const nextFailure = sql`${jobs.failureCount} + 1`;
 type Envelope = { version: 1; timezone: string; value: unknown; schedule?: { expression: string; at: string }; deferrals?: number };
 export type SystemJobContext = Omit<JobContext, 'gymId'> & { readonly gymId: null };
 export type SystemJobHandler = (payload: unknown, context: SystemJobContext) => Promise<void>;
@@ -51,6 +63,12 @@ export interface PostgresJobsOptions {
   readonly retention?: JobRetentionOptions;
   /** Tunes the batch lane; jobs registered with `{ lane: 'batch' }` run in it with or without this option. */
   readonly batch?: BatchLaneOptions;
+  /**
+   * Whether `jobs.failure_count` exists. Default true. False only for a restore that a newer release resumes before
+   * its normal migration adds the column: enqueueing then names only the columns it sets, and `failInterrupted`
+   * leaves the counter out unless told otherwise.
+   */
+  readonly failureCountColumn?: boolean;
 }
 export interface WorkerOptions {
   readonly concurrency?: number;
@@ -102,6 +120,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
   readonly #retention: Required<JobRetentionOptions> | undefined;
   readonly #batch: Set<string>;
   readonly #batchCap: number;
+  readonly #failureCountColumn: boolean;
   readonly #handlers = new Map<string, JobHandler>();
   readonly #systemHandlers = new Map<string, SystemJobHandler>();
   readonly #schedules = new Map<string, string>();
@@ -118,6 +137,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
     this.#listGyms = options.listGyms;
     this.#batch = new Set();
     this.#batchCap = positive(options.batch?.perGymConcurrency ?? 1, 'batch.perGymConcurrency');
+    this.#failureCountColumn = options.failureCountColumn ?? true;
     if (options.retention) {
       const { keep, succeededDays = defaultSucceededRetentionDays, failedDays = 90, batchSize = 1000 } = options.retention;
       this.#retention = { keep: [...keep], succeededDays: positive(succeededDays, 'succeededDays'),
@@ -180,8 +200,16 @@ export class PostgresJobs implements Jobs, JobRecovery {
         eq(jobScheduleCursors.gymId, gymId), eq(jobScheduleCursors.name, schedule.name), eq(jobScheduleCursors.expression, schedule.expression),
         eq(jobScheduleCursors.timezone, options.timezone), lt(jobScheduleCursors.lastOccurrence, new Date(schedule.at))));
       for (let attempt = 0; attempt < 2; attempt++) {
-        const [row] = await tx.insert(jobs).values({ id, gymId, name, payload: JSON.parse(encoded) as unknown,
-          runAt, maxAttempts, idempotencyKey, createdAt: now }).onConflictDoNothing().returning({ id: jobs.id });
+        // Drizzle names every schema column in an insert, so a database without the failure counter gets one that
+        // names only the columns set here; the rest take their database defaults either way.
+        const [row] = this.#failureCountColumn
+          ? await tx.insert(jobs).values({ id, gymId, name, payload: JSON.parse(encoded) as unknown,
+            runAt, maxAttempts, idempotencyKey, createdAt: now }).onConflictDoNothing().returning({ id: jobs.id })
+          : await tx.execute<{ id: string }>(sql`insert into ${jobs}
+              (id, gym_id, name, payload, run_at, max_attempts, idempotency_key, created_at)
+            values (${id}::uuid, ${gymId}::uuid, ${name}, ${encoded}::jsonb, ${runAt.toISOString()}::timestamptz,
+              ${maxAttempts}::integer, ${idempotencyKey}, ${now.toISOString()}::timestamptz)
+            on conflict do nothing returning id`);
         if (row) return { jobId: row.id };
         const [existing] = await tx.select({ id: jobs.id }).from(jobs).where(and(
           sql`${jobs.gymId} is not distinct from ${gymId}::uuid`, eq(jobs.idempotencyKey, idempotencyKey)));
@@ -203,7 +231,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
       const lock = await tx.execute<{ acquired: boolean }>(sql`select pg_try_advisory_xact_lock(${advisoryLockNamespace}::int, ${advisoryLocks.jobClaims}::int) as acquired`);
       if (!lock[0]?.acquired) return undefined;
       await tx.update(jobs).set({ status: 'failed', lockedUntil: null, lockToken: null, runAt: jobs.lockedUntil,
-        lastError: 'Lease expired after final attempt' }).where(sql`${jobs.status} = 'running'
+        failureCount: nextFailure, lastError: 'Lease expired after final attempt' }).where(sql`${jobs.status} = 'running'
           and ${jobs.lockedUntil} <= ${now.toISOString()} and ${jobs.attempts} >= ${jobs.maxAttempts}`);
       const accepted = sql`((${jobs.gymId} is not null and ${nameIn(this.#handlers.keys())})
         or (${jobs.gymId} is null and ${nameIn(this.#systemHandlers.keys())}))`;
@@ -275,6 +303,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
       await tx.update(jobs).set({
         status: deferred ? 'pending' : failed ? (final ? 'failed' : 'pending') : 'succeeded',
         ...(deferred ? { attempts: row.attempts - 1 } : {}),
+        ...(!deferred && failed && final ? { failureCount: nextFailure } : {}),
         ...(body && (deferred || deferrals > 0) ? { payload: { ...body, deferrals: deferred ? Math.min(deferrals + 1, 30) : 0 } } : {}),
         // A finished row's run time records when it finished: retention and failed-job lookups read it.
         runAt: deferred ? new Date(now.getTime() + deferBackoff) : failed && !final ? new Date(now.getTime() + backoff) : now,
@@ -335,6 +364,51 @@ export class PostgresJobs implements Jobs, JobRecovery {
       .where(and(eq(jobs.id, jobId), eq(jobs.status, 'failed'), isNull(jobs.acknowledgedAt))).returning({ id: jobs.id });
     const acknowledged = await (transaction ? update(transaction.tx) : this.#database.forGym(options.gymId, update));
     return acknowledged.length === 1;
+  }
+  /**
+   * Acknowledges exactly the gym's unacknowledged failed jobs that `failedVersion` (from `PostgresJobStatsQuery`) named.
+   * It locks them, recomputes the version over the locked rows, and answers `changed`, writing nothing, when the set differs.
+   */
+  async acknowledgeFailedVersion(options: { gymId: string; failedVersion: string; at: Date },
+    transaction?: JobTransaction): Promise<{ acknowledged: number } | 'changed'> {
+    if (transaction) assertJobTransaction(transaction, options.gymId);
+    else assertNoTransaction('jobs.acknowledgeFailedVersion');
+    idSchema.parse(options.gymId);
+    if (!options.failedVersion) throw new Error('Missing failed jobs version');
+    if (!Number.isFinite(options.at.getTime())) throw new Error('Invalid job time');
+    const acknowledge = async (tx: Tx) => {
+      // Keep the locked IDs in PostgreSQL so the update can handle more jobs than a parameter list fits.
+      const locked = tx.$with('locked').as(tx.select({ id: jobs.id, runAt: jobs.runAt, failureCount: jobs.failureCount })
+        .from(jobs).where(and(eq(jobs.gymId, options.gymId), unacknowledgedFailure)).orderBy(asc(jobs.id)).for('update'));
+      const observed = tx.$with('observed').as(tx.select({
+        version: failedVersionOf(locked.id, locked.runAt, locked.failureCount).as('version') }).from(locked));
+      const updated = tx.$with('updated').as(tx.update(jobs).set({ acknowledgedAt: options.at })
+        .where(and(eq(jobs.gymId, options.gymId), unacknowledgedFailure,
+          inArray(jobs.id, tx.select({ id: locked.id }).from(locked)),
+          sql`(select ${observed.version} from ${observed}) = ${options.failedVersion}`))
+        .returning({ id: jobs.id }));
+      const [row] = await tx.with(locked, observed, updated).select({ version: observed.version,
+        acknowledged: sql<number>`(select count(*)::int from ${updated})` }).from(observed);
+      if (!row) throw new Error('Missing failed jobs version');
+      return row.version === options.failedVersion ? { acknowledged: row.acknowledged } : 'changed' as const;
+    };
+    return transaction ? acknowledge(transaction.tx) : this.#database.forGym(options.gymId, acknowledge);
+  }
+  /**
+   * Install-wide: fails and acknowledges every running job with one of these names, in every gym and install
+   * jobs alike. Only for a restored database, whose running jobs no worker holds. `countFailure: false` leaves
+   * `failure_count` out, for a restored database that doesn't have the column yet (default: the queue's
+   * `failureCountColumn`).
+   */
+  async failInterrupted(names: readonly string[], options: { at: Date; reason: string; countFailure?: boolean }): Promise<number> {
+    assertNoTransaction('jobs.failInterrupted');
+    if (!names.length) throw new Error('No job names to fail');
+    if (!Number.isFinite(options.at.getTime())) throw new Error('Invalid job time');
+    const counted = options.countFailure ?? this.#failureCountColumn;
+    const failed = await this.#database.forSystem(tx => tx.update(jobs).set({ status: 'failed', acknowledgedAt: options.at,
+      runAt: options.at, ...(counted ? { failureCount: nextFailure } : {}), lastError: options.reason, lockToken: null, lockedUntil: null })
+      .where(and(inArray(jobs.name, [...names]), eq(jobs.status, 'running'))));
+    return failed.count;
   }
   /** Only schedules without a cursor inherit the occurrence watermark used by earlier releases. */
   async #seed(gym: Gym, missing: readonly (readonly [string, string])[], existing: ReadonlySet<string>, now: Date): Promise<Map<string, Date>> {
@@ -543,7 +617,6 @@ export class PostgresJobStatsQuery implements JobStatsQuery {
   constructor(readonly database: Pick<Scope, 'forSystem'> = { forSystem }) {}
   async get(gymId: Id): Promise<JobStats> {
     idSchema.parse(gymId);
-    const unacknowledgedFailure = sql`${jobs.status} = 'failed' and ${jobs.acknowledgedAt} is null`;
     return this.database.forSystem(async (tx) => {
       const [row] = await tx.select({
         pending: sql<number>`count(*) filter (where ${jobs.status} = 'pending')::int`,
@@ -552,11 +625,13 @@ export class PostgresJobStatsQuery implements JobStatsQuery {
         failed: sql<number>`count(*) filter (where ${unacknowledgedFailure})::int`,
         oldest: sql<string | null>`min(${jobs.runAt}) filter (where ${jobs.status} = 'pending')`,
         oldestFailure: sql<string | null>`min(${jobs.runAt}) filter (where ${unacknowledgedFailure})`,
+        failedVersion: failedVersionOf(jobs.id, jobs.runAt, jobs.failureCount, unacknowledgedFailure),
       }).from(jobs).where(eq(jobs.gymId, gymId));
       if (!row) throw new Error('Missing job statistics');
       return { pending: row.pending, running: row.running, succeeded: row.succeeded, failed: row.failed,
         oldestPendingAt: row.oldest === null ? null : instantSchema.parse(new Date(row.oldest).toISOString()),
-        oldestFailureAt: row.oldestFailure === null ? null : instantSchema.parse(new Date(row.oldestFailure).toISOString()) };
+        oldestFailureAt: row.oldestFailure === null ? null : instantSchema.parse(new Date(row.oldestFailure).toISOString()),
+        failedVersion: row.failedVersion };
     });
   }
 }
