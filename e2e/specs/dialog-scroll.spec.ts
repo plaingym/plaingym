@@ -152,3 +152,84 @@ test('short weekly class keeps its action row spacing at 1280x1200', async ({ pa
   expect(measured.helpGap, 'the timezone help to the action row').toBeCloseTo(16, 0);
   expect(measured.buttonGap, 'the lowest action button to the body edge').toBeCloseTo(36, 0);
 });
+
+test.describe('page scroll behind a weekly class dialog', () => {
+  test.use({ hasTouch: true });
+
+  for (const size of actionSizes) {
+    test(`stays locked under wheel and touch input at ${size.width}x${size.height}`, async ({ page, sandboxes }) => {
+      test.setTimeout(120_000);
+      await page.setViewportSize(size);
+      const sandbox = sandboxes[1]!, owner = await demoClient(sandbox, 'owner');
+      await owner.browser(page.context());
+      await page.goto(sandbox.origin + '/admin/schedule');
+      const opener = page.getByRole('button', { name: 'New weekly class', exact: true }).first();
+      await expect(opener).toBeVisible();
+      const scrollY = () => page.evaluate(() => window.scrollY);
+      await page.evaluate(() => {
+        document.body.style.minHeight = '2000px';
+        window.scrollTo(0, 300);
+      });
+      expect(await scrollY()).toBe(300);
+      // Activate the opener at this scroll position without Playwright scrolling it into view.
+      await opener.evaluate(button => (button as HTMLButtonElement).click());
+      const dialog = page.getByRole('dialog', { name: 'New weekly class' });
+      await expect(dialog).toBeVisible();
+      const dialogBox = (await dialog.boundingBox())!;
+      if (size.width === 360) expect(dialogBox.width).toBe(size.width);
+      else expect(dialogBox.x + dialogBox.width / 2).toBeCloseTo(size.width / 2, 0);
+      await padAboveActions(dialog);
+      const body = dialog.locator('[data-dialog-body]');
+      const bodyBox = (await body.boundingBox())!;
+      const titleBox = (await dialog.getByRole('heading', { name: 'New weekly class' }).boundingBox())!;
+      const bodyPoint = { x: bodyBox.x + 8, y: bodyBox.y + 250 };
+      const headerPoint = { x: titleBox.x + titleBox.width / 2, y: titleBox.y + titleBox.height / 2 };
+      const remaining = () => body.evaluate(element => Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop));
+      const expectLocked = async (input: string) => {
+        // Wheel input can be applied asynchronously by the browser.
+        await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+        expect(await scrollY(), input).toBe(300);
+      };
+
+      await page.mouse.move(bodyPoint.x, bodyPoint.y);
+      await expect.poll(async () => {
+        await page.mouse.wheel(0, 600);
+        return remaining();
+      }).toBeLessThanOrEqual(1);
+      await expectLocked('wheel to the body end');
+      await page.mouse.wheel(0, 600);
+      await expectLocked('wheel past the body end');
+      await page.mouse.move(headerPoint.x, headerPoint.y);
+      await page.mouse.wheel(0, 600);
+      await expectLocked('wheel over the header');
+      if (size.width === 1280) {
+        await page.mouse.move(10, size.height / 2);
+        await page.mouse.wheel(0, 600);
+        await expectLocked('wheel over the backdrop');
+      }
+
+      await body.evaluate(element => { element.scrollTop = element.scrollHeight - element.clientHeight - 100; });
+      const cdp = await page.context().newCDPSession(page);
+      const swipe = async ({ x, y }: { x: number; y: number }, distance: number) => {
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+        for (const fraction of [0.2, 0.4, 0.6, 0.8, 1]) {
+          await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y + distance * fraction }] });
+        }
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      };
+      await swipe(bodyPoint, -200);
+      await expect.poll(remaining).toBeLessThanOrEqual(1);
+      await expectLocked('touch scroll to the body end and beyond');
+      await swipe(headerPoint, 200);
+      await expectLocked('touch scroll over the header');
+      await cdp.detach();
+
+      await page.keyboard.press('Escape');
+      await expect(dialog).toBeHidden();
+      expect(await scrollY(), 'closing restores the page position').toBe(300);
+      await page.mouse.move(size.width / 2, size.height / 2);
+      await page.mouse.wheel(0, 600);
+      await expect.poll(scrollY).toBeGreaterThan(300);
+    });
+  }
+});

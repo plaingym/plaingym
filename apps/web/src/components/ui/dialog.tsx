@@ -9,6 +9,48 @@ const OperationContext = createContext<Dispatch<SetStateAction<number>> | undefi
 const DraftContext = createContext<((form?: HTMLFormElement) => void) | undefined>(undefined);
 const CancelContext = createContext<(() => void) | undefined>(undefined);
 
+let pageScrollLocks = 0;
+let restorePageScroll: (() => void) | undefined;
+
+function lockPageScroll() {
+  if (pageScrollLocks++ === 0) {
+    const { scrollX, scrollY } = window;
+    const { style } = document.documentElement;
+    // A shorthand can read as empty when only one axis has an inline value.
+    const overflowProperties = style.overflow ? ['overflow'] : ['overflow', 'overflow-x', 'overflow-y'];
+    const properties = [...overflowProperties, 'scrollbar-gutter'].map(name => ({
+      name, value: style.getPropertyValue(name), priority: style.getPropertyPriority(name),
+    }));
+    style.setProperty('overflow', 'hidden');
+    style.setProperty('scrollbar-gutter', 'stable');
+    restorePageScroll = () => {
+      for (const { name, value, priority } of properties) style.setProperty(name, value, priority);
+      window.scrollTo(scrollX, scrollY);
+    };
+  }
+  return () => {
+    if (--pageScrollLocks === 0) {
+      restorePageScroll?.();
+      restorePageScroll = undefined;
+    }
+  };
+}
+
+const actionsEndingBody = new WeakMap<Element, HTMLDivElement>();
+
+function endsDialogBody(actions: HTMLDivElement, body: Element) {
+  for (let node: Element | null = actions; node && node !== body; node = node.parentElement) {
+    for (let sibling = node.nextElementSibling; sibling; sibling = sibling.nextElementSibling) {
+      if (!sibling.hasAttribute('hidden') && getComputedStyle(sibling).display !== 'none') return false;
+    }
+    if (node !== actions) {
+      const { paddingBottom, marginBottom } = getComputedStyle(node);
+      if (parseFloat(paddingBottom) || parseFloat(marginBottom)) return false;
+    }
+  }
+  return true;
+}
+
 /** Keep a long dialog's actions visible inside its single scrolling body, with the bar's background reaching the body edge. */
 export function DialogActions({ children, className }: { children: ReactNode; className?: string }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -17,11 +59,24 @@ export function DialogActions({ children, className }: { children: ReactNode; cl
     if (!actions || !body) return;
     // Move the body's bottom padding into the bar only when the bar ends the flowing content;
     // an action row followed by other content keeps the body's normal padding and its own height.
-    let atEnd = true;
-    for (let node: Element | null = actions; node && node !== body; node = node.parentElement) {
-      if (node.nextElementSibling) { atEnd = false; break; }
-    }
-    actions.toggleAttribute('data-dialog-actions-at-end', atEnd);
+    const clearBodyEnd = () => {
+      if (actionsEndingBody.get(body) === actions) {
+        actionsEndingBody.delete(body);
+        body.removeAttribute('data-dialog-actions-end');
+      }
+    };
+    const update = () => {
+      const atEnd = endsDialogBody(actions, body);
+      actions.toggleAttribute('data-dialog-actions-at-end', atEnd);
+      if (atEnd) {
+        actionsEndingBody.set(body, actions);
+        body.setAttribute('data-dialog-actions-end', '');
+      } else clearBodyEnd();
+    };
+    update();
+    const observer = new MutationObserver(update);
+    observer.observe(body, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden', 'style', 'class'] });
+    return () => { observer.disconnect(); clearBodyEnd(); };
   });
   return <div ref={ref} data-dialog-actions className={cn('sticky bottom-0 z-10 flex flex-col gap-3 border-t border-border bg-background py-3 [&[data-dialog-actions-at-end]]:pb-7 sm:flex-row sm:flex-wrap sm:[&[data-dialog-actions-at-end]]:pb-9', className)}>{children}</div>;
 }
@@ -52,6 +107,7 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
   useLayoutEffect(() => { if (!suspended) return registerDialog?.(); }, [suspended, registerDialog]);
   const lastFocused = useRef<HTMLElement | null>(null);
   const resume = useRef<{ focused: HTMLElement | null; positions: { element: HTMLElement; top: number; left: number }[] } | undefined>(undefined);
+  const releasePageScroll = useRef<(() => void) | undefined>(undefined);
   const [busy, setBusy] = useState(0), [confirm, setConfirm] = useState(false);
   const dirty = useRef(new Set<HTMLElement>());
   function saved(form?: HTMLFormElement) {
@@ -77,6 +133,8 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
     return () => {
       if (dialog?.hasAttribute('open')) { if (typeof dialog.close === 'function') dialog.close(); else dialog.removeAttribute('open'); }
       if (previous?.isConnected) previous.focus({ preventScroll: true });
+      releasePageScroll.current?.();
+      releasePageScroll.current = undefined;
     };
   }, []);
   useLayoutEffect(() => {
@@ -89,14 +147,30 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
             .map(element => ({ element, top: element.scrollTop, left: element.scrollLeft })) };
         if (typeof dialog.close === 'function') dialog.close(); else dialog.removeAttribute('open');
       }
+      releasePageScroll.current?.();
+      releasePageScroll.current = undefined;
       return;
     }
     if (!dialog.hasAttribute('open')) {
+      releasePageScroll.current ??= lockPageScroll();
       if (typeof dialog.showModal === 'function') dialog.showModal(); else dialog.setAttribute('open', '');
       resume.current?.focused?.focus({ preventScroll: true });
       resume.current?.positions.forEach(({ element, top, left }) => { element.scrollTop = top; element.scrollLeft = left; });
       resume.current = undefined;
     }
+  }, [suspended]);
+  useLayoutEffect(() => {
+    const dialog = ref.current;
+    if (!dialog || suspended) return;
+    // The reserved root gutter also narrows the top layer. Keep the modal's
+    // width and alignment relative to the full viewport.
+    const fitViewport = () => {
+      const gutter = window.innerWidth - document.documentElement.getBoundingClientRect().width;
+      dialog.style.setProperty('--dialog-scrollbar-gutter', `${Math.max(0, gutter)}px`);
+    };
+    fitViewport();
+    window.addEventListener('resize', fitViewport);
+    return () => window.removeEventListener('resize', fitViewport);
   }, [suspended]);
   return <dialog ref={ref} aria-labelledby={titleId} {...(description ? { 'aria-describedby': descriptionId } : {})}
     onKeyDown={event => {
@@ -117,8 +191,8 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
     onPointerDown={event => { startedOutside.current = event.target === event.currentTarget && outside(event.clientX, event.clientY); }}
     onClick={event => { if (event.target === event.currentTarget && startedOutside.current && outside(event.clientX, event.clientY)) requestClose(); startedOutside.current = false; }}
     onChangeCapture={event => { if (event.target instanceof HTMLElement) dirty.current.add(event.target); }}
-    className={cn('m-0 h-dvh max-h-none w-full max-w-none overflow-hidden border-0 [&[open]]:flex [&[open]]:flex-col bg-background p-0 text-foreground', userNames, 'backdrop:bg-foreground/40',
-      'sm:m-auto sm:h-fit sm:max-h-[90dvh] sm:w-[calc(100%-2rem)] sm:rounded-xl sm:border sm:border-border sm:shadow-xl',
+    className={cn('m-0 h-dvh max-h-none w-[calc(100%+var(--dialog-scrollbar-gutter,0px))] max-w-none [inset-inline-end:calc(-1*var(--dialog-scrollbar-gutter,0px))] overflow-hidden overscroll-contain border-0 [&[open]]:flex [&[open]]:flex-col bg-background p-0 text-foreground', userNames, 'backdrop:bg-foreground/40',
+      'sm:m-auto sm:h-fit sm:max-h-[90dvh] sm:w-[calc(100%+var(--dialog-scrollbar-gutter,0px)-2rem)] sm:rounded-xl sm:border sm:border-border sm:shadow-xl',
       size === 'wide' ? 'sm:max-w-4xl' : 'sm:max-w-2xl', className)}>
     <div className="flex min-h-0 w-full flex-1 flex-col">
       <div className="flex items-start gap-3 border-b border-border px-4 py-3 sm:px-6">
@@ -128,7 +202,7 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
         </div>
         <Button variant="ghost" size="icon" aria-label={closeLabel} disabled={!dismissible || busy > 0} onClick={requestClose}><CloseIcon /></Button>
       </div>
-      <div data-dialog-body className="relative min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-6 [&:has([data-dialog-actions-at-end])]:pb-0">
+      <div data-dialog-body className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 sm:px-6 sm:py-6 [&[data-dialog-actions-end]]:pb-0">
         {notice && <div className="sticky top-0 z-10 mb-4 bg-background">{notice}</div>}
         {confirm && <div role="alert" className="mb-4 space-y-3 rounded-lg border border-border bg-muted p-4">
           <p>{t('shell/shell:discardHelp')}</p><div className="flex flex-wrap gap-2">
