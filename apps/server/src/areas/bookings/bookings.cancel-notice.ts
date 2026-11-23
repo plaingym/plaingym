@@ -93,9 +93,9 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
         if (!latest || latest.memberId !== row.memberId) return suppress('opt_out');
         const [current] = await scope(gymId, tx => readMemberNoticeEmails(tx, gymId, [latest.memberId]));
         if (!current || current.address !== recipient.address) return suppress('opt_out');
-        // A member at their own address isn't told their own name; a household address says whose booking it was.
+        // Always name the member: siblings can have one parent's address on their own records.
         message = await renderBookingCancellation({ gymName, name: latest.name, startsAt: latest.startsAt, timezone: gym.timezone,
-          memberNames: [`${current.firstName} ${current.lastName}`], showMembers: !current.email, note: notice.note });
+          memberNames: [`${current.firstName} ${current.lastName}`], showMembers: true, note: notice.note });
       } catch (cause) { throw new DeliveryError('not_accepted', 'Booking cancellation notice could not be prepared', { cause }); }
       return email.sendEmail({ to: recipient.address, ...message });
     } };
@@ -123,7 +123,6 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
           if (!latest || latest.memberId !== row.memberId) return { status: 'suppressed', reason: 'no_consent' };
           const [current] = await scope(gymId, tx => readNoticePhones(tx, gymId, [latest.memberId]));
           if (!current || current.phoneE164 !== group.phoneE164) return { status: 'suppressed', reason: 'phone_changed' };
-          const self = !current.consentHouseholdIds.length && current.consentMemberIds.length === 1 && current.consentMemberIds[0] === latest.memberId;
           const { timezone } = await settings.get(gymId);
           // MemberSms resolves the provider and reads settings before its final consent read, and that read accepts the
           // household phone for any member of the household. So its cap transaction first runs this check: the booking
@@ -158,7 +157,7 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
           };
           sender = noticeSender(delivery, gymId, current, lastCheck);
           message = { to: current.phoneE164,
-            body: t(self ? 'bookings/bookings:cancelNoticeSmsSelf' : 'bookings/bookings:cancelNoticeSms', { name: latest.name,
+            body: t('bookings/bookings:cancelNoticeSms', { name: latest.name,
               ...noticeWhen(latest.startsAt, timezone), names: current.memberNames.join(', ') }) };
         } catch (cause) { throw new DeliveryError('not_accepted', 'Booking cancellation text could not be prepared', { cause }); }
         // MemberSms rechecks the text switch, notices consent and caps after the last check above, so nothing reaches

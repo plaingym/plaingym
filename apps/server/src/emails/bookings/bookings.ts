@@ -8,7 +8,7 @@ import { EmailHeading, EmailText, renderEmail } from '../_shared/index.js';
 
 export const templates: readonly EmailTemplate[] = [];
 
-/** A staff cancellation of one booking. The member line appears only when the notice went to a household address. */
+/** A staff cancellation of one booking. The member line appears when `showMembers` is set; the staff cancellation notice always sets it. */
 export function renderBookingCancellation(input: {
   name: string; startsAt: Date; timezone: string; gymName: string; memberNames: string[]; showMembers: boolean; note: string;
 }) {

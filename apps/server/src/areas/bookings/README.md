@@ -205,9 +205,10 @@ After commit the handler attempts only the chosen channels, each under its own
 durable key (`booking-cancel-email:<bookingId>`, `booking-cancel-sms:<bookingId>`),
 apart from the promotion keys. Email goes to one recipient from
 `readMemberNoticeEmails` (the member's own address, or the household billing
-address, which also names the member); text goes to the consented phone from
-`memberNoticePhones` through `MemberSms` notices consent, switch and cap checks
-(the member's own phone isn't told their own name). Right before each provider
+address); text goes to the consented phone from `memberNoticePhones` through
+`MemberSms` notices consent, switch and cap checks. Both name the member whose
+booking was cancelled, at the member's own address or phone too, since siblings
+can have one parent's address or phone on their own records. Right before each provider
 call the handler rechecks that the booking is still cancelled, it is still the
 member's latest booking for that class (rebooking adds a new row; a later booking
 supersedes this one whatever its status, so after a rebooking only the latest

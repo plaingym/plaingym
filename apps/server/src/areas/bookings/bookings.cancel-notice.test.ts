@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Isolated fixtures switch the persisted member email and SMS notices.
-import { auditEvents, classBookings, emailDeliveries, gyms, households, members, smsDailyUsage, smsDeliveries, uuidv7 } from '@plaingym/db';
+import { auditEvents, classBookings, classSessions, emailDeliveries, gyms, households, members, smsDailyUsage, smsDeliveries, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { isInTransaction } from '@plaingym/shared/transaction';
@@ -106,17 +106,54 @@ it('rolls the cancellation, its audit, its promotion request and its notice back
   await f.cancel(['sms']); expect(f.notices()).toHaveLength(1);
 });
 
-it('prefers the member own email and consented phone, without naming them to themselves', async () => {
+it('prefers the member own email and consented phone, and names the member there too', async () => {
   const f = await fixture(), own = '+12025550199';
   await db.forGym(f.gymId, tx => tx.update(members).set({ email: 'mia@example.test', phone: own, phoneE164: own,
     smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }).where(eq(members.id, f.child.id)));
   await f.cancel(['email', 'sms'], 'Sorry about this.'); await f.run();
   expect(f.email.messages.map(message => message.to)).toEqual(['mia@example.test']);
   expect(f.sms.messages.map(message => message.to)).toEqual([own]);
-  expect(f.email.messages[0]!.text).not.toContain('Booking for');
+  expect(f.email.messages[0]!.text).toContain('Booking for: Mia Rivera');
   expect(f.email.messages[0]!.text).toContain('Sorry about this.');
-  expect(f.sms.messages[0]!.body).toContain('Your booking for Evening practice on 2026-11-10 at 7:30 PM EST');
-  expect(f.sms.messages[0]!.body).not.toContain('Mia');
+  expect(f.sms.messages[0]!.body).toContain('The booking for Mia Rivera in Evening practice on 2026-11-10 at 7:30 PM EST has been cancelled by the gym.');
+  expect(f.sms.messages[0]!.body).not.toContain('Your booking');
+});
+
+it('names only the cancelled sibling when siblings share a parent email and phone', async () => {
+  const f = await fixture(), sharedEmail = 'parent@example.test', sharedPhone = '+12025550177';
+  await db.forGym(f.gymId, async tx => {
+    await tx.update(classSessions).set({ capacity: 2 }).where(eq(classSessions.id, f.session.id));
+    await tx.update(members).set({ email: sharedEmail, phone: sharedPhone, phoneE164: sharedPhone,
+      smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }).where(eq(members.id, f.child.id));
+  });
+  const noa = await factory('members', f.gymId, { householdId: f.home.id, firstName: 'Noa', lastName: 'Rivera', email: sharedEmail,
+    phone: sharedPhone, phoneE164: sharedPhone, smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' });
+  const noaBooking = (await f.service.book(f.actor, { memberId: noa.id, sessionId: f.session.id, allowWaitlist: true })).booking;
+  expect(noaBooking).toMatchObject({ memberId: noa.id, status: 'booked' });
+
+  await f.cancel(['email', 'sms']); await f.drain();
+  expect(f.email.messages).toHaveLength(1);
+  expect(f.email.messages[0]).toMatchObject({ to: sharedEmail });
+  expect(f.email.messages[0]!.text).toContain('Booking for: Mia Rivera');
+  expect(f.email.messages[0]!.text).not.toContain('Noa');
+  expect(f.sms.messages).toHaveLength(1);
+  expect(f.sms.messages[0]).toMatchObject({ to: sharedPhone });
+  expect(f.sms.messages[0]!.body).toContain('The booking for Mia Rivera in Evening practice');
+  expect(f.sms.messages[0]!.body).not.toContain('Noa');
+
+  await f.cancel(['email', 'sms'], '', noaBooking.id); await f.drain();
+  expect(f.email.messages).toHaveLength(2);
+  expect(f.email.messages[1]).toMatchObject({ to: sharedEmail });
+  expect(f.email.messages[1]!.text).toContain('Booking for: Noa Rivera');
+  expect(f.email.messages[1]!.text).not.toContain('Mia');
+  expect(f.sms.messages).toHaveLength(2);
+  expect(f.sms.messages[1]).toMatchObject({ to: sharedPhone });
+  expect(f.sms.messages[1]!.body).toContain('The booking for Noa Rivera in Evening practice');
+  expect(f.sms.messages[1]!.body).not.toContain('Mia');
+  const emailKeys = (await db.forGym(f.gymId, tx => tx.select({ key: emailDeliveries.key }).from(emailDeliveries))).map(row => row.key);
+  const smsKeys = (await db.forGym(f.gymId, tx => tx.select({ key: smsDeliveries.key }).from(smsDeliveries))).map(row => row.key);
+  expect(emailKeys.sort()).toEqual([`booking-cancel-email:${f.booking.id}`, `booking-cancel-email:${noaBooking.id}`].sort());
+  expect(smsKeys.sort()).toEqual([`booking-cancel-sms:${f.booking.id}`, `booking-cancel-sms:${noaBooking.id}`].sort());
 });
 
 it.each(['erased', 'restored', 'rebooked', 'waitlisted'] as const)('suppresses both channels when the member is %s before the job runs', async change => {

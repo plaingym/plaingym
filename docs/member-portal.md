@@ -131,7 +131,7 @@ an eligible bank account when the gym has enabled bank payments.
   member's own address or the household's billing address when member emails are on,
   the address can receive email, and the recipient hasn't opted out. The text goes
   to a phone with notices consent when member texts are on. Each choice works
-  independently. Both messages name the class and its date and time. Erasing the
+  independently. Both messages name the member, the class and its date and time. Erasing the
   member, or booking them into the same class again before the notice goes out,
   suppresses both, even if that later booking is cancelled too: only a notice
   staff chose for the latest cancellation goes out, with its own note. If the
