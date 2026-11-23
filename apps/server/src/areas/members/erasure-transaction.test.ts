@@ -157,7 +157,7 @@ describe.each(['fake', 'postgres'] as const)('%s atomic erasure', kind => {
       .every(card => card.revokedAt)).toBe(true);
     if (q instanceof FakeJobs) {
       expect(q.jobs.filter(job => job.name === detachJob).map(job => ({ payload: job.payload, options: job.options }))).toEqual(expect.arrayContaining(cards.map(card => ({
-        payload: { paymentMethodId: card.id, redactBillingDetails: true },
+        payload: { paymentMethodId: card.id, redactBillingDetails: true, customerId },
         options: { gymId, timezone: 'UTC', maxAttempts: 12, idempotencyKey: `detach:${card.id}`, runAt: new Date(clock.now().getTime() + 60_000) } }))));
       expect(q.jobs.filter(job => job.name === detachJob)).toHaveLength(2);
       for (const job of q.jobs.filter(job => job.name === detachJob)) expect(job.runAt).toEqual(new Date(clock.now().getTime() + 60_000));
@@ -166,7 +166,7 @@ describe.each(['fake', 'postgres'] as const)('%s atomic erasure', kind => {
     } else {
       const { detaches, releases } = await cleanupRows(cards, files);
       expect(detaches.map(row => row.payload)).toEqual(expect.arrayContaining(cards.map(card => expect.objectContaining({ timezone: 'UTC',
-        value: { paymentMethodId: card.id, redactBillingDetails: true } }))));
+        value: { paymentMethodId: card.id, redactBillingDetails: true, customerId } }))));
       expect(detaches).toHaveLength(2);
       for (const row of detaches) {
         expect(row.maxAttempts).toBe(12);

@@ -506,7 +506,7 @@ describe('members and households', () => {
     expect(erased.erasedCustomerId).toBe(another ? null : customerId);
     // Only the card this erasure revoked gets a detach job, committed with it; the earlier revoked card already had its own.
     expect(jobs.jobs.filter(job => job.name === detachJob).map(job => job.payload))
-      .toEqual(another ? [] : [{ paymentMethodId: card.id, redactBillingDetails: true }]);
+      .toEqual(another ? [] : [{ paymentMethodId: card.id, redactBillingDetails: true, customerId }]);
     expect(jobs.jobs.filter(job => job.name === redactCustomerJob).map(job => job.payload)).toEqual(another ? [] : [{ customerId }]);
     const state = await database.forGym(gymA, async tx => ({
       home: (await tx.select().from(households).where(eq(households.id, home.id)))[0]!,

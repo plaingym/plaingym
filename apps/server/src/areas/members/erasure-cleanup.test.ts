@@ -84,7 +84,7 @@ describe('erasure cleanup after commit', () => {
     try { status = (await app({ jobs, uploads, detachCard, redactCustomer })(person.id)).status; } finally { setLogSink(previous); }
     expect(status).toBe(200);
     expect(jobs.jobs.filter(job => job.name === detachJob).map(job => job.payload)).toEqual(expect.arrayContaining(
-      cards.map(card => ({ paymentMethodId: card.id, redactBillingDetails: true }))));
+      cards.map(card => ({ paymentMethodId: card.id, redactBillingDetails: true, customerId: 'cus_cleanup' }))));
     expect(jobs.jobs.filter(job => job.name === releaseErasedFilesJob).map(job => job.payload)).toEqual([{ keys: files }]);
     expect(detachCard).toHaveBeenCalledTimes(2);
     // The inline release ran before promotion, and the failed promotion is logged with identifiers only.

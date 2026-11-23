@@ -154,3 +154,98 @@ describe('detaching a card whose customer is linked by a people CSV', () => {
     expect(await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, f.home.id)))).toHaveLength(1);
   });
 });
+
+describe('detaching a card after a last-member erasure cleared the household’s customer link', () => {
+  const erased = (paymentMethodId: string, customerId?: unknown) =>
+    ({ paymentMethodId, redactBillingDetails: true, ...(customerId === undefined ? {} : { customerId }) });
+  const original = { name: 'Payer', email: 'payer@example.invalid', phone: '+12025550123', address: '1 Test Street' };
+
+  it('adopts the customer the erasure read, redacts and detaches the method, and audits once', async () => {
+    const f = await fixture({ householdCustomerId: null });
+    await expect(f.run(erased(f.card.id, 'cus_csv'))).resolves.toBeUndefined();
+    expect(f.detachCard).toHaveBeenCalledTimes(2);
+    expect(f.detachCard).toHaveBeenNthCalledWith(1, f.gymId, 'pm_csv_pad', { redactBillingDetails: true });
+    expect(f.detachCard).toHaveBeenNthCalledWith(2, f.gymId, 'pm_csv_pad', { redactBillingDetails: true });
+    expect(f.stripe.objects.get('cus_csv')!.metadata).toEqual({ gym_id: f.gymId });
+    const method = f.stripe.objects.get('pm_csv_pad')!;
+    expect(method.customer).toBeNull();
+    expect(method.billing_details).toEqual({ name: 'Erased member', email: 'erased-member@example.com', phone: null, address: null });
+    const adopted = await f.audits('billing.customer.adopted');
+    expect(adopted).toHaveLength(1);
+    expect(adopted[0]).toMatchObject({ targetType: 'household', targetId: f.home.id,
+      after: { customerId: 'cus_csv', paymentMethodId: f.card.id, source: 'detach' } });
+    expect(await f.audits('billing.card.detached')).toHaveLength(1);
+    await expect(f.run(erased(f.card.id, 'cus_csv'))).resolves.toBeUndefined();
+    expect(await f.audits('billing.customer.adopted')).toHaveLength(1);
+    expect(await f.audits('billing.card.detached')).toHaveLength(1);
+  });
+
+  it('keeps a payload queued without the customer ID refused, as before', async () => {
+    const f = await fixture({ householdCustomerId: null });
+    const rejection = await f.run(erased(f.card.id)).catch(error => error);
+    expect(rejection).toBe(f.detachErrors[0]);
+    expect(f.adoptCustomer).not.toHaveBeenCalled();
+    expect(await f.audits()).toHaveLength(0);
+    const method = f.stripe.objects.get('pm_csv_pad')!;
+    expect(method.customer).toBe('cus_csv');
+    expect(method.billing_details).toEqual(original);
+  });
+
+  it('refuses a carried customer tagged for another gym and writes nothing', async () => {
+    const f = await fixture({ householdCustomerId: null, customerMetadata: { gym_id: uuidv7() } });
+    const rejection = await f.run(erased(f.card.id, 'cus_csv')).catch(error => error);
+    expect(rejection).toBe(f.detachErrors[0]);
+    expect(f.adoptCustomer).toHaveBeenCalledOnce();
+    expect(f.stripe.requests.filter(request => request.method === 'POST'
+      && request.path === '/v1/customers/cus_csv')).toHaveLength(0);
+    expect(await f.audits()).toHaveLength(0);
+    expect(f.stripe.objects.get('pm_csv_pad')!.customer).toBe('cus_csv');
+  });
+
+  it('leaves a method on a different customer than the carried one attached', async () => {
+    const f = await fixture({ householdCustomerId: null });
+    f.stripe.objects.set('cus_other', { id: 'cus_other', object: 'customer', email: null, metadata: {} });
+    const rejection = await f.run(erased(f.card.id, 'cus_other')).catch(error => error);
+    expect(f.detachErrors).toHaveLength(2);
+    expect(rejection).toBe(f.detachErrors[1]);
+    expect(await f.audits('billing.customer.adopted')).toHaveLength(0);
+    expect(await f.audits('billing.card.detached')).toHaveLength(0);
+    expect(f.stripe.objects.get('pm_csv_pad')!.customer).toBe('cus_csv');
+    expect(f.stripe.objects.get('cus_csv')!.metadata).toEqual({});
+  });
+
+  it('adopts the stored link over a carried customer ID', async () => {
+    const f = await fixture({ householdCustomerId: 'cus_csv' });
+    f.stripe.objects.set('cus_other', { id: 'cus_other', object: 'customer', email: null, metadata: {} });
+    await expect(f.run(erased(f.card.id, 'cus_other'))).resolves.toBeUndefined();
+    expect(f.adoptCustomer).toHaveBeenCalledOnce();
+    expect(f.adoptCustomer).toHaveBeenCalledWith(f.gymId, 'cus_csv');
+    expect(f.detachCard).toHaveBeenCalledTimes(2);
+    expect(f.stripe.objects.get('cus_csv')!.metadata).toEqual({ gym_id: f.gymId });
+    expect(f.stripe.objects.get('cus_other')!.metadata).toEqual({});
+    const method = f.stripe.objects.get('pm_csv_pad')!;
+    expect(method.customer).toBeNull();
+    expect(method.billing_details).toEqual({ name: 'Erased member', email: 'erased-member@example.com', phone: null, address: null });
+    const adopted = await f.audits('billing.customer.adopted');
+    expect(adopted).toHaveLength(1);
+    expect(adopted[0]).toMatchObject({ after: { customerId: 'cus_csv', paymentMethodId: f.card.id, source: 'detach' } });
+    expect(await f.audits('billing.card.detached')).toHaveLength(1);
+  });
+
+  it.each([['a number', 42], ['a malformed ID', 'cus csv'], ['an empty string', '']])(
+    'ignores %s as the carried customer ID', async (_name, customerId) => {
+      const f = await fixture({ householdCustomerId: null });
+      const rejection = await f.run(erased(f.card.id, customerId)).catch(error => error);
+      expect(rejection).toBe(f.detachErrors[0]);
+      expect(f.adoptCustomer).not.toHaveBeenCalled();
+      expect(await f.audits()).toHaveLength(0);
+    });
+
+  it('retries a transient refusal without adopting the carried customer', async () => {
+    const f = await fixture({ householdCustomerId: null }), unavailable = Object.assign(new Error('unavailable'), { statusCode: 503 });
+    f.detachCard.mockRejectedValueOnce(unavailable);
+    await expect(f.run(erased(f.card.id, 'cus_csv'))).rejects.toBe(unavailable);
+    expect(f.adoptCustomer).not.toHaveBeenCalled();
+    expect(f.stripe.objects.get('cus_csv')!.metadata).toEqual({});
+  });
+});

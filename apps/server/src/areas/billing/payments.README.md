@@ -183,7 +183,12 @@ job passes `{ redactBillingDetails: true }` only when its payload carries
 `redactBillingDetails: true`, which only member erasure sets.
 When Stripe refuses the detach because the household's own customer has no gym tag
 (a customer linked by a people CSV), the job tags that customer for the gym, audits
-`billing.customer.adopted` with `source: 'detach'`, and detaches again. A customer
+`billing.customer.adopted` with `source: 'detach'`, and detaches again. After a member
+erasure has cleared the household's customer link, the job adopts the customer ID the
+erasure read from that household, which its payload carries as `customerId`. A stored
+link always wins. A job queued without the field (by an older release, a staff removal
+or a debit-account retirement) behaves as before. The second detach still refuses a
+method attached to any other customer. A customer
 tagged for another gym or deleted is still refused. A rate limit, Stripe server error,
 lost connection, rejected key or missing key permission is retried without adoption.
 Without that operation removal returns unavailable.

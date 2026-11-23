@@ -77,7 +77,8 @@ export function createPaymentJobs(options?: DeliveryOptions): readonly JobRegist
       await options.notifications.receipt(notice, { emailOnly: true });
     } },
     { id: detachJob, async handler(payload, ctx) {
-      const { paymentMethodId, redactBillingDetails } = payload as { paymentMethodId: string; redactBillingDetails?: boolean }; idSchema.parse(paymentMethodId);
+      const { paymentMethodId, redactBillingDetails, customerId } = payload as { paymentMethodId: string; redactBillingDetails?: boolean; customerId?: unknown };
+      idSchema.parse(paymentMethodId);
       const options = read(), scope = options.scope ?? forGym;
       const { row, stripeCustomerId } = await scope(ctx.gymId, async tx => {
         const found = (await tx.select({ row: paymentMethods, stripeCustomerId: households.stripeCustomerId })
@@ -89,18 +90,23 @@ export function createPaymentJobs(options?: DeliveryOptions): readonly JobRegist
       if (!row.revokedAt) return;
       const detach = () => redactBillingDetails === true ? options.detachCard(ctx.gymId, row.processorId, { redactBillingDetails: true })
         : options.detachCard(ctx.gymId, row.processorId);
+      // An erasure clears the household's customer link in the transaction that queues this job, so its payload carries
+      // the customer ID it read from that household's row. The stored link always wins; the payload's only fills a null one.
+      const erasedCustomerId = typeof customerId === 'string' && /^cus_[A-Za-z0-9]+$/.test(customerId) ? customerId : null;
+      const adoptId = stripeCustomerId ?? erasedCustomerId;
       try { await detach(); }
       catch (first) {
         // A people CSV can save the household's method and mandate on its customer without tagging it. Adopt only the
-        // customer the method's own household links, then detach once more. Another gym's or a deleted customer is
-        // refused by adoption, and the first refusal stands. An outage or a key's missing permission is left to the job's retry.
-        if (!options.adoptCustomer || !stripeCustomerId || transientFailure(first)) throw first;
-        try { await options.adoptCustomer(ctx.gymId, stripeCustomerId); }
+        // customer the method's own household links (or linked until its erasure), then detach once more. Another gym's
+        // or a deleted customer is refused by adoption, and the first refusal stands; a method on any other customer is
+        // refused by the second detach. An outage or a key's missing permission is left to the job's retry.
+        if (!options.adoptCustomer || !adoptId || transientFailure(first)) throw first;
+        try { await options.adoptCustomer(ctx.gymId, adoptId); }
         catch { throw first; }
         await detach();
         await scope(ctx.gymId, tx => writeAudit(tx, { gymId: ctx.gymId, actorKind: 'system', action: 'billing.customer.adopted',
           targetType: 'household', targetId: row.householdId,
-          after: { customerId: stripeCustomerId, paymentMethodId: row.id, source: 'detach' }, occurredAt: ctx.clock.now() }));
+          after: { customerId: adoptId, paymentMethodId: row.id, source: 'detach' }, occurredAt: ctx.clock.now() }));
       }
       await recordCardDetached(scope, { gymId: ctx.gymId, actor: { kind: 'system' } }, ctx.clock, row);
     } },

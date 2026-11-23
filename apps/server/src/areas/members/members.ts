@@ -303,8 +303,10 @@ export function createMembersService(options: MembersOptions = {}) {
           { ...queued, idempotencyKey: `clear-billing-email:${erasure.id}` }, transaction);
           await audit(tx, context, billingEmailQueuedAction, 'household', home.id, undefined, { erasure: erasure.id });
         }
-        // Each card's billing details are cleared before it is detached (a staff card removal leaves them).
-        for (const card of revokedCards) await cleanup.jobs.enqueue(detachJob, { paymentMethodId: card.id, redactBillingDetails: true },
+        // Each card's billing details are cleared before it is detached (a staff card removal leaves them). The job carries
+        // the customer ID cleared above, so it can still adopt an untagged customer a people CSV saved the card on.
+        for (const card of revokedCards) await cleanup.jobs.enqueue(detachJob, { paymentMethodId: card.id, redactBillingDetails: true,
+          ...(typeof billing?.customerId === 'string' && billing.customerId ? { customerId: billing.customerId } : {}) },
           { ...queued, idempotencyKey: `detach:${card.id}`, runAt: new Date(now.getTime() + 60_000) }, transaction);
         const files = [...(before.photoKey ? [before.photoKey] : []), ...waivers.map((waiver) => waiver.key)];
         await queueReleasedFiles(transaction, cleanup, files, `release:${id}`, now);

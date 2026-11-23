@@ -204,7 +204,8 @@ cleanup keeps the join regardless of whether the runner held its invoice first.
 timezone as a required argument and inserts every cleanup job in the erasure
 transaction, so the erasure and its jobs commit or roll back together:
 `billing.payments.detach` for each card it revoked (key `detach:<card ID>`,
-12 attempts, a one-minute delay), `members.erasure.release_files` for the photo and signature images
+12 attempts, a one-minute delay; its payload carries the cleared customer ID as
+`customerId` when the household had one), `members.erasure.release_files` for the photo and signature images
 it released (key `release:<member ID>`, 12 attempts, a one-minute delay), and,
 when it cleared a customer ID, `members.erasure.redact_customer` carrying that ID
 (key `redact:<household erasure audit ID>`, 12 attempts, a one-minute delay). It returns `files`,
