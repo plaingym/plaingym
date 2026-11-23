@@ -369,6 +369,25 @@ describe('members and households', () => {
     expect(c.memberListResponseSchema.safeParse(result).success).toBe(true);
     expect(a.createdAt).toBe(clock.now().toISOString());
   });
+  it('leaves erased and Cancelled members out of a check-in eligible lookup before paging, and lists everyone by default', async () => {
+    const lastName = 'Eligible' + uuidv7().slice(-8), home = await factory('households', gymA);
+    const person = (status: c.MemberStatus, firstName: string, anonymizedAt: Date | null = null) =>
+      factory('members', gymA, { householdId: home.id, firstName, lastName, status, anonymizedAt });
+    // Names sort the ineligible rows first, so a filter applied after paging would return an empty first page.
+    const erased = await person('active', 'Aa', new Date()), cancelled = await person('cancelled', 'Ab');
+    const eligible = [await person('active', 'Ba'), await person('frozen', 'Bb'), await person('trial', 'Bc'), await person('visitor', 'Bd')];
+    await factory('members', gymB, { firstName: 'Ca', lastName, status: 'active' });
+    const ids = async (query: Partial<c.MemberListQuery>) => (await service.listMembers(gymA, { search: lastName, limit: 50, offset: 0, ...query })).data.map(row => row.id);
+    expect(await ids({ checkInEligible: true })).toEqual(eligible.map(row => row.id));
+    const first = await service.listMembers(gymA, { search: lastName, checkInEligible: true, limit: 1, offset: 0 });
+    expect(first.data.map(row => row.id)).toEqual([eligible[0]!.id]); expect(first.pagination.total).toBe(4);
+    for (const query of [{}, { checkInEligible: false }]) expect(await ids(query)).toEqual([erased.id, cancelled.id, ...eligible.map(row => row.id)]);
+    expect(await ids({ status: 'cancelled', checkInEligible: true })).toEqual([]);
+    // The route's parsed value parses again in the service.
+    expect(await ids(c.memberListQuerySchema.parse({ search: lastName, checkInEligible: 'true' }))).toEqual(eligible.map(row => row.id));
+    const none = await service.listMembers(gymA, { search: 'No such ' + lastName, checkInEligible: true, limit: 50, offset: 0 });
+    expect(none).toEqual({ data: [], pagination: { limit: 50, offset: 0, total: 0 } });
+  });
   it('rejects stale revisions and racing edits with 409 and audits only committed mutations', async () => {
     const { person, home } = await routeFixture(gymA);
     const results = await Promise.allSettled([service.updateMember(context(), person.id, { revision: 1, firstName: 'One' }), service.updateMember(context(), person.id, { revision: 1, firstName: 'Two' })]);

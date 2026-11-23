@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { and, eq } from 'drizzle-orm';
-import { auditEvents, classBookings, classSessions, uuidv7 } from '@plaingym/db';
+import { and, eq, inArray } from 'drizzle-orm';
+import { auditEvents, classBookings, classSessions, members as memberRows, uuidv7 } from '@plaingym/db';
+import { bookingRosterQuerySchema } from '@plaingym/shared/contracts';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
+import { createAttendanceService } from '../attendance/attendance.js';
 import { createBookingService, promoteWaitlist } from './bookings.js';
 import { createScheduleService } from '../schedule/schedule.js';
 import { createMembersService } from '../members/members.js';
@@ -23,6 +25,47 @@ async function fixture(capacity: number | null = 1) {
   const options = { scope: db.forGym, clock }, service = createBookingService(options);
   const book = async (memberId = member.id, allowWaitlist = true) => (await service.book(actor, { sessionId: session.id, memberId, allowWaitlist })).booking;
   return { gymId, clock, user, member, other, session, actor, options, service, book };
+}
+
+/**
+ * A scope whose transaction runs `mutation`, committed on a connection of its own, right after its `at`-th select statement
+ * finishes. `finish` runs the mutation afterwards when the service issued fewer statements, and waits for it. `rows` records
+ * how many rows each select statement returned, in order.
+ */
+function interleaved(at: number, mutation: () => Promise<unknown> = async () => undefined) {
+  let go!: () => void, statements = 0;
+  const rows: number[] = [];
+  // Chained here, outside the service's scope, so the mutation opens a transaction of its own.
+  const done = new Promise<void>(resolve => { go = resolve; }).then(mutation);
+  type Query = PromiseLike<unknown> & Record<string, unknown>;
+  type Select = (...args: unknown[]) => { from: (...from: unknown[]) => Query };
+  const pause = (query: Query) => {
+    const then = query.then.bind(query);
+    query.then = ((ok, fail) => then(async result => {
+      rows.push((result as unknown[]).length);
+      if (++statements === at) { go(); await done; }
+      return result;
+    }).then(ok, fail)) as Query['then'];
+    return query;
+  };
+  const paused = (select: Select): Select => (...args) => {
+    const builder = select(...args), from = builder.from.bind(builder);
+    builder.from = (...table) => pause(from(...table));
+    return builder;
+  };
+  const scope: typeof db.forGym = (gymId, fn) => db.forGym(gymId, tx => fn(new Proxy(tx, { get(target, key) {
+    const value = Reflect.get(target, key) as unknown;
+    if (typeof value !== 'function') return value;
+    if (key === 'select') return paused(value.bind(target) as Select);
+    // A statement that starts with common table expressions: tx.with(...).select(...).from(...).
+    if (key === 'with') return (...args: unknown[]) => {
+      const builder = (value as (...with_: unknown[]) => { select: Select }).apply(target, args);
+      builder.select = paused(builder.select.bind(builder));
+      return builder;
+    };
+    return value.bind(target) as unknown;
+  } })));
+  return { scope, rows, finish: async () => { go(); await done; } };
 }
 
 describe('booking transactions', () => {
@@ -122,6 +165,117 @@ describe('booking transactions', () => {
     expect(roster.data.find(row => row.booking?.id === booked.id)?.attendance?.memberId).toBe(f.member.id);
     expect(roster.data.find(row => row.booking === null)?.attendance?.memberId).toBe(f.other.id);
     expect(await f.service.roster(f.gymId, f.session.id, { limit: 1, offset: 1 })).toMatchObject({ pagination: { total: 2 } });
+  });
+  it('lists only eligible members on request: booked, then the waitlist in queue order, then walk-ins, across pages', async () => {
+    const f = await fixture(3), foreign = await fixture(3);
+    const [erased, cancelled, firstWait, secondWait, walkIn, erasedWalkIn] = await Promise.all([1, 2, 3, 4, 5, 6].map(() => factory('members', f.gymId)));
+    await f.book(); await f.book(erased!.id); await f.book(cancelled!.id);
+    const first = await f.book(firstWait!.id), second = await f.book(secondWait!.id);
+    expect([first.status, second.status]).toEqual(['waitlisted', 'waitlisted']);
+    await factory('attendances', f.gymId, { memberId: walkIn!.id, sessionId: f.session.id });
+    await factory('attendances', f.gymId, { memberId: erasedWalkIn!.id, sessionId: f.session.id });
+    // Rows written before the member was erased or Cancelled stay in the session; the eligible roster leaves them out.
+    await db.forGym(f.gymId, tx => tx.update(memberRows).set({ anonymizedAt: f.clock.now() }).where(inArray(memberRows.id, [erased!.id, erasedWalkIn!.id])));
+    await db.forGym(f.gymId, tx => tx.update(memberRows).set({ status: 'cancelled' }).where(eq(memberRows.id, cancelled!.id)));
+    await foreign.book(); await factory('attendances', foreign.gymId, { memberId: foreign.other.id, sessionId: foreign.session.id });
+    const eligible = { ...page, checkInEligible: true };
+    const roster = await f.service.roster(f.gymId, f.session.id, eligible);
+    const order = [f.member.id, firstWait!.id, secondWait!.id, walkIn!.id];
+    expect(roster.data.map(row => row.booking?.memberId ?? row.attendance?.memberId)).toEqual(order);
+    expect(roster.data.map(row => row.booking?.queueRank ?? null)).toEqual([null, 1, 2, null]);
+    expect(roster.pagination).toEqual({ ...page, total: 4 });
+    expect(roster.counts).toEqual({ booked: 1, waitlisted: 2, checkedIn: 1 });
+    // Every page keeps the same order, total and whole-session counts.
+    for (const [offset, memberId] of order.entries()) {
+      const single = await f.service.roster(f.gymId, f.session.id, { limit: 1, offset, checkInEligible: true });
+      expect(single.data.map(row => row.booking?.memberId ?? row.attendance?.memberId)).toEqual([memberId]);
+      expect(single.pagination.total).toBe(4); expect(single.counts).toEqual(roster.counts);
+    }
+    expect((await f.service.roster(f.gymId, f.session.id, { limit: 1, offset: 4, checkInEligible: true })).data).toEqual([]);
+    // Omitted or false keeps every member, ordered by ID, with the unfiltered counts.
+    for (const query of [page, { ...page, checkInEligible: false }]) {
+      const all = await f.service.roster(f.gymId, f.session.id, query);
+      expect(all.data.map(row => row.booking?.memberId ?? row.attendance?.memberId))
+        .toEqual([f.member.id, erased!.id, cancelled!.id, firstWait!.id, secondWait!.id, walkIn!.id, erasedWalkIn!.id].sort());
+      expect(all.counts).toEqual({ booked: 3, waitlisted: 2, checkedIn: 2 });
+    }
+    // Cancelling the first waitlist booking moves the other to first place; a check-in leaves the booking waitlisted.
+    await f.service.cancel(f.actor, first.id);
+    const attendance = await createAttendanceService(f.options).record(f.actor, { memberId: secondWait!.id, sessionId: f.session.id, programId: null });
+    const after = await f.service.roster(f.gymId, f.session.id, eligible);
+    expect(after.data.map(row => row.booking?.memberId ?? row.attendance?.memberId)).toEqual([f.member.id, secondWait!.id, walkIn!.id]);
+    expect(after.data[1]).toMatchObject({ booking: { id: second.id, status: 'waitlisted', queueRank: 1, waitlistPosition: second.waitlistPosition },
+      attendance: { id: attendance.id, memberId: secondWait!.id } });
+    expect(after.counts).toEqual({ booked: 1, waitlisted: 1, checkedIn: 2 });
+    // The route's parsed query parses again in the service, and another gym's session is not found.
+    expect((await f.service.roster(f.gymId, f.session.id, bookingRosterQuerySchema.parse({ checkInEligible: 'true' }))).pagination.total).toBe(3);
+    await expect(f.service.roster(f.gymId, foreign.session.id, eligible)).rejects.toMatchObject({ code: 'not_found' });
+  });
+  it('describes one moment in the roster while a check-in or a promotion commits between its statements', async () => {
+    const mutations = {
+      checkIn: (f: Awaited<ReturnType<typeof fixture>>) => createAttendanceService(f.options).record(f.actor, { memberId: f.member.id, sessionId: f.session.id, programId: null }),
+      promote: async (f: Awaited<ReturnType<typeof fixture>>) => {
+        await db.forGym(f.gymId, tx => tx.update(classSessions).set({ capacity: 2 }).where(eq(classSessions.id, f.session.id)));
+        await promoteWaitlist(f.gymId, f.session.id, f.options);
+      },
+    };
+    for (const [name, mutate] of Object.entries(mutations)) for (const query of [{ ...page, checkInEligible: true }, { limit: 1, offset: 1, checkInEligible: true }, page]) {
+      for (const at of [1, 2, 3, 4, 5, 6]) {
+        const f = await fixture(1);
+        await f.book(); expect((await f.book(f.other.id)).status).toBe('waitlisted');
+        const before = await f.service.roster(f.gymId, f.session.id, query);
+        const run = interleaved(at, () => mutate(f));
+        const during = await createBookingService({ ...f.options, scope: run.scope }).roster(f.gymId, f.session.id, query);
+        await run.finish();
+        const after = await f.service.roster(f.gymId, f.session.id, query);
+        expect(after, `${name} changes the roster`).not.toEqual(before);
+        expect([before, after], `${name} after statement ${at} of ${JSON.stringify(query)}`).toContainEqual(during);
+      }
+    }
+  });
+  it('reads full records for the requested roster page only, with whole-session totals, counts and places in line', async () => {
+    const f = await fixture(2), empty = await fixture(2);
+    const [erased, firstWait, secondWait, walkIn] = await Promise.all([1, 2, 3, 4].map(() => factory('members', f.gymId)));
+    await f.book(); await f.book(erased!.id);
+    expect([(await f.book(firstWait!.id)).status, (await f.book(secondWait!.id)).status]).toEqual(['waitlisted', 'waitlisted']);
+    await factory('attendances', f.gymId, { memberId: walkIn!.id, sessionId: f.session.id });
+    await db.forGym(f.gymId, tx => tx.update(memberRows).set({ anonymizedAt: f.clock.now() }).where(eq(memberRows.id, erased!.id)));
+    const modes = [
+      { query: { checkInEligible: true }, order: [f.member.id, firstWait!.id, secondWait!.id, walkIn!.id], counts: { booked: 1, waitlisted: 2, checkedIn: 1 } },
+      { query: {}, order: [f.member.id, erased!.id, firstWait!.id, secondWait!.id, walkIn!.id].sort(), counts: { booked: 2, waitlisted: 2, checkedIn: 1 } },
+      { query: { checkInEligible: false }, order: [f.member.id, erased!.id, firstWait!.id, secondWait!.id, walkIn!.id].sort(), counts: { booked: 2, waitlisted: 2, checkedIn: 1 } },
+    ];
+    const rank = new Map([[firstWait!.id, 1], [secondWait!.id, 2]]);
+    const read = async (gymId: string, sessionId: string, query: Parameters<typeof f.service.roster>[2]) => {
+      const run = interleaved(Infinity);
+      const roster = await createBookingService({ ...f.options, scope: run.scope }).roster(gymId, sessionId, query);
+      // The session check, then the roster statement.
+      expect(run.rows).toHaveLength(2);
+      return { roster, transferred: run.rows[1] };
+    };
+    for (const { query, order, counts } of modes) {
+      const whole = await read(f.gymId, f.session.id, { ...page, ...query });
+      expect(whole.roster.data.map(row => row.booking?.memberId ?? row.attendance?.memberId)).toEqual(order);
+      expect(whole.transferred).toBe(order.length);
+      for (const [offset, memberId] of order.entries()) {
+        const single = await read(f.gymId, f.session.id, { limit: 1, offset, ...query });
+        expect(single.roster.data.map(row => row.booking?.memberId ?? row.attendance?.memberId)).toEqual([memberId]);
+        expect(single.roster.data[0]!.booking?.queueRank ?? null).toBe(rank.get(memberId) ?? null);
+        expect(single.roster.pagination).toEqual({ limit: 1, offset, total: order.length });
+        expect(single.roster.counts).toEqual(counts);
+        // One participant's booking and attendance records, beside the session's totals.
+        expect(single.transferred).toBe(1);
+      }
+      // Past the last page: no rows, the same total and counts, and only the totals row read.
+      for (const offset of [order.length, order.length + 10]) {
+        const beyond = await read(f.gymId, f.session.id, { limit: 1, offset, ...query });
+        expect(beyond.roster).toEqual({ data: [], pagination: { limit: 1, offset, total: order.length }, counts });
+        expect(beyond.transferred).toBe(1);
+      }
+      // A session nobody booked or attended.
+      expect((await read(empty.gymId, empty.session.id, { ...page, ...query })).roster)
+        .toEqual({ data: [], pagination: { ...page, total: 0 }, counts: { booked: 0, waitlisted: 0, checkedIn: 0 } });
+    }
   });
   it('counts the whole session in the roster: booked, waitlisted and checked in, without cancelled or another gym', async () => {
     const f = await fixture(2), foreign = await fixture(2);

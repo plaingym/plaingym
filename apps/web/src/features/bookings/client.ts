@@ -23,8 +23,10 @@ export const bookingClient = {
   async list(memberId: string, offset: number) {
     return parseResponse(bookingsContracts.list.response, await request(bookingsContracts.list.path, { memberId, limit: 50, offset }));
   },
+  /** The staff booking picker offers no erased or Cancelled members. */
   async members(search: string) {
-    return parseResponse(membersContracts.listMembers.response, await request('/api/members', { ...(search ? { search } : {}), limit: 50, offset: 0 })).data;
+    return parseResponse(membersContracts.listMembers.response, await request('/api/members',
+      { ...(search ? { search } : {}), checkInEligible: 'true', limit: 50, offset: 0 })).data;
   },
   async session(id: string) { return parseResponse(scheduleContracts.getSession.response, await request(`/api/schedule/sessions/${id}`)).data; },
   async sessions(date: string, timezone: string) {

@@ -178,9 +178,8 @@ export async function adminScreens(browser: Browser, install: Install, info: Tes
       await showWeek(coachPage, zone, Date.parse(first.startsAt));
       await sessionButton(coachPage, size).click();
       const roster = coachPage.getByRole('region', { name: 'Coach check-in roster', exact: true });
-      await roster.getByLabel('Member name', { exact: true }).fill(last);
-      await roster.getByRole('button', { name: 'Search members', exact: true }).click();
-      await roster.getByRole('button', { name: `Check in Casey ${last}`, exact: true }).click();
+      await roster.getByRole('combobox', { name: 'Check in someone else', exact: true }).fill(last);
+      await roster.getByRole('option', { name: `Casey ${last}`, exact: true }).click();
       await expect(roster.getByRole('button', { name: `Casey ${last} is checked in`, exact: true })).toBeDisabled();
       await expect(roster.getByText('Checked in without spending a credit. This member needs more credits.')).toBeVisible();
       await check(coachPage, info, `${size}-coach-roster`);

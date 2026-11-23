@@ -30,7 +30,12 @@ phone and consent, switch and cap immediately before sending.
 
 Member list search splits on whitespace. Every word must match at least one of
 first name, last name or email, ignoring case; literal `%` and `_` stay literal.
-The admin members list and coach check-in roster use this same query.
+The admin members list and the member pickers use this same query. With
+`checkInEligible=true` (query strings `true` or `false`; omitted means `false`) it
+leaves out erased and Cancelled members before paging, so the total counts only
+who can be checked in; frozen, trial, visitor and other statuses stay. The coach
+check-in roster's **Check in someone else** picker and the staff booking picker
+send it; the Members page does not, and still lists every status.
 The member profile puts its tabs directly below the heading, with general details
 in the Profile tab and erase/delete actions in a separate final section.
 

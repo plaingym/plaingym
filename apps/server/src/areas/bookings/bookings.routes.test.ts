@@ -2,7 +2,7 @@
 import '@hono/zod-openapi';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { auditEvents, classBookings, classCreditEntries, householdUsers, uuidv7 } from '@plaingym/db';
+import { auditEvents, classBookings, classCreditEntries, householdUsers, members, uuidv7 } from '@plaingym/db';
 // eslint-disable-next-line no-restricted-imports -- Initialize the real registrations' app-role pools in the isolated composition test; no raw queries.
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -311,6 +311,25 @@ describe('booking route permissions and production composition', () => {
         await post(server, '/api/bookings', { memberId: f.member.id, sessionId: f.session.id }), await post(server, `/api/bookings/${booking.id}/cancel`)])
         expect([401, 403]).toContain(response.status);
     }
+  });
+  it('accepts the check-in eligible flag on the roster and member lookup, rejects other values, and keeps gym scope', async () => {
+    const f = await fixture(), foreign = await fixture(), server = app(f, staffPrincipal(f, 'coach'));
+    await book(f); await book(f, f.outsider.id); await book(foreign);
+    await db.forGym(f.gymId, tx => tx.update(members).set({ status: 'cancelled' }).where(eq(members.id, f.outsider.id)));
+    const roster = `/api/bookings/sessions/${f.session.id}/roster`, lookup = `/api/members?search=${encodeURIComponent(f.member.lastName)}`;
+    const listed = async (path: string) => {
+      const response = await server.request(path); expect(response.status).toBe(200);
+      return ((await response.json()) as { pagination: { total: number } }).pagination.total;
+    };
+    for (const suffix of ['', '&checkInEligible=false']) expect(await listed(roster + '?limit=50' + suffix)).toBe(2);
+    expect(await listed(roster + '?checkInEligible=true')).toBe(1);
+    const everyone = await listed(lookup);
+    expect(await listed(lookup + '&checkInEligible=false')).toBe(everyone);
+    expect(await listed(lookup + '&checkInEligible=true')).toBe(everyone - 1);
+    expect(await listed(`/api/members?search=NoSuchMember${uuidv7().slice(-8)}&checkInEligible=true`)).toBe(0);
+    for (const value of ['yes', '1', 'TRUE', ''])
+      for (const path of [roster + '?checkInEligible=' + value, lookup + '&checkInEligible=' + value]) expect((await server.request(path)).status).toBe(400);
+    expect((await server.request(`/api/bookings/sessions/${foreign.session.id}/roster?checkInEligible=true`)).status).toBe(404);
   });
   it('returns 404 for foreign resources on every staff endpoint', async () => {
     const f = await fixture(), foreign = await fixture(), booking = await book(foreign), server = app(f, staffPrincipal(f));

@@ -10,7 +10,7 @@ import { api } from '../../lib/api.js';
 import { useBootstrap } from '../../app/context.js';
 import type { ShellBootstrap } from '../../app/services.js';
 import { createRegistries, type ExtensionView } from '../../lib/registries.js';
-import { usePublishSessionCounts, useSessionChanged } from '../../lib/session-summary.js';
+import { usePublishSessionCounts, useSessionChanged, useSessionCounts } from '../../lib/session-summary.js';
 import { SchedulePage, SessionDetail, SessionForm, SessionPanels } from './page.js';
 import { ClassEditor } from './editor.js';
 import { calendarDate, calendarInstant, localTime, shiftDate, weekStart } from './calendar.js';
@@ -282,11 +282,15 @@ describe('schedule calendar and session detail', () => {
   it('shows the booking counts a session panel publishes beside the capacity, and clears them when the panel goes', () => {
     let counts: { booked: number; waitlisted: number; checkedIn: number; stale?: boolean } | null = { booked: 1200, waitlisted: 2400, checkedIn: 3600 };
     const Panel = () => { usePublishSessionCounts(counts); return <p>Counting panel</p>; };
+    // Another panel in the dialog reads what the counting panel published.
+    const Reader = () => { const seen = useSessionCounts(); return <p data-testid="read-counts">{seen ? `${seen.booked}|${seen.waitlisted}|${seen.checkedIn}` : 'none'}</p>; };
     const entry = { id: 'test.counts', labelKey: 'schedule/schedule:notes', permission: { kind: 'staff' as const, capability: 'attendance.manage' as const }, enabled: true, component: Panel };
-    const registries = createRegistries([{ sessionPanels: [entry] }]);
+    const reader = { ...entry, id: 'test.reader', component: Reader };
+    const registries = createRegistries([{ sessionPanels: [entry, reader] }]);
     const detail = (capacity: number | null) => <SessionDetail session={{ ...session, capacity, notes: null }} options={options} roles={['coach']} enabledModules={[]} onSaved={vi.fn()} registries={registries}/>;
     const view = render(detail(4800));
     expect(screen.getByTestId('session-counts').textContent).toBe('Booked 1,200 of 4,800 · 2,400 waitlisted · 3,600 checked in');
+    expect(screen.getByTestId('read-counts').textContent).toBe('1200|2400|3600');
     view.rerender(detail(null));
     expect(screen.getByTestId('session-counts').textContent).toBe('Booked 1,200 · 2,400 waitlisted · 3,600 checked in');
     counts = { booked: 5, waitlisted: 0, checkedIn: 1, stale: true }; view.rerender(detail(5));

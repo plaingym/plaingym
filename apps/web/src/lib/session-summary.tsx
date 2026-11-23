@@ -6,6 +6,8 @@ import type { BookingSessionCounts } from '@plaingym/shared/contracts';
 export type SessionCounts = BookingSessionCounts & { stale?: boolean };
 interface SessionSummary {
   publish: (counts: SessionCounts | null) => void;
+  /** The counts a panel last published, or `null`. */
+  counts: SessionCounts | null;
   /** Rises each time something in the dialog changed the session's bookings or check-ins. */
   changed: number;
   notify: () => void;
@@ -15,8 +17,8 @@ const noop = () => undefined;
 const SessionSummaryContext = createContext<SessionSummary | null>(null);
 
 /** The session dialog provides this around its panels; a panel publishes through `usePublishSessionCounts`, so the schedule never imports a feature. */
-export function SessionCountsProvider({ publish, changed = 0, notify, children }: { publish: SessionSummary['publish']; changed?: number; notify?: () => void; children: ReactNode }) {
-  const value = useMemo(() => ({ publish, changed, notify: notify ?? noop }), [publish, changed, notify]);
+export function SessionCountsProvider({ publish, counts = null, changed = 0, notify, children }: { publish: SessionSummary['publish']; counts?: SessionCounts | null; changed?: number; notify?: () => void; children: ReactNode }) {
+  const value = useMemo(() => ({ publish, counts, changed, notify: notify ?? noop }), [publish, counts, changed, notify]);
   return <SessionSummaryContext.Provider value={value}>{children}</SessionSummaryContext.Provider>;
 }
 
@@ -28,6 +30,9 @@ export function usePublishSessionCounts(counts: SessionCounts | null) {
   }, [publish, counts]);
   useEffect(() => () => publish?.(null), [publish]);
 }
+
+/** The counts another panel published to the surrounding session dialog (the bookings panel's), or `null` outside a dialog or before any arrive. */
+export function useSessionCounts(): SessionCounts | null { return useContext(SessionSummaryContext)?.counts ?? null; }
 
 /** A number that changes whenever a panel or the dialog reported a change; a panel that shows counts reloads when it changes. 0 outside a dialog. */
 export function useSessionChanged(): number { return useContext(SessionSummaryContext)?.changed ?? 0; }

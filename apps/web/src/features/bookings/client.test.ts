@@ -3,6 +3,18 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { bookingClient, type BookingCancelNotice } from './client.js';
 
 afterEach(() => vi.unstubAllGlobals());
+it('offers only eligible members to the staff booking picker, and keeps the full staff roster request', async () => {
+  const fetcher = vi.fn(async () => Response.json({ data: [], pagination: { limit: 50, offset: 0, total: 0 } }));
+  vi.stubGlobal('fetch', fetcher);
+  expect(await bookingClient.members('River')).toEqual([]);
+  const lookup = new URL(String((fetcher.mock.calls[0] as unknown[])[0]), 'https://gym.test');
+  expect(lookup.pathname).toBe('/api/members');
+  expect(Object.fromEntries(lookup.searchParams)).toEqual({ search: 'River', checkInEligible: 'true', limit: '50', offset: '0' });
+  fetcher.mockImplementationOnce(async () => Response.json({ data: [], pagination: { limit: 50, offset: 0, total: 0 }, counts: { booked: 0, waitlisted: 0, checkedIn: 0 } }));
+  await bookingClient.roster('0194a000-0000-7000-8000-000000000002', 0);
+  const roster = new URL(String((fetcher.mock.calls[1] as unknown[])[0]), 'https://gym.test');
+  expect(Object.fromEntries(roster.searchParams)).toEqual({ limit: '50', offset: '0' });
+});
 it('preserves structured booking conflicts for callers without exposing server messages', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: { code: 'conflict', message: 'Private server detail', details: { reason: ['full'] } } }, { status: 409 })));
   await expect(bookingClient.book({ memberId: '0194a000-0000-7000-8000-000000000001',

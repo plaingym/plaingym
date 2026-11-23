@@ -87,6 +87,15 @@ describe('booking and waitlist contracts', () => {
       expect(bookingRosterEntrySchema.safeParse({ displayName: 'River Lee', booking, attendance: { ...attendance, ...change } }).success).toBe(false);
     }
   });
+  it('pages the roster with an optional check-in eligible flag that parses twice', () => {
+    expect(bookingsContracts.roster.query.parse({})).toEqual({ limit: 50, offset: 0 });
+    for (const [value, parsed] of [['true', true], ['false', false], [true, true], [false, false]] as const) {
+      const query = bookingsContracts.roster.query.parse({ checkInEligible: value, limit: '1' });
+      expect(query).toEqual({ checkInEligible: parsed, limit: 1, offset: 0 }); expect(bookingsContracts.roster.query.parse(query)).toEqual(query);
+    }
+    for (const value of ['yes', '1', 'TRUE', '', 0]) expect(bookingsContracts.roster.query.safeParse({ checkInEligible: value }).success).toBe(false);
+    expect(bookingsContracts.roster.query.safeParse({ status: 'waitlisted' }).success).toBe(false);
+  });
   it('carries whole-session counts beside the roster page, and requires them', () => {
     const page = { data: [], pagination: { limit: 50, offset: 0, total: 0 } }, counts = { booked: 4, waitlisted: 2, checkedIn: 3 };
     expect(bookingsContracts.roster.response.parse({ ...page, counts }).counts).toEqual(counts);

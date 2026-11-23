@@ -71,7 +71,9 @@ test('import → schedule → coach check-in → kiosk → promote persists acro
   await showWeek(page, zone, began);
   await page.getByRole('button', { name: /QA evening class/ }).click();
   const roster = page.getByRole('region', { name: 'Coach check-in roster', exact: true });
-  await roster.getByRole('button', { name: 'Check in Jamie River', exact: true }).click();
+  // Jamie has no booking, so the coach checks them in as a walk-in.
+  await roster.getByRole('combobox', { name: 'Check in someone else', exact: true }).fill('Jamie River');
+  await roster.getByRole('option', { name: 'Jamie River', exact: true }).click();
   await expect(roster.getByRole('button', { name: 'Jamie River is checked in', exact: true })).toBeDisabled();
   await page.reload();
   await showWeek(page, zone, began);

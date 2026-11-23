@@ -191,7 +191,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
     {notes && <form key={'notes-' + session.revision} onSubmit={(event) => void change('notes', event)} className="space-y-2">
       <Field label={text('notes')}><Textarea name="notes" defaultValue={session.notes ?? ''} disabled={busy}/></Field>
       <Button type="submit" className="w-full sm:w-auto" disabled={busy}>{text('saveNotes')}</Button></form>}
-    <SessionCountsProvider publish={setCounts} changed={changed} notify={notify}><SessionPanels sessionId={session.id} roles={roles} enabledModules={enabledModules} {...(registries ? { registries } : {})}/></SessionCountsProvider>
+    <SessionCountsProvider publish={setCounts} counts={counts} changed={changed} notify={notify}><SessionPanels sessionId={session.id} roles={roles} enabledModules={enabledModules} {...(registries ? { registries } : {})}/></SessionCountsProvider>
   </div>;
 }
 /** Edits or moves one session through the full, revision-checked session update. Notes keep their own form. */

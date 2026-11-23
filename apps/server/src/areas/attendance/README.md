@@ -102,7 +102,34 @@ payers see their household. A missing or revoked grant returns not found.
 
 The prewired attendance route barrel imports `attendance.routes.ts`. The web contribution
 registers the coach roster under `sessionPanels` and the totals/open-mat panel under
-`memberTabs`. Member/program/tag APIs are consumed through their shared contracts; the
+`memberTabs`.
+
+The coach check-in roster lists the session's people, not the whole gym: it reads
+the bookings session roster with `checkInEligible=true` (see the bookings README),
+so it shows booked members, then waitlisted members with a `Waitlisted · #<rank>`
+badge for their current place in line, then walk-ins already checked in, and never
+erased or Cancelled members. Checking in a waitlisted member records attendance
+only; their booking and place stay as they are. **Check in someone else** is one
+member autocomplete over the eligible member list (`checkInEligible=true` on
+`GET /api/members`); choosing a member records their check-in, and they then appear
+as a walk-in until the check-in is undone. The roster reloads after every check-in
+and undo. It also follows each successful read by the session dialog's bookings
+panel (after a booking or cancellation in that panel, a promotion after a capacity
+change, a check-in reported to the dialog, and that panel's periodic, focus and
+visibility reloads) with one quiet read of its own page, and shows the new page when
+its participants changed: who is on it, their booking's ID, status and place, and
+their check-in. A replacement booking or a kiosk walk-in therefore appears even when
+every count stays the same. A failed bookings read is not followed, and the roster's
+own reads trigger nothing further.
+
+A walk-in's confirmation, and the credit warning a check-in may carry, belong to
+the attendance that check-in recorded, not to the member. While the roster page
+lists that attendance the confirmation says the member is checked in; once a later
+read of that page no longer lists it (undone on another device, for example), the
+confirmation and its warning disappear, and a new visit for the same member shows
+only its own feedback. A walk-in that isn't on the page being shown gets a
+past-tense acknowledgment instead, "Recorded a walk-in for <name> at <time>.", with
+its credit warning, which later reads leave in place. Member/program/tag APIs are consumed through their shared contracts; the
 corresponding implementations must be present for the panels to load. Tests use fixture
 sessions, independent of the schedule materializer.
 

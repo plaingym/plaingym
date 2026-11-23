@@ -85,11 +85,17 @@ export const updateMemberMedicalNotesRequestSchema = z.strictObject({
 });
 export const anonymizeMemberRequestSchema = z.strictObject({ revision: revisionSchema });
 export const memberParamsSchema = z.strictObject({ memberId: idSchema });
+/**
+ * Query flag for check-in pickers: `true` leaves out erased and Cancelled members. Accepts the query strings `true`
+ * and `false` or a boolean, so a value already parsed by the route parses again in the service.
+ */
+export const checkInEligibleQuerySchema = z.union([z.boolean(), z.enum(['true', 'false']).transform(value => value === 'true')]);
 export const memberListQuerySchema = paginationSchema.extend({
   search: nameSchema.optional(),
   householdId: idSchema.optional(),
   status: memberStatusSchema.optional(),
   tagId: idSchema.optional(),
+  checkInEligible: checkInEligibleQuerySchema.optional(),
 });
 export const memberResponseSchema = z.strictObject({ data: memberSchema });
 export const memberListResponseSchema = listResponseSchema(memberSchema);

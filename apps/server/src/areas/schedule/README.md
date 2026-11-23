@@ -87,6 +87,7 @@ cancellation does not need it. The admin calendar
 renders enabled, permitted `sessionPanels` contributions without importing
 their components directly. A panel can publish booking counts for the session
 dialog's summary (`lib/session-summary.tsx`); the dialog shows them beside the
-capacity when a panel has published any. The dialog also tells its panels when a
+capacity when a panel has published any, and hands them to the other panels, so the
+coach check-in roster can follow booking changes. The dialog also tells its panels when a
 capacity change or session cancellation may have changed bookings, and a panel can tell
 the dialog about its own changes (a check-in), so a panel that shows counts reloads.

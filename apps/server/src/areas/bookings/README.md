@@ -244,8 +244,18 @@ No additional member profile fields are exposed. A roster page needs one request
 its booking form separately reads the session detail for the cancellation cutoff.
 
 The roster response carries `counts` for the whole session, not the page:
-`booked`, `waitlisted` (one grouped query over active bookings) and `checkedIn`
-(every check-in, walk-ins included). Cancelled bookings are not counted. The
+`booked`, `waitlisted` (active bookings) and `checkedIn` (every check-in, walk-ins
+included). Cancelled bookings are not counted. Without a flag the roster lists
+every member once, ordered by member ID. With `checkInEligible=true` (query strings
+`true` or `false`; omitted means `false`) it first leaves out erased and Cancelled
+members, then orders booked members, the waitlist by `queueRank`, and walk-ins,
+member ID breaking ties, before paging; the total and `counts` then cover only
+those members. The roster reads the session's members, bookings and check-ins in
+one statement (`bookings.roster.query.ts`), so its rows, places in line, total and
+counts describe one moment even while check-ins and booking changes commit. The
+statement orders, ranks and counts the whole session in the database and returns
+names and full booking and attendance records for the requested page only. The coach check-in roster uses
+the flag; the staff bookings roster does not. The
 roster panel shows them in its heading and publishes them to the session dialog
 (`lib/session-summary.tsx`), which shows them beside the capacity; the schedule
 feature does not import the bookings feature. The panel reloads its counts after

@@ -106,6 +106,7 @@ export function createMembersService(options: MembersOptions = {}) {
         const tagged = query.tagId ? tx.select({ id: memberTagLinks.memberId }).from(memberTagLinks).where(eq(memberTagLinks.tagId, query.tagId)) : undefined;
         const where = and(query.householdId ? eq(members.householdId, query.householdId) : undefined,
           query.status ? eq(members.status, query.status) : undefined, tagged ? inArray(members.id, tagged) : undefined,
+          query.checkInEligible ? isNull(members.anonymizedAt) : undefined, query.checkInEligible ? ne(members.status, 'cancelled') : undefined,
           ...((query.search?.trim().split(/\s+/).filter(Boolean) ?? []).map((word) =>
             or(ilike(members.firstName, search(word)), ilike(members.lastName, search(word)), ilike(members.email, search(word))))));
         if (query.householdId) await getHouseholdRow(tx, query.householdId);

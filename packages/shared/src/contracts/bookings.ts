@@ -5,6 +5,7 @@ import { idSchema, instantSchema, listResponseSchema, paginationSchema } from '.
 import type { RoutePermission } from '../permissions.js';
 import { attendanceSchema } from './attendance.js';
 import { cancellationNoticeChannelsSchema } from './schedule.js';
+import { checkInEligibleQuerySchema } from './members.js';
 
 const manageBookings = { kind: 'staff', capability: 'bookings.manage' } as const satisfies RoutePermission;
 const bookSelf = { kind: 'member', capability: 'bookings.self' } as const satisfies RoutePermission;
@@ -14,6 +15,11 @@ export const bookingIdParamsSchema = z.strictObject({ id: idSchema });
 export const bookingMemberParamsSchema = z.strictObject({ memberId: idSchema });
 export const bookingHouseholdCancelParamsSchema = z.strictObject({ memberId: idSchema, id: idSchema });
 export const bookingRosterParamsSchema = z.strictObject({ sessionId: idSchema });
+/**
+ * With `checkInEligible` true the roster leaves out erased and Cancelled members before paging, and lists booked
+ * members, then the waitlist in queue order, then walk-ins. Omitted or false keeps every member, ordered by ID.
+ */
+export const bookingRosterQuerySchema = paginationSchema.extend({ checkInEligible: checkInEligibleQuerySchema.optional() });
 const bookingFieldsSchema = z.strictObject({
   id: idSchema, memberId: idSchema, sessionId: idSchema, createdAt: instantSchema,
   bookedBy: idSchema, bookedByKind: z.enum(['member', 'staff']),
@@ -73,7 +79,10 @@ export const bookingRosterEntrySchema = z.strictObject({ displayName: z.string()
   .refine((value) => value.attendance === null || (value.attendance.sessionId !== null && (
     value.booking === null || (value.attendance.memberId === value.booking.memberId && value.attendance.sessionId === value.booking.sessionId)
   )), { path: ['attendance'], message: 'Attendance must match the roster session and booked member, when present' });
-/** Whole-session counts, never the current page: active bookings, the waitlist, and members checked in (walk-ins included). Cancelled bookings are not counted. */
+/**
+ * Whole-session counts, never the current page: active bookings, the waitlist, and members checked in (walk-ins included).
+ * Cancelled bookings are not counted. An eligible roster counts only the members it can list.
+ */
 export const bookingSessionCountsSchema = z.strictObject({ booked: z.int().nonnegative(), waitlisted: z.int().nonnegative(), checkedIn: z.int().nonnegative() });
 export const bookingRosterResponseSchema = listResponseSchema(bookingRosterEntrySchema).extend({ counts: bookingSessionCountsSchema });
 
@@ -83,7 +92,7 @@ export const bookingsContracts = {
   create: { method: 'post', path: '/api/bookings', permission: manageBookings, body: createBookingRequestSchema, response: bookingResponseSchema },
   cancel: { method: 'post', path: '/api/bookings/{id}/cancel', permission: manageBookings, params: bookingIdParamsSchema, body: cancelBookingRequestSchema,
     description: 'The JSON body is optional. A booking that is already cancelled returns its earlier result and sends no notice.', response: bookingResponseSchema },
-  roster: { method: 'get', path: '/api/bookings/sessions/{sessionId}/roster', permission: manageBookings, params: bookingRosterParamsSchema, query: paginationSchema, response: bookingRosterResponseSchema },
+  roster: { method: 'get', path: '/api/bookings/sessions/{sessionId}/roster', permission: manageBookings, params: bookingRosterParamsSchema, query: bookingRosterQuerySchema, response: bookingRosterResponseSchema },
   listSelf: { method: 'get', path: '/api/portal/bookings', permission: bookSelf, query: memberBookingListQuerySchema, response: memberBookingListResponseSchema },
   createSelf: { method: 'post', path: '/api/portal/bookings', permission: bookSelf, body: memberCreateBookingRequestSchema, response: memberBookingResponseSchema },
   cancelSelf: { method: 'post', path: '/api/portal/bookings/{id}/cancel', permission: bookSelf, params: bookingIdParamsSchema, response: memberBookingResponseSchema },
@@ -103,6 +112,7 @@ export type BookingListQuery = z.infer<typeof bookingListQuerySchema>;
 export type MemberBookingListQuery = z.infer<typeof memberBookingListQuerySchema>;
 export type BookingSessionCounts = z.infer<typeof bookingSessionCountsSchema>;
 export type BookingRosterEntry = z.infer<typeof bookingRosterEntrySchema>;
+export type BookingRosterQuery = z.input<typeof bookingRosterQuerySchema>;
 
 export type BookingResponse = z.infer<typeof bookingResponseSchema>;
 export type BookingListResponse = z.infer<typeof bookingListResponseSchema>;

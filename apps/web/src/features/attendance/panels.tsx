@@ -1,104 +1,193 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { formatCount } from '../../lib/count.js';
-import { useEffect, useId, useState, type FormEvent } from 'react';
+import { useBootstrap } from '../../app/context.js';
+import { timeLabel } from '../../lib/instant.js';
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import type { Attendance, AttendanceTotals, Member } from '@plaingym/shared/contracts';
 import type { ExtensionViewProps } from '../../lib/registries.js';
 import { t } from '../../lib/i18n.js';
 import { Alert } from '../../components/ui/alert.js';
+import { Autocomplete } from '../../components/ui/autocomplete.js';
 import { Button } from '../../components/ui/button.js';
 import { Pager } from '../../components/ui/pager.js';
-import { Dialog, useDialogOperation } from '../../components/ui/dialog.js';
-import { Input } from '../../components/ui/input.js';
+import { Dialog, useDialogOperation, useDialogSaved } from '../../components/ui/dialog.js';
 import { Label } from '../../components/ui/label.js';
 import { Select } from '../../components/ui/select.js';
-import { TableContainer } from '../../components/ui/table.js';
+import { Badge, TableContainer } from '../../components/ui/table.js';
 import { EmptyState, LoadingState } from '../../components/ui/states.js';
-import { useNotifySessionChanged } from '../../lib/session-summary.js';
+import { useNotifySessionChanged, useSessionCounts } from '../../lib/session-summary.js';
 import { attendanceClient } from './client.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('attendance/attendance:' + key, values);
 export function AttendanceRosterPanel({ sessionId }: ExtensionViewProps) {
   return sessionId ? <Roster key={sessionId} sessionId={sessionId}/> : null;
 }
+/** Suggestions for a walk-in check-in: eligible members only, looked up after a short pause in typing. */
+function WalkIn({ disabled, onChoose }: { disabled: boolean; onChoose(member: { id: string; name: string }): Promise<boolean> }) {
+  const [query, setQuery] = useState(''), [lookup, setLookup] = useState<{ query: string; members: Member[]; failed?: boolean } | null>(null);
+  const [searching, setSearching] = useState(false), lookupSeq = useRef(0);
+  useEffect(() => {
+    const trimmed = query.trim(), seq = ++lookupSeq.current;
+    setLookup(null);
+    if (trimmed.length < 2) { setSearching(false); return; }
+    setSearching(true);
+    const timer = setTimeout(() => {
+      void attendanceClient.members(trimmed).then(rows => { if (seq === lookupSeq.current) setLookup({ query: trimmed, members: rows }); })
+        .catch(() => { if (seq === lookupSeq.current) setLookup({ query: trimmed, members: [], failed: true }); })
+        .finally(() => { if (seq === lookupSeq.current) setSearching(false); });
+    }, 250);
+    return () => { clearTimeout(timer); if (lookupSeq.current === seq) lookupSeq.current++; };
+  }, [query]);
+  const trimmed = query.trim(), current = lookup?.query === trimmed ? lookup : null;
+  const options = current ? current.members.map(row => ({ id: row.id, label: `${row.firstName} ${row.lastName}` })) : [];
+  return <div className="space-y-2">
+    <Autocomplete label={text('walkIn')} query={query} value="" options={options} disabled={disabled}
+      loading={searching || (trimmed.length >= 2 && !current)} onQueryChange={setQuery} onChange={id => {
+        const option = options.find(row => row.id === id);
+        if (!option) return;
+        void onChoose({ id: option.id, name: option.label }).then(saved => { if (saved) setQuery(''); });
+      }}/>
+    {current?.failed && <Alert variant="error">{text('walkInError')}</Alert>}
+  </div>;
+}
+type RosterPage = Awaited<ReturnType<typeof attendanceClient.roster>>;
+/** Who is on the page and in what state: each member with their booking's ID, status and place, and their check-in. */
+const participants = (page: RosterPage) => JSON.stringify([page.pagination.total, page.counts, page.data.map(row => [
+  row.booking?.memberId ?? row.attendance?.memberId, row.displayName, row.booking?.id, row.booking?.status, row.booking?.queueRank, row.attendance?.id])]);
+const sameParticipants = (a: RosterPage, b: RosterPage) => participants(a) === participants(b);
+/**
+ * Feedback for the check-in this roster last recorded, tied to that attendance rather than to the member. `since` is the
+ * number of roster reads started before it was recorded: only later reads say anything about it. `seen` is `pending`
+ * until such a read arrives, `listed` once a read of page `seenOffset` showed it, and `offPage` when the recorded walk-in
+ * isn't on the page being shown, so the page can't confirm it.
+ */
+type Recorded = { attendanceId: string; name: string; at: string; walkIn: boolean; needsCredits: boolean; since: number;
+  seen: 'pending' | 'listed' | 'offPage'; seenOffset?: number };
+/** What a successful read of page `offset` says about the recorded check-in; `null` once a read shows it was undone. */
+function observe(recorded: Recorded | null, page: RosterPage, offset: number, read: number): Recorded | null {
+  if (!recorded || read <= recorded.since) return recorded;
+  if (page.data.some(row => row.attendance?.id === recorded.attendanceId))
+    return recorded.seen === 'listed' && recorded.seenOffset === offset ? recorded : { ...recorded, seen: 'listed', seenOffset: offset };
+  // Gone from the page it was listed on (undone on another device, say), or a check-in from this page's own rows.
+  if ((recorded.seen === 'listed' && recorded.seenOffset === offset) || !recorded.walkIn) return null;
+  return recorded.seen === 'offPage' ? recorded : { ...recorded, seen: 'offPage' };
+}
 function Roster({ sessionId }: { sessionId: string }) {
-  const inputId = useId(), notifyChanged = useNotifySessionChanged();
-  const [search, setSearch] = useState(''), [query, setQuery] = useState('');
-  const [offset, setOffset] = useState(0), [reload, setReload] = useState(0);
-  const [roster, setRoster] = useState<{ data: Member[]; total: number } | null>(null);
-  const [checked, setChecked] = useState<Map<string, Attendance>>(new Map());
+  const notifyChanged = useNotifySessionChanged(), timezone = useBootstrap().data?.gym?.timezone;
+  const markSaved = useDialogSaved(), walkInForm = useRef<HTMLFormElement>(null);
+  const [offset, setOffset] = useState(0), [reload, setReload] = useState(0), [follow, setFollow] = useState(0);
+  const [roster, setRoster] = useState<RosterPage | null>(null);
+  // The attendance IDs whose check-in was recorded here without spending a credit.
   const [needsCredits, setNeedsCredits] = useState<Set<string>>(new Set());
   const [undoing, setUndoing] = useState<{ attendance: Attendance; name: string } | null>(null);
-  const [loading, setLoading] = useState(true), [saving, setSaving] = useState(false), [error, setError] = useState(false);
+  const [recorded, setRecorded] = useState<Recorded | null>(null), readsStarted = useRef(0);
+  const [loading, setLoading] = useState(true), [saving, setSaving] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false), [saveFailed, setSaveFailed] = useState(false);
   useDialogOperation(saving);
+  // The page, reload and follow-up a read last started for; a read that only follows the bookings panel is quiet.
+  const started = useRef<{ offset: number; reload: number } | null>(null);
   useEffect(() => {
     let active = true;
-    setLoading(true); setError(false); setRoster(null);
-    void Promise.all([attendanceClient.members(query, offset), attendanceClient.checkedIn(sessionId)])
-      .then(([members, attendance]) => {
-        if (active) { setRoster(members); setChecked(new Map(attendance.map((row) => [row.memberId, row]))); }
-      }).catch(() => { if (active) setError(true); })
+    const quiet = started.current?.offset === offset && started.current.reload === reload;
+    started.current = { offset, reload };
+    // A refresh keeps the current rows on screen until the new page arrives; a quiet read leaves the actions enabled.
+    if (!quiet) setLoading(true);
+    const read = ++readsStarted.current;
+    void attendanceClient.roster(sessionId, offset).then(page => {
+      if (!active) return;
+      // A page emptied by an undo falls back to the last page that still has rows.
+      if (page.data.length === 0 && offset > 0) setOffset(Math.max(0, Math.floor((page.pagination.total - 1) / 50) * 50));
+      else {
+        setRoster(current => current && sameParticipants(current, page) ? current : page); setLoadFailed(false);
+        setRecorded(current => observe(current, page, offset, read));
+      }
+    }).catch(() => { if (active) { setRoster(null); setLoadFailed(true); } })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [sessionId, query, offset, reload]);
-  async function checkIn(memberId: string) {
-    if (saving || checked.has(memberId)) return;
-    setSaving(true); setError(false);
+  }, [sessionId, offset, reload, follow]);
+  const refresh = () => setReload(value => value + 1);
+  // Each successful read by the dialog's bookings panel publishes a new counts object: after a booking, a cancellation or a
+  // promotion, on its 45-second, focus and visibility reloads, and after a check-in reported to the dialog. The roster
+  // follows each with one quiet read of its own page and shows it when the page's participants changed, so a replacement
+  // booking or a kiosk walk-in appears even when every total stays the same. Counts from a failed read are not a read.
+  // The roster's own reads publish nothing, so a follow-up never causes another.
+  const published = useSessionCounts(), bookingsRead = published && !published.stale ? published : null;
+  const seenRead = useRef(bookingsRead);
+  useEffect(() => {
+    if (bookingsRead === null || bookingsRead === seenRead.current) return;
+    seenRead.current = bookingsRead;
+    setFollow(value => value + 1);
+  }, [bookingsRead]);
+  async function checkIn(member: { id: string; name: string }, walkIn = false) {
+    if (saving) return false;
+    setSaving(true); setSaveFailed(false); setRecorded(null);
     try {
-      const attendance = await attendanceClient.record({ memberId, sessionId, programId: null });
-      setChecked((previous) => new Map(previous).set(memberId, attendance));
-      setNeedsCredits(previous => { const next = new Set(previous); if (attendance.needsCredits) next.add(memberId); else next.delete(memberId); return next; });
-      notifyChanged();
-    } catch { setError(true); }
+      const attendance = await attendanceClient.record({ memberId: member.id, sessionId, programId: null });
+      const credits = attendance.needsCredits === true;
+      if (credits) setNeedsCredits(previous => new Set(previous).add(attendance.id));
+      if (walkIn || credits) setRecorded({ attendanceId: attendance.id, name: member.name, at: attendance.occurredAt, walkIn,
+        needsCredits: credits, since: readsStarted.current, seen: 'pending' });
+      if (walkIn && walkInForm.current) markSaved(walkInForm.current);
+      notifyChanged(); refresh();
+      return true;
+    } catch { setSaveFailed(true); return false; }
     finally { setSaving(false); }
   }
   // A dismissed undo leaves no error behind on the roster.
-  function closeUndo() { setUndoing(null); setError(false); }
+  function closeUndo() { setUndoing(null); setSaveFailed(false); }
   async function undo() {
     if (saving || !undoing) return;
-    setSaving(true); setError(false);
+    setSaving(true); setSaveFailed(false); setRecorded(null);
     try {
       await attendanceClient.undo(undoing.attendance.id);
-      setChecked(previous => { const next = new Map(previous); next.delete(undoing.attendance.memberId); return next; });
-      setNeedsCredits(previous => { const next = new Set(previous); next.delete(undoing.attendance.memberId); return next; });
-      setUndoing(null); notifyChanged();
-    } catch { setError(true); }
+      setNeedsCredits(previous => { const next = new Set(previous); next.delete(undoing.attendance.id); return next; });
+      setUndoing(null); notifyChanged(); refresh();
+    } catch { setSaveFailed(true); }
     finally { setSaving(false); }
   }
   const busy = loading || saving;
+  // A listed check-in from a roster row speaks for itself; a walk-in keeps its banner while the page lists it.
+  const showConfirmation = recorded && (recorded.walkIn || recorded.seen !== 'listed') ? recorded : null;
   return <section className="space-y-4" aria-label={text('roster')}>
     <div className="flex flex-wrap items-baseline justify-between gap-2">
       <h3 className="text-lg font-semibold">{text('roster')}</h3>
-      {roster && <p className="text-sm text-muted-foreground" aria-live="polite">{text('checkedCount', { count: formatCount(checked.size) })}</p>}
+      {roster && <p className="text-sm text-muted-foreground" aria-live="polite">{text('checkedCount', { count: formatCount(roster.counts.checkedIn) })}</p>}
     </div>
-    <form role="search" className="grid grid-cols-[1fr_auto] items-end gap-2 sm:flex" onSubmit={(event) => {
-      event.preventDefault(); setQuery(search.trim()); setOffset(0); setReload((value) => value + 1);
-    }}>
-      <div className="col-span-2 grid gap-2 sm:flex-1"><Label htmlFor={inputId}>{text('search')}</Label>
-        <Input id={inputId} type="search" value={search} onChange={(event) => setSearch(event.target.value)} disabled={busy}/></div>
-      <Button type="submit" disabled={busy}>{text('searchButton')}</Button>
-      <Button type="button" variant="outline" disabled={busy} onClick={() => setReload((value) => value + 1)}>{text('refresh')}</Button>
-    </form>
-    {error && !undoing && <Alert variant="error" focusOnReveal>{text('error')}</Alert>}
+    <div className="grid items-end gap-2 sm:grid-cols-[1fr_auto]">
+      <form ref={walkInForm} onSubmit={event => event.preventDefault()}>
+        <WalkIn disabled={busy} onChoose={member => checkIn(member, true)}/>
+      </form>
+      <Button type="button" variant="outline" disabled={busy} onClick={() => { setLoadFailed(false); setRecorded(null); refresh(); }}>{text('refresh')}</Button>
+    </div>
+    {showConfirmation && <div role="status" className="text-sm">
+      <p>{showConfirmation.seen === 'offPage' ? text('walkInRecordedAt', { name: showConfirmation.name, time: timeLabel(showConfirmation.at, timezone) })
+        : text('walkInRecorded', { name: showConfirmation.name })}</p>
+      {showConfirmation.needsCredits && <p className="text-warning">{text('needsCredits')}</p>}
+    </div>}
+    {loadFailed && <Alert variant="error" focusOnReveal>{text('rosterLoadError')}</Alert>}
+    {saveFailed && !undoing && <Alert variant="error" focusOnReveal>{text('error')}</Alert>}
     {loading && <LoadingState label={text('loading')}/>}
-    {roster && roster.data.length > 0 && <ul className="divide-y divide-border rounded-xl border border-border">{roster.data.map((member) => {
-      const name = `${member.firstName} ${member.lastName}`, attendance = checked.get(member.id), done = !!attendance;
-      return <li key={member.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-2">
+    {roster && roster.data.length > 0 && <ul className="divide-y divide-border rounded-xl border border-border">{roster.data.map((entry) => {
+      const memberId = entry.booking?.memberId ?? entry.attendance!.memberId, name = entry.displayName, attendance = entry.attendance, done = !!attendance;
+      const rank = entry.booking?.status === 'waitlisted' ? entry.booking.queueRank : null;
+      return <li key={memberId} className="flex flex-wrap items-center justify-between gap-3 px-4 py-2">
         <div className="min-w-0 wrap-anywhere"><span className="font-medium">{name}</span>
-          {done && needsCredits.has(member.id) && <p role="status" className="text-sm text-warning">{text('needsCredits')}</p>}</div>
+          {rank !== null && <Badge className="ml-2">{text('waitlisted', { rank: formatCount(rank) })}</Badge>}
+          {attendance && showConfirmation?.attendanceId !== attendance.id && needsCredits.has(attendance.id) &&<p role="status" className="text-sm text-warning">{text('needsCredits')}</p>}</div>
         <div className="flex flex-wrap items-center gap-2">
-        <Button variant={done ? 'secondary' : 'default'} className={done ? 'shrink-0 bg-success/10 text-success disabled:opacity-100' : 'shrink-0'} disabled={busy || done} onClick={() => void checkIn(member.id)}
-          aria-label={text(done ? 'checkedNamed' : 'checkInNamed', { name })}>
+        <Button variant={done ? 'secondary' : 'default'} className={done ? 'shrink-0 bg-success/10 text-success disabled:opacity-100' : 'shrink-0'} disabled={busy || done}
+          onClick={() => void checkIn({ id: memberId, name })} aria-label={text(done ? 'checkedNamed' : 'checkInNamed', { name })}>
           {done && <span aria-hidden="true">✓</span>}{text(done ? 'checked' : 'checkIn')}</Button>
-        {attendance && attendance.source !== 'import' && <Button variant="outline" disabled={busy} onClick={() => { setError(false); setUndoing({ attendance, name }); }}
+        {attendance && attendance.source !== 'import' && <Button variant="outline" disabled={busy} onClick={() => { setSaveFailed(false); setUndoing({ attendance, name }); }}
           aria-label={text('undoNamed', { name })}>{text('undo')}</Button>}
         </div>
       </li>;
     })}</ul>}
-    {roster?.data.length === 0 && <EmptyState title={text('noMembers')} description={query ? text('noMembersHelp') : undefined}/>}
-    {roster && <Pager offset={offset} total={roster.total} limit={50} onChange={setOffset} disabled={busy} previousLabel={text('previous')} nextLabel={text('next')}/>}
+    {roster?.data.length === 0 && <EmptyState title={text('noRoster')} description={text('noRosterHelp')}/>}
+    {roster && <Pager offset={offset} total={roster.pagination.total} limit={50} onChange={setOffset} disabled={busy} previousLabel={text('previous')} nextLabel={text('next')}/>}
     {undoing && <Dialog title={text('undoTitle')} description={text('undoHelp', { name: undoing.name })}
       closeLabel={text('closeUndo')} onClose={closeUndo} dismissible={!saving}>
-      {error && <Alert variant="error" focusOnReveal>{text('error')}</Alert>}
+      {saveFailed && <Alert variant="error" focusOnReveal>{text('error')}</Alert>}
       <div className="flex flex-wrap justify-end gap-2">
         <Button variant="outline" disabled={saving} onClick={closeUndo}>{text('cancelUndo')}</Button>
         <Button disabled={saving} onClick={() => void undo()}>{text('confirmUndo')}</Button>

@@ -366,9 +366,8 @@ for (const width of [360, 1280]) test('coach undoes a credit check-in from the s
   await page.goto(gymOrigin + '/admin/schedule');
   await showWeek(page, await gymTimezone(owner), began);
   await page.getByRole('button', { name: new RegExp(name) }).click();
+  // A walk-in already checked in is listed without a search, so the check-in can be undone.
   const roster = page.getByRole('region', { name: 'Coach check-in roster', exact: true });
-  await roster.getByLabel('Member name').fill('Undo' + width);
-  await roster.getByRole('button', { name: 'Search members', exact: true }).click();
   const action = roster.getByRole('button', { name: 'Undo check-in for Undo' + width + ' Credit', exact: true });
   await expect(action).toBeVisible();
   await action.scrollIntoViewIfNeeded();
@@ -385,14 +384,19 @@ for (const width of [360, 1280]) test('coach undoes a credit check-in from the s
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: info.outputPath('undo-confirm-' + width + '.png'), fullPage: true });
   await submit.click();
-  await expect(roster.getByRole('button', { name: 'Check in Undo' + width + ' Credit', exact: true })).toBeEnabled();
+  // Undo removes the walk-in from the roster; booked and waitlisted members stay.
+  await expect(roster.getByText('Undo' + width + ' Credit', { exact: true })).toHaveCount(0);
   expect((await owner.json<{ data: { balance: number } }>(read)).data.balance).toBe(1);
   expect((await coach.request(undo, 'POST')).status).toBe(404);
   await page.reload(); await showWeek(page, await gymTimezone(owner), began);
   await page.getByRole('button', { name: new RegExp(name) }).click();
-  await roster.getByLabel('Member name').fill('Undo' + width);
-  await roster.getByRole('button', { name: 'Search members', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Check in Undo' + width + ' Credit', exact: true })).toBeEnabled();
+  await expect(roster.getByText('Undo' + width + ' Credit', { exact: true })).toHaveCount(0);
+  // Check the walk-in in again from the eligible member picker.
+  await roster.getByRole('combobox', { name: 'Check in someone else', exact: true }).fill('Undo' + width);
+  await roster.getByRole('option', { name: 'Undo' + width + ' Credit', exact: true }).click();
+  await expect(roster.getByRole('button', { name: 'Undo' + width + ' Credit is checked in', exact: true })).toBeDisabled();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect((await owner.json<{ data: { balance: number } }>(read)).data.balance).toBe(0);
 });
 test('front desk reads and adjusts credits with replay protection; coaches and foreign gyms are refused', async ({ install, sandboxes }) => {
   const owner = install.clients.owner, desk = install.clients.front_desk;

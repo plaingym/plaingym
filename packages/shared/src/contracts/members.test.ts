@@ -98,6 +98,12 @@ describe('member contracts', () => {
     expect(memberListQuerySchema.parse({})).toEqual({ limit: 50, offset: 0 });
     expect(memberListQuerySchema.safeParse({ limit: 101 }).success).toBe(false);
     expect(memberListQuerySchema.safeParse({ filter: 'everything' }).success).toBe(false);
+    // The check-in flag takes query strings or a boolean, so a route-parsed value parses again in the service.
+    for (const [value, parsed] of [['true', true], ['false', false], [true, true], [false, false]] as const) {
+      const query = memberListQuerySchema.parse({ checkInEligible: value });
+      expect(query.checkInEligible).toBe(parsed); expect(memberListQuerySchema.parse(query)).toEqual(query);
+    }
+    for (const value of ['yes', '1', 'TRUE', '', 1, null]) expect(memberListQuerySchema.safeParse({ checkInEligible: value }).success).toBe(false);
     expect(memberListResponseSchema.parse({
       data: [{ ...member, emailDeliverable: false }], pagination: { limit: 50, offset: 0, total: 1 },
     }).data).toHaveLength(1);

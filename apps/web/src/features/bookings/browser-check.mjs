@@ -39,7 +39,11 @@ Object.assign(bookingClient, {
   book:async()=>{booking={...booking,status:'waitlisted',queueRank:2,waitlistPosition:3};return booking;},
   cancel:async(id,notice)=>{(window.cancelCalls??=[]).push(notice??null);if(window.failCancel){window.failCancel=false;throw new Error('Unavailable');}booking={...booking,status:'cancelled',queueRank:null,waitlistPosition:null};return booking;}
 });
-Object.assign(attendanceClient, { members:async()=>({data:[member],total:1}), checkedIn:async()=>[], record:async()=>({id:'visit',memberId}) });
+// The coach check-in roster reads its own eligible roster, unaffected by the simulated bookings failure.
+Object.assign(attendanceClient, { members:async()=>[member],
+  roster:async()=>{const gone=booking.status==='cancelled',waiting=booking.status==='waitlisted';
+    return {data:gone?[]:[{displayName:member.firstName+' '+member.lastName,booking,attendance:null}],pagination:{limit:50,offset:0,total:gone?0:1},counts:{booked:gone||waiting?0:1,waitlisted:waiting?1:0,checkedIn:0}};},
+  record:async()=>({id:'visit',memberId,sessionId,programId:null,source:'coach',kind:'class',occurredAt:'2026-11-02T18:00:00Z',createdAt:'2026-11-02T18:00:00Z',needsCredits:true}) });
 const dialogSession={id:sessionId,name:'Fundamentals',startsAt:'2026-11-02T18:00:00Z',endsAt:'2026-11-02T19:00:00Z',coachId:null,status:'scheduled',capacity:5,notes:null,kind:'class',programIds:[],tagIds:[],revision:1};
 const options={timezone:'America/New_York',programs:[],coaches:[]};
 const services={loadBootstrap:async()=>({gym:{timezone:'America/New_York'},session:{roles:['owner']}})};
@@ -124,6 +128,8 @@ try {
     await page.getByRole('button', { name: 'Refresh', exact: true }).click();
     await expect(page.getByText(/These bookings and counts may be out of date/)).toHaveCount(0);
     await expect(page.getByRole('alert')).toHaveCount(0);
+    // The coach check-in roster beside it loaded its own roster, and follows the cancellation.
+    await expect(page.getByRole('button', { name: 'Check in Alexandria Rivera-Martinez', exact: true })).toBeVisible();
     // The confirmation replaces the roster inside the one session dialog. Escape guards its draft, and a refused
     // request keeps the choices and note for a retry.
     await page.getByRole('button', { name: /^Cancel booking for/ }).click();
@@ -145,7 +151,25 @@ try {
     await expect(page.getByTestId('session-counts')).toHaveText('Booked 0 of 5 · 0 waitlisted · 2 checked in');
     const sent = { channels: ['email'], note: 'Class moved to Monday' };
     expect(await page.evaluate(() => [globalThis.cancelCalls, globalThis.dialogClosed ?? false])).toEqual([[sent, sent], false]);
-    results.push({ width, panel: 'dialog', overflow: false, summaryUpdates: true, staleRecovery: true, escapeKeepsDraft: true, retryKeepsDraft: true });
+    await expect(page.getByRole('button', { name: 'Check in Alexandria Rivera-Martinez', exact: true })).toHaveCount(0);
+    // A walk-in the roster page doesn't list gets a past-tense acknowledgment with its credit notice, kept by later reads.
+    const walkIn = page.getByRole('combobox', { name: 'Check in someone else', exact: true });
+    await walkIn.fill('Alexandria');
+    await expect(page.getByRole('option', { name: 'Alexandria Rivera-Martinez', exact: true })).toBeVisible();
+    await walkIn.press('Enter');
+    const acknowledged = page.getByText(/^Recorded a walk-in for Alexandria Rivera-Martinez at 1:00\sPM\.$/);
+    await expect(acknowledged).toBeVisible();
+    await expect(page.getByText('Checked in without spending a credit. This member needs more credits.')).toBeVisible();
+    await page.evaluate(() => globalThis.dispatchEvent(new Event('focus')));
+    await expect(page.getByTestId('session-counts')).toHaveText('Booked 0 of 5 · 0 waitlisted · 2 checked in');
+    await expect(acknowledged).toBeVisible();
+    await expect(page.getByText(/is checked in\./)).toHaveCount(0);
+    expect(await page.evaluate(() => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth)).toBe(true);
+    const ackBox = await acknowledged.boundingBox();
+    expect(ackBox.x >= 0 && ackBox.x + ackBox.width <= width).toBe(true);
+    await acknowledged.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: resolve(output, 'dialog-walk-in-' + width + '.png'), fullPage: true });
+    results.push({ width, panel: 'dialog', overflow: false, summaryUpdates: true, staleRecovery: true, escapeKeepsDraft: true, retryKeepsDraft: true, walkInAcknowledged: true });
     await context.close();
   }
   // The roster confirmation: both boxes start unticked; each choice is its own fixture; dismissing sends nothing.

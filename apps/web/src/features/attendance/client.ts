@@ -2,9 +2,9 @@
 import { parseResponse } from '../../lib/response.js';
 import { reportApiRefusal } from '../../lib/api.js';
 import {
-  attendanceContracts, attendanceListResponseSchema, attendanceTotalsResponseSchema,
+  attendanceContracts, attendanceTotalsResponseSchema, bookingsContracts,
   memberListResponseSchema, ranksContracts, classTagListResponseSchema,
-  type RecordAttendanceRequest, type Attendance, type Member,
+  type RecordAttendanceRequest, type Member,
 } from '@plaingym/shared/contracts';
 
 async function get(path: string, query: Record<string, string | number>) {
@@ -22,17 +22,15 @@ async function catalog<T>(path: string, parse: (value: unknown) => { data: T[]; 
   }
 }
 export const attendanceClient = {
-  async members(search: string, offset: number): Promise<{ data: Member[]; total: number }> {
-    const page = parseResponse(memberListResponseSchema, await get('/api/members', { limit: 50, offset, ...(search ? { search } : {}) }));
-    return { data: page.data, total: page.pagination.total };
+  /** Walk-in suggestions: members who can be checked in, never erased or Cancelled ones. */
+  async members(search: string): Promise<Member[]> {
+    return parseResponse(memberListResponseSchema, await get('/api/members', { search, checkInEligible: 'true', limit: 50, offset: 0 })).data;
   },
-  async checkedIn(sessionId: string) {
-    const data: Attendance[] = [];
-    for (let offset = 0; ; offset += 100) {
-      const page = parseResponse(attendanceListResponseSchema, await get('/api/attendance', { sessionId, limit: 100, offset }));
-      data.push(...page.data);
-      if (offset + 100 >= page.pagination.total) return data;
-    }
+  /** The session's eligible roster: booked members, then the waitlist in queue order, then walk-ins. */
+  async roster(sessionId: string, offset: number) {
+    const params = bookingsContracts.roster.params.parse({ sessionId });
+    return parseResponse(bookingsContracts.roster.response,
+      await get(bookingsContracts.roster.path.replace('{sessionId}', params.sessionId), { checkInEligible: 'true', limit: 50, offset }));
   },
   async totals(memberId: string) {
     return parseResponse(attendanceTotalsResponseSchema, await get('/api/attendance/totals', { memberId })).data;

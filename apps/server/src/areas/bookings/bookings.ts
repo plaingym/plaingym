@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, count, desc, eq, inArray, lt, ne } from 'drizzle-orm';
-import { attendances, classBookings, classSessions, forGym, householdUsers, members, type Transaction } from '@plaingym/db';
+import { and, desc, eq, inArray, lt, ne } from 'drizzle-orm';
+import { classBookings, classSessions, forGym, householdUsers, members, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
-import { attendanceSchema, bookingListQuerySchema, classBookingSchema, createBookingRequestSchema, paginationSchema,
-  type BookingListQuery, type ClassBooking, type CreateBookingRequest, type Pagination } from '@plaingym/shared/contracts';
+import { attendanceSchema, bookingListQuerySchema, bookingRosterQuerySchema, classBookingSchema, createBookingRequestSchema,
+  type BookingListQuery, type BookingRosterQuery, type ClassBooking, type CreateBookingRequest, type Pagination } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import { notFound, type MutationContext } from '../../core/interfaces/common.js';
 import type { PortalIdentity } from '../../core/interfaces/member-household.js';
@@ -14,6 +14,7 @@ import { lacksClassEligibility } from '../billing/packs/index.js';
 import { withJobTransaction, type JobTransaction } from '../../infra/jobs/index.js';
 import { activeBookings, assertBookable, assertCancellable, bookablePlaces, bookingAudit, bookingConflict, cutoffPassed, openPlaces, reconcileSessionBookings,
   type BookingRow } from './bookings.rules.js';
+import { readRosterPage } from './bookings.roster.query.js';
 
 export interface BookingOptions { scope?: typeof forGym; clock?: Clock; settings?: GymSettingsAccessor; }
 export type BookingNoticeChannel = 'email' | 'sms';
@@ -29,6 +30,9 @@ export type BookingActor = MutationContext & { actor: { kind: 'user'; userId: st
 export async function bookingView(tx: Transaction, row: BookingRow): Promise<ClassBooking> {
   const queueRank = row.status === 'waitlisted' ? 1 + await tx.$count(classBookings, and(
     eq(classBookings.sessionId, row.sessionId), eq(classBookings.status, 'waitlisted'), lt(classBookings.waitlistPosition, row.waitlistPosition!))) : null;
+  return bookingRecord(row, queueRank);
+}
+function bookingRecord(row: BookingRow, queueRank: number | null): ClassBooking {
   return classBookingSchema.parse({ id: row.id, memberId: row.memberId, sessionId: row.sessionId, status: row.status,
     waitlistPosition: row.waitlistPosition, queueRank, bookedBy: row.bookedBy, bookedByKind: row.bookedByKind,
     createdAt: row.createdAt.toISOString(), cancelledAt: row.cancelledAt?.toISOString() ?? null });
@@ -132,32 +136,19 @@ export function createBookingService(options: BookingOptions = {}) {
     async project(gymId: string, rows: BookingRow[]) {
       return scope(gymId, tx => Promise.all(rows.map(row => bookingView(tx, row))));
     },
-    async roster(gymId: string, sessionId: string, input: Pagination) {
-      const page = paginationSchema.parse(input);
+    async roster(gymId: string, sessionId: string, input: BookingRosterQuery) {
+      const { checkInEligible, ...page } = bookingRosterQuerySchema.parse(input);
       return scope(gymId, async tx => {
         await references(tx, { sessionId });
-        const bookedIds = tx.select({ id: classBookings.memberId }).from(classBookings).where(and(eq(classBookings.sessionId, sessionId), ne(classBookings.status, 'cancelled')));
-        const attendedIds = tx.select({ id: attendances.memberId }).from(attendances).where(eq(attendances.sessionId, sessionId));
-        // A member appears once, whether booked, waitlisted or a walk-in.
-        const ids = [...new Set([...(await bookedIds), ...(await attendedIds)].map(row => row.id))].sort();
-        const selected = ids.slice(page.offset, page.offset + page.limit);
-        const names = selected.length ? await tx.select({ id: members.id, firstName: members.firstName, lastName: members.lastName })
-          .from(members).where(inArray(members.id, selected)) : [];
-        const displayNames = new Map(names.map(member => [member.id, `${member.firstName} ${member.lastName}`]));
-        const bookings = selected.length ? await tx.select().from(classBookings).where(and(eq(classBookings.sessionId, sessionId), ne(classBookings.status, 'cancelled'), inArray(classBookings.memberId, selected))) : [];
-        const checked = selected.length ? await tx.select().from(attendances).where(and(eq(attendances.sessionId, sessionId), inArray(attendances.memberId, selected))) : [];
-        const data = await Promise.all(selected.map(async memberId => {
-          const booking = bookings.find(row => row.memberId === memberId), attendance = checked.find(row => row.memberId === memberId);
-          return { displayName: displayNames.get(memberId)!, booking: booking ? await bookingView(tx, booking) : null, attendance: attendance ? attendanceSchema.parse({
-            id: attendance.id, memberId, sessionId, programId: attendance.programId, source: attendance.source, kind: attendance.kind,
-            occurredAt: attendance.occurredAt.toISOString(), createdAt: attendance.createdAt.toISOString() }) : null };
-        }));
-        // Whole-session counts: one grouped query over active bookings, one count of check-ins.
-        const grouped = await tx.select({ status: classBookings.status, total: count() }).from(classBookings)
-          .where(and(eq(classBookings.sessionId, sessionId), ne(classBookings.status, 'cancelled'))).groupBy(classBookings.status);
-        const counts = { booked: grouped.find(row => row.status === 'booked')?.total ?? 0, waitlisted: grouped.find(row => row.status === 'waitlisted')?.total ?? 0,
-          checkedIn: await tx.$count(attendances, eq(attendances.sessionId, sessionId)) };
-        return { data, pagination: { ...page, total: ids.length }, counts };
+        // One statement: the page's rows, places in line, the total and the whole-session counts share one snapshot.
+        const rows = await readRosterPage(tx, sessionId, { ...page, checkInEligible: checkInEligible === true });
+        const { total, booked, waitlisted, checkedIn } = rows[0]!;
+        const data = rows.flatMap(({ memberId, queueRank, firstName, lastName, booking, attendance }) => memberId === null ? [] : [{
+          displayName: `${firstName} ${lastName}`, booking: booking ? bookingRecord(booking, queueRank) : null,
+          attendance: attendance ? attendanceSchema.parse({ id: attendance.id, memberId, sessionId, programId: attendance.programId,
+            source: attendance.source, kind: attendance.kind, occurredAt: attendance.occurredAt.toISOString(), createdAt: attendance.createdAt.toISOString() }) : null,
+        }]);
+        return { data, pagination: { ...page, total }, counts: { booked, waitlisted, checkedIn } };
       });
     },
     /** Counts only: open places for each reservable session, never who holds them. Sessions without capacity are omitted. */
