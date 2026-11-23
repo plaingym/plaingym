@@ -1,14 +1,53 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { useEffect, useRef, useState } from 'react';
+
 declare const __BUILD_INFO__: { version: string; commit: string };
 export const clientVersion = typeof __BUILD_INFO__ === 'undefined' ? null : __BUILD_INFO__;
 
+// Keep in sync with scripts/release/version.mjs, which imports Node APIs.
+export const releaseVersionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+
+function releaseRepository(source: string): string | undefined {
+  let url: URL;
+  try { url = new URL(source); }
+  catch { return undefined; }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return undefined;
+
+  const segments = url.pathname.split('/').filter(Boolean);
+  if (segments.length !== 2 && (segments.length !== 4 || segments[2] !== 'tree')) return undefined;
+  const owner = segments[0], repo = segments[1]?.replace(/\.git$/, '');
+  return owner && repo ? `${url.origin}/${owner}/${repo}` : undefined;
+}
+
 /** The label beside the footer's source link; a plain release links to its notes on the source repository. */
-export function versionLabel(version: string, sourceUrl: string): { text: string; href?: string } {
-  if (!/^\d+\.\d+\.\d+$/.test(version)) return { text: version };
+export function versionLabel(version: string, sourceUrl?: string): { text: string; href?: string } {
+  if (!releaseVersionPattern.test(version)) return { text: version };
+  const text = 'v' + version;
+  const repository = sourceUrl === undefined ? undefined : releaseRepository(sourceUrl);
+  return repository ? { text, href: `${repository}/releases/tag/${text}` } : { text };
+}
+
+async function loadSourceRepository(): Promise<string | undefined> {
   try {
-    const url = new URL(sourceUrl);
-    return { text: 'v' + version, href: `${url.origin}/${url.pathname.split('/').filter(Boolean).slice(0, 2).join('/')}/releases/tag/v${version}` };
-  } catch { return { text: 'v' + version }; }
+    const response = await fetch('/api/source', { credentials: 'same-origin', redirect: 'error', cache: 'no-store' });
+    if (!response.ok) return undefined;
+    const body = await response.json() as { data?: { url?: unknown } } | null;
+    return typeof body?.data?.url === 'string' ? body.data.url : undefined;
+  } catch { return undefined; }
+}
+
+export function useSourceRepository(enabled: boolean): string | undefined {
+  const [source, setSource] = useState<string>();
+  // The same mount can run its effect twice in StrictMode.
+  const request = useRef<Promise<string | undefined>>(undefined);
+  useEffect(() => {
+    if (!enabled) return;
+    let active = true;
+    request.current ??= loadSourceRepository();
+    void request.current.then(url => { if (active) setSource(url); });
+    return () => { active = false; };
+  }, [enabled]);
+  return enabled ? source : undefined;
 }
 
 type FollowOptions = {

@@ -130,7 +130,9 @@ it('never resets an existing password or uses invitations to take over protected
 it('renders a public, translated acceptance page with a source link and hides password in email mode', async () => {
   const page = await server('anonymous').request('/staff-invitation');
   expect(page.status).toBe(200); expect(page.headers.get('cache-control')).toBe('no-store');
-  const html = await page.text(); expect(html).toContain('name="password"'); expect(html).toContain('href="/source"'); expect(html).toContain('aria-label="Version '); expect(html).toContain('location.hash');
+  const html = await page.text(); expect(html).toContain('name="password"'); expect(html).toContain('href="/source"'); expect(html).toContain('location.hash');
+  expect(html).toContain('<span class="sr-only">Version </span>');
+  expect(html).not.toContain('aria-label="Version');
   // The inline script carries a fresh per-response nonce for the Content-Security-Policy.
   expect(html).toMatch(/<script nonce="[A-Za-z0-9+/]{22}==">/);
   const multi = createStaffInvitationService({ config: { ...config, tenancy: 'multi', passwordEnabled: false }, smtpConfigured: smtp.configured, mailer: smtpMailer(smtp), database: () => db.system.db });

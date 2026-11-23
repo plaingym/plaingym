@@ -18,6 +18,7 @@
   "loading": "Loading...",
   "source": "Source code",
   "version": "Version {version}",
+  "versionPrefix": "Version",
   "notFound": "Page not found",
   "error": "Something went wrong. Please try again.",
   "home": "Go to sign in",

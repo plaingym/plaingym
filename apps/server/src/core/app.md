@@ -148,16 +148,20 @@ carries its own reason.
 
 `SOURCE_URL` is read when constructing the app, defaults to the public source
 repository, and is passed through Docker and Compose. Footers can use `/source`
-or load `/api/source` to follow a runtime override. Existing SPA footers use
-their build-time URL until connected to this endpoint.
+or load `/api/source` to follow a runtime override. For a release build, the SPA
+footer loads `/api/source` and links the version once it has a repository URL
+that supports the release link.
 
 Every footer that shows the Source code link also shows the running version
 beside it. The SPA footer reads its own bundle's build; the server-rendered
 pages read `areas/health/version.ts` (what `/healthz` returns). A plain release
-(`0.5.0`) shows as `v0.5.0` and links to `<repository>/releases/tag/v0.5.0`, the
-repository taken from `SOURCE_URL` so a fork links to its own releases; any other
-build (a development build, `0.4.0+0.g6e55ffe`) shows its version text without a
-link. The label wraps onto its own line on a narrow screen.
+(`0.5.0`) shows as `v0.5.0`. It links to `<repository>/releases/tag/v0.5.0` when
+the HTTP(S) source URL path is `<owner>/<repo>` or `<owner>/<repo>/tree/<ref>`.
+The demo product page uses its GitHub project repository when it can identify
+one, or links through `/source` for other matching repository paths. Other
+source paths and non-release builds show the version as text. Server footers
+put a visually hidden “Version ” prefix before the visible version. The
+email-change confirmation page has no stylesheet and shows the prefix as text.
 
 The install endpoint schemas are declared locally. TODO: move these declarations
 into the shared contracts, which currently omit these endpoints. All four

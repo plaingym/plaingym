@@ -1,5 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { releasePattern } from '../../../../scripts/release/version.mjs';
+import { releaseVersionPattern, versionLabel } from './version.js';
+
+describe('the footer version label', () => {
+  it('uses the release script pattern', () => {
+    expect(releaseVersionPattern.source).toBe(releasePattern.source);
+  });
+
+  it('links the repository when the source URL names a tree', () => {
+    expect(versionLabel('0.5.0', 'https://github.com/plaingym/plaingym/tree/0.5.0').href)
+      .toBe('https://github.com/plaingym/plaingym/releases/tag/v0.5.0');
+  });
+
+  it.each([undefined, 'https://gitlab.com/group/sub/gym', 'https://github.com/a/b/archive/refs/tags/v0.5.0.tar.gz'])(
+    'shows a plain version when the release repository is unavailable from %s', source => {
+      expect(versionLabel('0.5.0', source)).toEqual({ text: 'v0.5.0' });
+    },
+  );
+});
 
 describe('the shared navigation version check', () => {
   const built = { version: '1.3.0', commit: '3'.repeat(40) };

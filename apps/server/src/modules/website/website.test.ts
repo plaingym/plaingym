@@ -219,7 +219,7 @@ describe('the pages', () => {
       }
       expect(body, path).not.toMatch(/\son[a-z]+=/i);
       expect(body, path).not.toMatch(/\sstyle=/i);
-      expect(body, path).toContain('href="/source"'); expect(body, path).toContain('aria-label="Version ');
+      expect(body, path).toContain('href="/source"'); expect(body, path).toContain('<span class="sr-only">Version </span>');
       expect(body, path).toContain('href="/portal"');
       expect(body, path).toContain('name="viewport"');
       expect(body, path).toContain(`<link rel="canonical" href="${origin}${path}"/>`);

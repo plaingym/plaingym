@@ -179,9 +179,10 @@ it('has a header with section links, native phone menus and icons on both calls 
 });
 it('keeps the running version in the footer after the source, license and self-hosting links', () => {
   const html = demoLandingPage('/demo', source), footer = html.match(/<footer.*?<\/footer>/s)?.[0] ?? '';
-  const text = footer.replace(/<[^>]+>/g, '|').split('|').filter(Boolean);
+  const text = footer.replace('<span class="sr-only">Version </span>', '').replace(/<[^>]+>/g, '|').split('|').filter(Boolean);
   expect(text.slice(0, 3)).toEqual(['Source code', 'AGPL-3.0 license', 'Self-hosting guide']);
   expect(text).toHaveLength(4);
+  expect(footer).toContain('<span class="sr-only">Version </span>' + text[3]);
   expect(footer).toContain('flex-wrap');
 });
 it('serves only the manifest assets on the entry host with immutable image caching', async () => {
