@@ -119,7 +119,7 @@ it('marks and recovers a terminal dispatch whose stored-event reads failed befor
   const [failed] = await f.queue.failedJobs(webhookDispatchJob, [saved.id], { gymId: f.gymId });
   expect(failed).toBeDefined();
   expect(await f.build().recoverFailed(f.gymId)).toEqual({ recovered: 0, exhausted: 0 });
-  expect(await f.stored()).toMatchObject({ error: 'dispatch_failed', processedAt: null });
+  expect(await f.stored()).toMatchObject({ error: 'dispatch_failed', failedAt: failed!.failedAt, processedAt: null });
   expect(await health.get(f.gymId)).toMatchObject({ pendingCount: 0, failedCount: 1, recentFailedCount: 1 });
   f.clock.advance(webhookRecoveryDelayMs);
   expect(await f.build().recoverFailed(f.gymId)).toEqual({ recovered: 1, exhausted: 0 });
@@ -128,6 +128,33 @@ it('marks and recovers a terminal dispatch whose stored-event reads failed befor
   expect(f.handler).toHaveBeenCalledTimes(1);
   expect(await f.stored()).toMatchObject({ id: saved.id, error: null, processedAt: f.clock.now() });
   expect(await health.get(f.gymId)).toMatchObject({ pendingCount: 0, failedCount: 0, recentFailedCount: 0 });
+});
+
+it('moves the sweep marker’s failure time to the dispatch’s latest failure after a reset', async () => {
+  let failRead = false;
+  const f = await fixture(async (gymId, fn) => {
+    if (failRead) {
+      failRead = false;
+      throw new Error('Inbox read interrupted');
+    }
+    return db.forGym(gymId, fn);
+  });
+  await f.deliver();
+  await f.exhaust(() => { failRead = true; });
+  const saved = await f.stored(), health = createWebhookHealthQuery(db.forGym, f.clock);
+  const [first] = await f.queue.failedJobs(webhookDispatchJob, [saved.id], { gymId: f.gymId });
+  expect(await f.build().recoverFailed(f.gymId)).toEqual({ recovered: 0, exhausted: 0 });
+  expect(await f.stored()).toMatchObject({ error: 'dispatch_failed', failedAt: first!.failedAt });
+  f.clock.advance(8 * 86_400_000);
+  expect(await health.get(f.gymId)).toMatchObject({ failedCount: 1, recentFailedCount: 0 });
+  expect(await f.build().recoverFailed(f.gymId)).toEqual({ recovered: 1, exhausted: 0 });
+  await f.exhaust(() => { failRead = true; });
+  const [second] = await f.queue.failedJobs(webhookDispatchJob, [saved.id], { gymId: f.gymId });
+  expect(second!.failedAt.getTime()).toBeGreaterThan(first!.failedAt.getTime());
+  // Still inside the next cooldown: the sweep records the new failure time without another reset.
+  expect(await f.build().recoverFailed(f.gymId)).toEqual({ recovered: 0, exhausted: 0 });
+  expect(await f.stored()).toMatchObject({ error: 'dispatch_failed', failedAt: second!.failedAt, processedAt: null });
+  expect(await health.get(f.gymId)).toMatchObject({ failedCount: 1, recentFailedCount: 1 });
 });
 
 it('does not reset an event processed while the original dispatch was down', async () => {

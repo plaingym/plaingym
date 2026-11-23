@@ -281,6 +281,13 @@
       "when": 1795367036166,
       "tag": "0040_job_failure_count",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1795410371181,
+      "tag": "0041_stripe_event_failed_at",
+      "breakpoints": true
     }
   ]
 }

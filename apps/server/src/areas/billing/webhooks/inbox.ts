@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, count, eq, gte, isNotNull, isNull, max } from 'drizzle-orm';
+import { and, count, eq, gte, isNotNull, isNull, max, or } from 'drizzle-orm';
 import { forGym, forSystem, stripeEvents, uuidv7, writeAudit } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { z } from 'zod';
@@ -166,13 +166,13 @@ export function createWebhookInbox(options: {
           }
         }
         await scope(context.gymId, async (tx) => {
-          await tx.update(stripeEvents).set({ processedAt: clock.now(), error: null }).where(match(context.gymId, input.eventId));
+          await tx.update(stripeEvents).set({ processedAt: clock.now(), error: null, failedAt: null }).where(match(context.gymId, input.eventId));
           if (skipped) await writeAudit(tx, { gymId: context.gymId, actorKind: 'system', action: testEventSkippedAction,
             targetType: 'stripe_event', targetId: row.id, before: null, after: { eventId: event.id, type: event.type }, occurredAt: clock.now() });
         });
       } catch (error) {
         try {
-          await scope(context.gymId, (tx) => tx.update(stripeEvents).set({ error: 'handler_failed' })
+          await scope(context.gymId, (tx) => tx.update(stripeEvents).set({ error: 'handler_failed', failedAt: clock.now() })
             .where(match(context.gymId, input.eventId)));
         } finally {
           // Keep the original diagnostic even when the database cannot record the failure marker.
@@ -207,7 +207,9 @@ export function createWebhookHealthQuery(scope: typeof forGym = forGym, clock: C
       const [failed] = await tx.select({ total: count() }).from(stripeEvents)
         .where(and(eq(stripeEvents.gymId, gymId), isNotNull(stripeEvents.error)));
       const [recent] = await tx.select({ total: count() }).from(stripeEvents)
-        .where(and(eq(stripeEvents.gymId, gymId), isNotNull(stripeEvents.error), gte(stripeEvents.receivedAt, since)));
+        .where(and(eq(stripeEvents.gymId, gymId), isNotNull(stripeEvents.error),
+          // A row that failed before failure times were recorded counts by when it was received.
+          or(gte(stripeEvents.failedAt, since), and(isNull(stripeEvents.failedAt), gte(stripeEvents.receivedAt, since)))));
       return { lastReceivedAt: times?.received?.toISOString() ?? null, lastProcessedAt: times?.processed?.toISOString() ?? null,
         pendingCount: pending?.total ?? 0, failedCount: failed?.total ?? 0, recentFailedCount: recent?.total ?? 0 };
     });

@@ -389,6 +389,34 @@ it('health counts only this gym and follows processing, failure, and recovery', 
   fail = false; clock.advance(1000); await jobs.runNext();
   expect(await health.get(gymA)).toEqual({ lastReceivedAt: '2026-10-24T12:00:00.000Z', lastProcessedAt: clock.now().toISOString(), pendingCount: 0, failedCount: 0, recentFailedCount: 0 });
 });
+it('health counts a recent failure by when the event last failed, so an old event failing on replay is recent again', async () => {
+  const day = 24 * 60 * 60_000, health = createWebhookHealthQuery(database.forGym, clock);
+  let fail = true;
+  inbox.register('payment_intent.succeeded', async () => { if (fail) throw new Error('failure'); });
+  clock.set('2026-09-01T00:00:00Z'); await deliver(); clock.set('2026-10-24T12:00:00Z');
+  await expect(inbox.dispatch({ eventId: 'evt_test' }, context())).rejects.toThrow('failure');
+  expect((await rows())[0]).toMatchObject({ receivedAt: new Date('2026-09-01T00:00:00Z'), error: 'handler_failed', failedAt: clock.now() });
+  expect(await health.get(gymA)).toMatchObject({ failedCount: 1, recentFailedCount: 1 });
+  clock.advance(6 * day); expect(await health.get(gymA)).toMatchObject({ failedCount: 1, recentFailedCount: 1 });
+  clock.advance(2 * day); expect(await health.get(gymA)).toMatchObject({ failedCount: 1, recentFailedCount: 0 });
+  // A replay that fails again moves the failure time, so the event counts as recent once more.
+  await expect(inbox.dispatch({ eventId: 'evt_test', replay: true }, context())).rejects.toThrow('failure');
+  expect((await rows())[0]).toMatchObject({ error: 'handler_failed', failedAt: clock.now(), processedAt: null });
+  expect(await health.get(gymA)).toMatchObject({ failedCount: 1, recentFailedCount: 1 });
+  fail = false; clock.advance(1000); await inbox.dispatch({ eventId: 'evt_test', replay: true }, context());
+  expect((await rows())[0]).toMatchObject({ processedAt: clock.now(), error: null, failedAt: null });
+  expect(await health.get(gymA)).toMatchObject({ failedCount: 0, recentFailedCount: 0 });
+});
+it('health counts a failure recorded without a failure time by when its event was received', async () => {
+  const day = 24 * 60 * 60_000, health = createWebhookHealthQuery(database.forGym, clock);
+  const id = uuidv7(), match = eq(stripeEvents.id, id);
+  await database.forSystem(tx => tx.insert(stripeEvents).values({ id, eventId: 'evt_old', gymId: gymA, type: 'payment_intent.succeeded',
+    payload: event('evt_old'), receivedAt: new Date(clock.now().getTime() - day), error: 'handler_failed' }));
+  expect((await rows())[0]).toMatchObject({ failedAt: null });
+  expect(await health.get(gymA)).toMatchObject({ failedCount: 1, recentFailedCount: 1 });
+  await database.forSystem(tx => tx.update(stripeEvents).set({ receivedAt: new Date(clock.now().getTime() - 8 * day) }).where(match));
+  expect(await health.get(gymA)).toMatchObject({ failedCount: 1, recentFailedCount: 0 });
+});
 it('deduplicates and retries through the real persistent Postgres queue', async () => {
   const queue = new PostgresJobs({ database, clock }), service = createWebhookInbox({
     paymentsFor: async () => fake, jobs: queue, gymSettings, clock, scope: database.forGym, system: database.forSystem,

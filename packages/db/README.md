@@ -191,6 +191,10 @@ Migration `0040_job_failure_count.sql` adds `jobs.failure_count`, an integer tha
 defaults to 0 and is never null. The queue adds one each time it fails a job and a
 retry never resets it. Existing jobs, failed ones included, start at 0.
 
+Migration `0041_stripe_event_failed_at.sql` adds the nullable `stripe_events.failed_at`,
+the time of the event's latest failed dispatch. Existing rows start without one, and
+Health counts those by their received time.
+
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver

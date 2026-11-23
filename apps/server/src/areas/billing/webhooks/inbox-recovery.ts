@@ -44,12 +44,15 @@ export function createWebhookInboxRecovery(options: { job: string; scope?: typeo
             const { tx } = transaction;
             const event = and(eq(stripeEvents.gymId, gymId), eq(stripeEvents.id, eventId), isNull(stripeEvents.processedAt));
             // Serialize sweeps of this event and recheck the audit after acquiring the row lock.
-            const [row] = await tx.select({ error: stripeEvents.error }).from(stripeEvents).where(event).for('update');
+            const [row] = await tx.select({ error: stripeEvents.error, failedAt: stripeEvents.failedAt }).from(stripeEvents)
+              .where(event).for('update');
             if (!row || (await dispatchAudits(tx, gymId, webhookDispatchRecoveryExhausted, eventId).limit(1)).length) return;
             const [current] = await recovery.failedJobs(options.job, [eventId], { gymId }, transaction);
             if (!current) return;
-            // Health can now count a failed dispatch whose attempts never recorded a handler error.
-            if (row.error === null) await tx.update(stripeEvents).set({ error: 'dispatch_failed' }).where(event);
+            // Health can now count a failed dispatch whose attempts never recorded a handler error, from when its job
+            // failed; the sweep's own marker follows the job's latest failure after a reset.
+            if (row.error === null || (row.error === 'dispatch_failed' && (!row.failedAt || row.failedAt < current.failedAt)))
+              await tx.update(stripeEvents).set({ error: 'dispatch_failed', failedAt: current.failedAt }).where(event);
             const history = await dispatchAudits(tx, gymId, webhookDispatchRetried, eventId).limit(webhookRecoveryLimit);
             const now = clock.now();
             if (history.length >= webhookRecoveryLimit) {

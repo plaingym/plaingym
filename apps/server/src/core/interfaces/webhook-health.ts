@@ -4,7 +4,10 @@ import type { Id, IsoInstant } from '@plaingym/shared/contracts';
 import { clock as systemClock } from '../clock.js';
 import { instant } from './common.js';
 
-/** A failure counts as recent when its event was received within this long before the check. */
+/**
+ * A failure counts as recent when the event last failed within this long before the check (for an event that failed
+ * before failure times were recorded: when it was received).
+ */
 export const recentWebhookFailureMs = 7 * 24 * 60 * 60 * 1000;
 export interface WebhookHealth {
   readonly lastReceivedAt: IsoInstant | null;
@@ -12,7 +15,7 @@ export interface WebhookHealth {
   readonly pendingCount: number;
   /** Events that failed and are still unprocessed: recent and older ones together. A replay that succeeds clears one. */
   readonly failedCount: number;
-  /** The part of `failedCount` received within `recentWebhookFailureMs`; the rest are older and still unresolved. */
+  /** The part of `failedCount` that last failed within `recentWebhookFailureMs`; the rest are older and still unresolved. */
   readonly recentFailedCount: number;
 }
 /** Implemented by the webhook inbox; no payloads, secrets or errors escape. */
@@ -22,6 +25,7 @@ export interface WebhookHealthFixture {
   readonly receivedAt: IsoInstant;
   readonly processedAt: IsoInstant | null;
   readonly failed: boolean;
+  readonly failedAt?: IsoInstant | null;
 }
 export class FakeWebhookHealthQuery implements WebhookHealthQuery {
   readonly #events: readonly WebhookHealthFixture[];
@@ -41,7 +45,7 @@ export class FakeWebhookHealthQuery implements WebhookHealthQuery {
       if (lastReceivedAt === null || instant(event.receivedAt) > instant(lastReceivedAt)) lastReceivedAt = event.receivedAt;
       if (event.processedAt !== null && (lastProcessedAt === null || instant(event.processedAt) > instant(lastProcessedAt)))
         lastProcessedAt = event.processedAt;
-      if (event.failed) { failedCount++; if (instant(event.receivedAt) >= since) recentFailedCount++; }
+      if (event.failed) { failedCount++; if (instant(event.failedAt ?? event.receivedAt) >= since) recentFailedCount++; }
       else if (event.processedAt === null) pendingCount++;
     }
     return { lastReceivedAt, lastProcessedAt, pendingCount, failedCount, recentFailedCount };

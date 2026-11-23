@@ -85,4 +85,13 @@ describe('Operational read interfaces', () => {
     expect(await fake.get(gym)).toEqual({ lastReceivedAt: '2026-10-21T12:00:00Z', lastProcessedAt: '2026-10-20T13:00:00Z', pendingCount: 1, failedCount: 2, recentFailedCount: 1 });
     expect(await new FakeWebhookHealthQuery().get(gym)).toEqual({ lastReceivedAt: null, lastProcessedAt: null, pendingCount: 0, failedCount: 0, recentFailedCount: 0 });
   });
+  it('counts a webhook failure as recent by when it last failed, not when it was received', async () => {
+    const fake = new FakeWebhookHealthQuery([
+      // Received 30 days before the clock, failed again 1 day before it.
+      { gymId: gym, receivedAt: '2026-09-22T12:00:00Z', processedAt: null, failed: true, failedAt: '2026-10-21T12:00:00Z' },
+      // Received 30 days before the clock, last failed 9 days before it: older.
+      { gymId: gym, receivedAt: '2026-09-22T12:00:00Z', processedAt: null, failed: true, failedAt: '2026-10-13T12:00:00Z' },
+    ], new TestClock('2026-10-22T12:00:00Z'));
+    expect(await fake.get(gym)).toMatchObject({ failedCount: 2, recentFailedCount: 1 });
+  });
 });
