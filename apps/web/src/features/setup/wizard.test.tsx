@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createWebRegistries } from '@plaingym/shared';
@@ -18,6 +18,9 @@ const services: ShellServices = {
 };
 const privateKey = 'AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ';
 const publicKey = 'age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
+const restoreJob = '019a0af0-9c00-7000-8000-0000000000bb';
+/** The faked server's next answers to restore polls, in order; once they run out, the restore is complete. */
+let restorePolls: (() => Response | Promise<Response>)[] = [];
 /** A faked setup server: its step, revision and the owner's recorded decisions, as `/api/setup` reports them. */
 function start(step = 0, completedSteps = Array.from({ length: step }, (_, i) => i), registries = createRegistries(),
   recorded: { googleSkipped?: boolean; backupsLater?: boolean } = {}) {
@@ -47,7 +50,9 @@ function start(step = 0, completedSteps = Array.from({ length: step }, (_, i) =>
       return Response.json({ data: { publicKey, confirmed: true, revision } });
     }
     if (name.endsWith('/stripe')) { currentStep = 7; revision++; return Response.json({ data: { configured: false, mode: null, webhookRegistered: false, revision } }); }
-    if (name.startsWith('/api/setup/restore/')) return Response.json({ data: { status: 'restored', jobId: name.split('/').pop(), billingEnabled: false, next: 'login' } });
+    if (name === '/api/setup/restore') return Response.json({ data: { status: 'running', jobId: restoreJob, phase: 'verifying' } });
+    if (name.startsWith('/api/setup/restore/')) return restorePolls.length ? restorePolls.shift()!()
+      : Response.json({ data: { status: 'restored', jobId: name.split('/').pop(), billingEnabled: false, next: 'login' } });
     if (name.endsWith('/finish')) return Response.json({ data: { completed: true, billingEnabled: false, memberEmailsEnabled: false, revision: ++revision } });
     return Response.json({}, { status: 500 });
   });
@@ -58,8 +63,8 @@ function start(step = 0, completedSteps = Array.from({ length: step }, (_, i) =>
   render(<QueryClientProvider client={query}><ShellServicesContext.Provider value={services}><SetupWizard client={client} registries={registries} /></ShellServicesContext.Provider></QueryClientProvider>);
   return { fetcher, client, query };
 }
-beforeEach(() => { sessionStorage.clear(); localStorage.clear(); vi.clearAllMocks(); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+beforeEach(() => { sessionStorage.clear(); localStorage.clear(); vi.clearAllMocks(); restorePolls = []; });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe('setup wizard', () => {
   it('reports a structured setup refusal once and keeps its reason codes on the thrown error', async () => {
     const reason = ['demo_showcase_read_only'], observe = vi.fn(), stop = onApiError(observe);
@@ -683,5 +688,84 @@ describe('setup wizard resume', () => {
     expect(await screen.findByRole('button', { name: 'Generate backup key' })).toBeDefined();
     const decision = fetcher.mock.calls.find(([path]) => path === '/api/setup/decisions');
     expect(JSON.parse(String(decision?.[1]?.body))).toEqual({ revision: 1, decision: 'backups_now' });
+  });
+});
+
+describe('setup wizard restore progress', () => {
+  const running = (phase: string) => () => Response.json({ data: { status: 'running', jobId: restoreJob, phase } });
+  const failed = (reason: string, staged: boolean) => () => Response.json({ data: { status: 'failed', jobId: restoreJob, message: 'Restore failed.', reason, staged } });
+  const restoring = /Restoring your verified backup/;
+  async function startRestore() {
+    start(0);
+    await userEvent.click(await screen.findByRole('button', { name: 'Restore a backup' }));
+    await userEvent.type(screen.getByLabelText('S3-compatible endpoint URL'), 'https://s3.example.test');
+    await userEvent.type(screen.getByLabelText('Storage bucket'), 'backups');
+    await userEvent.type(screen.getByLabelText('Storage access key ID'), 'access');
+    await userEvent.type(screen.getByLabelText('Storage secret access key'), 'secret');
+    await userEvent.type(screen.getByLabelText('Snapshot ID or snapshots/ID/ prefix'), '019a0af0-9c00-7000-8000-0000000000cc');
+    await userEvent.click(screen.getByLabelText('Backup private key')); await userEvent.paste(privateKey);
+    await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Restore a backup' }));
+  }
+  /** Runs the next restore poll: one second while the server answers, five while it doesn't. */
+  const tick = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+
+  it('names the cause of a failed restore, without the maintenance command when nothing is staged', async () => {
+    restorePolls = [failed('credentials_rejected', false)];
+    await startRestore();
+    expect(await screen.findByText('Restore failed: the storage service rejected the access key ID or secret. Check both, then start again.')).toBeDefined();
+    expect(document.body.textContent).not.toMatch(/maintenance/i);
+    expect(screen.queryByText(restoring)).toBeNull();
+    // Starting fresh instead leaves the failure behind on step 0.
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Start fresh' }));
+    expect(await screen.findByRole('heading', { name: 'Create your owner account' })).toBeDefined();
+    expect(screen.queryByText(/^Restore failed/)).toBeNull();
+  });
+  it('says a verified restore is staged, and how it finishes, when the server says so', async () => {
+    restorePolls = [failed('other', true)];
+    await startRestore();
+    expect(await screen.findByText(/^Restore failed\. Check the storage details, snapshot ID and private key, then start again\. The server log has the cause\.$/)).toBeDefined();
+    expect(screen.getByText(/^A verified restore is staged on the server\./).textContent).toContain('maintenance command');
+  });
+  it('shows a server that stops answering instead of the spinner, and keeps checking', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    sessionStorage.setItem('setup.restore', restoreJob);
+    restorePolls = [running('verifying'), () => { throw new TypeError('Failed to fetch'); }, running('database'), () => new Response('Bad gateway', { status: 502 })];
+    const { fetcher } = start(0);
+    expect(await screen.findByText(restoring)).toBeDefined();
+    await tick(1000);
+    expect(await screen.findByText("The server isn't answering. This page keeps checking.")).toBeDefined();
+    expect(screen.getByText(/^If the server restarted while the backup was being checked/)).toBeDefined();
+    expect(screen.queryByText(restoring)).toBeNull();
+    // While unreachable, it checks every five seconds.
+    const polls = () => fetcher.mock.calls.filter(([path]) => String(path).startsWith('/api/setup/restore/')).length;
+    await tick(4000);
+    expect(polls()).toBe(2);
+    await tick(1000);
+    expect(await screen.findByText(restoring)).toBeDefined();
+    expect(polls()).toBe(3);
+    await tick(1000);
+    expect(await screen.findByText('The backup was verified, so the restore carries on by itself when the server is back.')).toBeDefined();
+    expect(screen.queryByText(restoring)).toBeNull();
+    expect(sessionStorage.getItem('setup.restore')).toBe(restoreJob);
+  });
+  it('keeps checking after a server error, without guessing the phase it never saw', async () => {
+    sessionStorage.setItem('setup.restore', restoreJob);
+    restorePolls = [() => Response.json({ error: { code: 'internal', message: 'Internal error' } }, { status: 500 })];
+    start(0);
+    expect(await screen.findByText("The server isn't answering. This page keeps checking.")).toBeDefined();
+    expect(screen.queryByText(/^If the server restarted while the backup was being checked/)).toBeNull();
+    expect(screen.queryByText(/^The backup was verified/)).toBeNull();
+    expect(screen.queryByText('Could not read restore progress. Reload this page to retry.')).toBeNull();
+    expect(sessionStorage.getItem('setup.restore')).toBe(restoreJob);
+  });
+  it('stops polling and shows the progress error on step 0 when the server no longer knows the restore', async () => {
+    sessionStorage.setItem('setup.restore', restoreJob);
+    restorePolls = [() => Response.json({ error: { code: 'not_found', message: 'Restore not found' } }, { status: 404 })];
+    start(0);
+    expect(await screen.findByText('Could not read restore progress. Reload this page to retry.')).toBeDefined();
+    expect(screen.getByRole('heading', { name: 'Start fresh or restore a backup' })).toBeDefined();
+    expect(screen.queryByText(restoring)).toBeNull();
+    expect(sessionStorage.getItem('setup.restore')).toBeNull();
   });
 });

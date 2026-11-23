@@ -82,7 +82,10 @@ and logged again if they recur after a successful check.
 | `SNAPSHOT is not a snapshot ID (a UUID)` | The ID you passed. |
 | `The restore configuration names a different snapshot than SNAPSHOT` | The `snapshotId` field, if you set one. |
 | `Cannot read the key file (CODE)` | `identityFile` in the configuration, and that the file is inside the container. |
-| `The backup bucket answered with error CODE` | The bucket's error code (such as `AccessDenied`, or `HTTP` and a status): the access keys, region and endpoint. |
+| `The backup bucket rejected the access key or secret (CODE)` | The access key ID and secret: the bucket refused them (such as `SignatureDoesNotMatch` for a wrong secret, `InvalidAccessKeyId`, `AccessDenied`, or `HTTP 401` or `HTTP 403`). |
+| `The backup bucket doesn't exist (NoSuchBucket)` | The bucket name, endpoint and region. |
+| `The snapshot isn't in the backup bucket (CODE); check the snapshot ID` | The snapshot ID (`NoSuchKey` or `NotFound`). |
+| `The backup bucket answered with error CODE` | Any other error code from the bucket (such as `InternalError`, or `HTTP` and a status): the region, endpoint and the storage service's status. |
 | `Cannot reach the backup bucket (CODE)` | The `endpoint` and the server's network connection; `ECONNREFUSED` and `ENOTFOUND` mean nothing answered at that address. |
 | `Snapshot not found in the bucket` | The snapshot ID, and the `bucket` name: a bucket that doesn't exist reads the same as a snapshot that doesn't. |
 | `The key doesn't open this snapshot` | That the key file is the private key for the backup key the snapshot was made with. |
@@ -108,7 +111,7 @@ and logged again if they recur after a successful check.
 | `The snapshot's contents are not in a format this version reads` | Use a compatible snapshot and app version. Snapshot field names and values aren't printed. |
 | `The snapshot is damaged; try an earlier one` | Snapshot metadata, authentication or checksums failed before activation. Nothing was restored; use an intact earlier snapshot. |
 | `The staged restore failed; preserve the restore state and check the server before retrying resume` | A failure after activation, including damaged staged files, a database restore failure, or a disk error just after the restore journal was written. Keep the journal and staged files, investigate the server and storage, then retry `resume` once the cause is resolved. An earlier snapshot can't replace an active restore. |
-| `The staged restore failed: the uploads bucket answered with error CODE; preserve the restore state, fix the uploads bucket, then retry resume` | An install that keeps uploads in S3: its uploads bucket (`UPLOADS_S3_*`, not the backup bucket) refused to take the restored files, with that error code (such as `AccessDenied`, or `HTTP` and a status). Fix its access keys or policy, then resume. |
+| `The staged restore failed: the uploads bucket answered with error CODE; preserve the restore state, fix the uploads bucket, then retry resume` | An install that keeps uploads in S3: its uploads bucket (`UPLOADS_S3_*`, not the backup bucket) refused to take the restored files, with that error code (`HTTP` and a status when it names none). When it reads `the uploads bucket rejected the access key or secret (CODE)` instead, fix its access keys or policy; when it reads `the uploads bucket doesn't exist (NoSuchBucket)`, its bucket name and endpoint. Then resume. |
 | `The staged restore failed: cannot reach the uploads bucket (CODE); preserve the restore state, fix the uploads bucket, then retry resume` | The uploads bucket's endpoint didn't answer (`ECONNREFUSED`, `ENOTFOUND` or a timeout). Check `UPLOADS_S3_ENDPOINT` and the network, then resume. |
 | `The restore activity lease is invalid; stop the app, delete the restore-activity folder on its data volume, then start the app` | A process lease file on the data volume is invalid or oversized. Each process keeps one lease while requests and jobs are counted in memory; with the app stopped none is live and the folder can go: `sudo docker compose stop app`, then `sudo docker compose run --rm --no-deps --entrypoint rm app -rf /var/lib/plaingym/restore-activity`, then `sudo docker compose up -d`. Leave `restore-state.json` and `staging/` alone: a staged restore resumes when the app starts. |
 | `Timed out waiting for restore activity to drain; stop the app, then retry resume` | The PIDs printed during the drain and their app logs. Stop the app before resuming; keep `restore-state.json` and staging. |
@@ -121,8 +124,11 @@ Fix what the reason names. If the resume hint appeared, a restore is staged and 
 
 A verified restore resumes by itself when the app restarts (`sudo docker compose up -d`): the
 container's entrypoint resumes it before migrations or any request. If the wizard says the
-restore failed, check the bucket, credentials, snapshot ID and key against the
-[errors](#restore-errors), then start it again.
+restore failed, it names the cause: rejected storage credentials, a missing bucket or snapshot,
+an endpoint it couldn't reach, a private key that doesn't open the snapshot or isn't one, or a
+damaged snapshot. Fix that (the [errors](#restore-errors) say what to check), then start it
+again. The wizard mentions the maintenance command only when a verified restore is staged. If
+the server stops answering while a restore runs, the page says so and keeps checking.
 
 Under the backup lock, starting a new restore removes abandoned `restore-*` staging
 folders when no restore is active. `resume` does the same when the journal is absent

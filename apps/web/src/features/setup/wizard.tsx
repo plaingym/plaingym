@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { smtpPresets } from '../../lib/integration-setup.js';
-import { createContext, useContext, useState, useEffect, useMemo, useRef, type FormEvent, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useState, useEffect, useMemo, useRef, type FormEvent, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { setupBackupConfirmRequestSchema, type GoogleClientCheck, type SetupS3Credentials } from '@plaingym/shared/contracts';
+import { setupBackupConfirmRequestSchema, type GoogleClientCheck, type SetupRestoreFailureReason, type SetupRestoreResponse, type SetupS3Credentials } from '@plaingym/shared/contracts';
 import { Button } from '../../components/ui/button.js';
 import { Label } from '../../components/ui/label.js';
 import { CheckboxField, Select } from '../../components/ui/select.js';
@@ -105,6 +105,16 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   const errorBox = useRevealed<HTMLDivElement>(error);
   const [restore, setRestore] = useState(false), [jobId, setJobId] = useState<string | null>(() => sessionStorage.getItem('setup.restore'));
   const [restoreState, setRestoreState] = useState<'running' | 'failed' | 'restored' | null>(null);
+  const [restoreFailure, setRestoreFailure] = useState<{ reason: SetupRestoreFailureReason; staged: boolean } | null>(null);
+  // The last `running` answer's phase; null until one arrives (after a reload, say), so an unreachable server isn't guessed at.
+  const [phase, setPhase] = useState<string | null>(null), [unreachable, setUnreachable] = useState(false);
+  const restoreAnswer = useCallback((state: SetupRestoreResponse['data']) => {
+    setRestoreState(state.status);
+    if (state.status === 'failed') setRestoreFailure({ reason: state.reason, staged: state.staged });
+    if (state.status === 'running') setPhase(state.phase);
+  }, []);
+  // The job a poll last settled for: switching between answering and unreachable only changes the interval, without an extra poll.
+  const polledJob = useRef<string | null>(null);
   // The website step's choice once the owner picks one; until then the draft's.
   const [siteChoice, setSiteChoice] = useState<'builtin' | 'existing' | null>(null);
   // Reopened, the step's radios start again from the draft, so the address follows the draft too.
@@ -143,14 +153,22 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
       try {
         const state = await client.call('restoreStatus', undefined, jobId);
         if (!alive) return;
-        setRestoreState(state.status);
+        polledJob.current = jobId;
+        setUnreachable(false);
+        restoreAnswer(state);
         if (state.status !== 'running') { sessionStorage.removeItem('setup.restore'); setJobId(null); }
-      } catch { if (alive) { setError('pollFailed'); setJobId(null); } }
+      } catch (failure) {
+        if (!alive) return;
+        polledJob.current = jobId;
+        // No answer, the proxy's answer for an app that is down, or a server error: the restore may still be running, so keep checking.
+        if (failure instanceof TypeError || (failure instanceof ApiError && failure.status >= 500)) { setUnreachable(true); return; }
+        setError('pollFailed'); setJobId(null); setRestoreState(null); setUnreachable(false); sessionStorage.removeItem('setup.restore');
+      }
     };
-    void poll();
-    const timer = setInterval(() => { void poll(); }, 1000);
+    if (polledJob.current !== jobId) void poll();
+    const timer = setInterval(() => { void poll(); }, unreachable ? 5000 : 1000);
     return () => { alive = false; clearInterval(timer); };
-  }, [client, jobId]);
+  }, [client, jobId, unreachable, restoreAnswer]);
   const complete = done || restoreState === 'restored';
   const unavailable = status.isError && !jobId && !restoreState && !done;
   useEffect(() => { heading.current?.focus(); }, [step, restore, googlePage, held]);
@@ -167,19 +185,26 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
         : <Button asChild><a href="/admin">{t('setup/setup:openAdmin')}</a></Button>}</>
     : unavailable ? <><Alert>{t('setup/setup:unavailable')}</Alert><a href="/login" className="inline-flex min-h-11 items-center underline">{t('setup/setup:signIn')}</a></>
     : status.isPending && !jobId ? <LoadingState label={t('setup/setup:loading')} />
-    : jobId || restoreState === 'running' ? <LoadingState label={t('setup/setup:restoring')} />
+    : jobId || restoreState === 'running' ? unreachable
+      ? <Alert role="status"><p>{t('setup/setup:restoreUnreachable')}</p>
+        {phase && <p>{t(phase === 'verifying' ? 'setup/setup:restoreUnreachableVerifying' : 'setup/setup:restoreUnreachableStaged')}</p>}</Alert>
+      : <LoadingState label={t('setup/setup:restoring')} />
     : <>
       <p className="text-sm text-muted-foreground">{t('setup/setup:step')} {googlePage ? t('setup/setup:googleStepNumber') : step + 1} / 9</p>
       <h2 ref={heading} tabIndex={-1} className="scroll-mt-4 text-xl font-semibold focus:outline-none">{googlePage ? t('setup/google-step:title') : t('setup/setup:step' + step)}</h2>
       {error && <Alert ref={errorBox} tabIndex={-1} variant="error">{say(error)}</Alert>}
-      {restoreState === 'failed' && <Alert variant="error">{t('setup/setup:restoreFailed')}</Alert>}
+      {/* A failed restore is step 0's news: once the owner starts fresh, later steps don't repeat it. */}
+      {step === 0 && (restoreFailure ? <Alert variant="error"><p>{t('setup/setup:restoreFailure.' + restoreFailure.reason)}</p>
+        {restoreFailure.staged && <p>{t('setup/setup:restoreStaged')}</p>}</Alert>
+        : restoreState === 'failed' && <Alert variant="error">{t('setup/setup:restoreFailed')}</Alert>)}
       {step === 0 && (restore ? <Form action={async (data) => {
         const result = await client.call('restore', { choice: 'restore', source: destination(data), snapshotPrefix: text(data, 'snapshotPrefix'), privateKey: text(data, 'privateKey') });
-        setRestoreState(result.status); setJobId(result.jobId); sessionStorage.setItem('setup.restore', result.jobId);
+        setRestoreFailure(null); setUnreachable(false); setPhase(null);
+        restoreAnswer(result); setJobId(result.jobId); sessionStorage.setItem('setup.restore', result.jobId);
       }} submit="restore" secondary={<Button type="button" variant="outline" disabled={busy} onClick={() => setRestore(false)}>{t('setup/setup:back')}</Button>}>
         <p>{t('setup/setup:restoreHint')}</p><Destination /><Field name="snapshotPrefix" /><Field name="privateKey" type="password" />
       </Form> : <SetupActions><Button disabled={busy} onClick={() => void run(async () => { await client.call('start', { choice: 'fresh' }); setOverride(1); })}>{t('setup/setup:fresh')}</Button>
-        <Button variant="outline" onClick={() => { setRestore(true); setRestoreState(null); }}>{t('setup/setup:restore')}</Button></SetupActions>)}
+        <Button variant="outline" onClick={() => { setRestore(true); setRestoreState(null); setRestoreFailure(null); setUnreachable(false); }}>{t('setup/setup:restore')}</Button></SetupActions>)}
       {step === 1 && <Form action={async (data) => {
         const email = text(data, 'email'), password = text(data, 'password');
         await client.call('owner', { name: text(data, 'ownerName'), email, password });

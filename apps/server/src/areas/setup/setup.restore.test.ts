@@ -122,8 +122,48 @@ describe('setup restore coordinator', () => {
     fail(new Error('secret credentials from a provider'));
     await expect.poll(async () => (await coordinator.status(job.jobId)).status).toBe('failed');
     expect(JSON.stringify(await coordinator.status(job.jobId))).not.toContain('credentials');
+    expect(await coordinator.status(job.jobId)).toMatchObject({ status: 'failed', message: 'Restore failed.', reason: 'other', staged: false });
     await expect(coordinator.status(uuidv7())).rejects.toBeInstanceOf(AppError);
     expect(() => snapshotId('../anything')).toThrow();
+  });
+  it('names rejected credentials without the upstream message or the secret', async () => {
+    const rejected = Object.assign(new Error('SECRETACCESS rejected'), { name: 'SignatureDoesNotMatch', Code: 'SignatureDoesNotMatch', $metadata: { httpStatusCode: 403 } });
+    const coordinator = createSetupRestore({ assertEmpty: async () => {}, restore: async () => { throw rejected; } });
+    const secret = 'SECRET' + 'VALUEOFTHESOURCE';
+    const job = await coordinator.start({ choice: 'restore', source: { endpoint: 'https://s3.example.org', region: 'auto', bucket: 'backups', accessKeyId: 'access', secretAccessKey: secret },
+      snapshotPrefix: uuidv7(), privateKey: await generateIdentity() });
+    await expect.poll(async () => (await coordinator.status(job.jobId)).status).toBe('failed');
+    const status = await coordinator.status(job.jobId);
+    expect(status).toMatchObject({ status: 'failed', message: 'Restore failed.', reason: 'credentials_rejected', staged: false });
+    expect(JSON.stringify(status)).not.toMatch(/SECRETACCESS|SECRETVALUEOFTHESOURCE/);
+  });
+  it('says a verified restore is staged only while the restore gate is closed', async () => {
+    for (const verified of [true, false]) {
+      const directory = join(root, verified ? 'staged' : 'unstaged'), gate = new RestoreGate(directory);
+      const input: SetupRestoreRequest = { choice: 'restore', source: { endpoint: 'https://s3.example.org', region: 'auto', bucket: 'backups', accessKeyId: 'access', secretAccessKey: 'secret' }, snapshotPrefix: uuidv7(), privateKey: await generateIdentity() };
+      const coordinator = createSetupRestore({ journal: join(directory, 'setup-restore.json'), gate, assertEmpty: async () => {}, restore: async () => {
+        if (verified) await atomicJson(gate.statePath, { id: input.snapshotPrefix, phase: 'verified' });
+        throw new Error('Power loss');
+      } });
+      const job = await coordinator.start(input);
+      await expect.poll(async () => (await coordinator.status(job.jobId)).status).toBe('failed');
+      // With nothing staged, the failure keeps its own cause instead of reading as an interrupted verification.
+      expect(await coordinator.status(job.jobId)).toMatchObject({ status: 'failed', message: 'Restore failed.', reason: 'other', staged: verified });
+    }
+  });
+  it('reads a failed journal written before failures carried a cause', async () => {
+    const directory = join(root, 'older'), journal = join(directory, 'setup-restore.json'), jobId = uuidv7();
+    await atomicJson(journal, { result: { status: 'failed', jobId, message: 'Restore failed. Check the source and private key, or resume a verified restore.' }, snapshotId: uuidv7() });
+    for (const gate of [undefined, new RestoreGate(directory)]) {
+      const coordinator = createSetupRestore({ journal, ...(gate ? { gate } : {}), assertEmpty: async () => {}, restore: async () => {} });
+      expect(await coordinator.status(jobId)).toMatchObject({ status: 'failed', reason: 'other', staged: false });
+    }
+  });
+  it('calls a restore that stopped during verification interrupted', async () => {
+    const directory = join(root, 'stopped'), journal = join(directory, 'setup-restore.json'), jobId = uuidv7();
+    await atomicJson(journal, { result: { status: 'running', jobId, phase: 'verifying' }, snapshotId: uuidv7() });
+    const coordinator = createSetupRestore({ journal, gate: new RestoreGate(directory), assertEmpty: async () => {}, restore: async () => {} });
+    expect(await coordinator.status(jobId)).toEqual({ status: 'failed', jobId, message: 'Restore verification was interrupted. Start again.', reason: 'interrupted', staged: false });
   });
   it('recognizes a verified restore completed by maintenance after a restart', async () => {
     const journal = join(root, 'restart', 'setup-restore.json'), gate = new RestoreGate(join(root, 'restart'));

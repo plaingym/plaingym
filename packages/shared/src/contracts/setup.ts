@@ -119,11 +119,14 @@ export const setupRestoreRequestSchema = z.strictObject({
   privateKey: z.string().regex(/^AGE-SECRET-KEY-1[0-9A-Z]+$/),
 });
 export const setupRestoreJobParamsSchema = z.strictObject({ jobId: idSchema });
+export const setupRestoreFailureReasonSchema = z.enum(['credentials_rejected', 'bucket_missing', 'snapshot_missing', 'endpoint_unreachable',
+  'wrong_key', 'invalid_key', 'damaged', 'unsupported', 'interrupted', 'not_started', 'other']);
 export const setupRestoreResponseSchema = z.strictObject({ data: z.discriminatedUnion('status', [
   z.strictObject({ status: z.literal('running'), jobId: idSchema, phase: z.enum(['verifying', 'database', 'secrets', 'uploads', 'reconciling']) }),
   // Restore skips the rest of setup and leaves billing paused for reconciliation.
   z.strictObject({ status: z.literal('restored'), jobId: idSchema, billingEnabled: z.literal(false), next: z.literal('login') }),
-  z.strictObject({ status: z.literal('failed'), jobId: idSchema, message: z.string().min(1) }),
+  z.strictObject({ status: z.literal('failed'), jobId: idSchema, message: z.string().min(1),
+    reason: setupRestoreFailureReasonSchema.default('other'), staged: z.boolean().default(false) }),
 ]) });
 /** Step 8. `skipBackups` defers backups: it follows the payments step and clears any unconfirmed destination. */
 export const setupFinishRequestSchema = z.discriminatedUnion('choice', [
@@ -175,4 +178,5 @@ export type SetupBackupRequest = z.infer<typeof setupBackupRequestSchema>;
 export type SetupBackupConfirmRequest = z.infer<typeof setupBackupConfirmRequestSchema>;
 export type SetupRestoreRequest = z.infer<typeof setupRestoreRequestSchema>;
 export type SetupRestoreResponse = z.infer<typeof setupRestoreResponseSchema>;
+export type SetupRestoreFailureReason = z.infer<typeof setupRestoreFailureReasonSchema>;
 export type SetupFinishRequest = z.infer<typeof setupFinishRequestSchema>;

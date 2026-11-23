@@ -13,6 +13,7 @@ import { createS3Client, S3BackupObjectStore } from '../../infra/storage/index.j
 import { RestoreService } from '../health/restore.js';
 import { createRuntimeUploads } from '../../infra/storage/runtime.js';
 import { RestoreGate } from '../health/restore.gate.js';
+import { restoreFailureClass } from '../health/restore.failure.js';
 import { PostgresMaintenance } from '../health/backups.database.js';
 import { atomicJson } from '../health/backups.files.js';
 import { processAlive, processStart, type ProcessLease } from './setup.process.js';
@@ -65,9 +66,11 @@ export function createSetupRestore(options: {
             active = false;
             await publish({ status: 'restored', jobId: pollingId, billingEnabled: false, next: 'login' });
           } catch (error) {
-            // Operators need the cause; the owner-facing status stays generic. The logger drops the message, which can quote the source or key.
+            // Operators need the cause; the owner-facing status carries only its class. The logger drops the message, which can quote the source or key.
             logError('setup.restore_failed', {}, error);
-            await publish({ status: 'failed', jobId: pollingId, message: 'Restore failed. Check the source and private key, or resume a verified restore.' });
+            // A gate that can't be read may hide a staged restore.
+            const staged = options.gate ? await options.gate.isClosed().catch(() => true) : false;
+            await publish({ status: 'failed', jobId: pollingId, message: 'Restore failed.', reason: restoreFailureClass(error), staged });
           } finally {
             // A verified but interrupted restore retains its reservation until maintenance resumes it.
             if (!options.gate || !await options.gate.isClosed()) await release?.();
@@ -78,7 +81,7 @@ export function createSetupRestore(options: {
       } catch (error) {
         try {
           await release?.();
-          if (jobId) await publish({ status: 'failed', jobId, message: 'Restore could not start.' });
+          if (jobId) await publish({ status: 'failed', jobId, message: 'Restore could not start.', reason: 'not_started', staged: false });
         } finally { active = false; }
         throw error;
       }
@@ -114,8 +117,11 @@ export function createSetupRestore(options: {
           const alive = active || (saved.status === 'running' && owner !== undefined && await processAlive(owner));
           if (!alive) {
             if (reservationId) await options.onInterrupted?.(reservationId);
-            saved = { status: 'failed', jobId, message: 'Restore verification was interrupted. Start again.' };
-            await publish(saved);
+            // A failure published before verification keeps its own cause; only a restore that stopped mid-run was interrupted.
+            if (saved.status === 'running') {
+              saved = { status: 'failed', jobId, message: 'Restore verification was interrupted. Start again.', reason: 'interrupted', staged: false };
+              await publish(saved);
+            }
           }
         }
       }

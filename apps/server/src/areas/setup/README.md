@@ -60,7 +60,10 @@ blob key).
 
 Restore runs through `RestoreService`, outside the HTTP activity lease. The small
 external setup journal stores the random polling ID, snapshot ID, and safe status;
-it never stores credentials or private identities. Polling can recognize completion
+it never stores credentials or private identities. A failed status carries a cause class
+(rejected credentials, a missing bucket or snapshot, an unreachable endpoint, a wrong or
+invalid key, a damaged or unreadable snapshot, an interrupted or unstarted restore) and
+whether a verified restore is staged, never upstream error text. Polling can recognize completion
 after maintenance resumes a verified restore. Billing, member emails and member texts remain
 off; backup pruning stays held until an owner confirms the old server is gone
 in Settings or Health.

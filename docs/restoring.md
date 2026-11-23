@@ -111,9 +111,11 @@ gym's stored secrets (Stripe key, email password, backup settings) for the new i
 wizard is skipped afterwards, because the restored gym is already set up. A backup taken
 before an encryption-key rotation restores the same way.
 
-If the wizard says the restore failed, check the bucket details, snapshot ID and key against
-the [restore errors](restore-reference.md#restore-errors), then start it again. An interrupted
-restore finishes by itself when the app restarts ([details](restore-reference.md#if-a-restore-is-interrupted)).
+If the wizard says the restore failed, it says which part failed: the storage credentials, the
+bucket, the snapshot ID, the endpoint, the private key, or a damaged snapshot. Fix that (the
+[restore errors](restore-reference.md#restore-errors) say what to check), then start it again.
+When a verified restore is already staged, the wizard says so: it finishes by itself when the
+app restarts ([details](restore-reference.md#if-a-restore-is-interrupted)).
 
 ## Restore from the command line
 

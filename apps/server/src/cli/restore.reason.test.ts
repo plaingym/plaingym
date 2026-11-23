@@ -156,9 +156,15 @@ describe('restoreFailureReason', () => {
       for (const secret of secrets) expect(reason).not.toContain(secret);
       // A code the server names is passed through; anything that isn't an identifier is not.
       expect(restoreFailureReason(Object.assign(new Error('Key SECRETFIELDVALUE'), { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } })))
-        .toBe('The backup bucket answered with error AccessDenied');
+        .toBe('The backup bucket rejected the access key or secret (AccessDenied)');
       expect(restoreFailureReason(Object.assign(new Error('x'), { name: 'bad name SECRETFIELDVALUE', $metadata: { httpStatusCode: 403 } })))
-        .toBe('The backup bucket answered with error HTTP 403');
+        .toBe('The backup bucket rejected the access key or secret (HTTP 403)');
+      expect(restoreFailureReason(Object.assign(new Error('bucket-name-value'), { name: 'NoSuchBucket', Code: 'NoSuchBucket', $metadata: { httpStatusCode: 404 } })))
+        .toBe("The backup bucket doesn't exist (NoSuchBucket)");
+      expect(restoreFailureReason(Object.assign(new Error('snapshots/x'), { name: 'NoSuchKey', Code: 'NoSuchKey', $metadata: { httpStatusCode: 404 } })))
+        .toBe("The snapshot isn't in the backup bucket (NoSuchKey); check the snapshot ID");
+      expect(restoreFailureReason(Object.assign(new Error('x'), { name: 'InternalError', Code: 'InternalError', $metadata: { httpStatusCode: 500 } })))
+        .toBe('The backup bucket answered with error InternalError');
       // The SDK adds `$metadata` to errors that never reached a server; those are not an answer.
       expect(restoreFailureReason(Object.assign(new Error('connect ECONNREFUSED 10.0.0.1:443'), { code: 'ECONNREFUSED', $metadata: { attempts: 3 } })))
         .toBe('Cannot reach the backup bucket (ECONNREFUSED)');
