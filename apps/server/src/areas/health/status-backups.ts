@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { createHash } from 'node:crypto';
 import { desc, eq, inArray } from 'drizzle-orm';
 import { backupRuns, forSystem } from '@plaingym/db';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { createS3Client, S3BackupObjectStore, type BackupObjectStore } from '../../infra/storage/index.js';
 import { isBackupsUnconfigured, loadBackupConfig, type InstallBackupConfig } from './restore.config.js';
-import { guardSnapshot, inventory, prunePlan, UnverifiedInventory } from './backups.retention.js';
+import { guardSnapshot, inventory, prunePlan, UnverifiedInventory, type BackupInventory, type RunStatuses } from './backups.retention.js';
+import { backupHealthGeneration } from './backups.health-cache.js';
 import { healthProvider, statusMessage } from './status.js';
 import { backupFailureCause, type BackupFailureCause } from './backups.failure.js';
 
@@ -30,19 +32,46 @@ export function createBackupHealthProvider(options: {
       credentials: { accessKeyId: settings.destination.accessKeyId, secretAccessKey: settings.destination.secretAccessKey } });
     return { store: new S3BackupObjectStore({ client, bucket: settings.destination.bucket }), close: () => client.destroy() };
   });
+  const runStatuses: RunStatuses = async (prefixes) => new Map((await scope((tx) => tx
+    .select({ prefix: backupRuns.objectPrefix, status: backupRuns.status }).from(backupRuns)
+    .where(inArray(backupRuns.objectPrefix, [...prefixes])))).map((run) => [run.prefix, run.status]));
+  // Only the inventory is reused, never the tile: ages and rules are computed from it on every read.
+  // The key covers the destination, the keys, the runs and the backup generation; only its hash is kept.
+  let cached: { key: string; storedAt: number; state: BackupInventory } | null = null;
+  const loading = new Map<string, Promise<BackupInventory>>();
+  const cachedInventory = (settings: InstallBackupConfig, key: string, now: number): Promise<BackupInventory> => {
+    if (cached && cached.key === key && now - cached.storedAt < 60_000) return Promise.resolve(cached.state);
+    const inFlight = loading.get(key);
+    if (inFlight) return inFlight;
+    const load = (async () => {
+      const destination = open(settings);
+      try { return await inventory(destination.store, settings.blobKey, runStatuses); }
+      finally { destination.close(); }
+    })();
+    loading.set(key, load);
+    // A failed load is never cached; a load the page gave up on still serves the next refresh.
+    load.then((state) => { if (!cached || cached.storedAt <= now) cached = { key, storedAt: now, state }; }, () => undefined)
+      .finally(() => { loading.delete(key); });
+    return load;
+  };
   return healthProvider('last_backup', async (context) => {
     const settings = await config(), checkedAt = context.clock.now().toISOString();
     // Install-wide snapshot history is never disclosed to another tenant.
     if (!settings || settings.gymId !== context.gymId) return { id: 'last_backup', status: 'not_configured', checkedAt, details: null, message: statusMessage('backupMissing') };
-    const runs = await scope((tx) => tx.select({ id: backupRuns.id, startedAt: backupRuns.startedAt })
-      .from(backupRuns).where(eq(backupRuns.status, 'succeeded')).orderBy(desc(backupRuns.startedAt)));
-    const destination = open(settings);
+    const { runs, newestRun } = await scope(async (tx) => ({
+      runs: await tx.select({ id: backupRuns.id, startedAt: backupRuns.startedAt })
+        .from(backupRuns).where(eq(backupRuns.status, 'succeeded')).orderBy(desc(backupRuns.startedAt)),
+      newestRun: (await tx.select({ id: backupRuns.id, status: backupRuns.status }).from(backupRuns)
+        .orderBy(desc(backupRuns.startedAt), desc(backupRuns.id)).limit(1))[0],
+    }));
+    const { endpoint, region, bucket, accessKeyId, secretAccessKey } = settings.destination;
+    const key = createHash('sha256').update(JSON.stringify([settings.gymId, endpoint ?? '', region, bucket, accessKeyId, secretAccessKey,
+      settings.recipient, settings.blobKey.toString('base64'), newestRun ? newestRun.id + ':' + newestRun.status : '', runs.length,
+      backupHealthGeneration()])).digest('hex');
     let damagedGuardSnapshot: string | null = null;
     let missingGuardSnapshot: string | null = null;
     try {
-      const state = await inventory(destination.store, settings.blobKey, async (prefixes) => new Map((await scope((tx) => tx
-        .select({ prefix: backupRuns.objectPrefix, status: backupRuns.status }).from(backupRuns)
-        .where(inArray(backupRuns.objectPrefix, [...prefixes])))).map((run) => [run.prefix, run.status])));
+      const state = await cachedInventory(settings, key, context.clock.now().getTime());
       // An abandoned run is cleaned up by the next prune; only what stops pruning is reported.
       const floorSnapshot = guardSnapshot(env);
       damagedGuardSnapshot = state.damaged.find(snapshot => snapshot.id === floorSnapshot)?.id ?? null;
@@ -50,8 +79,7 @@ export function createBackupHealthProvider(options: {
         ? floorSnapshot : null;
       if (prunePlan(state, context.clock.now(), floorSnapshot).stopped) throw new UnverifiedInventory('Pruning stopped');
       const latest = runs.find((run) => state.snapshots.some((snapshot) => snapshot.id === run.id && snapshot.recipient === settings.recipient));
-      const blobs = await destination.store.listObjects('blobs/');
-      const retainedBytes = [...state.objects, ...blobs].reduce((total, object) => total + object.size, 0);
+      const retainedBytes = [...state.objects, ...state.blobs].reduce((total, object) => total + object.size, 0);
       const ageSeconds = latest ? Math.max(0, Math.floor((context.clock.now().getTime() - latest.startedAt.getTime()) / 1000)) : null;
       const overdue = ageSeconds === null || ageSeconds > 7200;
       // Any key's newest snapshot sizes the next one: the database doesn't shrink when the key changes.
@@ -75,6 +103,6 @@ export function createBackupHealthProvider(options: {
         details: { latestRestorableAt: null, ageSeconds: null, overdue: true, retainedBytes: 0,
           noneUnderCurrentKey: false, retentionBudgetBytes: settings.budgetBytes, pruningStopped: true,
           pruningHeld: settings.pruningHeld ?? false, damagedGuardSnapshot, missingGuardSnapshot, destinationFailure, keyReminder: true } };
-    } finally { destination.close(); }
+    }
   });
 }

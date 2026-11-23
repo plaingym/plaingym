@@ -4,7 +4,12 @@
 `GET /api/health` requires `settings.manage`. The page renders all contracted tiles,
 including providers that are not configured. Each provider uses the frozen
 `HealthTileProvider` interface; failures and malformed payloads become an unavailable
-tile without exposing exception messages. Responses are not cached.
+tile without exposing exception messages. Each tile has 5 seconds to answer; after that
+it reads "Still checking" and the other tiles render (the slow check keeps running and
+its late result is discarded). A tile slower than 2 seconds logs `health.tile_slow`
+with its tile ID and duration only. The Last backup tile reuses its bucket inventory
+for up to one minute, dropped when a backup or prune finishes or the destination or
+the backup runs change; pruning always reads the bucket itself.
 
 The Invoice effects tile (`invoice_effects`) stays in error while any invoice
 effect has exhausted automatic recovery. It reads durable audits rather than
@@ -103,6 +108,8 @@ policy expires. When the guard's snapshot is in neither complete nor damaged inv
 `missingGuardSnapshot` and warns while the active guard still names it. A guard
 whose `SCHEMA_SNAPSHOT` is the updater's `-` placeholder names no restore point. Retention receives the guard explicitly from the backup service and
 the health provider's injected `env`.
+The inventory reads at most four reference lists at a time and lists `blobs/` once; the
+page shows `ageSeconds` as a duration ("48 minutes"), while the API keeps the number.
 Settings and Health share the backup actions: `GET /api/health/backups` reads the
 state and `POST /api/health/backups/now` queues `health.backup.manual` in the batch
 lane so a slow snapshot doesn't block the gym's regular jobs; both endpoints require

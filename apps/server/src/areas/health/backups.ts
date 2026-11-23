@@ -16,6 +16,7 @@ import { PostgresMaintenance } from './backups.database.js';
 import { SnapshotContentError } from './backups.content.js';
 import { backupFailureCause } from './backups.failure.js';
 import { logError } from '../../core/log.js';
+import { invalidateBackupHealth } from './backups.health-cache.js';
 
 export interface BackupOptions {
   readonly database: PostgresMaintenance;
@@ -148,7 +149,7 @@ export class BackupService {
         logError('backup.snapshot_failed', { runId: id, kind, cause }, error);
         throw new Error('Snapshot failed', { cause: error });
       } finally { await rm(staging, { recursive: true, force: true }); }
-    });
+    }).finally(() => { invalidateBackupHealth(); }); // Pass or fail, the health tile reads the bucket again.
   }
   async prune(): Promise<{ retainedBytes: number; protectedKeys: ReadonlySet<string> }> {
     const o = this.options;
@@ -157,7 +158,7 @@ export class BackupService {
       return pruneUnlocked(o.store, o.blobKey, await o.uploads(), o.clock.now(),
         o.reserveBytes, o.budgetBytes, o.clock.now(), this.runs,
         guardSnapshot(process.env));
-    });
+    }).finally(() => { invalidateBackupHealth(); });
   }
 }
 /** Useful for restore verification and operator diagnostics without exposing recovery plaintext. */

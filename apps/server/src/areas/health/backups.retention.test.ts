@@ -39,7 +39,7 @@ describe('snapshot retention', () => {
   });
   it('lets a damaged guard expire under normal pre-upgrade retention, while preserving a complete guard', () => {
     const guard = snapshot(new Date(now.getTime() - 30 * 86_400_000), 'pre_upgrade');
-    const state: BackupInventory = { snapshots: [], damaged: [guard], abandoned: [], suspect: [], objects: [] };
+    const state: BackupInventory = { snapshots: [], damaged: [guard], abandoned: [], suspect: [], objects: [], blobs: [] };
     expect(prunePlan(state, now, guard.id)).toMatchObject({ stopped: true, keep: new Set([guard.id]) });
     const later = new Date(now.getTime() + 1);
     expect(prunePlan(state, later, guard.id)).toMatchObject({ stopped: false, keep: new Set() });
@@ -47,7 +47,7 @@ describe('snapshot retention', () => {
   });
   it('finishes deleting a damaged snapshot outside the policy and stops at damage the policy keeps', () => {
     const state = (damaged: Snapshot[], extra: Partial<BackupInventory> = {}): BackupInventory =>
-      ({ snapshots: recent, damaged, abandoned: [], suspect: [], objects: [], ...extra });
+      ({ snapshots: recent, damaged, abandoned: [], suspect: [], objects: [], blobs: [], ...extra });
     // Hourly snapshots fill all 24 hourly, 7 daily and 4 weekly buckets, so a 60-day-old one is outside the policy.
     const recent = Array.from({ length: 40 * 24 }, (_, hours) => snapshot(new Date(now.getTime() - hours * 3_600_000)));
     const expired = snapshot(new Date(now.getTime() - 60 * 86_400_000)), current = snapshot(new Date(now.getTime() + 60_000));

@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react
 import type { StaffRole } from '@plaingym/shared';
 import type { ShellBootstrap } from '../../app/services.js';
 import { healthTileIds, healthTileSchema, maxDismissedChargeRuns, type HealthTile } from '@plaingym/shared/contracts';
-import { HealthPage, HealthTiles, bytesLabel } from './page.js';
+import { HealthPage, HealthTiles, bytesLabel, durationLabel } from './page.js';
 import { useBootstrap } from '../../app/context.js';
 import { api } from '../../lib/api.js';
 vi.mock('../../app/context.js', () => ({ useBootstrap: vi.fn() }));
@@ -84,7 +84,8 @@ describe('health page', () => {
     const version = healthTileSchema.parse({ id: 'version', status, checkedAt, message: 'Version check', details: { version: '0.1.0', sourceUrl: 'https://example.test/source/v0.1.0' } });
     render(<HealthTiles tiles={[backup, version]}/>);
     expect(screen.getByText(/Keep your backup private key safe/)).toBeDefined();
-    expect(screen.getByText('Snapshot age (seconds)')).toBeDefined();
+    expect(screen.getByText('Snapshot age').parentElement!.querySelector('dd')!.textContent).toBe('1 minute');
+    expect(screen.getByText('Storage used').parentElement!.querySelector('dd')!.textContent).toBe('100 B');
     expect(screen.getByRole('link', { name: 'Source code' }).getAttribute('href')).toBe('https://example.test/source/v0.1.0');
     expect(document.body.textContent).not.toContain('health/status:');
   });
@@ -167,6 +168,12 @@ describe('disk sizes', () => {
     expect(bytesLabel(999_950)).toBe('1 MB');
     expect(bytesLabel(999_600_000)).toBe('1 GB');
     expect(bytesLabel(12_345_678_901)).toBe('12.3 GB');
+  });
+});
+describe('durations', () => {
+  it('shows the largest whole units, rounded down, with the singular for one', () => {
+    for (const [seconds, text] of [[2926, '48 minutes'], [30, 'less than a minute'], [60, '1 minute'], [3600, '1 hour'],
+      [11_100, '3 hours 5 minutes'], [86_400, '1 day'], [190_000, '2 days']] as const) expect(durationLabel(seconds)).toBe(text);
   });
 });
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { backupRuns, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -12,6 +12,7 @@ import type { InstallBackupConfig } from './restore.config.js';
 import * as configuration from './restore.config.js';
 import { createBackupHealthProvider } from './status-backups.js';
 import * as retention from './backups.retention.js';
+import { invalidateBackupHealth } from './backups.health-cache.js';
 
 const database = useTestDatabase(), factory = createFactories(database), gymId = uuidv7(), gymB = uuidv7();
 const clock = new TestClock('2026-10-22T12:00:00Z'), context = { gymId, clock, roles: ['owner'] as const };
@@ -79,6 +80,7 @@ describe('last-backup health', () => {
     expect(await health.read(context)).toMatchObject({ status: 'warning', message: expect.stringContaining('overdue'),
       details: { damagedGuardSnapshot: guard.id } });
     for (const name of ['database.age', 'references.json']) await store.deleteObject(snapshotPrefix(guard.id) + name);
+    invalidateBackupHealth(); // The objects changed behind the tile's back; a real prune drops the cached inventory.
     expect(await health.read(context)).toMatchObject({ status: 'warning', message: expect.stringContaining('overdue'),
       details: { missingGuardSnapshot: guard.id } });
   });
@@ -190,5 +192,62 @@ describe('last-backup health', () => {
     const readProvider = provider();
     expect(await readProvider.read({ ...context, gymId: gymB })).toMatchObject({ status: 'not_configured', details: null });
     expect(close).not.toHaveBeenCalled();
+  });
+  it('lists each prefix once for one tile read', async () => {
+    await snapshot();
+    const list = vi.spyOn(store, 'listObjects');
+    expect(await read()).toMatchObject({ status: 'healthy' });
+    expect(list.mock.calls.map(([prefix]) => prefix).sort()).toEqual(['blobs/', 'snapshots/']);
+  });
+});
+
+describe('last-backup inventory cache', () => {
+  const start = '2026-10-22T12:00:00Z';
+  afterEach(() => { clock.set(start); });
+  const age = (tile: HealthTile) => (tile as Extract<HealthTile, { id: 'last_backup' }>).details!.ageSeconds;
+  const storeCalls = (list: { mock: { calls: unknown[] } }, get: { mock: { calls: unknown[] } }) => list.mock.calls.length + get.mock.calls.length;
+  it('reuses the inventory for under a minute and computes the tile again on each read', async () => {
+    await snapshot();
+    const health = provider(), list = vi.spyOn(store, 'listObjects'), get = vi.spyOn(store, 'getObject');
+    const first = healthTileSchema.parse(await health.read(context));
+    expect(first).toMatchObject({ status: 'healthy' });
+    const calls = storeCalls(list, get);
+    expect(calls).toBeGreaterThan(0);
+    clock.advance(30_000);
+    const second = healthTileSchema.parse(await health.read(context));
+    expect(storeCalls(list, get)).toBe(calls);
+    expect(age(second)).toBe(age(first)! + 30);
+    clock.set(new Date(new Date(start).getTime() + 61_000));
+    await health.read(context);
+    expect(list).toHaveBeenCalledTimes(4);
+  });
+  it('reads the bucket again after a new run or a finished backup or prune', async () => {
+    await snapshot();
+    const health = provider(), list = vi.spyOn(store, 'listObjects');
+    await health.read(context);
+    expect(list).toHaveBeenCalledTimes(2);
+    await health.read(context);
+    expect(list).toHaveBeenCalledTimes(2);
+    await factory('backupRuns', gymId, { startedAt: clock.now(), completedAt: clock.now(), status: 'succeeded' });
+    await health.read(context);
+    expect(list).toHaveBeenCalledTimes(4);
+    invalidateBackupHealth();
+    await health.read(context);
+    expect(list).toHaveBeenCalledTimes(6);
+  });
+  it('never caches a failed inventory', async () => {
+    await snapshot();
+    const health = provider(), list = vi.spyOn(store, 'listObjects').mockRejectedValueOnce(new Error('disk full'));
+    expect(await health.read(context)).toMatchObject({ status: 'error', details: { pruningStopped: true } });
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(await health.read(context)).toMatchObject({ status: 'healthy' });
+    expect(list).toHaveBeenCalledTimes(3);
+  });
+  it('shares one inventory between reads started together', async () => {
+    await snapshot();
+    const health = provider(), list = vi.spyOn(store, 'listObjects');
+    const tiles = await Promise.all([health.read(context), health.read(context)]);
+    expect(tiles.map((tile) => tile.status)).toEqual(['healthy', 'healthy']);
+    expect(list).toHaveBeenCalledTimes(2);
   });
 });

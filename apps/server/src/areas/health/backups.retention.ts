@@ -40,6 +40,16 @@ export interface BackupInventory {
   /** Why deleting anything could lose data: unknown objects, unverifiable reference lists, unexplained prefixes. */
   suspect: string[];
   objects: Awaited<ReturnType<BackupObjectStore['listObjects']>>;
+  /** The `blobs/` listing the completeness check used. */
+  blobs: Awaited<ReturnType<BackupObjectStore['listObjects']>>;
+}
+/** Runs `read` over `items` with at most `limit` in flight; results keep the items' order. */
+async function readAtMost<T, R>(items: readonly T[], limit: number, read: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => { while (next < items.length) { const index = next++; results[index] = await read(items[index]!); } };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
 }
 /** The recorded status of each snapshot's run, keyed by object prefix (from `backup_runs`). */
 export type RunStatuses = (prefixes: readonly string[]) => Promise<ReadonlyMap<string, string>>;
@@ -61,6 +71,12 @@ export async function inventory(store: BackupObjectStore, blobKey: Buffer, runs?
   const blobs = await store.listObjects('blobs/');
   const uncommitted = [...ids].filter((id) => !objects.some((object) => object.key === snapshotPrefix(id) + 'references.json'));
   const statuses = runs && uncommitted.length ? await runs(uncommitted.map(snapshotPrefix)) : new Map<string, string>();
+  // Reference lists are fetched a few at a time; the results are then walked in `ids` order, as before.
+  const committed = [...ids].filter((id) => !uncommitted.includes(id));
+  const verified = new Map((await readAtMost(committed, 4, async (id) => {
+    try { return [id, verifyReferences(await readReferences(store, snapshotPrefix(id) + 'references.json'), blobKey, id)] as const; }
+    catch { return [id, null] as const; }
+  })));
   const snapshots: Snapshot[] = [], damaged: Snapshot[] = [], abandoned: string[] = [];
   for (const id of ids) {
     const prefix = snapshotPrefix(id);
@@ -70,15 +86,14 @@ export async function inventory(store: BackupObjectStore, blobKey: Buffer, runs?
       else suspect.push('Missing snapshot reference list');
       continue;
     }
-    let snapshot: Snapshot;
-    try { snapshot = verifyReferences(await readReferences(store, prefix + 'references.json'), blobKey, id); }
-    catch { suspect.push('Invalid snapshot reference list'); continue; }
+    const snapshot = verified.get(id);
+    if (!snapshot) { suspect.push('Invalid snapshot reference list'); continue; }
     const complete = ([['database.age', snapshot.database], ['manifest.age', snapshot.manifest]] as const).every(([name, expected]) =>
       objects.some((object) => object.key === prefix + name && object.size === expected.size))
       && snapshot.uploads.every((reference) => blobs.some((blob) => blob.key === reference.blob && blob.size === reference.encrypted.size));
     (complete ? snapshots : damaged).push(snapshot);
   }
-  return { snapshots, damaged, abandoned, suspect, objects };
+  return { snapshots, damaged, abandoned, suspect, objects, blobs };
 }
 /**
  * What pruning keeps: the retention policy over complete snapshots, plus damaged snapshots the policy would

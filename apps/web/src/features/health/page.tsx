@@ -25,10 +25,23 @@ export function bytesLabel(bytes: number) {
   while (value >= 999.5 && unit < units.length - 1) { value /= 1000; unit++; }
   return value.toLocaleString('en', { maximumFractionDigits: unit && value < 100 ? 1 : 0 }) + ' ' + units[unit];
 }
+/** A duration in its largest whole units, rounded down: "48 minutes", "3 hours 5 minutes", "2 days". */
+export function durationLabel(seconds: number) {
+  const unit = (count: number, singular: string, plural: string) => count === 1 ? label('duration.' + singular)
+    : t('health/status:duration.' + plural, { count: count.toLocaleString() });
+  if (seconds < 60) return label('duration.lessThanMinute');
+  const minutes = Math.floor(seconds / 60);
+  if (seconds < 3600) return unit(minutes, 'minute', 'minutes');
+  if (seconds < 86_400) {
+    const hours = unit(Math.floor(seconds / 3600), 'hour', 'hours'), rest = minutes % 60;
+    return rest ? hours + ' ' + unit(rest, 'minute', 'minutes') : hours;
+  }
+  return unit(Math.floor(seconds / 86_400), 'day', 'days');
+}
 function detailValue(key: string, value: unknown, timezone?: string) {
   if (value === null) return label('unknown');
   if (typeof value === 'boolean') return label(value ? 'yes' : 'no');
-  if (typeof value === 'number') return key.endsWith('Bytes') ? bytesLabel(value) : value.toLocaleString();
+  if (typeof value === 'number') return key.endsWith('Bytes') ? bytesLabel(value) : key.endsWith('Seconds') ? durationLabel(value) : value.toLocaleString();
   if (key === 'result') return label('result.' + String(value));
   if (key === 'lastTestResult') return label('sms.test.' + String(value));
   if (key.endsWith('At') && typeof value === 'string') return <time dateTime={value}>{instantLabel(value, timezone)}</time>;
