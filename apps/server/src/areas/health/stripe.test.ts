@@ -64,7 +64,12 @@ describe('Stripe health', () => {
     const gymId = uuidv7(); await factory('gyms', gymId);
     for (const configured of [false, true]) {
       const provider = createStripeHealthProvider({ webhooks: createWebhookHealthQuery(db.forGym), configured: async () => configured });
-      expect(await provider.read({ gymId, roles: ['admin'], clock })).toHaveProperty('status', configured ? 'warning' : 'not_configured');
+      const tile = await provider.read({ gymId, roles: ['admin'], clock });
+      expect(tile).toHaveProperty('status', configured ? 'healthy' : 'not_configured');
+      if (configured) {
+        expect(tile).toMatchObject({ details: { lastReceivedAt: null, pending: 0, failed: 0 } });
+        expect(tile.message).toContain('No webhook has arrived yet');
+      }
     }
     const provider = createStripeHealthProvider({ webhooks: createWebhookHealthQuery(db.forGym), configured: async () => { throw new Error('private key'); } });
     const response = await createHealthService([provider]).get({ gymId, roles: ['owner'], clock });

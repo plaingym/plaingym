@@ -2,7 +2,7 @@
 import type { ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
-import { healthContracts, healthTileIds, type HealthTile } from '@plaingym/shared/contracts';
+import { healthContracts, healthTileIds, sharedDiskVolume, type HealthTile } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../app/context.js';
 import { api } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
@@ -58,8 +58,7 @@ function detailRows(tile: ShownHealthTile): [key: string, label: string, value: 
   if (tile.id === 'disk') {
     if (tile.details.sameFilesystem) {
       // A shared volume shows the lower free figure alongside that path's total.
-      const shared = tile.details.backupStaging && tile.details.backupStaging.availableBytes < tile.details.uploads.availableBytes
-        ? tile.details.backupStaging : tile.details.uploads;
+      const shared = sharedDiskVolume(tile.details);
       return [
         ['sharedTotalBytes', label('field.sharedTotalBytes'), shared.totalBytes],
         ['sharedAvailableBytes', label('field.sharedAvailableBytes'), shared.availableBytes],

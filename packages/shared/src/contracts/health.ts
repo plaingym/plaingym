@@ -204,6 +204,14 @@ export type BackupHealthDetails = z.infer<typeof backupHealthDetailsSchema>;
 export type FailedJobsHealthDetails = z.infer<typeof failedJobsHealthDetailsSchema>;
 export type SmtpHealthDetails = z.infer<typeof smtpHealthDetailsSchema>;
 export type DiskHealthDetails = z.infer<typeof diskHealthDetailsSchema>;
+/**
+ * The volume whose figures stand for a filesystem that uploads and backup staging share: the one with the lower free
+ * figure, and uploads on ties. Without a shared filesystem (or without a staging volume) it is the uploads volume.
+ */
+export function sharedDiskVolume(details: DiskHealthDetails): DiskHealthDetails['uploads'] {
+  return details.sameFilesystem && details.backupStaging && details.backupStaging.availableBytes < details.uploads.availableBytes
+    ? details.backupStaging : details.uploads;
+}
 export type WebhookHealthDetails = z.infer<typeof webhookHealthDetailsSchema>;
 export type ChargeFailureCause = z.infer<typeof chargeFailureCauseSchema>;
 export type ChargeFailureReport = z.infer<typeof chargeFailureReportSchema>;

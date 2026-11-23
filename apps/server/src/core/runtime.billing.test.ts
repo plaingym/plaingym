@@ -91,7 +91,7 @@ it('collects assigned invoices, retries a declined cycle, serves staff billing, 
     const health = await app.runtime.app.request(sandbox.origin + '/api/health', { headers });
     expect(health.status).toBe(200);
     expect((await health.json()).data.tiles).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'stripe_webhooks', status: 'warning', details: expect.objectContaining({ failed: 0, pending: 0 }) }),
+      expect.objectContaining({ id: 'stripe_webhooks', status: 'healthy', details: expect.objectContaining({ failed: 0, pending: 0 }) }),
       expect.objectContaining({ id: 'last_charge_run', status: 'healthy', details: expect.objectContaining({ result: 'succeeded', lastCompletedAt: testClock.now().toISOString() }) }),
     ]));
     const retry = (await database.forGym(sandbox.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.transition.effect.created'))))

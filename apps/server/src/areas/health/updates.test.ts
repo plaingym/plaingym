@@ -6,6 +6,7 @@ import { healthTileSchema, updateAvailableResponseSchema } from '@plaingym/share
 import type { Principal, RequestEnvironment } from '../../core/context.js';
 import { TestClock } from '../../core/clock.js';
 import { createServerRegistry } from '../../core/registry.js';
+import { setLogSink } from '../../core/log.js';
 import { authorize } from '../staff/auth.permissions.js';
 import {
   compareVersions, createReleaseCheck, createUpdateAvailableProvider, parseVersion, releaseRepository, releasesApiUrl, releasesApiUrlFor, updateKind,
@@ -203,6 +204,55 @@ describe('update_available tile', () => {
     expect(result).toMatchObject({ status: 'unavailable', checkedAt: clock.now().toISOString(), details: null,
       message: expect.stringContaining('could not be read from GitHub') });
     expect(result.message).toContain('UPDATE_CHECK=off');
+  });
+  describe('a failed release check', () => {
+    /** Runs one check against `fetcher`, returning the tile and the log lines it wrote. */
+    async function failed(fetcher: typeof fetch) {
+      const lines: string[] = [], previous = setLogSink(line => lines.push(line));
+      try {
+        const check = createReleaseCheck({ fetch: fetcher });
+        await check.latest(clock.now());
+        await flush();
+        return { result: await tile({}, check), check, lines: lines.map(line => JSON.parse(line) as Record<string, unknown>) };
+      } finally { setLogSink(previous); }
+    }
+    it('says no stable release exists for a 404, and logs the status', async () => {
+      const { result, lines } = await failed(answer({ message: 'Not Found' }, 404));
+      expect(result).toMatchObject({ status: 'unavailable', checkedAt: clock.now().toISOString(), details: null,
+        message: expect.stringContaining('No stable release has been published yet') });
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({ event: 'health.release_check_failed', status: 404, reason: 'http' });
+    });
+    it.each([
+      ['a 500', answer('', 500), 500, 'http'],
+      ['a thrown fetch', async () => { throw new TypeError('fetch failed for https://api.github.com/secret'); }, null, 'network'],
+      ['a pre-release', answer(release('v9.0.0', { prerelease: true })), null, 'unusable'],
+      ['a body that is not JSON', answer('<html>'), null, 'unusable'],
+      ['a body that is null', answer('null'), null, 'unusable'],
+      ['a body cut off by a dropped connection', async () => new Response(new ReadableStream({
+        pull(controller) { controller.error(new TypeError('terminated')); } })), null, 'network'],
+    ])('says the release could not be read for %s, and logs its kind', async (_name, fetcher, status, reason) => {
+      const { result, lines } = await failed(fetcher as typeof fetch);
+      expect(result.message).toContain('could not be read from GitHub');
+      expect(lines).toHaveLength(1);
+      expect(Object.keys(lines[0]!).sort()).toEqual(['event', 'level', 'reason', 'status', 'time']);
+      expect(lines[0]).toMatchObject({ event: 'health.release_check_failed', status, reason });
+      expect(lines[0]).not.toHaveProperty('error');
+      expect(JSON.stringify(lines)).not.toMatch(/github\.com|secret/);
+    });
+    it('forgets the 404 once a good answer arrives', async () => {
+      let found = false;
+      const previous = setLogSink(() => undefined);
+      try {
+        const check = createReleaseCheck({ fetch: async () => found ? new Response(JSON.stringify(release('v1.3.0'))) : new Response('', { status: 404 }) });
+        await settled(check, clock.now());
+        expect(check.failure?.()).toBe('not_found');
+        found = true;
+        expect((await settled(check, new Date(clock.now().getTime() + hour)))?.version).toBe('1.3.0');
+        expect(check.failure?.()).toBeNull();
+        expect(await tile({}, check)).toMatchObject({ status: 'warning', details: { latestVersion: '1.3.0' } });
+      } finally { setLogSink(previous); }
+    });
   });
   describe('a newer patch', () => {
     it('names and links the attempt target when it is ahead of the cached release', async () => {

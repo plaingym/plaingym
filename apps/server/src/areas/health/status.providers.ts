@@ -4,6 +4,7 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import { runningVersion } from './version.js';
 import { auditEvents, forGym, smsDailyUsage } from '@plaingym/db';
 import { localDate } from '@plaingym/shared/time';
+import { sharedDiskVolume } from '@plaingym/shared/contracts';
 import { PostgresJobStatsQuery } from '../../infra/jobs/postgres.js';
 import type { JobStatsQuery } from '../../core/interfaces/job-stats.js';
 import { sourceUrl } from '../../core/source-link.js';
@@ -152,10 +153,10 @@ export function createStatusProviders(options: StatusOptions = {}) {
       if (sameDevice && !totalsMatch(volumes)) volumes = await readVolumes();
       const sameFilesystem = sameDevice && totalsMatch(volumes);
       const uploads = volumes[0]!, staging = volumes[1];
-      // A shared volume reports the lower free figure and uses uploads on ties.
-      const shared = sameFilesystem && staging && staging.availableBytes < uploads.availableBytes ? staging : uploads;
       // Keep each volume's capacity and free space together, even when both directories share a filesystem.
       const details = { uploads, backupStaging: staging ?? null, sameFilesystem };
+      // A shared volume reports the lower free figure and uses uploads on ties; the health page picks it the same way.
+      const shared = sharedDiskVolume(details);
       return { id: 'disk', checkedAt: context.clock.now().toISOString(), details,
         status: volumes.some((v) => critical(v.availableBytes)) ? 'error' : volumes.some(low) ? 'warning' : 'healthy',
         message: statusMessage(sameFilesystem ? 'diskFreeShared' : staging ? 'diskFree' : 'diskFreeUploads', {

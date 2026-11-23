@@ -5,5 +5,5 @@
   "failedOlder": "{count} Stripe webhook events older than 7 days were never processed. Queue each again with the replay command (gym-app replay --gym <gym-id> <event-id>).",
   "pending": "Stripe webhooks are waiting to be processed.",
   "healthy": "Stripe webhooks are processing normally.",
-  "waiting": "Waiting for the first Stripe webhook."
+  "waiting": "Stripe is connected and its webhook endpoint is registered. No webhook has arrived yet; Stripe sends one with the first payment event."
 }

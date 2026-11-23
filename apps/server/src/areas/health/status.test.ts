@@ -317,6 +317,16 @@ describe('built-in providers', () => {
     });
     expect(nearlyEqual.mock.calls.map(([path]) => path).sort()).toEqual(['/staging', '/uploads']);
   });
+  it('treats totals 0.05% apart as one volume and reports the uploads free figure when free space ties', async () => {
+    const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' };
+    const apart = vi.fn(async (path: string) => path === '/staging'
+      ? { blocks: 5_002_500, bsize: 1000, bavail: 2_000_000 }
+      : { blocks: 5_000_000, bsize: 1000, bavail: 2_000_000 });
+    expect(await tile('disk', gymA, { env: single, device: async () => 7, disk: apart })).toMatchObject({
+      details: { sameFilesystem: true, uploads: { availableBytes: 2_000_000_000 }, backupStaging: { availableBytes: 2_000_000_000 } },
+      message: 'Free space: uploads and backup staging (one volume) 2 GB.',
+    });
+  });
   it('keeps volumes separate when their totals differ by more than 0.1%', async () => {
     const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' };
     const shared = vi.fn(async (_path: string) => 7);

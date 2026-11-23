@@ -5,6 +5,7 @@ import messages from '../../../../../locales/en/health/updates.json' with { type
 import type { UpdateAvailableHealthDetails } from '@plaingym/shared/contracts';
 import { requestAutoUpdateState, autoUpdateMessage, patchHoldReason, type AutoUpdateState } from './auto-update.js';
 import { healthProvider } from './status.js';
+import { logWarn } from '../../core/log.js';
 import type { StaffProviderContext } from '../../core/interfaces/extensions.js';
 
 const translate = createTranslator({ 'health/updates': messages });
@@ -55,6 +56,11 @@ export interface ReleaseCheck {
   latest(now: Date): Promise<LatestRelease | null>;
   /** When the last request failed, if it did and no request has succeeded since; null while the first one is still running. */
   failedAt?(): Date | null;
+  /**
+   * What the last failed request was: `not_found` for GitHub's 404 (the repository has no stable release yet), `failed` for
+   * anything else. Null while none has failed since the last success, or none has finished.
+   */
+  failure?(): 'not_found' | 'failed' | null;
 }
 export interface ReleaseCheckOptions {
   fetch?: typeof fetch;
@@ -67,19 +73,23 @@ export interface ReleaseCheckOptions {
   retryMs?: number;
   timeoutMs?: number;
 }
+/** Thrown inside the release check for an answer that came back but can't be used; `status` is the HTTP status of a non-OK one. */
+class Rejected extends Error {
+  constructor(readonly reason: 'http' | 'unusable', readonly status: number | null = null) { super(reason); }
+}
 /** The whole body as text, refusing an answer over `limit` bytes: by its declared length, or as soon as the stream passes it. */
 async function readLimited(response: Response, limit: number): Promise<string> {
   const declared = Number(response.headers.get('content-length'));
-  if (declared > limit) { await response.body?.cancel().catch(() => undefined); throw new Error('Release answer too large'); }
+  if (declared > limit) { await response.body?.cancel().catch(() => undefined); throw new Rejected('unusable'); }
   const reader = response.body?.getReader();
-  if (!reader) throw new Error('Release answer has no body');
+  if (!reader) throw new Rejected('unusable');
   const chunks: Uint8Array[] = [];
   let size = 0;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
     size += value.byteLength;
-    if (size > limit) { await reader.cancel().catch(() => undefined); throw new Error('Release answer too large'); }
+    if (size > limit) { await reader.cancel().catch(() => undefined); throw new Rejected('unusable'); }
     chunks.push(value);
   }
   return new TextDecoder().decode(Buffer.concat(chunks));
@@ -95,22 +105,35 @@ export function createReleaseCheck(options: ReleaseCheckOptions = {}): ReleaseCh
   const ttl = options.ttlMs ?? day, retry = options.retryMs ?? hour, timeout = options.timeoutMs ?? 5000;
   // The release page must sit under the repository that was asked, so an answer can't point the link elsewhere.
   const pagePrefix = `/${repository}/releases/`.toLowerCase();
-  let known: LatestRelease | null = null, failedAt: Date | null = null, nextAt = 0, pending: Promise<void> | null = null;
+  let known: LatestRelease | null = null, failedAt: Date | null = null, failure: 'not_found' | 'failed' | null = null;
+  let nextAt = 0, pending: Promise<void> | null = null;
   async function refresh(now: Date) {
     try {
       const response = await fetcher(url, { headers: { accept: 'application/vnd.github+json', 'user-agent': 'plaingym-update-check' },
         redirect: 'error', signal: AbortSignal.timeout(timeout) });
-      if (!response.ok) { await response.body?.cancel().catch(() => undefined); throw new Error('Release list answered ' + response.status); }
-      const body = JSON.parse(await readLimited(response, maxBodyBytes)) as { tag_name?: unknown; html_url?: unknown; draft?: unknown; prerelease?: unknown };
-      if (typeof body.tag_name !== 'string' || typeof body.html_url !== 'string' || body.draft === true || body.prerelease === true) throw new Error('Unusable release');
-      const version = parseVersion(body.tag_name), page = new URL(body.html_url);
-      if (!version || page.origin + '/' !== releasePageOrigin || !page.pathname.toLowerCase().startsWith(pagePrefix)) throw new Error('Unusable release');
+      if (!response.ok) { await response.body?.cancel().catch(() => undefined); throw new Rejected('http', response.status); }
+      // Reading the body stays outside the parse guard: a timeout or dropped connection mid-body is a network failure.
+      const text = await readLimited(response, maxBodyBytes);
+      let body: { tag_name?: unknown; html_url?: unknown; draft?: unknown; prerelease?: unknown } | null;
+      try { body = JSON.parse(text) as typeof body; } catch { throw new Rejected('unusable'); }
+      if (!body || typeof body !== 'object') throw new Rejected('unusable');
+      if (typeof body.tag_name !== 'string' || typeof body.html_url !== 'string' || body.draft === true || body.prerelease === true) throw new Rejected('unusable');
+      const version = parseVersion(body.tag_name);
+      let page: URL;
+      try { page = new URL(body.html_url); } catch { throw new Rejected('unusable'); }
+      if (!version || page.origin + '/' !== releasePageOrigin || !page.pathname.toLowerCase().startsWith(pagePrefix)) throw new Rejected('unusable');
       known = { version: `${version.major}.${version.minor}.${version.patch}`, url: page.href, checkedAt: now };
       failedAt = null;
+      failure = null;
       nextAt = now.getTime() + ttl;
-    } catch {
+    } catch (error) {
+      const status = error instanceof Rejected ? error.status : null;
       failedAt = now;
+      // GitHub answers 404 for a repository with no stable release (or none at all); that is not a read failure.
+      failure = status === 404 ? 'not_found' : 'failed';
       nextAt = now.getTime() + retry;
+      // Status and class only: no URL, body or error message.
+      logWarn('health.release_check_failed', { status, reason: error instanceof Rejected ? error.reason : 'network' });
     }
   }
   return {
@@ -119,6 +142,7 @@ export function createReleaseCheck(options: ReleaseCheckOptions = {}): ReleaseCh
       return known;
     },
     failedAt: () => failedAt,
+    failure: () => failure,
   };
 }
 const shared = new Map<string, ReleaseCheck>();
@@ -161,7 +185,8 @@ export function createUpdateAvailableProvider(options: UpdateProviderOptions = {
       // Both answers are `unavailable`. Only the first request still running has no check time, which is what the banner waits on:
       // after a failure the check retries by itself each hour, and nothing needs asking sooner.
       const failedAt = check.failedAt?.() ?? null;
-      return failedAt ? empty('unavailable', 'unreadable', failedAt.toISOString()) : empty('unavailable', 'unreachable');
+      if (!failedAt) return empty('unavailable', 'unreachable');
+      return empty('unavailable', check.failure?.() === 'not_found' ? 'noRelease' : 'unreadable', failedAt.toISOString());
     }
     const state = await (options.state ? options.state(context) : options.automatic ? options.automatic(context.gymId, context.clock) : requestAutoUpdateState(context)).catch(() => null);
     const target = state?.attempt?.toVersion ? parseVersion(state.attempt.toVersion) : null;

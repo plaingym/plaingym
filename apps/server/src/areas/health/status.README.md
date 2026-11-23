@@ -203,7 +203,8 @@ that remains outside either bound keeps its own rows. Free space is excluded fro
 the comparison because two `statfs` calls on a busy disk can differ slightly. Each
 figure describes the volume seen at that path. When `sameFilesystem` is true,
 the message reports the lower free figure and the page shows it alongside that
-path's total, using uploads when the free figures tie. The status still checks
+path's total, using uploads when the free figures tie. Both pick that volume with
+`sharedDiskVolume` (`packages/shared/src/contracts/health.ts`). The status still checks
 each path's own free bytes and free-space percentage.
 `backupStaging` is null when no staging directory is configured, including multi-gym
 mode, which ignores `BACKUP_STAGING_DIR`; `sameFilesystem` is then false and the page
@@ -219,7 +220,11 @@ updater follows; the release page must sit under it) without a token at most onc
 the network: with nothing cached it starts the request in the background and the tile is `unavailable` with no
 `checkedAt` until it arrives (the banner asks again each minute meanwhile). After a failed request with nothing cached
 it is `unavailable` with `checkedAt` set to the failure and its own message (the banner then keeps its usual pace; the
-check retries hourly). A failed, oversized (refused by `Content-Length`, or once the stream passes 256 KiB), draft, pre-release or
+check retries hourly). GitHub answers 404 for a repository with no stable release: the tile then says no stable release
+has been published yet (`ReleaseCheck.failure()` is `not_found`) instead of "could not be read". Every failed request
+writes one `health.release_check_failed` log line with only `status` (the HTTP status, null when there was none) and
+`reason` (`http`, `unusable` for a body that fails parsing or the release checks, or `network` for a failed or timed-out
+fetch); it never logs the URL, body or error message. A failed, oversized (refused by `Content-Length`, or once the stream passes 256 KiB), draft, pre-release or
 off-host answer keeps the last good one and retries after an hour. A newer minor or major is `warning` with
 `available: true` (the banner). A newer patch is `healthy` with `available: false` while the nightly update is
 expected to install it, and `warning` with `available: true` when it is not: the gym's automatic-updates switch is off,

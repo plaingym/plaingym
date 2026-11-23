@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { healthTileIds, healthTileSchema, healthResponseSchema, healthContracts, chargeFailureReportSchema, chargeFailuresResponseSchema,
   dismissChargeFailuresRequestSchema, dismissChargeFailuresResponseSchema, maxDismissedChargeRuns, autoUpdateContracts,
-  autoUpdateSettingsResponseSchema, updateAutoUpdateSettingsRequestSchema } from './index.js';
+  autoUpdateSettingsResponseSchema, updateAutoUpdateSettingsRequestSchema, sharedDiskVolume } from './index.js';
 import { canStaff, staffRoles } from '../permissions.js';
 
 const now = '2026-10-21T20:00:00Z';
@@ -67,6 +67,15 @@ describe('health contracts', () => {
     expect(tile({ uploads: volume, backupStaging: null })).toBe(false);
     expect(tile({ uploads: volume, backupStaging: null, sameFilesystem: 'yes' })).toBe(false);
     expect(tile({ uploads: volume, backupStaging: null, sameFilesystem: true })).toBe(false);
+  });
+  it('picks the volume that stands for a shared filesystem: the lower free figure, uploads on ties', () => {
+    const uploads = { totalBytes: 1000, availableBytes: 500 }, staging = (availableBytes: number) => ({ totalBytes: 999, availableBytes });
+    expect(sharedDiskVolume({ uploads, backupStaging: staging(500), sameFilesystem: true })).toBe(uploads);
+    expect(sharedDiskVolume({ uploads, backupStaging: staging(900), sameFilesystem: true })).toBe(uploads);
+    const lower = staging(100);
+    expect(sharedDiskVolume({ uploads, backupStaging: lower, sameFilesystem: true })).toBe(lower);
+    expect(sharedDiskVolume({ uploads, backupStaging: lower, sameFilesystem: false })).toBe(uploads);
+    expect(sharedDiskVolume({ uploads, backupStaging: null, sameFilesystem: false })).toBe(uploads);
   });
   it('limits the charge failure reports and their dismissal to managers, like the page that shows them', () => {
     for (const contract of [healthContracts.listChargeFailures, healthContracts.dismissChargeFailures]) {

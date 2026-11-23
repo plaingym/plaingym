@@ -8,7 +8,8 @@ The runtime supplies both providers to the generic health route through
 `WebhookHealthQuery` and a boolean configuration resolver, such as
 `async gymId => Boolean(await paymentsFor(gymId))`. It never reads inbox rows,
 credentials or payloads. Failed processing is an error, pending processing is a
-warning, and configured Stripe with no received event is a warning. Silence after
+warning, and configured Stripe with no received event yet is healthy (the tile
+says no webhook has arrived). Silence after
 an event is not a failure: an idle gym may receive no new events.
 
 `monitorChargeRunner(runner, { scope, clock, settings })` returns a runner whose
