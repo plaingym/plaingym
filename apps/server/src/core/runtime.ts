@@ -436,7 +436,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
     createDisputeAlertProvider(), createCheckoutDebitReviewProvider(), createPinLimitWidgetProvider(),
     createPortalConfirmationWidgetProvider(), createSkippedCollectionsProvider({ settings }),
     createFollowUpsDueProvider({ settings })]);
-  configurePaymentDelivery({ notifications: billing.notifications, detachCard });
+  configurePaymentDelivery({ notifications: billing.notifications, detachCard,
+    adoptCustomer: async (gymId, customerId) => (await requirePayments(gymId)).adoptCustomer(customerId) });
   // Portal billing seals its Checkout return into the signed-link receipt cookie, so both share one key.
   const receiptKey = new Uint8Array(hkdfSync('sha256', key, new Uint8Array(0), 'plaingym signed-link receipts v1', 32));
   configureLinkPages({ waivers, portalInvitations, checkout, receiptKey });

@@ -174,6 +174,34 @@ it('collects assigned invoices, retries a declined cycle, serves staff billing, 
   }
 }, 90_000);
 
+it('adopts a household’s untagged customer when the runtime detaches its card', async () => {
+  const sandbox = app.sandbox, transport = new StripeFixtures(sandbox.gymId);
+  const provider = vi.spyOn(stripeAdapter, 'stripeTransport').mockReturnValue(transport);
+  const [gym] = await database.forGym(sandbox.gymId, tx => tx.select().from(gyms).where(eq(gyms.id, sandbox.gymId)));
+  try {
+    await app.restart(demoStripeEnv);
+    await database.forGym(sandbox.gymId, tx => tx.update(gyms).set({ billingEnabled: true }).where(eq(gyms.id, sandbox.gymId)));
+    const home = await factory('households', sandbox.gymId, { stripeCustomerId: 'cus_csv_runtime' });
+    const card = await factory('paymentMethods', sandbox.gymId, { householdId: home.id, processorId: 'pm_csv_runtime', type: 'acss_debit',
+      isDefault: false, revokedAt: clock.now() });
+    transport.objects.set('cus_csv_runtime', { id: 'cus_csv_runtime', object: 'customer', email: 'csv.payer@example.invalid', metadata: {} });
+    transport.objects.set('pm_csv_runtime', { id: 'pm_csv_runtime', object: 'payment_method', created: transport.now, type: 'acss_debit',
+      customer: 'cus_csv_runtime', metadata: {}, billing_details: { name: null, email: null, phone: null, address: null },
+      acss_debit: { bank_name: 'STRIPE TEST BANK', last4: '6789' } });
+    const handler = app.handlers.get('billing.payments.detach');
+    expect(handler).toBeDefined();
+    await handler!({ paymentMethodId: card.id }, { gymId: sandbox.gymId, timezone: 'UTC', clock, jobId: uuidv7(), attempt: 1 });
+    expect(transport.objects.get('cus_csv_runtime')!.metadata).toEqual({ gym_id: sandbox.gymId });
+    expect(transport.objects.get('pm_csv_runtime')!.customer).toBeNull();
+    expect(await database.forGym(sandbox.gymId, tx => tx.select().from(auditEvents).where(and(eq(auditEvents.targetId, home.id),
+      eq(auditEvents.action, 'billing.customer.adopted'))))).toHaveLength(1);
+  } finally {
+    await database.forGym(sandbox.gymId, tx => tx.update(gyms).set({ billingEnabled: gym!.billingEnabled }).where(eq(gyms.id, sandbox.gymId)));
+    provider.mockRestore();
+    await app.restart();
+  }
+}, 60_000);
+
 it('lists and dismisses charge failure reports through the runtime charge runner', async () => {
   const sandbox = app.sandbox, cookie = await app.login('owner'), headers = app.headers(sandbox, cookie), runId = uuidv7();
   const home = await factory('households', sandbox.gymId);
