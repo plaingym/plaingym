@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, eq, gt, inArray, isNull, notExists } from 'drizzle-orm';
-import { auditEvents, classBookings, classSessions, forGym, members, writeAudit } from '@plaingym/db';
+import { auditEvents, classBookings, classSessions, forGym, members, writeAudit, type Transaction } from '@plaingym/db';
 import { z } from 'zod';
 import { idSchema } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
@@ -42,7 +42,7 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
   const settings = options.settings ?? createGymSettingsAccessor({ scope });
   const deliveries = createEmailDeliveries({ scope, clock });
   const sendSms = createBookingSms({ scope, clock, settings, ...(options.sms ? { sms: options.sms } : {}),
-    load: (gymId, bookingId) => readNotice(gymId, bookingId, true) });
+    load: (tx, gymId, bookingId) => readNoticeIn(tx, gymId, bookingId, true) });
   const noticeKey = (bookingId: string) => `booking-promotion:${bookingId}`;
   async function enqueueNotice(gymId: string, bookingId: string) {
     const gym = await settings.get(gymId);
@@ -107,21 +107,23 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
       cursor = pending.at(-1)!.id;
     }
   }
-  async function readNotice(gymId: string, bookingId: string, includeSent = false) {
-    return scope(gymId, async tx => {
-      const [promotion] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.targetId, bookingId), recentPromotion()));
-      const [sent] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.targetId, bookingId), eq(auditEvents.action, 'booking.notice_sent')));
-      if (sent && !includeSent) return;
-      if (!promotion) {
-        if (!includeSent) logInfo('bookings.notice_skipped', { gymId, bookingId, reason: 'stale_or_missing_promotion' });
-        return;
-      }
-      const [row] = await tx.select({ booking: classBookings, session: classSessions, memberId: members.id })
-        .from(classBookings).innerJoin(classSessions, eq(classSessions.id, classBookings.sessionId))
-        .innerJoin(members, eq(members.id, classBookings.memberId)).where(and(eq(classBookings.id, bookingId),
-          eq(classBookings.status, 'booked'), eq(classSessions.status, 'scheduled'), gt(classSessions.startsAt, clock.now()), isNull(members.anonymizedAt)));
-      return row;
-    });
+  function readNotice(gymId: string, bookingId: string, includeSent = false) {
+    return scope(gymId, tx => readNoticeIn(tx, gymId, bookingId, includeSent));
+  }
+  /** The same read inside a caller's gym transaction, so the text sender can recheck it with its cap reservation. */
+  async function readNoticeIn(tx: Transaction, gymId: string, bookingId: string, includeSent = false) {
+    const [promotion] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.targetId, bookingId), recentPromotion()));
+    const [sent] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.targetId, bookingId), eq(auditEvents.action, 'booking.notice_sent')));
+    if (sent && !includeSent) return;
+    if (!promotion) {
+      if (!includeSent) logInfo('bookings.notice_skipped', { gymId, bookingId, reason: 'stale_or_missing_promotion' });
+      return;
+    }
+    const [row] = await tx.select({ booking: classBookings, session: classSessions, memberId: members.id })
+      .from(classBookings).innerJoin(classSessions, eq(classSessions.id, classBookings.sessionId))
+      .innerJoin(members, eq(members.id, classBookings.memberId)).where(and(eq(classBookings.id, bookingId),
+        eq(classBookings.status, 'booked'), eq(classSessions.status, 'scheduled'), gt(classSessions.startsAt, clock.now()), isNull(members.anonymizedAt)));
+    return row;
   }
   async function sendEmail(gymId: string, bookingId: string) {
     const read = () => readNotice(gymId, bookingId);

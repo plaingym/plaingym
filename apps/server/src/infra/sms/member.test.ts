@@ -3,16 +3,17 @@ import { expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- SQL only reads a transaction-local timeout setting.
 import { sql } from 'drizzle-orm';
-import { auditEvents, databaseCode, households, members, smsDailyUsage, uuidv7 } from '@plaingym/db';
+import { auditEvents, databaseCode, households, members, smsDailyUsage, uuidv7, type Transaction } from '@plaingym/db';
 // eslint-disable-next-line database/system-tables -- One extra app-role connection holds the lock in this disposable test database.
 import { openConnection, scopedDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
+import { isInTransaction } from '@plaingym/shared/transaction';
 import { TestClock } from '../../core/clock.js';
 import { setLogSink } from '../../core/log.js';
 import { createGymSettingsAccessor } from '../../areas/settings/settings.js';
 import type { SmsResolver } from '../../areas/settings/sms.js';
-import { createSmsDeliveries, FakeSms, MemberSms, SmsDeliveryError, type MemberSmsOptions } from './index.js';
+import { createSmsDeliveries, FakeSms, MemberSms, SmsDeliveryError, SmsRecheckBusy, type MemberSmsOptions } from './index.js';
 import { smsInFlightMs } from './deliveries.js';
 import { smsDeadlineMs } from './constants.js';
 
@@ -30,6 +31,8 @@ async function fixture(options: { enabled?: boolean; cap?: number } = {}) {
   const usage = () => scope(gymId, tx => tx.select().from(smsDailyUsage));
   return { gymId, clock, consent, home, person, sms, resolver, settings, sender, usage, logSuppression };
 }
+/** The fixture gym's settings as a last check would read them. */
+const locked = { memberSmsEnabled: true, smsDailyCap: 1000, timezone: 'America/Los_Angeles', country: 'US' };
 it('sends only after its transactions commit, with the gym name and a local-day slot', async () => {
   const f = await fixture();
   expect(await f.sender().sendSms(message)).toMatchObject({ status: 'sent' });
@@ -77,6 +80,75 @@ it('requires the billing phone consent independently and never uses it for annou
   await scope(f.gymId, tx => tx.update(households).set({ smsNoticesConsentAt: null, smsNoticesConsentSource: null }).where(eq(households.id, f.home.id)));
   expect(await f.sender({ householdIds: [f.home.id] }).sendSms(message)).toEqual({ status: 'suppressed', reason: 'no_consent' });
   expect(f.sms.messages).toHaveLength(1);
+});
+it('runs the last check first in the cap transaction, after credentials resolve and before the slot', async () => {
+  const f = await fixture(), order: string[] = [];
+  const resolver: SmsResolver = { ...f.resolver, async resolve(id) { order.push('resolve'); return f.resolver.resolve(id); } };
+  const recheck = vi.fn(async (tx: Transaction) => {
+    order.push('recheck'); expect(isInTransaction()).toBe(true);
+    expect(await tx.select().from(smsDailyUsage)).toEqual([]);
+    return 'phone_changed' as const;
+  });
+  expect(await f.sender({ resolver, recheck }).sendSms(message)).toEqual({ status: 'suppressed', reason: 'phone_changed' });
+  expect(order).toEqual(['resolve', 'recheck']); expect(f.sms.messages).toEqual([]); expect(await f.usage()).toEqual([]);
+  expect(f.logSuppression).toHaveBeenCalledWith({ event: 'sms.suppressed', gymId: f.gymId, memberIds: [f.person.id], reason: 'phone_changed' });
+  await expect(f.sender({ recheck: async () => { throw new Error('Read failed'); } }).sendSms(message)).rejects.toMatchObject({ acceptance: 'not_accepted' });
+  expect(f.sms.messages).toEqual([]); expect(await f.usage()).toEqual([]);
+  expect(await f.sender({ recheck: async () => locked }).sendSms(message)).toMatchObject({ status: 'sent' });
+  expect(f.sms.messages).toHaveLength(1); expect(await f.usage()).toEqual([expect.objectContaining({ sent: 1, refused: 0 })]);
+});
+it('decides with the switch and cap the last check read instead of the earlier settings snapshot', async () => {
+  const f = await fixture();
+  expect(await f.sender().sendSms(message)).toMatchObject({ status: 'sent' });
+  expect(await f.sender({ recheck: async () => ({ ...locked, memberSmsEnabled: false }) }).sendSms(message))
+    .toEqual({ status: 'suppressed', reason: 'disabled' });
+  expect(await f.usage()).toEqual([expect.objectContaining({ sent: 1, refused: 0 })]);
+  expect(await f.sender({ recheck: async () => ({ ...locked, smsDailyCap: 1 }) }).sendSms(message))
+    .toEqual({ status: 'suppressed', reason: 'cap_reached' });
+  expect(f.sms.messages).toHaveLength(1); expect(await f.usage()).toEqual([expect.objectContaining({ sent: 1, refused: 1 })]);
+});
+it('charges the usage day of the timezone the last check read, and refuses when that day is full', async () => {
+  const f = await fixture();
+  // 02:00 UTC is still 2026-11-15 in the snapshot's Los Angeles, but already 2026-11-16 in London.
+  expect(await f.sender({ recheck: async () => ({ ...locked, timezone: 'Europe/London' }) }).sendSms(message)).toMatchObject({ status: 'sent' });
+  expect(await f.usage()).toEqual([expect.objectContaining({ day: '2026-11-16', sent: 1, refused: 0 })]);
+  expect(await f.sender({ recheck: async () => ({ ...locked, timezone: 'Europe/London', smsDailyCap: 1 }) }).sendSms(message))
+    .toEqual({ status: 'suppressed', reason: 'cap_reached' });
+  expect(f.sms.messages).toHaveLength(1);
+  expect(await f.usage()).toEqual([expect.objectContaining({ day: '2026-11-16', sent: 1, refused: 1 })]);
+});
+it('validates a stored national-format phone under the country the last check read', async () => {
+  const f = await fixture();
+  await scope(f.gymId, tx => tx.update(members).set({ phone: '(202) 555-0123' }).where(eq(members.id, f.person.id)));
+  expect(await f.sender({ recheck: async () => ({ ...locked, country: 'GB' }) }).sendSms(message))
+    .toEqual({ status: 'suppressed', reason: 'phone_changed' });
+  expect(f.sms.messages).toEqual([]); expect(await f.usage()).toEqual([]);
+  expect(await f.sender({ recheck: async () => locked }).sendSms(message)).toMatchObject({ status: 'sent' });
+  expect(f.sms.messages).toHaveLength(1);
+});
+it('rolls back a busy last check and reruns it in a fresh transaction, taking one slot', async () => {
+  const f = await fixture();
+  let tries = 0;
+  const recheck = vi.fn(async (tx: Transaction) => {
+    // A write in the busy try shows that its transaction rolls back before the retry.
+    if (++tries === 1) { await tx.insert(smsDailyUsage).values({ gymId: f.gymId, day: '2026-01-01', sent: 1, createdAt: f.clock.now() }); throw new SmsRecheckBusy(); }
+    return locked;
+  });
+  expect(await f.sender({ recheck }).sendSms(message)).toMatchObject({ status: 'sent' });
+  expect(recheck).toHaveBeenCalledTimes(2); expect(f.sms.messages).toHaveLength(1);
+  expect(await f.usage()).toEqual([expect.objectContaining({ day: '2026-11-15', sent: 1, refused: 0 })]);
+});
+it('suppresses a last check still busy when the preparation time is used up, with no slot or provider call', async () => {
+  const f = await fixture(), now = performance.now.bind(performance);
+  let skipped = 0;
+  const clock = vi.spyOn(performance, 'now').mockImplementation(() => now() + skipped);
+  try {
+    // Each busy try uses up all but 200 ms of the preparation time, too little for a pause and another try.
+    const recheck = vi.fn(async () => { skipped += smsDeadlineMs / 2 - 200; throw new SmsRecheckBusy(); });
+    expect(await f.sender({ recheck }).sendSms(message)).toEqual({ status: 'suppressed', reason: 'no_consent' });
+    expect(recheck).toHaveBeenCalledTimes(1);
+  } finally { clock.mockRestore(); }
+  expect(f.sms.messages).toEqual([]); expect(await f.usage()).toEqual([]);
 });
 it('serializes concurrent cap reservations and counts every refused attempt', async () => {
   const f = await fixture({ cap: 2 });

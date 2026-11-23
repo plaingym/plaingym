@@ -104,11 +104,34 @@ receives `sms: { resolver, phoneDigest }`. The gym-aware resolver is the same
 only email. `memberNoticePhones` prefers the member's own consented phone and
 otherwise uses their consented household billing phone. `MemberSms` enforces
 notices consent, current phone and household membership, the independent SMS
-switch and daily cap. Announcement consent alone is insufficient.
+switch and daily cap. Announcement consent alone is insufficient. After the
+provider credentials resolve, the text's last check runs first in the
+transaction that takes the cap slot. It locks and reads the gym settings, locks
+the class session before checking the promotion, then locks the member and
+their household before rechecking the preferred consented phone. Staff
+cancellation takes the same session lock before changing the booking. A promotion
+no longer eligible
+(such as a cancellation that committed first), no consented phone, or a
+preferred phone other than the one the attempt started with (such as the
+member's own newly consented phone) suppresses the text without taking a slot.
+The settings read there decide everything after it: the SMS switch, the
+country that validates stored phones, the timezone of the usage day and the
+daily cap. A cancellation that comes later waits until the slot commits, then
+cancels as usual.
+A promotion text gives way to a staff erasure or deletion of the member. Those
+lock the household and member before the member's class sessions, so the last
+check takes the member and household locks without waiting. When either is
+busy, it rolls back with no slot, releasing the session, and tries again from
+the booking reread after a short pause, within the same preparation deadline.
+Once the erasure or deletion commits, that reread suppresses the text. A check
+still busy when the deadline is used up is suppressed too.
 The text starts with the gym name and names the promoted member, class, date and
 time in the gym's timezone. The durable key is
 `booking-promotion-sms:<bookingId>`; accepted or uncertain attempts never resend.
-Only a definite non-send retries. Texts are independent of email acceptance,
+The delivery row records a suppressed text as a definite non-send. After a
+successful email, the registered job finishes without scheduling another text.
+A later attempt under the same key (for example an explicit replay of the notice) picks its recipient
+again and texts the member's current preferred phone once. Texts are independent of email acceptance,
 suppression, missing SMTP and the email switch. Both channels still require a
 recent promotion, an unstarted scheduled class and a current booked participant.
 Ordinary booking confirmations and portal cancellations (self or household) send no

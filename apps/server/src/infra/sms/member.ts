@@ -61,10 +61,35 @@ async function correctLateUsage(scope: typeof forGym, gymId: string, day: string
 export interface SmsSuppression {
   readonly event: 'sms.suppressed'; readonly gymId: string; readonly memberIds: readonly string[]; readonly reason: SuppressionReason;
 }
+/**
+ * The gym settings a sender's last check read in the cap transaction: the switch, the daily cap, the timezone that picks
+ * the usage day and the country that normalizes stored phones.
+ */
+export interface SmsRecheckSettings {
+  readonly memberSmsEnabled: boolean; readonly smsDailyCap: number; readonly timezone: string; readonly country: string | null;
+}
+/**
+ * Thrown by a sender's `recheck` when a row it must lock is busy (for example a `NOWAIT` lock refused while staff
+ * change the member). The cap transaction rolls back with no slot, and `MemberSms` reruns it after a short pause while
+ * the preparation deadline allows. A check still busy when that time is used up ends as a `no_consent` suppression.
+ */
+export class SmsRecheckBusy extends Error {
+  constructor() { super('SMS recipient rows are busy'); this.name = 'SmsRecheckBusy'; }
+}
+const recheckPauseMs = 50;
 export interface MemberSmsOptions {
   readonly gymId: string; readonly memberIds: readonly string[]; readonly householdIds: readonly string[];
   readonly kind: 'notices' | 'announcements'; readonly resolver: SmsResolver; readonly settings: GymSettingsAccessor;
   readonly scope?: typeof forGym; readonly clock?: Clock; readonly logSuppression?: (event: SmsSuppression) => void;
+  /**
+   * The sender's own last check, run first in the cap transaction (after credentials resolve, before the consent reads
+   * and the slot, inside the preparation deadline). It locks and reads the rows its recipient decision uses in `tx`,
+   * with no nested transaction or network call, and returns a suppression reason or the gym settings read in `tx`.
+   * Those replace the earlier settings snapshot for every later step: the switch, phone normalization, the usage day and
+   * the cap, including a late usage correction. Throwing `SmsRecheckBusy` gives way: the transaction rolls back and the
+   * whole check, recheck first, runs again in a fresh transaction.
+   */
+  readonly recheck?: (tx: Transaction) => Promise<SuppressionReason | SmsRecheckSettings>;
 }
 /** One wrapper per recipient group, always used inside an at-most-once delivery attempt. */
 export class MemberSms implements Sms {
@@ -103,8 +128,17 @@ export class MemberSms implements Sms {
       // Checked with the gym name added, before a cap slot is taken for a message the transport would refuse.
       const outgoing = { ...message, body: `${resolved.name}: ${message.body}` };
       validateSms(outgoing);
-      const checked = await scope(gymId, async tx => {
+      const check = () => scope(gymId, async tx => {
         await setPreparationTimeouts(tx, Math.max(1, requireTime() - preparationTimeoutMarginMs));
+        let current: Pick<SmsRecheckSettings, 'smsDailyCap' | 'timezone' | 'country'> = gym;
+        if (this.#options.recheck) {
+          const locked = await this.#options.recheck(tx);
+          requireTime();
+          if (typeof locked === 'string') return locked;
+          if (!locked.memberSmsEnabled) return 'disabled';
+          current = locked;
+        }
+        const { smsDailyCap: cap, timezone, country } = current;
         if ((!memberIds.length && !householdIds.length) || (kind === 'announcements' && householdIds.length)) return 'no_consent';
         const homes = householdIds.length ? await tx.select({ phone: households.phone, phoneE164: households.phoneE164,
           smsNoticesConsentAt: households.smsNoticesConsentAt }).from(households).where(inArray(households.id, [...householdIds])) : [];
@@ -114,24 +148,34 @@ export class MemberSms implements Sms {
         if (homes.length !== householdIds.length || people.length !== memberIds.length) return 'no_consent';
         for (const home of homes) {
           if (!home.smsNoticesConsentAt) return 'no_consent';
-          if (home.phoneE164 !== message.to || normalizePhone(home.phone, gym.country) !== message.to) return 'phone_changed';
+          if (home.phoneE164 !== message.to || normalizePhone(home.phone, country) !== message.to) return 'phone_changed';
         }
         for (const member of people) {
           if (member.anonymizedAt) return 'no_consent';
           // A child reached on the billing phone is authorized by that household's checked notices consent.
           if (householdIds.includes(member.householdId)) continue;
           if (!(kind === 'notices' ? member.smsNoticesConsentAt : member.smsAnnouncementsConsentAt)) return 'no_consent';
-          if (member.phoneE164 !== message.to || normalizePhone(member.phone, gym.country) !== message.to) return 'phone_changed';
+          if (member.phoneE164 !== message.to || normalizePhone(member.phone, country) !== message.to) return 'phone_changed';
         }
         await setPreparationTimeouts(tx, Math.max(1, requireTime() - preparationTimeoutMarginMs));
         requireTime();
         const now = clock.now();
-        const allowed = await takeSmsSlot(tx, gymId, now, gym.timezone, gym.smsDailyCap);
-        const day = localDate(now, gym.timezone);
+        const allowed = await takeSmsSlot(tx, gymId, now, timezone, cap);
+        const day = localDate(now, timezone);
         requireTime();
         usageMayCommit = true;
         return { day, counter: allowed ? 'sent' : 'refused' } as const;
       });
+      let checked: Awaited<ReturnType<typeof check>>;
+      for (;;) {
+        try { checked = await check(); break; }
+        catch (error) {
+          // A busy recheck rolled back before the slot, so this try left no usage. Retry while a pause and a new try fit.
+          if (!(error instanceof SmsRecheckBusy)) throw error;
+          if (expired || remaining() <= recheckPauseMs + preparationTimeoutMarginMs) { checked = 'no_consent'; break; }
+          await new Promise(resolve => setTimeout(resolve, recheckPauseMs));
+        }
+      }
       if (expired || remaining() <= 0) {
         // Reverse only an increment confirmed by a committed transaction.
         if (typeof checked === 'object') await correctLateUsage(scope, gymId, checked.day, checked.counter, correctionRemaining);
