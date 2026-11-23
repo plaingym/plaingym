@@ -12,12 +12,16 @@ still requires a successful preview and confirmation.
 
 The optional text composer shows the gym prefix and mandatory STOP line, the
 complete 480-character limit and the shared GSM-7/UCS-2 segment estimate. Preview
-shows distinct consenting phone recipients and server segment counts. Confirmation
+shows distinct consenting phone recipients and server segment counts.
+When the text recipients exceed the daily cap's remaining texts for the day they'd go
+out, the preview warns how many won't get the text (they get the email only). The
+warning doesn't block sending. Confirmation
 names both email and text totals; zero email recipients do not block a text send.
 The typed test phone receives only the text test, counted against the daily cap.
 Quiet-hour guidance explains the 08:00-21:00 gym-local window and deferred 08:00
-delivery. History shows independent SMS counts and its scheduled time, and keeps
-polling until both channels finish.
+delivery. History shows independent SMS counts and its scheduled time, and polls
+every 5 seconds while delivery runs. While texts only wait for quiet hours, it polls
+when they're due and at least every 5 minutes.
 
 The dialog blocks simultaneous operations and dismissal while a request is
 running. After a send attempt, retries keep the same immutable draft and send

@@ -14,7 +14,8 @@ import type { Announcement, AnnouncementClient } from './api.js';
 import { definiteRefusal, Failure, text } from './messages.js';
 
 const statuses = ['active', 'trial', 'frozen'] as const;
-export interface AnnouncementAttempt { draft: AnnouncementDraft; count: number; smsCount?: number; segments?: number; generation: string; uncertain: boolean }
+export interface AnnouncementAttempt { draft: AnnouncementDraft; count: number; smsCount?: number; segments?: number;
+  capRemaining?: number; capDay?: 'today' | 'tomorrow'; generation: string; uncertain: boolean }
 export function AnnouncementEditor({ gymName, programs, client, close, sent, owner = false, attempt, rememberAttempt }: {
   gymName: string; programs: Program[]; client: AnnouncementClient; close(): void; sent(announcement: Announcement): void;
   owner?: boolean; attempt?: AnnouncementAttempt | undefined; rememberAttempt?(attempt: AnnouncementAttempt | undefined): void;
@@ -25,7 +26,8 @@ export function AnnouncementEditor({ gymName, programs, client, close, sent, own
   const composedText = announcementSmsBody(gymName, smsBody), segments = smsSegments(composedText).segments;
   const [selectedStatuses, setStatuses] = useState<AnnouncementDraft['audience']['statuses']>(attempt?.draft.audience.statuses ?? [...statuses]);
   const [programIds, setPrograms] = useState<string[]>(attempt?.draft.audience.programIds ?? []);
-  const [preview, setPreview] = useState<{ draft: AnnouncementDraft; count: number; smsCount?: number; segments?: number } | null>(attempt ?? null);
+  const [preview, setPreview] = useState<{ draft: AnnouncementDraft; count: number; smsCount?: number; segments?: number;
+    capRemaining?: number; capDay?: 'today' | 'tomorrow' } | null>(attempt ?? null);
   const [confirming, setConfirming] = useState(!!attempt), [attempted, setAttempted] = useState(!!attempt);
   const [pending, setPending] = useState<'previewError' | 'testError' | 'sendError' | null>(null);
   const [error, setError] = useState<{ cause: unknown; fallback: string } | null>(null);
@@ -73,7 +75,9 @@ export function AnnouncementEditor({ gymName, programs, client, close, sent, own
         void run(async () => {
           const result = await client.preview(parsed);
           generation.current = crypto.randomUUID();
-          setPreview({ draft: parsed, count: result.recipientCount, smsCount: result.smsRecipientCount, segments: result.smsSegments });
+          setPreview({ draft: parsed, count: result.recipientCount, smsCount: result.smsRecipientCount, segments: result.smsSegments,
+            ...(result.smsCapRemaining !== undefined ? { capRemaining: result.smsCapRemaining } : {}),
+            ...(result.smsCapDay ? { capDay: result.smsCapDay } : {}) });
         }, 'previewError');
       }}>
         <fieldset disabled={busy} className="min-w-0 space-y-4">
@@ -118,6 +122,9 @@ export function AnnouncementEditor({ gymName, programs, client, close, sent, own
         <p className="font-medium">{text(preview.draft.sms ? 'emailRecipients' : 'recipients', { count: formatCount(preview.count) })}</p>
         {preview.draft.sms && <section className="min-w-0 space-y-2 rounded-xl border p-4">
           <p>{text('smsRecipients', { count: preview.smsCount ?? 0, segments: preview.segments ?? 0 })}</p>
+          {preview.capRemaining !== undefined && preview.capDay && (preview.smsCount ?? 0) > preview.capRemaining && <Alert role="note">
+            {text(`smsCapWarning_${preview.capDay}`, { remaining: formatCount(preview.capRemaining),
+              over: formatCount((preview.smsCount ?? 0) - preview.capRemaining), count: formatCount(preview.smsCount ?? 0) })}</Alert>}
           <p className="whitespace-pre-wrap">{announcementSmsBody(gymName, preview.draft.sms.body)}</p>
           <p className="text-sm text-muted-foreground">{text('smsQuietHours')}</p>
         </section>}

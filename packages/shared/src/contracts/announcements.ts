@@ -28,9 +28,11 @@ const permission = { kind: 'staff', capability: 'announcements.send' } as const;
 const response = z.strictObject({ data: announcementSchema });
 export const announcementsContracts = {
   // Preview and a new send refuse with reason disabled, no_smtp or no_origin (canonical HTTPS origin required).
+  // With a text, `smsCapRemaining` is how many more texts the daily cap allows on the gym-local day texts would start (`smsCapDay`).
   preview: { method: 'post', path: '/api/announcements/preview', permission, body: announcementDraftSchema,
     response: z.strictObject({ data: z.strictObject({ recipientCount: z.int().nonnegative(),
-      smsRecipientCount: z.int().nonnegative().default(0), smsSegments: z.int().nonnegative().default(0) }) }) },
+      smsRecipientCount: z.int().nonnegative().default(0), smsSegments: z.int().nonnegative().default(0),
+      smsCapRemaining: z.int().nonnegative().optional(), smsCapDay: z.enum(['today', 'tomorrow']).optional() }) }) },
   test: { method: 'post', path: '/api/announcements/test', permission, body: announcementDraftSchema,
     response: z.strictObject({ data: z.strictObject({ sent: z.literal(true) }) }) },
   testSms: { method: 'post', path: '/api/announcements/test-sms', permission,

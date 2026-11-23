@@ -11,9 +11,19 @@ import { Button } from '../../components/ui/button.js';
 import { Pager } from '../../components/ui/pager.js';
 import { Card } from '../../components/ui/card.js';
 import { Alert } from '../../components/ui/alert.js';
-import { announcementClient, type AnnouncementClient } from './api.js';
+import { announcementClient, type Announcement, type AnnouncementClient } from './api.js';
 import { AnnouncementEditor, type AnnouncementAttempt } from './editor.js';
 import { text } from './messages.js';
+
+/** Every 5 s while delivery runs; while texts only wait for quiet hours, once they are due and at least every 5 minutes. */
+export function historyPollInterval(items: Announcement[], now: number): number | false {
+  if (items.some(item => item.status === 'sending')) return 5000;
+  const waiting = items.filter(item => item.smsBody && !item.smsCompletedAt);
+  if (!waiting.length) return false;
+  if (waiting.some(item => !item.smsScheduledFor || Date.parse(item.smsScheduledFor) <= now)) return 5000;
+  const due = Math.min(...waiting.map(item => Date.parse(item.smsScheduledFor!)));
+  return Math.min(300_000, Math.max(5000, due - now));
+}
 
 export function AnnouncementWorkspace({ gymId, gymName, timezone, owner = false, client = announcementClient }: {
   gymId: string; gymName: string; timezone: string; owner?: boolean; client?: AnnouncementClient;
@@ -21,9 +31,9 @@ export function AnnouncementWorkspace({ gymId, gymName, timezone, owner = false,
   const cache = useQueryClient(), key = ['announcements', gymId];
   const [editing, setEditing] = useState(false), [offset, setOffset] = useState(0), [sent, setSent] = useState(false);
   const [attempt, setAttempt] = useState<AnnouncementAttempt>();
-  // Poll only while a shown announcement is still being delivered.
+  // Poll while a shown announcement is delivering; deferred texts poll when due (`historyPollInterval`).
   const history = useQuery({ queryKey: [...key, 'history', offset], queryFn: () => client.list(offset),
-    refetchInterval: query => query.state.data?.data.some(item => item.status === 'sending' || (item.smsBody && !item.smsCompletedAt)) ? 5000 : false });
+    refetchInterval: query => historyPollInterval(query.state.data?.data ?? [], Date.now()) });
   const programs = useQuery({ queryKey: [...key, 'programs'], queryFn: () => client.programs() });
   const senders = useQuery({ queryKey: [...key, 'senders'], queryFn: () => client.senders() });
   const names = new Map(senders.data?.filter(profile => profile.userId).map(profile => [profile.userId, profile.displayName]));

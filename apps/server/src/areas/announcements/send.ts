@@ -3,6 +3,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { announcementRecipients, announcementSmsRecipients, announcements, forGym, staffRoles, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, createTranslator, smsSegments, type Clock } from '@plaingym/shared';
 import { normalizePhone } from '@plaingym/shared/phone';
+import { localDate } from '@plaingym/shared/time';
 import { announcementDraftSchema, announcementsContracts, sendAnnouncementSchema, type AnnouncementDraft, type SendAnnouncement } from '@plaingym/shared/contracts';
 import { z } from 'zod';
 import { clock as systemClock } from '../../core/clock.js';
@@ -14,7 +15,7 @@ import { renderAnnouncement } from '../../emails/announcements/send.js';
 import messages from '../../../../../locales/en/announcements/send.json' with { type: 'json' };
 import { readAudience, readSmsAudience } from './audience.js';
 import { announcementSmsJob, announcementSmsJobKey, checkedAnnouncementSms, createAnnouncementSmsDelivery, nextAnnouncementSmsTime, type AnnouncementSmsOptions } from './send.sms.js';
-import { takeSmsSlot } from '../../infra/sms/daily-cap.js';
+import { remainingSmsSlots, takeSmsSlot } from '../../infra/sms/daily-cap.js';
 import { createAnnouncementDelivery } from './send.delivery.js';
 import { createAnnouncementHistory } from './send.history.js';
 
@@ -84,9 +85,13 @@ export function createAnnouncementsService(options: AnnouncementsOptions) {
       const draft = announcementDraftSchema.parse(input);
       await available(gymId);
       const text = draft.sms ? await textReady(gymId, draft.sms.body) : undefined;
+      const now = clock.now();
+      const day = text ? localDate(nextAnnouncementSmsTime(now, text.gym.timezone) ?? now, text.gym.timezone) : '';
+      const smsCapDay = text && day === localDate(now, text.gym.timezone) ? 'today' as const : 'tomorrow' as const;
       return scope(gymId, async tx => ({ recipientCount: (await readAudience(tx, draft.audience)).recipients.length,
         ...(text ? { smsRecipientCount: (await readSmsAudience(tx, draft.audience, text.gym.country)).length,
-          smsSegments: smsSegments(text.text).segments } : {}) }));
+          smsSegments: smsSegments(text.text).segments,
+          smsCapRemaining: await remainingSmsSlots(tx, gymId, day, text.gym.smsDailyCap), smsCapDay } : {}) }));
     },
     async testSms(actor: AnnouncementActor, input: z.infer<typeof announcementsContracts.testSms.body>) {
       const draft = announcementsContracts.testSms.body.parse(input);

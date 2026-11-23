@@ -14,6 +14,7 @@ import { FakeEmail } from '../../infra/email/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { createSmsPhoneDigest, DeliveryError, FakeSms } from '../../infra/sms/index.js';
 import { smsInFlightMs } from '../../infra/sms/deliveries.js';
+import { takeSmsSlot } from '../../infra/sms/daily-cap.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { createAnnouncementJobs } from './jobs.js';
 import { createAnnouncementRoutes } from './send.routes.js';
@@ -23,9 +24,9 @@ import { announcementSmsJob, announcementSmsKey, nextAnnouncementSmsTime } from 
 const db = useTestDatabase(), factory = createFactories(db), phone = '+12025550123';
 const digest = createSmsPhoneDigest('announcement-text-tests');
 const draft = announcementDraftSchema.parse({ subject: 'Classes', body: 'Email body', sms: { body: 'Classes resume Monday.' } });
-async function fixture(at = '2026-11-10T15:00:00Z', role: StaffRole = 'owner') {
+async function fixture(at = '2026-11-10T15:00:00Z', role: StaffRole = 'owner', gym: { smsDailyCap?: number } = {}) {
   const gymId = uuidv7(), clock = new TestClock(at);
-  await factory('gyms', gymId, { name: 'Cedar Gym', timezone: 'America/New_York', settings: { address: { country: 'US' } }, memberEmailsEnabled: true, memberSmsEnabled: true });
+  await factory('gyms', gymId, { name: 'Cedar Gym', timezone: 'America/New_York', settings: { address: { country: 'US' } }, memberEmailsEnabled: true, memberSmsEnabled: true, ...gym });
   const user = await factory('authUser', gymId), home = await factory('households', gymId);
   await factory('staffRoles', gymId, { userId: user.id, role });
   const email = new FakeEmail(), sms = new FakeSms(), jobs = new FakeJobs(clock);
@@ -211,4 +212,59 @@ it('keeps unbilled member deletion working after a text recipient was snapshotte
   const removal = memberRemoval(f);
   await removal.remove(person.id);
   expect(await removal.recipients()).toEqual([]);
+});
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+async function capFixture(at = '2026-11-10T15:00:00Z', smsDailyCap = 3) {
+  const f = await fixture(at, 'owner', { smsDailyCap });
+  for (const number of ['+12025550141', '+12025550142', '+12025550143']) await f.member({ phone: number, phoneE164: number });
+  return f;
+}
+const usage = (f: Fixture, day: string, sent: number, refused = 0, gymId = f.gymId) =>
+  db.forGym(gymId, tx => tx.insert(smsDailyUsage).values({ gymId, day, sent, refused, createdAt: f.clock.now() }));
+const segments = smsSegments(announcementSmsBody('Cedar Gym', draft.sms!.body)).segments;
+it('previews the full cap when no texts were sent and writes no usage row', async () => {
+  const f = await capFixture();
+  expect(await f.service.preview(f.gymId, draft)).toEqual({ recipientCount: 3, smsRecipientCount: 3, smsSegments: segments, smsCapRemaining: 3, smsCapDay: 'today' });
+  expect(await db.forGym(f.gymId, tx => tx.select().from(smsDailyUsage))).toEqual([]);
+});
+it('previews no more texts than the cap minus sent, ignoring refused', async () => {
+  const f = await capFixture(); await usage(f, '2026-11-10', 1, 5);
+  expect(await f.service.preview(f.gymId, draft)).toMatchObject({ smsCapRemaining: 2, smsCapDay: 'today' });
+});
+it.each([[3], [4]])('previews zero remaining texts with %i sent against a cap of 3', async sent => {
+  const f = await capFixture(); await usage(f, '2026-11-10', sent);
+  expect(await f.service.preview(f.gymId, draft)).toMatchObject({ smsCapRemaining: 0, smsCapDay: 'today' });
+});
+it('does not count other days or other gyms against the cap', async () => {
+  const f = await capFixture(), other = await fixture();
+  await usage(f, '2026-11-09', 3); await usage(other, '2026-11-10', 3, 0, other.gymId);
+  expect(await f.service.preview(f.gymId, draft)).toMatchObject({ smsCapRemaining: 3, smsCapDay: 'today' });
+});
+it('previews tomorrow\'s day after 21:00 gym time', async () => {
+  const f = await capFixture('2026-11-11T03:00:00Z');
+  await usage(f, '2026-11-10', 3); await usage(f, '2026-11-11', 1);
+  expect(await f.service.preview(f.gymId, draft)).toMatchObject({ smsCapRemaining: 2, smsCapDay: 'tomorrow' });
+});
+it('previews today before 08:00 gym time', async () => {
+  const f = await capFixture('2026-11-10T11:00:00Z'); await usage(f, '2026-11-10', 1);
+  expect(await f.service.preview(f.gymId, draft)).toMatchObject({ smsCapRemaining: 2, smsCapDay: 'today' });
+});
+it('previews the highest allowed cap', async () => {
+  const f = await fixture('2026-11-10T15:00:00Z', 'owner', { smsDailyCap: 100_000 });
+  expect(await f.service.preview(f.gymId, draft)).toMatchObject({ smsCapRemaining: 100_000 });
+});
+it('returns only the email count for a draft without a text', async () => {
+  const f = await capFixture();
+  expect(Object.keys(await f.service.preview(f.gymId, { ...draft, sms: undefined }))).toEqual(['recipientCount']);
+});
+it('takes no slot when previewing', async () => {
+  const f = await capFixture(); await f.service.preview(f.gymId, draft);
+  for (const expected of [true, true, true, false])
+    expect(await db.forGym(f.gymId, tx => takeSmsSlot(tx, f.gymId, f.clock.now(), 'America/New_York', 3))).toBe(expected);
+});
+it('answers the preview route with the remaining cap', async () => {
+  const f = await capFixture(); await usage(f, '2026-11-10', 1, 5);
+  const response = await f.app().request('/api/announcements/preview', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(draft) });
+  expect(response.status).toBe(200);
+  expect((await response.json() as { data: Record<string, unknown> }).data).toMatchObject({ smsCapRemaining: 2, smsCapDay: 'today' });
 });

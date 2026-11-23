@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { StaffRole } from '@plaingym/shared';
-import { AnnouncementWorkspace, AnnouncementPage } from './page.js';
+import { AnnouncementWorkspace, AnnouncementPage, historyPollInterval } from './page.js';
 import { AnnouncementEditor } from './editor.js';
 import { announcementClient, type Announcement, type AnnouncementClient } from './api.js';
 import { ApiError } from '../../lib/api.js';
@@ -382,5 +382,88 @@ describe('announcement screens', () => {
     expect(list).toHaveBeenCalledWith(0);
     await userEvent.click(screen.getByRole('button', { name: 'New announcement' }));
     expect(screen.getByRole('dialog')).toBeDefined();
+  });
+});
+
+describe('daily text cap warning', () => {
+  const warning = 'The daily text cap allows 1 more texts today, so 2 of the 3 text recipients will not get the text. '
+    + 'They still get the email if they have an email address. Other texts sent today also count against the cap. '
+    + 'An owner can raise the Daily text cap in Settings → Integrations → SMS.';
+  async function previewWith(result: Awaited<ReturnType<AnnouncementClient['preview']>>) {
+    const service = client(); vi.mocked(service.preview).mockResolvedValue(result);
+    editor(service);
+    fireEvent.change(screen.getByLabelText('Subject'), { target: { value: 'Classes' } });
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Email' } });
+    await userEvent.click(screen.getByLabelText('Include a text message'));
+    fireEvent.change(screen.getByLabelText('Text message'), { target: { value: 'See you Monday.' } });
+    await userEvent.click(screen.getByRole('button', { name: 'Preview announcement' }));
+    await screen.findByText(/text recipients ·/);
+    return service;
+  }
+  it('warns without blocking the send', async () => {
+    const service = await previewWith({ recipientCount: 5, smsRecipientCount: 3, smsSegments: 1, smsCapRemaining: 1, smsCapDay: 'today' });
+    expect(screen.getByText(warning)).toBeDefined();
+    await userEvent.click(screen.getByRole('button', { name: 'Continue to confirmation' }));
+    expect(screen.getByText(warning)).toBeDefined();
+    const send = screen.getByRole('button', { name: 'Send 5 emails and 3 texts' }) as HTMLButtonElement;
+    expect(send.disabled).toBe(false);
+    await userEvent.click(send);
+    expect(service.send).toHaveBeenCalled();
+  });
+  it('says when no texts fit', async () => {
+    await previewWith({ recipientCount: 5, smsRecipientCount: 2, smsSegments: 1, smsCapRemaining: 0, smsCapDay: 'today' });
+    expect(screen.getByText(/allows 0 more texts today, so 2 of the 2 text recipients/)).toBeDefined();
+  });
+  it('names tomorrow when texts wait for quiet hours to end', async () => {
+    await previewWith({ recipientCount: 5, smsRecipientCount: 2, smsSegments: 1, smsCapRemaining: 1, smsCapDay: 'tomorrow' });
+    expect(screen.getByText(/^Texts go out tomorrow from 08:00\. The daily text cap allows 1 texts tomorrow, so 1 of the 2 text recipients/)).toBeDefined();
+  });
+  it.each([
+    [{ smsCapRemaining: 3, smsCapDay: 'today' as const }], [{ smsCapRemaining: 4, smsCapDay: 'today' as const }], [{}],
+  ])('shows no warning when the texts fit: %j', async extra => {
+    await previewWith({ recipientCount: 5, smsRecipientCount: 3, smsSegments: 1, ...extra });
+    expect(screen.queryByText(/daily text cap allows/)).toBeNull();
+  });
+  it('shows the warning again for a retained attempt', () => {
+    render(<AnnouncementEditor gymName="Our Gym" programs={[program]} client={client()} close={vi.fn()} sent={vi.fn()}
+      attempt={{ draft: { subject: 'Classes', body: 'Email', sms: { body: 'See you Monday.' }, audience: { statuses: ['active'], programIds: [] } },
+        count: 1, smsCount: 2, segments: 1, capRemaining: 0, capDay: 'today', generation: crypto.randomUUID(), uncertain: true }} />);
+    expect(screen.getByText(/allows 0 more texts today, so 2 of the 2 text recipients/)).toBeDefined();
+  });
+});
+
+describe('historyPollInterval', () => {
+  const now = Date.parse('2026-11-11T03:00:00Z'), base = { ...announcement, status: 'sent' as const };
+  const waiting = (smsScheduledFor: string | null) => ({ ...base, smsBody: 'x', smsCompletedAt: null, smsScheduledFor });
+  const at = (offset: number) => new Date(now + offset).toISOString();
+  it('stops when nothing is unfinished', () => {
+    expect(historyPollInterval([], now)).toBe(false);
+    expect(historyPollInterval([{ ...base, smsBody: 'x', smsCompletedAt: '2026-11-10T20:00:00.000Z' }], now)).toBe(false);
+  });
+  it('polls every 5 seconds while delivery runs or texts are due', () => {
+    expect(historyPollInterval([{ ...base, status: 'sending' }], now)).toBe(5000);
+    expect(historyPollInterval([waiting(null)], now)).toBe(5000);
+    expect(historyPollInterval([waiting(at(-1000))], now)).toBe(5000);
+    expect(historyPollInterval([waiting(at(2000))], now)).toBe(5000);
+    expect(historyPollInterval([waiting('2026-11-11T13:00:00.000Z'), { ...base, status: 'sending' }], now)).toBe(5000);
+  });
+  it('waits for deferred texts, at most 5 minutes', () => {
+    expect(historyPollInterval([waiting('2026-11-11T13:00:00.000Z')], now)).toBe(300_000);
+    expect(historyPollInterval([waiting(at(60_000))], now)).toBe(60_000);
+    expect(historyPollInterval([waiting(at(36_000_000)), waiting(at(120_000))], now)).toBe(120_000);
+  });
+  it('polls a workspace with deferred texts slowly', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      vi.setSystemTime(new Date('2026-11-11T03:00:00Z'));
+      const service = client();
+      vi.mocked(service.list).mockResolvedValue({ data: [{ ...announcement, status: 'sent', smsBody: 'x', smsRecipientCount: 1,
+        smsScheduledFor: '2026-11-11T13:00:00.000Z', smsCompletedAt: null }], pagination: { total: 1, limit: 20, offset: 0 } });
+      mount(service); expect(await screen.findByText('Text delivery is pending.')).toBeDefined();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(service.list).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(240_000);
+      expect(service.list).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
   });
 });

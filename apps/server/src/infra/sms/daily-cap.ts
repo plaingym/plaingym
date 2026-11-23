@@ -15,3 +15,10 @@ export async function takeSmsSlot(tx: Transaction, gymId: string, now: Date, tim
   await tx.update(smsDailyUsage).set(allowed ? { sent: row.sent + 1 } : { refused: row.refused + 1 }).where(eq(smsDailyUsage.id, row.id));
   return allowed;
 }
+
+/** Read-only: texts still allowed on a gym-local day, as `takeSmsSlot` decides (a slot is allowed while `sent < cap`). */
+export async function remainingSmsSlots(tx: Transaction, gymId: string, day: string, cap: number): Promise<number> {
+  const [row] = await tx.select({ sent: smsDailyUsage.sent }).from(smsDailyUsage)
+    .where(and(eq(smsDailyUsage.gymId, gymId), eq(smsDailyUsage.day, day)));
+  return Math.max(0, cap - (row?.sent ?? 0));
+}

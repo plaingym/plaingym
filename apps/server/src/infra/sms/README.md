@@ -52,7 +52,8 @@ prefixed body over 1,600 characters, then sends after these checks commit:
   The cap is owner-editable from 1 to 100,000 and defaults to 1,000. `sent` counts reserved provider attempts;
   provider failures and unknown outcomes retain their slots conservatively. `refused`
   counts attempts suppressed by the cap. Retries of accepted delivery keys do
-  not enter this wrapper or consume another slot.
+  not enter this wrapper or consume another slot. `remainingSmsSlots` reads the same
+  row without locking it or taking a slot (the announcement preview's warning).
 
 An optional `recheck(tx)` lets a sender repeat its own recipient check once the
 credentials resolve. It runs first in the cap transaction, within the

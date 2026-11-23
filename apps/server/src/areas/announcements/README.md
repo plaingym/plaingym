@@ -5,7 +5,7 @@ Owners and admins use `announcements.send` for all six endpoints:
 
 | Method and path | Result |
 | --- | --- |
-| `POST /api/announcements/preview` | Eligible recipient count |
+| `POST /api/announcements/preview` | Eligible recipient count; with a text, the text recipient count, segments and the remaining daily text cap |
 | `POST /api/announcements/test` | One test to the authenticated sender's login email |
 | `POST /api/announcements/test-sms` | One test text to the supplied `testTo` phone, counted against the daily cap |
 | `POST /api/announcements/send` | Confirm and queue an announcement |
@@ -26,6 +26,10 @@ Drafts may also include `sms: { body }`. The server prefixes the gym name and
 appends `Reply STOP to opt out`; the complete text must fit within 480 UTF-16
 code units. Preview includes `smsRecipientCount` and `smsSegments` using the
 shared GSM-7/UCS-2 counter, including escape characters and surrogate pairs.
+It also returns `smsCapRemaining` and `smsCapDay`. Texts would start today, or tomorrow
+at 08:00 after 21:00 in the gym timezone, and `smsCapRemaining` is how many more texts
+the daily cap allows on that gym-local day: the cap minus the day's `sent`, never below 0,
+as `takeSmsSlot` decides. The read takes no slot and writes nothing.
 Text recipients require announcements consent and a valid normalized member
 phone; notices consent and email unsubscribe preferences do not qualify or block
 them. One recipient group represents each phone, with consenting member IDs
