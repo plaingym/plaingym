@@ -178,6 +178,11 @@ the staff API. `detachCard(gymId, processorId, options?)` delegates to the gym's
 A staff removal passes no options and leaves the method's billing details. The detach
 job passes `{ redactBillingDetails: true }` only when its payload carries
 `redactBillingDetails: true`, which only member erasure sets.
+When Stripe refuses the detach because the household's own customer has no gym tag
+(a customer linked by a people CSV), the job tags that customer for the gym, audits
+`billing.customer.adopted` with `source: 'detach'`, and detaches again. A customer
+tagged for another gym or deleted is still refused. A rate limit, Stripe server error,
+lost connection, rejected key or missing key permission is retried without adoption.
 Without that operation removal returns unavailable.
 The Jobs interface rejects enqueue inside a transaction and provides no
 transactional enqueue. If a crash or enqueue failure occurs after local revocation,
@@ -228,7 +233,10 @@ Runtime composition supplies `configurePayments(createPaymentService({ settings,
 clock, jobs, paymentsFor, transitions, detachCard, runner }))`, constructed after the
 runner and sharing the payments resolver
 and invoice transitions with the webhook composition. It also supplies
-`configurePaymentDelivery({ notifications, detachCard })` before starting jobs.
+`configurePaymentDelivery({ notifications, detachCard, adoptCustomer })` before starting
+jobs, where `adoptCustomer(gymId, customerId)` resolves the gym's payments provider and
+calls its `adoptCustomer(customerId)`, so the detach job can adopt a CSV-linked customer
+and retry once.
 Register `createLapsedRefundJobs({ clock, transitions, payments })` alongside the
 runtime's other job contributions. It schedules `billing.payments.settle_lapsed`
 at minute 43 of every hour for each gym through `Jobs.schedule`. Its payments
