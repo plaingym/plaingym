@@ -1186,7 +1186,7 @@ describe('public join pages through the production registrations', () => {
     expect(next).toMatchObject([{ kind: 'cycle', status: 'paid', amountCents: 31500, periodStartsOn: '2026-11-29', periodEndsOn: '2026-12-29' }]);
   });
 
-  it('closes a completed card join and stops resending when all its memberships are cancelled', async () => {
+  it('ends a completed card join and stops resending when all its memberships are cancelled', async () => {
     const f = await fixture(), { cookie } = await f.submit([adult(), child()]);
     await f.pay(cookie);
     const state = await f.rows(), [link] = state.links;
@@ -1202,12 +1202,15 @@ describe('public join pages through the production registrations', () => {
     await cancel(joinedMemberships[1]!.id);
     const sentBeforeResend = f.sent.length;
     expect(sentBeforeResend).toBe(1);
-    expect(await f.join.state(f.gymId, link!.id)).toEqual({ status: 'closed' });
+    expect(await f.join.state(f.gymId, link!.id)).toEqual({ status: 'ended' });
     const returned = await f.get('/join/return', cookie);
     expect(returned.status).toBe(200);
     const html = await returned.text();
-    expect(html).toContain('The gym has closed this payment');
-    expect(html).toContain('Please contact the gym');
+    expect(html).toContain('This membership has ended');
+    expect(html).toContain('The gym has ended the membership from this sign-up');
+    expect(html).toContain('Please contact the gym if you have questions');
+    expect(html).not.toContain('The gym has closed this payment');
+    expect(html).not.toContain('a sign-in link is on its way');
     expect(html).not.toContain('If this address can receive a portal login, a sign-in link is on its way.');
     const resent = await f.post('/join/sign-in', undefined, cookie);
     expect(resent.status).toBe(303);
@@ -1389,7 +1392,7 @@ describe('public join pages through the production registrations', () => {
 
     await db.forGym(f.gymId, tx => tx.update(memberships).set({ status: 'cancelled', cancelledAt: f.clock.now() })
       .where(eq(memberships.householdId, home!.id)));
-    expect(await f.join.state(f.gymId, joinLink.id)).toEqual({ status: 'closed' });
+    expect(await f.join.state(f.gymId, joinLink.id)).toEqual({ status: 'ended' });
   });
 
   it('completes a join paid by cash or check through the paid-invoice effect, once alongside the Checkout hook', async () => {
@@ -1819,4 +1822,124 @@ it('keeps a paid staff-address join public response neutral and records refusals
   } finally {
     setLogSink(restore);
   }
+});
+
+describe('join return page after a membership ends', () => {
+  const joined = async (f: Fixture) => {
+    const state = await f.rows(), [link] = state.links;
+    return { link: link!, rows: state.memberships.filter(row => row.householdId === link!.householdId),
+      bill: state.invoices.find(row => row.householdId === link!.householdId)! };
+  };
+  const update = (f: Fixture, id: string, values: { status?: 'pending' | 'trial' | 'active' | 'frozen' | 'cancelled'; cancelledAt?: Date | null; frozenAt?: Date | null }) =>
+    db.forGym(f.gymId, tx => tx.update(memberships).set(values).where(eq(memberships.id, id)));
+  // A member erased or a membership row removed: the invoice lines keep their own snapshot and no longer name it.
+  const remove = (f: Fixture, id: string) => db.forGym(f.gymId, async tx => {
+    await tx.update(invoiceLineItems).set({ membershipId: null }).where(eq(invoiceLineItems.membershipId, id));
+    await tx.delete(membershipDiscounts).where(eq(membershipDiscounts.membershipId, id));
+    await tx.delete(memberships).where(eq(memberships.id, id));
+  });
+  const finishCard = async (f: Fixture, cookie: string) => {
+    const response = await f.get('/join/checkout', cookie);
+    expect(response.status).toBe(303);
+    const sessionId = new URL(response.headers.get('location')!).pathname.slice(1);
+    f.provider.completeCheckout(sessionId);
+    await f.webhook(sessionId);
+    await f.webhook(sessionId);
+  };
+
+  it('shows the welcome page while one membership row remains and the ended page once none do', async () => {
+    const f = await fixture(), { cookie } = await f.submit([adult(), child()]);
+    await f.pay(cookie);
+    const before = await joined(f);
+    expect(before.rows.map(row => row.status)).toEqual(['active', 'active']);
+    await remove(f, before.rows[0]!.id);
+    const welcome = await f.get('/join/return', cookie);
+    expect(welcome.status).toBe(200);
+    const welcomeHtml = await welcome.text();
+    expect(welcomeHtml).toContain('a sign-in link is on its way');
+    expect(welcomeHtml).not.toContain('This membership has ended');
+    await remove(f, before.rows[1]!.id);
+    expect(await f.join.state(f.gymId, before.link.id)).toEqual({ status: 'ended' });
+    const ended = await f.get('/join/return', cookie);
+    expect(ended.status).toBe(200);
+    const endedHtml = await ended.text();
+    expect(endedHtml).toContain('This membership has ended');
+    expect(endedHtml).toContain('The gym has ended the membership from this sign-up');
+    expect(endedHtml).not.toContain('The gym has closed this payment');
+    expect(endedHtml).not.toContain('Confirming');
+  });
+
+  it('treats one pending membership of a completed settled join as welcome and falls back when the invoice is open', async () => {
+    const f = await fixture(), { cookie } = await f.submit([adult(), child()]);
+    await f.pay(cookie);
+    const { link, rows, bill } = await joined(f);
+    await update(f, rows[0]!.id, { status: 'pending', cancelledAt: null, frozenAt: null });
+    await update(f, rows[1]!.id, { status: 'cancelled', cancelledAt: f.clock.now() });
+    expect(await f.join.state(f.gymId, link.id)).toMatchObject({ status: 'active' });
+    const welcome = await f.get('/join/return', cookie);
+    expect(welcome.status).toBe(200);
+    const welcomeHtml = await welcome.text();
+    expect(welcomeHtml).toContain('a sign-in link is on its way');
+    expect(welcomeHtml).not.toContain('Confirming your payment');
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'open' }).where(eq(invoices.id, bill.id)));
+    expect(await f.join.state(f.gymId, link.id)).toMatchObject({ status: 'pending' });
+    const confirming = await f.get('/join/return', cookie);
+    expect(confirming.status).toBe(200);
+    const confirmingHtml = await confirming.text();
+    expect(confirmingHtml).toContain('Confirming your payment');
+    expect(confirmingHtml).not.toContain('a sign-in link is on its way');
+  });
+
+  it('ends a completed card-only join when its only trial is cancelled', async () => {
+    const f = await fixture(), { cookie } = await f.submit([adult()], 'trial-ended@example.invalid', f.trial.id);
+    await finishCard(f, cookie);
+    const { link, rows } = await joined(f);
+    expect(rows.map(row => row.status)).toEqual(['trial']);
+    await update(f, rows[0]!.id, { status: 'cancelled', cancelledAt: f.clock.now() });
+    expect(await f.join.state(f.gymId, link.id)).toEqual({ status: 'ended' });
+    const html = await (await f.get('/join/return', cookie)).text();
+    expect(html).toContain('This membership has ended');
+    expect(html).not.toContain('Confirming');
+  });
+
+  it('keeps a completed card-only join welcome when one of two trials is cancelled', async () => {
+    const f = await fixture(), { cookie } = await f.submit([adult(), child()], 'trial-partial@example.invalid', f.trial.id);
+    await finishCard(f, cookie);
+    const { link, rows } = await joined(f);
+    expect(rows.map(row => row.status)).toEqual(['trial', 'trial']);
+    await update(f, rows[0]!.id, { status: 'cancelled', cancelledAt: f.clock.now() });
+    expect(await f.join.state(f.gymId, link.id)).toMatchObject({ status: 'active' });
+    const html = await (await f.get('/join/return', cookie)).text();
+    expect(html).toContain('a sign-in link is on its way');
+    expect(html).not.toContain('This membership has ended');
+  });
+
+  it('keeps a completed join welcome when its only membership is frozen', async () => {
+    const f = await fixture(), { cookie } = await f.submit([adult()]);
+    await f.pay(cookie);
+    const { link, rows } = await joined(f);
+    await update(f, rows[0]!.id, { status: 'frozen', frozenAt: f.clock.now() });
+    expect(await f.join.state(f.gymId, link.id)).toMatchObject({ status: 'active' });
+    const html = await (await f.get('/join/return', cookie)).text();
+    expect(html).toContain('a sign-in link is on its way');
+  });
+
+  it('renders the ended page on every join step and starts no Checkout', async () => {
+    const f = await fixture(), { cookie } = await f.submit([adult()]);
+    await f.pay(cookie);
+    const start = vi.spyOn(f.join, 'checkout'), create = vi.spyOn(f.provider, 'createCheckout'), { rows } = await joined(f);
+    await update(f, rows[0]!.id, { status: 'cancelled', cancelledAt: f.clock.now() });
+    for (const path of ['/join/checkout', '/join/review', '/join/return', '/join/cancelled']) {
+      const response = await f.get(path, cookie);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('location')).toBeNull();
+      const html = await response.text();
+      expect(html).toContain('This membership has ended');
+      expect(html).toContain('The gym has ended the membership from this sign-up');
+      expect(html).not.toContain('The gym has closed this payment');
+      expect(html).not.toContain('Confirming');
+    }
+    expect(start).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  });
 });

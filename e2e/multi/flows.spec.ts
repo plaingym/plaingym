@@ -186,7 +186,8 @@ for (const index of [0, 1] as const) {
     const before = await mailIds();
     await deliverStripeEvent('checkout.session.completed', session, own);
     await expect(page.getByRole('heading', { name: 'Welcome', exact: true })).toBeVisible({ timeout: 30_000 });
-    expect((await prospects(own)).map((member) => member.status)).toEqual(['active']);
+    // The paid invoice's membership effect is queued, so the member can become active just after the join completes.
+    await expect.poll(async () => (await prospects(own)).map((member) => member.status), { timeout: 30_000 }).toEqual(['active']);
     expect(await prospects(other)).toEqual([]);
     // The card payment is in this gym's ledger, and not in the other's.
     const [member] = await prospects(own);

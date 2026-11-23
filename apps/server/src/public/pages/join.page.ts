@@ -104,7 +104,7 @@ export function joinFormPage(input: JoinPageInput & { plan: PublicPlan; count: n
   return layout(input, text('formTitle', { plan: plan.name }), h('div', { class: 'space-y-6' }, feedback, summary, counter, form), true);
 }
 export type JoinPageState = 'continue' | 'confirming' | 'welcomeEmail' | 'resent' | 'welcomePassword'
-  | 'cancelled' | 'closed' | 'missing' | 'unavailable' | 'failed' | 'admittedFailed' | 'admittedUnavailable' | 'limited' | 'retry' | 'tooLarge' | 'manual' | 'card' | 'confirmingCard' | 'cancelledCard' | 'codeRefused';
+  | 'cancelled' | 'closed' | 'ended' | 'missing' | 'unavailable' | 'failed' | 'admittedFailed' | 'admittedUnavailable' | 'limited' | 'retry' | 'tooLarge' | 'manual' | 'card' | 'confirmingCard' | 'cancelledCard' | 'codeRefused';
 /** The first invoice's lines and total, as the review step shows them. */
 function invoiceSummary(input: JoinPageInput, invoice: JoinInvoice) {
   const text = joinText(input.t), money = (cents: number) => formatMoney(cents, invoice.currency, input.locale);
@@ -138,6 +138,7 @@ export function joinStatusPage(input: JoinPageInput & { state: JoinPageState; pr
     cancelled: ['cancelledTitle', 'cancelledBody', actions(h('a', { href: '/join/checkout', class: button }, text('pay')), start)],
     cancelledCard: ['cancelledCardTitle', 'cancelledCardBody', actions(h('a', { href: '/join/checkout', class: button }, text('saveCard')), start)],
     closed: ['closedTitle', 'closedBody', h('a', { href: '/portal', class: link }, text('portal'))],
+    ended: ['endedTitle', 'endedBody', h('a', { href: '/portal', class: link }, text('portal'))],
     missing: ['missingTitle', 'missingBody', start],
     unavailable: ['title', 'unavailable', start],
     failed: ['title', 'failed', start],

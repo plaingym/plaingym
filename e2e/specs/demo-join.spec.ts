@@ -167,7 +167,8 @@ test('a visitor joins with the test card, and only the signed checkout webhook a
   await deliverStripeEvent('checkout.session.completed', session);
   await expect(page.getByRole('heading', { name: 'Welcome', exact: true })).toBeVisible({ timeout: 30_000 });
   await bothWidths(page, info, 'join-welcome');
-  expect((await joined(owner, visitor)).map(member => member.status)).toEqual(['active']);
+  // The activated invoice's membership effect is queued, so the member can become active just after the join completes.
+  await expect.poll(async () => (await joined(owner, visitor)).map(member => member.status), { timeout: 30_000 }).toEqual(['active']);
   await signInToPortal(page, info, owner, visitor, before);
   await signInAgain(page, info, sandbox.origin, visitor);
 });
@@ -218,7 +219,8 @@ test('a joined visitor books, is promoted from the waitlist, checks in by QR cod
   await expect(page.getByRole('heading', { name: 'Welcome', exact: true })).toBeVisible({ timeout: 30_000 });
   await bothWidths(page, info, 'join-welcome');
   const [member] = await joined(owner, visitor);
-  expect(member).toMatchObject({ status: 'active' });
+  // The cash payment's membership effect is queued: wait for the member status the portal needs.
+  await expect.poll(async () => (await joined(owner, visitor)).map(row => row.status), { timeout: 30_000 }).toEqual(['active']);
   await signInToPortal(page, info, owner, visitor, before);
 
   // The portal installs as an app at phone width: a valid manifest and a service worker for /portal.

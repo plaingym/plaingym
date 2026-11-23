@@ -26,7 +26,9 @@ The join can activate memberships while the first bank debit is processing. The
 welcome page shows the processing notice while the invoice is in that state.
 If the debit later fails, the invoice becomes past due and enters dunning. The
 completed join keeps the welcome page and sign-in path while a membership from
-the join remains live.
+the join remains live, or remains pending with a settled invoice. Once every
+membership from a completed join is cancelled or removed, the return page shows
+an ended page and sends no sign-in link.
 
 `configurePublicPages` supplies the real waiver service, gym uploads, a staff
 notifier and an optional `dropInFeeFor(gymId, tx)` projection: `createDropInFee()`

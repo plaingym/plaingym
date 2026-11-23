@@ -67,9 +67,10 @@ const assignmentBillingRead = z.object({ billing: z.object({ description: z.stri
 /** Strict producer schemas for the replayable audit records. */
 export const joinRecordWriteSchemas = { admitted, received, discounted, invoiced };
 export interface JoinInvoice { amountCents: number; currency: string; lines: { description: string; amountCents: number }[] }
-/** A join is `closed` when every membership from a completed join is cancelled,
- * or when an invoice that has yet to settle is voided or its join link is revoked. */
-export type JoinState = { status: 'missing' | 'closed' } | { status: 'pending' | 'active' | 'manual'; householdId: string; cardOnly?: boolean; processing?: boolean };
+/** A join is `ended` once it has completed and none of its memberships is live or pending any more:
+ * every row is cancelled, or the rows are gone. A join that has yet to settle is `closed` when its
+ * invoice is voided or its link is revoked. */
+export type JoinState = { status: 'missing' | 'closed' | 'ended' } | { status: 'pending' | 'active' | 'manual'; householdId: string; cardOnly?: boolean; processing?: boolean };
 
 export interface JoinOptions {
   scope?: typeof forGym;
@@ -623,11 +624,12 @@ export function createJoinService(options: JoinOptions) {
         if (bill && await marked(tx, 'public.join.completed', link.householdId)) {
           const rows = await tx.select({ status: memberships.status }).from(memberships)
             .where(and(eq(memberships.householdId, link.householdId), inArray(memberships.id, record.membershipIds)));
-          if (rows.length === record.membershipIds.length && rows.every(row => row.status !== 'pending')) {
-            if (rows.every(row => row.status === 'cancelled')) return { status: 'closed' };
-            if (rows.some(row => row.status === 'trial' || row.status === 'active' || row.status === 'frozen'))
-              return { status: 'active', ...view };
-          }
+          // Classify by the memberships that still exist: a removed row never leaves the join confirming.
+          if (rows.some(row => row.status === 'trial' || row.status === 'active' || row.status === 'frozen'))
+            return { status: 'active', ...view };
+          if (rows.some(row => row.status === 'pending') && settled.includes(bill.status))
+            return { status: 'active', ...view };
+          if (!rows.some(row => row.status === 'pending')) return { status: 'ended' };
         }
         if (!bill || !settled.includes(bill.status))
           return bill?.status === 'void' || link.revokedAt ? { status: 'closed' }

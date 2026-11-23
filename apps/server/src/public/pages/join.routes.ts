@@ -173,14 +173,17 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
     route({ method: 'get', path: '/join/checkout', permission: { kind: 'public' }, middleware: [steps], responses: html }, async ctx => {
       const linkId = pending(ctx), service = options().service;
       const state = linkId ? await service.state(gymOf(ctx), linkId) : { status: 'missing' as const };
-      if (state.status === 'missing' || state.status === 'closed') return page(ctx, state.status);
+      if (state.status === 'missing' || state.status === 'closed' || state.status === 'ended') return page(ctx, state.status);
       if (state.status === 'active') return ctx.redirect('/join/return', 303);
       if (state.status === 'manual') return page(ctx, 'manual');
       try { return ctx.redirect(await service.checkout(gymOf(ctx), linkId!), 303); }
       catch (error) {
         if (error instanceof AppError && ['below_minimum', 'off_step'].includes(error.details?.reason?.[0] ?? '')) return page(ctx, 'manual');
-        // Paid, or a session being recorded, continues on the return page; a void invoice or revoked link cannot be paid here.
-        if (settledOrGone(error)) return (await service.state(gymOf(ctx), linkId!)).status === 'closed' ? page(ctx, 'closed') : ctx.redirect('/join/return', 303);
+        // Paid, or a session being recorded, continues on the return page; a void invoice, revoked link or ended join cannot be paid here.
+        if (settledOrGone(error)) {
+          const after = (await service.state(gymOf(ctx), linkId!)).status;
+          return after === 'closed' || after === 'ended' ? page(ctx, after) : ctx.redirect('/join/return', 303);
+        }
         if (error instanceof AppError && error.code === 'unavailable') return page(ctx, 'unavailable', 503);
         throw error;
       }
@@ -189,7 +192,8 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
     route({ method: 'get', path: '/join/review', permission: { kind: 'public' }, responses: html }, async ctx => {
       const linkId = pending(ctx), service = options().service;
       const state = linkId ? await service.state(gymOf(ctx), linkId) : { status: 'missing' as const };
-      if (!linkId || state.status === 'missing' || state.status === 'closed') return page(ctx, state.status === 'closed' ? 'closed' : 'missing');
+      if (!linkId || state.status === 'missing' || state.status === 'closed' || state.status === 'ended')
+        return page(ctx, state.status === 'closed' || state.status === 'ended' ? state.status : 'missing');
       if (state.status === 'active') return ctx.redirect('/join/return', 303);
       return page(ctx, state.status === 'manual' ? 'manual' : 'cardOnly' in state && state.cardOnly ? 'card' : 'continue', 200, linkId);
     }),
@@ -197,7 +201,7 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
     route({ method: 'get', path: '/join/return', permission: { kind: 'public' }, responses: html }, async ctx => {
       const linkId = pending(ctx), service = options().service;
       const state = linkId ? await service.state(gymOf(ctx), linkId) : { status: 'missing' as const };
-      if (state.status === 'missing' || state.status === 'closed') return page(ctx, state.status);
+      if (state.status === 'missing' || state.status === 'closed' || state.status === 'ended') return page(ctx, state.status);
       if (state.status === 'pending') return page(ctx, state.cardOnly ? 'confirmingCard' : 'confirming');
       if (state.status === 'manual') return page(ctx, 'manual');
       return page(ctx, await service.passwordMode(gymOf(ctx)) ? 'welcomePassword' : 'welcomeEmail', 200, undefined, 'processing' in state && state.processing);

@@ -267,8 +267,8 @@ does the same for any recorded Checkout of the joined household once the invoice
 Both lock the household and check `public.join.completed`, so together, retried or
 concurrent, they complete a join once and send one sign-in link. `/join/return` is
 read-only. It shows the welcome page once the join is complete, its invoice
-exists, all its recorded memberships still exist and none is pending, and at least one is live
-(`trial`, `active` or `frozen`). A pending join shows
+exists, and one of its recorded memberships that still exist is live (`trial`, `active` or
+`frozen`), or is pending while the invoice is settled. A pending join shows
 "confirming" with a spinner and `aria-live` text. The page points to **Check again**
 if it does not change. `/join/client.js` (the page's only script, `'self'`, no inline
 script) asks `/join/return` itself with the join cookie about every two seconds and
@@ -284,14 +284,15 @@ nor activates them and holds the invoice for review after seven days, and the jo
 voids the join on the seventh local day after submission (**Unpaid joins**, above). A browser without
 the cookie is told what happens next and can do nothing more.
 
-When the join cleanup voids the unpaid invoice or staff revoke the join's link, it can no longer be paid
-online: `/join/checkout`, `/join/review`, `/join/return` and `/join/cancelled` show a closed page that
-says to contact the gym, without starting Checkout. A paid invoice wins over a revoked
-link, and a Checkout that completed but is still being recorded continues to
+When the join cleanup voids the unpaid invoice or staff revoke a join link that has not settled, it
+can no longer be paid online: `/join/checkout`, `/join/review`, `/join/return` and `/join/cancelled`
+show a closed page that says to contact the gym, without starting Checkout. A settled invoice wins
+over a revoked link, and a Checkout that completed but is still being recorded continues to
 `/join/return`. A completed join with a live membership keeps the welcome page and its sign-in
-path even if its invoice is voided or its link is revoked. Dunning can collect a failed first
-payment while the payer can still sign in. Once every recorded membership is cancelled, the
-completed join shows the closed page and sends no sign-in link.
+path even if its invoice is voided or its link is revoked; a pending membership keeps it once the
+invoice is settled, so a completed join with a settled invoice never shows the confirming page. Dunning can collect a
+failed first payment while the payer can still sign in. Once every recorded membership is cancelled,
+or its rows are gone, the completed join shows the ended page and sends no sign-in link.
 
 ## Portal login
 

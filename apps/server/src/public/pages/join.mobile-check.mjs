@@ -135,6 +135,8 @@ try {
     await expect(page.locator('a[href="/join/checkout"]')).toHaveCount(0);
     state = 'closed'; await page.goto(base + '/join/checkout'); await check(page, width + '-closed');
     await expect(page.locator('main')).toContainText('Please contact the gym');
+    state = 'ended'; await page.goto(base + '/join/return'); await check(page, width + '-ended');
+    await expect(page.locator('main')).toContainText('This membership has ended');
     const fresh = await browser.newContext({ viewport: { width, height: 900 } }), lost = await fresh.newPage();
     await lost.goto(base + '/join/return'); await check(lost, width + '-missing'); await fresh.close();
     state = 'pending'; cardOnly = true;
@@ -192,5 +194,5 @@ try {
   expect(calls.filter(c => c.kind === 'admit').every(c => c.body.members[1].signatures.every(s => s.signer.kind === 'guardian'))).toBe(true);
   expect(calls.filter(c => c.kind === 'checkout')).toHaveLength(process.argv.includes('--native') ? 4 : 6);
   console.log(process.argv.includes('--native') ? '360/1280 px: native payment and card-setup forms, file signatures, layouts and touch targets passed.'
-    : '360/1280 px: plans, trial/free forms, drawn/file signatures, promo codes and review, payment and card setup, confirming, cancelled, welcome, closed, resend, missing, native forms, touch targets and axe passed.');
+    : '360/1280 px: plans, trial/free forms, drawn/file signatures, promo codes and review, payment and card setup, confirming, cancelled, welcome, closed, ended, resend, missing, native forms, touch targets and axe passed.');
 } finally { await browser.close(); await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
