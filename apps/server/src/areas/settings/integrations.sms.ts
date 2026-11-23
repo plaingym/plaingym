@@ -2,7 +2,7 @@
 import { forGym, gyms, writeAudit } from '@plaingym/db';
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
-import { normalizePhone } from '@plaingym/shared/phone';
+import { callingCodeOf, normalizePhone, normalizePhoneWithCallingCode } from '@plaingym/shared/phone';
 import { updateSmsDailyCapRequestSchema, type UpdateSmsDailyCapRequest, type SaveSmsIntegrationRequest, type SmsIntegration,
   type SmsTestFailure } from '@plaingym/shared/contracts';
 import type { MutationContext } from '../../core/interfaces/common.js';
@@ -86,8 +86,10 @@ export function createSmsIntegration(options: SmsIntegrationOptions) {
         throw new AppError('invalid_request', 'Use the Twilio provider URL', { baseUrl: ['twilio_only'] });
       const address = gym.address as { country?: unknown };
       const country = typeof address.country === 'string' ? address.country : undefined;
-      const testTo = normalizePhone(input.testTo, country);
       const from = 'from' in input.sender ? normalizePhone(input.sender.from, country) : null;
+      // With no gym country, the owner's test number may be typed nationally: it takes the From number's calling code.
+      const fromCode = country ? null : callingCodeOf(from);
+      const testTo = fromCode ? normalizePhoneWithCallingCode(input.testTo, fromCode) : normalizePhone(input.testTo, country);
       if (!testTo || ('from' in input.sender && !from))
         throw new AppError('invalid_request', 'Enter a valid phone number with its country code', { phone: ['invalid_phone'] });
       const config = storedSmsSchema.parse({ accountSid: input.accountSid, auth: input.auth,

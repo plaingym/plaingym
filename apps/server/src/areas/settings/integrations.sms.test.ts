@@ -322,6 +322,45 @@ describe('SMS integration settings', () => {
   it.each(['invalid', '+12025550123 ext 1'])('refuses an invalid test number %s before network calls', async testTo => {
     expect((await save(server(), { testTo })).status).toBe(400); expect(smsFactory).not.toHaveBeenCalled();
   });
+  it('with no gym country, reads a national test number with the From number calling code', async () => {
+    await database.forGym(gymId, tx => tx.update(gyms).set({ address: {} }));
+    const result = await save(server(), { sender: { from: '+1 (415) 555-2671' }, testTo: '(202) 555-0123' });
+    expect(result.status).toBe(200);
+    expect(send).toHaveBeenCalledExactlyOnceWith({ to: '+12025550123', body: 'Test gym: PlainGym SMS test.' });
+    expect((await row()).smsConfig).not.toBeNull();
+  });
+  it('with no gym country, reads a national test number with another From calling code', async () => {
+    await database.forGym(gymId, tx => tx.update(gyms).set({ address: {} }));
+    const result = await save(server(), { sender: { from: '+44 20 7946 0018' }, testTo: '020 7946 0018' });
+    expect(result.status).toBe(200);
+    expect(send).toHaveBeenCalledExactlyOnceWith({ to: '+442079460018', body: 'Test gym: PlainGym SMS test.' });
+  });
+  it('with no gym country, keeps the test number own code when it starts with +', async () => {
+    await database.forGym(gymId, tx => tx.update(gyms).set({ address: {} }));
+    const result = await save(server(), { sender: { from: '+1 (415) 555-2671' }, testTo: '+44 20 7946 0018' });
+    expect(result.status).toBe(200);
+    expect(send).toHaveBeenCalledExactlyOnceWith({ to: '+442079460018', body: 'Test gym: PlainGym SMS test.' });
+  });
+  it('with no gym country, still refuses a From number without + before network calls', async () => {
+    await database.forGym(gymId, tx => tx.update(gyms).set({ address: {} }));
+    const result = await save(server(), { sender: { from: '(415) 555-2671' }, testTo: '(202) 555-0123' });
+    expect(result.status).toBe(400);
+    expect(result.body).toMatchObject({ error: { code: 'invalid_request', details: { phone: ['invalid_phone'] } } });
+    expect(smsFactory).not.toHaveBeenCalled();
+  });
+  it('with no gym country, takes no calling code from a Messaging Service sender', async () => {
+    await database.forGym(gymId, tx => tx.update(gyms).set({ address: {} }));
+    const result = await save(server(), { sender: { messagingServiceSid }, testTo: '(202) 555-0123' });
+    expect(result.status).toBe(400);
+    expect(result.body).toMatchObject({ error: { code: 'invalid_request', details: { phone: ['invalid_phone'] } } });
+    expect(smsFactory).not.toHaveBeenCalled();
+  });
+  it('lets the gym country decide the test number when it is set', async () => {
+    const result = await save(server(), { sender: { from: '+44 20 7946 0018' }, testTo: '020 7946 0018' });
+    expect(result.status).toBe(400);
+    expect(result.body).toMatchObject({ error: { code: 'invalid_request', details: { phone: ['invalid_phone'] } } });
+    expect(smsFactory).not.toHaveBeenCalled();
+  });
   it('refuses sandbox and operator-managed saves and removes before touching the provider', async () => {
     const multiEnv = { ...env, TENANCY: 'multi', AUTH_PASSWORD_LOGIN: 'off' };
     for (const current of [service({ sandbox: true }), service({ env: multiEnv, config: authConfig(multiEnv, true) })]) {

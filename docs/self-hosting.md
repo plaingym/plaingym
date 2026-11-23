@@ -148,7 +148,10 @@ again, and every change is recorded in the audit log without them.
   (`AUTH_PASSWORD_LOGIN=auto`: emailed links with email, passwords without); the
   page says how before you save. Removing email is refused while it is your only
   way to sign in (your account has no password and the gym has no Google client).
-* **SMS** connects your gym’s own Twilio account. Enter its Account SID and either
+* **SMS** connects your gym’s own Twilio account. Type the From and test numbers with
+  + and the country code (for example +1 604 555 0123), or set the gym's country
+  code in **Settings → Gym details** first. With no country code set, a test number
+  without + uses the From number's country code. Enter its Account SID and either
   an auth token or an API key SID and secret, plus a From phone number or Messaging
   Service SID. The account is checked without sending a message, then one test
   text goes only to the number you enter. Credentials are saved encrypted only

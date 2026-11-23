@@ -11,3 +11,19 @@ export function normalizePhone(phone: string | null | undefined, country?: strin
     return parsed && !parsed.ext && parsed.isValid() ? parsed.number : null;
   } catch { return null; }
 }
+/** The calling code of a valid international number, such as `1` for `+16045550123`. */
+export function callingCodeOf(phone: string | null | undefined): string | null {
+  if (!phone || phone.length > 100) return null;
+  try {
+    const parsed = parsePhoneNumberFromString(phone.trim(), { extract: false });
+    return parsed && !parsed.ext && parsed.isValid() ? parsed.countryCallingCode : null;
+  } catch { return null; }
+}
+/** Like normalizePhone, for a national number read with a calling code instead of a country. Only for the owner's own SMS test number. */
+export function normalizePhoneWithCallingCode(phone: string | null | undefined, callingCode: string): string | null {
+  if (!phone || phone.length > 100) return null;
+  try {
+    const parsed = parsePhoneNumberFromString(phone.trim(), { defaultCallingCode: callingCode, extract: false });
+    return parsed && !parsed.ext && parsed.isValid() ? parsed.number : null;
+  } catch { return null; }
+}

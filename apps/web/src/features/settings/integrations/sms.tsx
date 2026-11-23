@@ -124,6 +124,7 @@ export function SmsIntegrationSection({ sms, editable, state }: { sms: SmsIntegr
           {sms.baseUrl !== undefined && <Field name="baseUrl" type="url" value={sms.baseUrl} required={false}/>}
           <Field name="testTo" type="tel"/>
           <p className="text-sm text-muted-foreground">{label('testHint')}</p>
+          {senderKind === 'from' && gym.settings && !gym.settings.address.country && <p className="text-sm text-muted-foreground">{label('testHintNoCountry')}</p>}
           <div className="flex flex-col gap-3 sm:flex-row">
             <Button type="submit">{label(busy ? 'saving' : 'save')}</Button>
             <Button variant="outline" onClick={() => setOpen(false)}>{label('cancel')}</Button>
