@@ -125,6 +125,14 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
       const token = c.req.valid('param').token;
       const receipt = config.receipts.open(getCookie(c, receiptCookie), ctx.clock.now(), { gymId: ctx.gym.gymId });
       const resolution = await config.links.resolve(ctx.gym.gymId, token, receipt?.token === token ? receipt : undefined);
+      // A Checkout a portal login started returns to the portal's billing page once the link is complete. An open link
+      // keeps its page, whose script confirms the result and returns here; so does a payment still processing, which only
+      // the page can explain.
+      if (receipt?.token === token && receipt.portal && c.req.valid('query').returned === '1'
+        && resolution.status === 'used' && !resolution.processing) {
+        deleteCookie(c, receiptCookie, { path: '/' });
+        return c.redirect('/portal/billing', 302);
+      }
       const common = { ...await presentation(c), tablet: c.req.valid('query').tablet === '1' };
       if (resolution.status !== 'active') {
         // This is static guidance, never proof a credential or household exists. Other gyms see the same page.

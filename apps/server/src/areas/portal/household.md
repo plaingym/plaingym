@@ -58,7 +58,8 @@ Checkout (`areas/billing/signed-link-checkout.ts`). The route mints a single-use
 valid for a day, and starts that link's Checkout. The token never appears in a
 response body or in the Stripe return URL. It is sealed into the same HttpOnly
 receipt cookie that `/l/*` uses, so Stripe's return to `/l/return` reopens the
-link's page, which confirms the result and can recover a missed card webhook. If
+link's page, which confirms the result and can recover a missed card webhook; once
+the link is complete the return redirects on to `/portal/billing`. If
 Checkout cannot start, the link is revoked. Once a new Checkout starts, the
 login's earlier unused links for the same purpose (and invoice) are revoked, so
 only the newest stays usable; a payment or card completed in an older Checkout

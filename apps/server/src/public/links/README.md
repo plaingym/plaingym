@@ -174,7 +174,10 @@ It is HttpOnly, Secure and SameSite=Lax; its path must be `/` to serve both
 `/l/return` and `/api/links/*/complete`. Neither its bearer token nor metadata is
 readable in the cookie. Old plaintext receipts are rejected; restart Checkout
 to obtain an encrypted receipt. It does not grant
-any account access. A browser return merely triggers a completion check.
+any account access. A browser return merely triggers a completion check. A
+Checkout a signed-in portal login started marks its receipt `portal`; once such a
+link is complete (and not still processing), its return redirects to
+`/portal/billing` instead of showing the used link's page.
 
 **Webhook-only completion:** Checkout and its setup/payment intent carry `linkId`.
 The existing Checkout-start audits target that immutable link ID and store

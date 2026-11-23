@@ -28,7 +28,7 @@ export function createPortalBillingRoutes(service: PortalBillingService = create
   function redirect(c: Context<RequestEnvironment>, started: PortalCheckoutStart) {
     const now = c.get('context').clock.now().getTime(), expires = Date.parse(started.expiresAt);
     setCookie(c, receiptCookie, receipts().seal({ token: started.token, gymId: c.get('context').gym.gymId, linkId: started.linkId,
-      sessionId: started.session.id, expires, tablet: false }), { httpOnly: true, secure: true, sameSite: 'Lax', path: '/', maxAge: Math.max(1, Math.floor((expires - now) / 1000)) });
+      sessionId: started.session.id, expires, tablet: false, portal: true }), { httpOnly: true, secure: true, sameSite: 'Lax', path: '/', maxAge: Math.max(1, Math.floor((expires - now) / 1000)) });
     c.header('Cache-Control', 'no-store');
     return c.json({ data: { url: started.session.url, expiresAt: started.expiresAt } }, 200);
   }

@@ -24,7 +24,8 @@ import { FakePayments } from '../../infra/payments/index.js';
 import { FakeUploads } from '../../infra/storage/index.js';
 import { demoUploads } from '../../demo/uploads.js';
 import { demoSignaturePng } from '../../demo/seed/waivers-image.js';
-import { configureLinkPages } from './links.routes.js';
+import { configureLinkPages, receiptCookie } from './links.routes.js';
+import { checkoutReceipts } from './receipt.js';
 import { createSettingsService } from '../../areas/settings/settings.js';
 import { createLinkPageService } from './service.js';
 import { cachedLinkAsset } from './assets.js';
@@ -495,6 +496,25 @@ describe('signed-link pages through production registrations', () => {
     const session = await f.checkout.start(f.gymId, f.link.link.id); await f.completeAtStripe(session.session.id);
     expect(await (await f.request(f.path + '/complete', 'POST', {}, cookie)).json()).toEqual({ data: { completed: true } });
     expect(await (await f.app().request('/l/' + f.link.token)).text()).toContain('Already done');
+  });
+  it('sends a completed portal Checkout back to the portal billing page, and keeps the page for an open link', async () => {
+    const f = await fixture('update_card');
+    const receipts = checkoutReceipts(new Uint8Array(32).fill(7));
+    const session = await f.checkout.start(f.gymId, f.link.link.id);
+    const cookie = receiptCookie + '=' + receipts.seal({ token: f.link.token, gymId: f.gymId, linkId: f.link.link.id, sessionId: session.session.id,
+      expires: Date.now() + 60_000, tablet: false, portal: true });
+    const returned = () => f.app().request('https://gym.example.test/l/' + f.link.token + '?returned=1', { headers: { cookie } });
+    // Still open: the page stays, so its script can confirm the result.
+    expect((await returned()).status).toBe(200);
+    await f.completeAtStripe(session.session.id);
+    expect(await f.checkout.complete(f.gymId, f.link.link.id, session.session.id)).toBe(true);
+    const done = await returned();
+    expect(done.status).toBe(302); expect(done.headers.get('location')).toBe('/portal/billing');
+    // Without the portal flag, the same return keeps the link page.
+    const plain = receiptCookie + '=' + receipts.seal({ token: f.link.token, gymId: f.gymId, linkId: f.link.link.id, sessionId: session.session.id,
+      expires: Date.now() + 60_000, tablet: false });
+    const page = await f.app().request('https://gym.example.test/l/' + f.link.token + '?returned=1', { headers: { cookie: plain } });
+    expect(await page.text()).toContain('Already done');
   });
   for (const [name, contract] of Object.entries({ ...contracts, ...actions })) {
     if (contract.permission.kind !== 'signed_link' || contract.permission.purpose === 'unsubscribe') continue;

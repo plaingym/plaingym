@@ -184,7 +184,7 @@ describe('portal billing routes', () => {
     // Stripe returns to /l/return; the sealed receipt binds that return to the internal link without exposing it to Stripe.
     const cookie = /plaingym_link_checkout=([^;]+)/.exec(response.headers.get('set-cookie') ?? '')?.[1];
     const receipt = receipts.open(cookie, f.clock.now(), { gymId: f.gymId, linkId: link!.id });
-    expect(receipt).toMatchObject({ linkId: link!.id, tablet: false });
+    expect(receipt).toMatchObject({ linkId: link!.id, tablet: false, portal: true });
     const sessionId = receipt!.sessionId;
     expect(await f.invoice(f.open.id)).toMatchObject({ status: 'open', checkoutSessionId: sessionId });
     await f.webhook(f.fake.completeCheckout(sessionId));

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:crypto';
 import { z } from 'zod';
-const receipt = z.strictObject({ token: z.string().regex(/^[A-Za-z0-9_-]{32,128}$/), gymId: z.uuid(), linkId: z.uuid(), sessionId: z.string().min(1).max(255), expires: z.number(), tablet: z.boolean() });
+const receipt = z.strictObject({ token: z.string().regex(/^[A-Za-z0-9_-]{32,128}$/), gymId: z.uuid(), linkId: z.uuid(), sessionId: z.string().min(1).max(255), expires: z.number(), tablet: z.boolean(),
+  /** Set when a signed-in portal login started the Checkout: its return goes back to the portal's billing page. */
+  portal: z.boolean().optional() });
 export type CheckoutReceipt = z.infer<typeof receipt>;
 /** A stable installation key binds a provider return to this link without exposing its token to Stripe. */
 export function checkoutReceipts(key: Uint8Array) {
