@@ -26,8 +26,10 @@ export function staticAssets(directory = './public'): MiddlewareHandler<RequestE
     if (/[\\\0]/.test(path) || path.split('/').some((part) => part.startsWith('.'))
       || /^\/(?:api|webhooks|l|join|trial|drop-in)(?:\/|$)/.test(path)) return next();
 
-    // Built asset URLs never carry a query, and one would bypass Cloudflare's cache.
-    if (path.startsWith('/assets/') && context.req.url.includes('?')) return next();
+    // A file URL this middleware serves never carries a query, and one would bypass Cloudflare's cache.
+    // Hand the request on rather than answering 404: a route mounted after this one may own a
+    // file-like URL with a query (the website theme stylesheet).
+    if (extname(path) !== '' && context.req.url.includes('?')) return next();
 
     const serve = async (relative: string, immutable = false): Promise<Response | undefined> => {
       const file = resolve(root, `.${relative}`);

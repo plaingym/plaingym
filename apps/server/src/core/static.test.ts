@@ -11,10 +11,14 @@ beforeAll(async () => {
   directory = await mkdtemp(join(tmpdir(), 'plaingym-static-'));
   const publicDirectory = join(directory, 'public');
   await mkdir(join(publicDirectory, 'assets'), { recursive: true });
+  await mkdir(join(publicDirectory, 'fonts'), { recursive: true });
   await mkdir(join(directory, 'private'));
   await writeFile(join(publicDirectory, 'index.html'), '<html><body>SPA</body></html>');
   await writeFile(join(publicDirectory, 'assets', 'app-12345678.js'), 'console.log("asset");');
   await writeFile(join(publicDirectory, 'assets', 'app-12345678.css'), 'body { color: red; }');
+  await writeFile(join(publicDirectory, 'app.js'), 'console.log("root");');
+  await writeFile(join(publicDirectory, 'icon-192.png'), 'png-bytes');
+  await writeFile(join(publicDirectory, 'fonts', 'x.woff2'), 'font-bytes');
   await writeFile(join(publicDirectory, 'manifest.webmanifest'), '{}');
   await writeFile(join(publicDirectory, '.env'), 'SECRET=hidden');
   await writeFile(join(directory, 'private', 'key.txt'), 'private key');
@@ -27,6 +31,7 @@ beforeAll(async () => {
     session: async (_context, next) => { await next(); },
     authorize: () => async (_context, next) => { await next(); },
   });
+  app.get('/website/theme.css', (context) => context.body('theme css', 200, { 'Content-Type': 'text/css; charset=utf-8' }));
 });
 afterAll(async () => { if (directory) await rm(directory, { recursive: true, force: true }); });
 
@@ -41,6 +46,14 @@ it('serves assets with MIME, cache, content-length, and nosniff headers', async 
   expect(body).toBe('console.log("asset");');
   expect((await app.request('/assets/app-12345678.css')).headers.get('content-type')).toContain('text/css');
   expect((await app.request('/manifest.webmanifest')).headers.get('content-type')).toBe('application/manifest+json');
+  const script = await app.request('/app.js');
+  expect(script.status).toBe(200);
+  expect(script.headers.get('content-type')).toBe('text/javascript; charset=utf-8');
+  expect(await script.text()).toBe('console.log("root");');
+  const icon = await app.request('/icon-192.png');
+  expect(icon.status).toBe(200);
+  expect(icon.headers.get('content-type')).toBe('image/png');
+  expect(await icon.text()).toBe('png-bytes');
 });
 
 it.each(['/admin', '/admin/members/123', '/portal', '/portal/household', '/kiosk', '/login', '/setup', '/setup/restore'])('serves the SPA entry for browser navigation to %s', async (path) => {
@@ -54,7 +67,8 @@ it.each(['/admin', '/admin/members/123', '/portal', '/portal/household', '/kiosk
 it.each(['/api/missing', '/webhooks/stripe', '/l/token', '/join', '/trial', '/drop-in', '/', '/unrecognized',
   '/assets/missing.js', '/admin/missing.js', '/.env', '/%2eenv', '/assets/%2e%2e%2f.env', '/escape/key.txt',
   '/assets/%5c..%5c.env', '/assets/%00', '/assets/%ZZ',
-  '/assets/app-12345678.js?n=1', '/assets/app-12345678.js?', '/assets/app-12345678.css?v=2'])('never exposes files or falls back to HTML for %s', async (path) => {
+  '/assets/app-12345678.js?n=1', '/assets/app-12345678.js?', '/assets/app-12345678.css?v=2',
+  '/icon-192.png?1', '/icon-192.png?', '/app.js?v=2', '/fonts/x.woff2?x'])('never exposes files or falls back to HTML for %s', async (path) => {
   const response = await app.request(path, { headers: { accept: 'text/html' } });
   expect(response.status).toBe(404);
   expect(await response.json()).toMatchObject({ error: { code: 'not_found' } });
@@ -65,16 +79,23 @@ it('does not replace JSON or write requests with the SPA', async () => {
   expect((await app.request('/admin', { method: 'POST', headers: { accept: 'text/html' } })).status).toBe(404);
 });
 
-it('refuses a HEAD asset request that carries a query string', async () => {
-  const response = await app.request('/assets/app-12345678.js?n=1', { method: 'HEAD' });
+it.each(['/assets/app-12345678.js?n=1', '/icon-192.png?1'])('refuses a HEAD file request that carries a query string for %s', async (path) => {
+  const response = await app.request(path, { method: 'HEAD' });
   expect(response.status).toBe(404);
 });
 
-it('still serves the SPA entry for a navigation that carries a query string', async () => {
-  const response = await app.request('/admin?tab=billing', { headers: { accept: 'text/html' } });
+it.each(['/admin?tab=billing', '/portal?x=1'])('still serves the SPA entry for a navigation that carries a query string for %s', async (path) => {
+  const response = await app.request(path, { headers: { accept: 'text/html' } });
   expect(response.status).toBe(200);
   expect(response.headers.get('cache-control')).toBe('no-cache');
   expect(await response.text()).toContain('SPA');
+});
+
+it('lets a route mounted after the middleware answer a file URL that carries a query string', async () => {
+  const response = await app.request('/website/theme.css?v=1');
+  expect(response.status).toBe(200);
+  expect(response.headers.get('content-type')).toContain('text/css');
+  expect(await response.text()).toBe('theme css');
 });
 
 it('counts asset requests that carry a query string toward the flood limit', async () => {
