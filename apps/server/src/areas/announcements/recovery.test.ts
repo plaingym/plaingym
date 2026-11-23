@@ -87,6 +87,25 @@ it('only looks up and resets cancelled sessions that have not started, including
   expect(f.jobs.jobs.at(-1)!.id).toBe(jobs.at(-1)!.jobId);
 });
 
+it('retries only the current cancellation of a restored session, by its scoped key', async () => {
+  const f = await fixture();
+  const startsAt = new Date(f.clock.now().getTime() + 24 * 60 * minute);
+  const row = await factory('classSessions', f.gymId, { status: 'cancelled', restoreCount: 1, startsAt, endsAt: new Date(startsAt.getTime() + 60 * minute) });
+  // A failed job from the cancellation before the restore, then one from the cancellation after it.
+  const before = await f.queue(row.id, cancellationNoticeJob, cancellationNoticeKeyPrefix + row.id);
+  expect(await f.jobs.runNext()).toBe(true);
+  const after = await f.queue(row.id, cancellationNoticeJob, `${cancellationNoticeKeyPrefix}${row.id}.1`);
+  expect(await f.jobs.runNext()).toBe(true);
+  f.clock.advance(15 * minute);
+  const lookup = vi.spyOn(f.jobs, 'failedJobs');
+  expect(await f.run()).toEqual({ recovered: 1 });
+  expect(lookup).toHaveBeenCalledExactlyOnceWith(cancellationNoticeJob, [`${cancellationNoticeKeyPrefix}${row.id}.1`], { gymId: f.gymId });
+  expect(f.jobs.jobs.find(job => job.id === before.jobId)!.status).toBe('failed');
+  expect(f.jobs.jobs.find(job => job.id === after.jobId)!.status).toBe('queued');
+  expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'schedule.cancellation_notice_retried'))))
+    .toMatchObject([{ targetId: row.id, after: { jobId: after.jobId } }]);
+});
+
 it('pages candidates and bounds key lookups without transactions around queue calls', async () => {
   const f = await fixture(), user = await factory('authUser', f.gymId);
   const rows = await db.forGym(f.gymId, tx => tx.insert(announcements).values(Array.from({ length: 205 }, () => ({

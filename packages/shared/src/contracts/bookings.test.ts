@@ -115,7 +115,7 @@ describe('booking and waitlist contracts', () => {
   });
   it('keeps persisted booking fields aligned with the schema and rank as a computed aggregate', () => {
     expectTypeOf<Omit<ClassBooking, 'createdAt' | 'cancelledAt' | 'queueRank'>>()
-      .toExtend<Omit<typeof classBookings.$inferSelect, 'gymId' | 'createdAt' | 'cancelledAt'>>();
+      .toExtend<Omit<typeof classBookings.$inferSelect, 'gymId' | 'createdAt' | 'cancelledAt' | 'sessionCancelStatus' | 'sessionCancelPosition'>>();
   });
   it('declares staff, self, and payer-only household access separately', () => {
     for (const endpoint of Object.values(bookingsContracts)) {

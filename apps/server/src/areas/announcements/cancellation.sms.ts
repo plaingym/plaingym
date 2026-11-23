@@ -7,8 +7,13 @@ import { smsInFlightMs } from '../../infra/sms/deliveries.js';
 import { noticeSender, noticeWhen, readNoticePhones, type ClassNoticeDeliveryOptions } from '../bookings/bookings.sms.js';
 import messages from '../../../../../locales/en/announcements/cancellation.json' with { type: 'json' };
 
-interface Cancellation { sessionId: string; memberIds: string[] }
+interface Cancellation { sessionId: string; memberIds: string[]; round?: number | undefined }
 export const cancellationSmsKeyPrefix = 'schedule-cancel-sms:';
+/**
+ * A session's notices are keyed by its ID until it is restored. After its Nth restore, the next cancellation's
+ * notices use `<session ID>.<N>`, so they never collide with an earlier cancellation's deliveries.
+ */
+export const noticeScope = (sessionId: string, round?: number) => round ? `${sessionId}.${round}` : sessionId;
 
 /** A separate keyed send after email; neither channel's suppression nor outcome decides the other. */
 export function createCancellationSms(options: ClassNoticeDeliveryOptions) {
@@ -20,7 +25,10 @@ export function createCancellationSms(options: ClassNoticeDeliveryOptions) {
       const { memberSmsEnabled, timezone } = await settings.get(gymId);
       if (!memberSmsEnabled) return;
       const groups = await scope(gymId, tx => readNoticePhones(tx, gymId, notice.memberIds));
-      const prefix = `${cancellationSmsKeyPrefix}${notice.sessionId}:`;
+      const prefix = `${cancellationSmsKeyPrefix}${noticeScope(notice.sessionId, notice.round)}:`;
+      // A notice from before a restore never sends after it, even when the session is cancelled again.
+      const isCurrent = <S extends { status: string; restoreCount: number }>(session?: S): session is S =>
+        session?.status === 'cancelled' && session.restoreCount === (notice.round ?? 0);
       const keyFor = (memberId: string) => prefix + memberId;
       const owned = new Set(groups.map(group => keyFor(group.memberIds[0]!)));
       let failure: unknown;
@@ -34,7 +42,7 @@ export function createCancellationSms(options: ClassNoticeDeliveryOptions) {
             if (!member) throw new AppError('conflict', 'Cancellation text recipients changed');
             // Serializes key/destination reservations only; the provider is always outside this transaction.
             const [session] = await tx.select().from(classSessions).where(eq(classSessions.id, notice.sessionId)).for('update');
-            if (!session || session.status !== 'cancelled') return;
+            if (!isCurrent(session)) return;
             const current = (await readNoticePhones(tx, gymId, group.memberIds)).find(row => row.phoneE164 === group.phoneE164);
             if (!current) return;
             if (current.memberIds[0] !== anchor) throw new AppError('conflict', 'Cancellation text recipients changed');
@@ -69,8 +77,9 @@ export function createCancellationSms(options: ClassNoticeDeliveryOptions) {
             verifyAccount: () => noticeSender(options, gymId, group).verifyAccount(),
             async sendSms() {
               const current = await scope(gymId, async tx => {
-                const [session] = await tx.select({ status: classSessions.status }).from(classSessions).where(eq(classSessions.id, notice.sessionId));
-                return session?.status === 'cancelled'
+                const [session] = await tx.select({ status: classSessions.status, restoreCount: classSessions.restoreCount })
+                  .from(classSessions).where(eq(classSessions.id, notice.sessionId));
+                return isCurrent(session)
                   ? (await readNoticePhones(tx, gymId, reservation.memberIds)).find(row => row.phoneE164 === group.phoneE164) : undefined;
               });
               if (!current) return { status: 'suppressed', reason: 'no_consent' };

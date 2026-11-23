@@ -21,6 +21,7 @@ const options = { timezone: 'America/New_York', programs: [{ id: programId, name
 const session: ClassSession = { id, name: 'Evening class', startsAt: '2026-03-02T23:00:00Z', endsAt: '2026-03-03T00:00:00Z',
   cancelBefore: '2026-03-02T22:00:00Z',
   templateId: null, coachId: null, status: 'scheduled', capacity: null, notes: '<script>Keep plain</script>', kind: 'class', programIds: [programId], tagIds: [], revision: 4, createdAt: '2026-03-01T00:00:00Z' };
+const textHint = "Texts go to each member's own phone when they agreed to notices texts, otherwise to their household's billing phone when it agreed to them, and only while Member texts is on in Settings → Go-live.";
 function bootstrap(roles: StaffRole[] = ['owner'], gymId = id, staffProfileId: string | null = null) {
   const data: ShellBootstrap = { gym: { id: gymId, name: 'Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: id, staffProfileId, displayName: 'Test User', roles, member: !roles.length }, login: { password: true, magicLink: false } };
   vi.mocked(useBootstrap).mockReturnValue(new QueryObserver(new QueryClient(), { queryKey: ['bootstrap'], queryFn: async () => data, initialData: data }).getCurrentResult());
@@ -70,7 +71,7 @@ describe('schedule calendar and session detail', () => {
     expect([boxes.email.checked, boxes.sms.checked]).toEqual([false, false]);
     expect(boxes.sms.getAttribute('aria-describedby')).toBeTruthy();
     expect(document.getElementById(boxes.sms.getAttribute('aria-describedby')!)?.textContent)
-      .toBe('Texts go only to members who agreed to notices texts, and only while Member texts is on in Settings → Go-live.');
+      .toBe(textHint);
     expect(screen.queryByLabelText(/Optional cancellation note/)).toBeNull();
     for (const channel of ticked) fireEvent.click(boxes[channel]);
     fireEvent.change(screen.getByLabelText(/Optional cancellation note \(email only/), { target: { value: 'Closed' } });
@@ -230,14 +231,97 @@ describe('schedule calendar and session detail', () => {
     render(<SessionDetail session={{ ...session, coachId: programId }} options={options} roles={[role]} enabledModules={[]} onSaved={vi.fn()} registries={noticeRegistries()}/>);
     expect(screen.queryByRole('checkbox', { name: /(Email|Text) the/ })).toBeNull();
   });
-  it('keeps cancellation without email available and hides the option on an already cancelled session', async () => {
+  it('keeps cancellation without email available and offers a restore instead on an already cancelled session', async () => {
     vi.mocked(api.POST).mockResolvedValue({ response: new Response(), data: { data: { ...session, revision: 5, status: 'cancelled' } } } as Awaited<ReturnType<typeof api.POST>>);
     const view = render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={vi.fn()} registries={noticeRegistries()}/>);
     fireEvent.click(screen.getByRole('button', { name: 'Cancel session' }));
     await waitFor(() => expect(api.POST).toHaveBeenCalledWith('/api/schedule/sessions/{id}/cancel', { params: { path: { id } }, body: { revision: 4 } }));
     view.rerender(<SessionDetail session={{ ...session, status: 'cancelled' }} options={options} roles={['owner']} enabledModules={[]} onSaved={vi.fn()} registries={noticeRegistries()}/>);
-    expect(screen.queryByRole('checkbox', { name: /(Email|Text) the/ })).toBeNull();
-    expect((screen.getByRole('button', { name: 'Cancel session' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('checkbox', { name: /(Email|Text) the \d/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Cancel session' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Restore class' })).toBeTruthy();
+  });
+  describe('restoring a cancelled class', () => {
+    const cancelled = { ...session, status: 'cancelled' as const, coachId: programId };
+    const restored = { ...cancelled, status: 'scheduled' as const, revision: 5 };
+    const boxes = () => ({ email: screen.getByRole('checkbox', { name: 'Email the members whose places come back' }) as HTMLInputElement,
+      sms: screen.getByRole('checkbox', { name: 'Text the members whose places come back' }) as HTMLInputElement });
+    const detail = (roles: StaffRole[] = ['owner'], onSaved = vi.fn(), value: ClassSession = cancelled) =>
+      <SessionDetail session={value} options={options} roles={roles} enabledModules={[]} onSaved={onSaved} registries={noticeRegistries()}/>;
+    it('shows an owner the help, two unticked boxes with the text hint, and a Restore class button', () => {
+      render(detail());
+      expect(screen.getByText(/^Brings this class back and restores the places its cancellation cancelled/)).toBeTruthy();
+      const { email, sms } = boxes();
+      expect([email.checked, sms.checked]).toEqual([false, false]);
+      expect(document.getElementById(sms.getAttribute('aria-describedby')!)?.textContent).toBe(textHint);
+      expect(screen.getByRole('button', { name: 'Restore class' })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Cancel session' })).toBeNull();
+    });
+    it.each([
+      [[], { revision: 4 }],
+      [['email'], { revision: 4, notify: true, channels: ['email'] }],
+      [['sms'], { revision: 4, notify: true, channels: ['sms'] }],
+      [['sms', 'email'], { revision: 4, notify: true, channels: ['email', 'sms'] }],
+    ] as const)('ticking %j posts %j, then reports the restore and reloads the panels', async (ticked, body) => {
+      vi.mocked(api.POST).mockResolvedValue({ response: new Response(), data: { data: restored } } as Awaited<ReturnType<typeof api.POST>>);
+      const onSaved = vi.fn();
+      render(detail(['owner'], onSaved));
+      for (const channel of ticked) fireEvent.click(boxes()[channel]);
+      fireEvent.click(screen.getByRole('button', { name: 'Restore class' }));
+      await waitFor(() => expect(onSaved).toHaveBeenCalledWith(restored));
+      expect(api.POST).toHaveBeenCalledWith('/api/schedule/sessions/{id}/restore', { params: { path: { id } }, body });
+      expect(screen.getByRole('status').textContent).toBe('Class restored. The places its cancellation cancelled are back.');
+    });
+    it('lets the session coach notify, and another coach restore without the boxes', () => {
+      bootstrap(['coach'], id, programId);
+      render(detail(['coach']));
+      expect([boxes().email.checked, boxes().sms.checked]).toEqual([false, false]);
+      cleanup(); bootstrap(['coach'], id, id);
+      render(detail(['coach']));
+      expect(screen.getByRole('button', { name: 'Restore class' })).toBeTruthy();
+      expect(screen.queryByRole('checkbox', { name: /places come back/ })).toBeNull();
+    });
+    it('shows front desk no restore form', () => {
+      bootstrap(['front_desk']);
+      render(detail(['front_desk']));
+      expect(screen.queryByRole('button', { name: 'Restore class' })).toBeNull();
+      expect(screen.queryByText(/^Brings this class back/)).toBeNull();
+    });
+    it.each(['2026-03-02T23:00:00Z', '2026-03-03T01:00:00Z'])('shows no restore form for a cancelled session started at %s', now => {
+      vi.setSystemTime(new Date(now));
+      render(detail());
+      expect(screen.queryByRole('button', { name: 'Restore class' })).toBeNull();
+      expect(screen.queryByRole('checkbox', { name: /places come back/ })).toBeNull();
+    });
+    it('explains a session that started before the restore and hides the form', async () => {
+      vi.mocked(api.POST).mockResolvedValue({ response: new Response(null, { status: 409 }),
+        error: { error: { details: { reason: ['session_started'] } } } } as Awaited<ReturnType<typeof api.POST>>);
+      const onSaved = vi.fn();
+      render(detail(['owner'], onSaved));
+      fireEvent.click(screen.getByRole('button', { name: 'Restore class' }));
+      await waitFor(() => expect(screen.getByRole('status').textContent).toBe("This session has started and can't be restored."));
+      expect(screen.queryByRole('button', { name: 'Restore class' })).toBeNull();
+      expect(onSaved).not.toHaveBeenCalled();
+    });
+    it('explains a session that is no longer cancelled and refreshes it', async () => {
+      vi.mocked(api.POST).mockResolvedValue({ response: new Response(null, { status: 409 }),
+        error: { error: { details: { reason: ['not_cancelled'] } } } } as Awaited<ReturnType<typeof api.POST>>);
+      vi.mocked(api.GET).mockResolvedValue({ response: new Response(), data: { data: restored } } as Awaited<ReturnType<typeof api.GET>>);
+      const onSaved = vi.fn();
+      render(detail(['owner'], onSaved));
+      fireEvent.click(boxes().email);
+      fireEvent.click(screen.getByRole('button', { name: 'Restore class' }));
+      await waitFor(() => expect(screen.getByRole('status').textContent).toBe("This session isn't cancelled any more. No notice was queued."));
+      expect(api.GET).toHaveBeenCalledWith('/api/schedule/sessions/{id}', { params: { path: { id } } });
+      await waitFor(() => expect(onSaved).toHaveBeenCalledWith(restored));
+    });
+    it('shows the conflict message for a stale revision', async () => {
+      vi.mocked(api.POST).mockResolvedValue({ response: new Response(null, { status: 409 }),
+        error: { error: { code: 'conflict' } } } as Awaited<ReturnType<typeof api.POST>>);
+      render(detail());
+      fireEvent.click(screen.getByRole('button', { name: 'Restore class' }));
+      await waitFor(() => expect(screen.getByRole('status').textContent).toBe('This record changed or is in use. Reload before trying again.'));
+    });
   });
   it('retains a selected email option while stale counts require a roster refresh', () => {
     let counts = { booked: 2, waitlisted: 1, checkedIn: 0, stale: false };

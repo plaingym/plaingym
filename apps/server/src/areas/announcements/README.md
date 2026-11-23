@@ -88,12 +88,12 @@ serializes reservations across workers. Each reservation has an identifier-only
 destination. Comparing these durable digests prevents duplicates when addresses
 converge, including after an earlier recipient changes their address. The digest
 is not a readable address. A member's erasure clears the digests of their
-announcement and cancellation notice rows in the same transaction
+announcement, cancellation notice and restore notice rows in the same transaction
 (`forgetErasedAddressDigests`, `erasure.ts`), so another member still at that
 address could get a copy of an announcement that is still being sent.
 Announcement keys are cleared with an UPDATE subquery over the member's
 recipients. Matching shared-address digests are also cleared on other recipients
-of those announcements and on cancellation notices keyed by another member.
+of those announcements and on cancellation and restore notices keyed by another member.
 SQL computes the same JSON/sha256 digest as the sender over the indexed delivery
 key ranges, using the member's stored normalized address before it is removed;
 erasure does not load cancellation history into JavaScript.
@@ -136,7 +136,9 @@ contain identifiers and the delay, without content or addresses. Recipient
 decisions and durable email delivery keys remain unchanged, so accepted, unknown,
 failed and skipped recipients are not mailed again. The same recovery policy
 applies to class-cancellation notices, retaining their original roster and note,
-but notices for sessions that have started are never reset. The reset and audit
+but notices for sessions that have started are never reset. For a cancelled session
+it looks up only the current cancellation's job, by the key its restore count scopes
+(below); a job from a cancellation before a restore would send nothing. The reset and audit
 are separate commits: if the audit write fails, that reset does not increase the
 next backoff delay.
 
@@ -163,11 +165,19 @@ opt-out or suppress transactional mail.
 The schedule service enqueues `announcements.cancellation` in the cancellation's
 transaction with a snapshot of booked and waitlisted member IDs, the session ID,
 an optional plain text note and the chosen `channels` (`email`, `sms`, or both).
-Its job key is `schedule-cancel-notice:<sessionId>`. A payload without `channels`
+Its job key is `schedule-cancel-notice:<scope>`. The scope is the session ID, or
+`<sessionId>.<round>` for a cancellation after the session's `round`th restore: such a
+payload carries `round` (a positive integer, in both stored shapes), and one without it is
+round 0. A never-restored session's job key, delivery keys, digests and payloads are
+therefore unchanged, and each later cancellation gets its own notice. Every reservation and
+send guard (email and text) also requires the session's restore count to equal the
+notice's round, next to it being cancelled, so a notice from before a restore never sends
+after it, even once the session is cancelled again. A decision audit for a round above 0
+carries `round`. A payload without `channels`
 (queued before staff could choose) sends both. The job runs only the chosen
 channels: a channel not listed is never reserved or attempted.
 A notice for both channels is stored in that flat shape, with no `channels`. A
-notice for one channel is stored as `{ channels, notice: { sessionId, memberIds, note } }`.
+notice for one channel is stored as `{ channels, notice: { sessionId, memberIds, note } }` (and `round` when set).
 A previous release requires a top-level `sessionId`, so after a rollback it fails
 that job before reserving anything, instead of dropping `channels` and sending
 both. Recovery (above) retries the failed job, with its original payload, once a
@@ -198,13 +208,15 @@ ID at reservation, and the reason: `disabled` for the switch, or the address's
 `opt_out` or `undeliverable`. When no preference blocks the address but nobody
 covered is left there (erased, or moved to another address), it logs
 `announcements.cancellation_notice_skipped` with the gym, session and that member
-ID and reason `no_recipient` instead. Either way the address's decision is
+ID and reason `no_recipient` instead, or reason `restored` when the session was
+restored since the reservation. Either way the address's decision is
 `suppressed`. The guard renders the content once. A reload
 or render failure before transport records a definite non-send, and the job
 continues with the remaining addresses.
 
-A short session-row lock serializes `email_deliveries` reservations. Keys contain
-the session ID and the address group's first member ID; a digest of session ID
+A short session-row lock serializes `email_deliveries` reservations. Keys
+(`schedule-cancel-notice:<scope>:<firstMemberId>`) contain the notice scope and the
+address group's first member ID; a digest of the scope
 and normalized address also prevents duplicate destinations when addresses change
 or converge. No SMTP runs inside a transaction. Live reservations defer to a job
 retry. Accepted, unknown and definitely rejected attempts are not resent by this
@@ -235,8 +247,8 @@ text (`sms_self`) leaves the names out; a household billing phone (its group's
 alone never authorizes these texts. `MemberSms` rechecks notices consent, current
 phones and household membership, the independent member-SMS switch and daily cap.
 
-`sms_deliveries` keys are `schedule-cancel-sms:<sessionId>:<firstMemberId>`.
-A session-scoped keyed phone digest also prevents another text to the same
+`sms_deliveries` keys are `schedule-cancel-sms:<scope>:<firstMemberId>`.
+A scope-prefixed keyed phone digest also prevents another text to the same
 destination after the first member leaves the group or groups converge. Neither
 the phone nor message content is stored in those keys or digests. Live attempts
 defer to a retry; accepted and uncertain attempts never resend. Only a definite
@@ -257,3 +269,34 @@ mailer is never called, and a missing demo outbox fails closed. Without that set
 (a bare service in a test), requesting notification fails with 503 and rolls back the
 cancellation. Tests may inject the same service through
 `createScheduleService({ cancellation })`.
+
+## Class restore notices
+
+When staff restore a cancelled session with `notify: true` and at least one booking
+came back, the schedule service enqueues `announcements.restore_notice` (`restored.ts`)
+in the restore's transaction, with the restored member IDs (booked and waitlisted,
+sorted), the chosen `channels` (both when none were chosen) and `round`, the session's
+restore count. There is no note. Its job key is `schedule-restore-notice:<sessionId>.<round>`.
+It follows the cancellation notice's rules: for email, the member-email switch, address
+groups with their opt-out and deliverability checks, a member's own email or else their
+household's billing email, the canonical HTTPS origin, the demo outbox, one delivery per
+address group (`schedule-restore-notice:<sessionId>.<round>:<firstMemberId>`, with a digest
+of `restored`, the scope and the address) and a re-read of the group at the send boundary;
+for texts (`restored.sms.ts`), each member's consented phone or else the consented household
+billing phone, `MemberSms` consent, switch and cap, and keys
+`schedule-restore-sms:<sessionId>.<round>:<firstMemberId>`. Every reservation and send
+guard requires the session to be scheduled, not restored again since and not started, and
+keeps only members who still have a booked or waitlisted place in it: a member who
+cancelled their restored place gets nothing, and a session cancelled again or started
+sends nothing more. The email says the class is going ahead after all, that the places
+cancelled with it are back, and who the address covers (left out for a member at their own
+address); the text does the same, without names on a member's own phone. Each address
+gets a `schedule.restore_notice_decided` audit with the member ID, round and outcome.
+Accepted and uncertain deliveries are never resent. Restore notices have no recovery
+sweep: the job's own retries (12 attempts) are their retry. Erasure clears their digests
+as it does for cancellation notices.
+
+`configureRestoreNotice(createRestoreNotice({ ... }))` takes the same options as the
+cancellation notice and is configured by the runtime the same way. Without it (a bare
+service in a test), a restore that would queue a notice fails with 503 and rolls back.
+Tests may inject the service through `createScheduleService({ restore })`.

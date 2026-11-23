@@ -764,7 +764,7 @@ Old versions and documents referenced by signatures remain retained after retire
   in the gym, with identifier-only audits. `sms_deliveries` holds no readable phone
   or body. Phone digests use `createKeyedCommandDigest` under `AUTH_SECRET`.
   Erasure clears the keyed phone digests from the member's announcement and
-  member-keyed class cancellation delivery records. New card campaign deliveries
+  member-keyed class cancellation and restore delivery records. New card campaign deliveries
   use recipient IDs, and erasure replaces older digest-keyed reservations in
   that household with identifier-only keys that still prevent replay. Delivery state is
   retained permanently; daily usage is install-local. Neither is exported. Demo
@@ -788,7 +788,7 @@ Old versions and documents referenced by signatures remain retained after retire
   erased, so nobody holding the database or a backup, without the install's
   `AUTH_SECRET`, can test a guessed address against it. A member notice (receipts, dunning) is keyed by IDs only. An emailed
   portal invitation's request digest is an HMAC under a key derived from
-  `AUTH_SECRET`. Announcements and cancellation notices keep a plain digest of the
+  `AUTH_SECRET`. Announcements and class cancellation and restore notices keep a plain digest of the
   address they went to, so an address gets each message once, and an erasure
   clears the erased member's in its own transaction. Only staff recipients' keys
   carry a hash of their address. An hourly job per gym deletes login-link rows once

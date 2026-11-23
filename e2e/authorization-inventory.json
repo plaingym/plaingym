@@ -709,6 +709,14 @@
     }
   },
   {
+    "method": "POST",
+    "path": "/api/schedule/sessions/{id}/restore",
+    "permission": {
+      "kind": "staff",
+      "capability": "schedule.manage"
+    }
+  },
+  {
     "method": "GET",
     "path": "/api/schedule/sessions/{id}",
     "permission": {

@@ -7,7 +7,7 @@ import type { JobRegistration } from '../../core/registry.js';
 import type { JobRecovery } from '../../infra/jobs/index.js';
 import { announcementSendJob } from './send.js';
 import { announcementSmsJob, announcementSmsJobKey } from './send.sms.js';
-import { cancellationNoticeJob, cancellationNoticeKeyPrefix } from './cancellation.js';
+import { cancellationNoticeJob, cancellationNoticeKeyPrefix, noticeScope } from './cancellation.js';
 
 export const announcementRecoveryJob = 'announcements.recover';
 export interface AnnouncementRecoveryOptions {
@@ -67,14 +67,16 @@ export function createAnnouncementRecovery(options: AnnouncementRecoveryOptions)
       }
       cursor = undefined;
       for (;;) {
-        const rows = await scope(gymId, tx => tx.select({ id: classSessions.id }).from(classSessions).where(and(
+        const rows = await scope(gymId, tx => tx.select({ id: classSessions.id, restoreCount: classSessions.restoreCount }).from(classSessions).where(and(
           eq(classSessions.status, 'cancelled'), gt(classSessions.startsAt, clock.now()),
           cursor ? gt(classSessions.id, cursor) : undefined))
           .orderBy(asc(classSessions.id)).limit(batchSize));
         if (!rows.length) break;
         // The original job holds the roster and note. Never reconstruct them from current bookings.
-        recovered += await retry(gymId, cancellationNoticeJob, rows.map(row => row.id), id => cancellationNoticeKeyPrefix + id,
-          'schedule.cancellation_notice_retried', 'class_session');
+        // Only the current cancellation's job is retried: one from before a restore would send nothing.
+        const rounds = new Map(rows.map(row => [row.id, row.restoreCount]));
+        recovered += await retry(gymId, cancellationNoticeJob, rows.map(row => row.id),
+          id => cancellationNoticeKeyPrefix + noticeScope(id, rounds.get(id)), 'schedule.cancellation_notice_retried', 'class_session');
         cursor = rows.at(-1)!.id;
       }
       return { recovered };

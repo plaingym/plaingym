@@ -46,9 +46,25 @@ async function fixture(recurring = false, channels?: ('email' | 'sms')[]) {
   createServerRegistry({ jobs: createAnnouncementJobs(undefined, () => notice) }).registerJobs(jobs, new Set());
   await schedule.changeSession({ gymId, actor: { kind: 'user', userId: user.id } }, session.id, 'cancel', { revision: 1, notify: true, ...(channels ? { channels } : {}) });
   const payload ={ sessionId: session.id, memberIds: children.map(child => child.id), note: '' };
-  return { gymId, clock, home, children, session, email, sms, jobs, resolver, options, notice, payload,
+  return { gymId, clock, user, home, children, session, email, sms, jobs, resolver, options, notice, schedule, payload,
     run: () => notice.run(payload, gymId) };
 }
+
+it('texts a cancellation after a restore under its scoped key, and never the one from before the restore', async () => {
+  const f = await fixture(), actor = { gymId: f.gymId, actor: { kind: 'user' as const, userId: f.user.id } };
+  const first = f.jobs.jobs.find(job => job.name === cancellationNoticeJob)!.payload;
+  await f.schedule.restoreSession(actor, f.session.id, { revision: 2 });
+  await f.schedule.changeSession(actor, f.session.id, 'cancel', { revision: 3, notify: true, channels: ['sms'] });
+  await f.notice.run(first, f.gymId);
+  expect(f.sms.messages).toHaveLength(0); expect(f.email.messages).toHaveLength(0);
+  const second = f.jobs.jobs.filter(job => job.name === cancellationNoticeJob)[1]!;
+  expect(second.options.idempotencyKey).toBe(`schedule-cancel-notice:${f.session.id}.1`);
+  await f.notice.run(second.payload, f.gymId); await f.notice.run(second.payload, f.gymId);
+  expect(f.sms.messages).toHaveLength(1); expect(f.email.messages).toHaveLength(0);
+  const stored = await db.forGym(f.gymId, tx => tx.select().from(smsDeliveries));
+  expect(stored).toMatchObject([{ key: `schedule-cancel-sms:${f.session.id}.1:${f.children[0]!.id}`, state: 'accepted',
+    commandDigest: `schedule-cancel-sms:${f.session.id}.1:${digest(phone)}` }]);
+});
 
 it.each([false, true])('a cancelled class (recurring=%s) sends its parent one email and one text naming three children, once', async recurring => {
   const f = await fixture(recurring);

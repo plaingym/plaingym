@@ -195,6 +195,12 @@ Migration `0041_stripe_event_failed_at.sql` adds the nullable `stripe_events.fai
 the time of the event's latest failed dispatch. Existing rows start without one, and
 Health counts those by their received time.
 
+Migration `0042_session_restore.sql` adds `class_sessions.restore_count` (how many times a
+cancelled session was restored, starting at 0) and the nullable
+`class_bookings.session_cancel_status` and `session_cancel_position`, which a session
+cancellation sets on each booking it cancels so restoring the session can bring them back in
+order. Existing rows start with 0 and no marker.
+
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver

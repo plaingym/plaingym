@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, gte, ilike, inArray, isNull, lt, or, type SQL } from 'drizzle-orm';
+import { and, asc, eq, gte, ilike, inArray, isNotNull, isNull, lt, or, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
-import { forGym, classBookings, classTags, classTemplates, classTemplatePrograms, classTemplateTags, classSessions, classSessionPrograms, classSessionTags, programs, staffProfiles, staffRoles, revisionGuard, assertRevised, writeAudit, RevisionConflictError, type Transaction } from '@plaingym/db';
+import { forGym, classBookings, members, classTags, classTemplates, classTemplatePrograms, classTemplateTags, classSessions, classSessionPrograms, classSessionTags, programs, staffProfiles, staffRoles, revisionGuard, assertRevised, writeAudit, RevisionConflictError, type Transaction } from '@plaingym/db';
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { classTagSchema, classTemplateSchema, classSessionSchema, createClassTagRequestSchema, updateClassTagRequestSchema, createClassTemplateRequestSchema, updateClassTemplateRequestSchema, createClassSessionRequestSchema, updateClassSessionRequestSchema, classTagListQuerySchema, classTemplateListQuerySchema, classSessionListQuerySchema, scheduleRevisionRequestSchema, swapSessionCoachRequestSchema, updateSessionNotesRequestSchema, updateSessionCapacityRequestSchema,
   type ClassTemplate, type ClassSession, type CreateClassTagRequest, type UpdateClassTagRequest, type CreateClassTemplateRequest, type UpdateClassTemplateRequest, type CreateClassSessionRequest, type UpdateClassSessionRequest, type ClassTagListQuery, type ClassTemplateListQuery, type ClassSessionListQuery, type ScheduleRevisionRequest, type SwapSessionCoachRequest, type UpdateSessionNotesRequest, type UpdateSessionCapacityRequest } from '@plaingym/shared/contracts';
@@ -10,10 +10,11 @@ import type { MutationContext } from '../../core/interfaces/common.js';
 import { localDate, occurrences } from './schedule.time.js';
 import { createGymSettingsAccessor, readBookingRules } from '../settings/settings.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
-import { bookingAudit, cancellationCutoffAt, reconcileSessionBookings } from '../bookings/bookings.rules.js';
-import { cancelSessionRequestSchema, type CancelSessionRequest } from '@plaingym/shared/contracts';
+import { activeBookings, bookingAudit, cancellationCutoffAt, reconcileSessionBookings } from '../bookings/bookings.rules.js';
+import { cancelSessionRequestSchema, restoreSessionRequestSchema, type CancelSessionRequest, type RestoreSessionRequest } from '@plaingym/shared/contracts';
 import { readCancellationRecipients } from '../bookings/bookings.recipients.js';
 import { cancellationNotice, type CancellationNotice } from '../announcements/cancellation.js';
+import { restoreNotice, type RestoreNotice } from '../announcements/restored.js';
 import { withJobTransaction } from '../../infra/jobs/index.js';
 import messages from '../../../../../locales/en/schedule/schedule.json' with { type: 'json' };
 
@@ -79,7 +80,26 @@ async function safe<T>(work: () => Promise<T>): Promise<T> {
     throw error;
   }
 }
-export function createScheduleService(options: { scope?: typeof forGym; clock?: Clock; settings?: GymSettingsAccessor; cancellation?: Pick<CancellationNotice, 'enqueue'> } = {}) {
+/** Only an owner, an admin or the coach whose staff profile is the session's coach may send its members a notice. */
+async function assertMayNotify(tx: Transaction, context: MutationContext, row: SessionRow, notice: 'cancellation' | 'restore') {
+  const roles = context.actor.kind === 'user' ? await tx.select({ role: staffRoles.role }).from(staffRoles)
+    .where(eq(staffRoles.userId, context.actor.userId)) : [];
+  const manager = roles.some(({ role }) => role === 'owner' || role === 'admin');
+  const [profile] = context.actor.kind === 'user' && roles.some(({ role }) => role === 'coach') && row.coachId
+    ? await tx.select({ id: staffProfiles.id }).from(staffProfiles).where(and(eq(staffProfiles.id, row.coachId), eq(staffProfiles.userId, context.actor.userId))) : [];
+  if (!manager && !profile) throw new AppError('forbidden', `Only the session coach, an admin or an owner may send a ${notice} notice`);
+}
+type BookingRow = typeof classBookings.$inferSelect;
+/** The bookings a session's cancellation cancelled: booked ones in booking order, then the waitlist in its old order. */
+async function cancelledBySession(tx: Transaction, sessionId: string): Promise<BookingRow[]> {
+  const marked = (status: 'booked' | 'waitlisted') => and(eq(classBookings.sessionId, sessionId), eq(classBookings.sessionCancelStatus, status));
+  return [
+    ...await tx.select().from(classBookings).where(marked('booked')).orderBy(asc(classBookings.createdAt), asc(classBookings.id)),
+    ...await tx.select().from(classBookings).where(marked('waitlisted')).orderBy(asc(classBookings.sessionCancelPosition), asc(classBookings.id)),
+  ];
+}
+export function createScheduleService(options: { scope?: typeof forGym; clock?: Clock; settings?: GymSettingsAccessor; cancellation?: Pick<CancellationNotice, 'enqueue'>;
+  restore?: Pick<RestoreNotice, 'enqueue'> } = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const settings = options.settings ?? createGymSettingsAccessor({ scope });
   const audit = async (tx: Transaction, context: MutationContext, action: string, id: string, before: unknown, after: unknown) => {
@@ -270,14 +290,7 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
           if (row.status === 'cancelled') throw new AppError('conflict', t('schedule/schedule:alreadyCancelled'), { reason: ['already_cancelled'] });
           const now = clock.now();
           if (row.startsAt <= now) throw new AppError('conflict', t('schedule/schedule:sessionStarted'), { reason: ['session_started'] });
-          if (value.notify) {
-            const roles = context.actor.kind === 'user' ? await tx.select({ role: staffRoles.role }).from(staffRoles)
-              .where(eq(staffRoles.userId, context.actor.userId)) : [];
-            const manager = roles.some(({ role }) => role === 'owner' || role === 'admin');
-            const [profile] = context.actor.kind === 'user' && roles.some(({ role }) => role === 'coach') && row.coachId
-              ? await tx.select({ id: staffProfiles.id }).from(staffProfiles).where(and(eq(staffProfiles.id, row.coachId), eq(staffProfiles.userId, context.actor.userId))) : [];
-            if (!manager && !profile) throw new AppError('forbidden', 'Only the session coach, an admin or an owner may send a cancellation notice');
-          }
+          if (value.notify) await assertMayNotify(tx, context, row, 'cancellation');
           const before = await sessionSnapshot(tx, row), guard = revisionGuard(classSessions.revision, value.revision);
           const afterRow = assertRevised(await tx.update(classSessions).set({ status: 'cancelled', revision: guard.next })
             .where(and(eq(classSessions.id, id), guard.matches)).returning());
@@ -285,12 +298,18 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
             const memberIds = await readCancellationRecipients(tx, id);
             // Without a choice, both channels go, as they did before staff could pick.
             const channels = value.channels ?? ['email', 'sms'];
+            // A cancellation after a restore scopes its notice by the restore count; a never-restored one keeps today's payload.
             await (options.cancellation ?? cancellationNotice()).enqueue(transaction,
-              { sessionId: id, memberIds, note: value.note ?? '', channels }, gym!.timezone);
+              { sessionId: id, memberIds, note: value.note ?? '', channels, ...(afterRow.restoreCount > 0 ? { round: afterRow.restoreCount } : {}) },
+              gym!.timezone);
           }
-          const cancelled = await tx.update(classBookings).set({ status: 'cancelled', cancelledAt: now, waitlistPosition: null })
-            .where(and(eq(classBookings.sessionId, id), inArray(classBookings.status, ['booked', 'waitlisted']))).returning();
-          for (const booking of cancelled) await bookingAudit(tx, context, now, 'cancelled', booking);
+          // Mark each booking with its place, so restoring the session can bring them back in their original order.
+          for (const booking of await activeBookings(tx, id)) {
+            const [cancelled] = await tx.update(classBookings).set({ status: 'cancelled', cancelledAt: now, waitlistPosition: null,
+              sessionCancelStatus: booking.status, sessionCancelPosition: booking.status === 'waitlisted' ? booking.waitlistPosition : null })
+              .where(eq(classBookings.id, booking.id)).returning();
+            await bookingAudit(tx, context, now, 'cancelled', cancelled!);
+          }
           const after = await sessionSnapshot(tx, afterRow);
           await audit(tx, context, 'session.cancel', id, before, after);
           return sessionResponse(after, await readBookingRules(tx, context.gymId));
@@ -308,6 +327,61 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
         const rules = await readBookingRules(tx, context.gymId);
         if (kind === 'capacity') await reconcileSessionBookings(tx, afterRow, context, clock.now(), rules);
         const after = await sessionSnapshot(tx, afterRow); await audit(tx, context, 'session.' + kind, id, before, after); return sessionResponse(after, rules);
+      }));
+    },
+    /**
+     * Brings a cancelled session that hasn't started back to scheduled, with the bookings its cancellation cancelled:
+     * booked ones first up to the capacity, then the old waitlist in its order. Bookings cancelled before that stay
+     * cancelled, as do erased members' bookings. Everything, including an optional notice job, commits together.
+     */
+    async restoreSession(context: MutationContext, id: string, input: RestoreSessionRequest) {
+      const value = restoreSessionRequestSchema.parse(input);
+      if (value.channels && !value.notify)
+        throw new AppError('invalid_request', 'Notice channels need notify', { reason: ['channels_without_notify'] });
+      const gym = value.notify ? await settings.get(context.gymId) : undefined;
+      return safe(() => withJobTransaction(scope, context.gymId, async transaction => {
+        const { tx } = transaction;
+        // Restore, cancellation and every booking change serialize on this lock.
+        const [row] = await tx.select().from(classSessions).where(eq(classSessions.id, id)).for('update'); if (!row) missing();
+        if (row.status !== 'cancelled') throw new AppError('conflict', t('schedule/schedule:notCancelled'), { reason: ['not_cancelled'] });
+        const now = clock.now();
+        if (row.startsAt <= now) throw new AppError('conflict', t('schedule/schedule:restoreStarted'), { reason: ['session_started'] });
+        if (value.notify) await assertMayNotify(tx, context, row, 'restore');
+        const before = await sessionSnapshot(tx, row), guard = revisionGuard(classSessions.revision, value.revision);
+        const afterRow = assertRevised(await tx.update(classSessions).set({ status: 'scheduled', restoreCount: row.restoreCount + 1, revision: guard.next })
+          .where(and(eq(classSessions.id, id), guard.matches)).returning());
+        const marked = await cancelledBySession(tx, id), active = await activeBookings(tx, id);
+        const erased = new Set(marked.length ? (await tx.select({ id: members.id }).from(members).where(and(
+          inArray(members.id, [...new Set(marked.map(booking => booking.memberId))]), isNotNull(members.anonymizedAt)))).map(member => member.id) : []);
+        const holders = new Set(active.map(booking => booking.memberId));
+        let booked = active.filter(booking => booking.status === 'booked').length;
+        let position = Math.max(0, ...active.flatMap(booking => booking.status === 'waitlisted' ? [booking.waitlistPosition!] : []));
+        const restored: string[] = [];
+        for (const booking of marked) {
+          const cleared = { sessionCancelStatus: null, sessionCancelPosition: null };
+          // An erased member, or one who already holds a place, keeps this booking cancelled; its marker is spent either way.
+          if (erased.has(booking.memberId) || holders.has(booking.memberId)) {
+            await tx.update(classBookings).set(cleared).where(eq(classBookings.id, booking.id));
+            continue;
+          }
+          const status = booking.sessionCancelStatus === 'booked' && (afterRow.capacity === null || booked < afterRow.capacity) ? 'booked' : 'waitlisted';
+          const [back] = await tx.update(classBookings).set({ ...cleared, status, cancelledAt: null,
+            waitlistPosition: status === 'waitlisted' ? ++position : null }).where(eq(classBookings.id, booking.id)).returning();
+          if (status === 'booked') booked++;
+          holders.add(booking.memberId); restored.push(booking.memberId);
+          await bookingAudit(tx, context, now, 'restored', back!);
+        }
+        const rules = await readBookingRules(tx, context.gymId);
+        // A free place promotes the waitlist exactly as a capacity change does.
+        await reconcileSessionBookings(tx, afterRow, context, now, rules);
+        if (value.notify && restored.length) {
+          // Without a choice, both channels go, as for a cancellation.
+          await (options.restore ?? restoreNotice()).enqueue(transaction, { sessionId: id, memberIds: [...new Set(restored)].sort(),
+            channels: value.channels ?? ['email', 'sms'], round: afterRow.restoreCount }, gym!.timezone);
+        }
+        const after = await sessionSnapshot(tx, afterRow);
+        await audit(tx, context, 'session.restored', id, before, after);
+        return sessionResponse(after, rules);
       }));
     },
     async materialize(gymId: string, timezone: string, jobClock: Clock = clock) {

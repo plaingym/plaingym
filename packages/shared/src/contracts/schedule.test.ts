@@ -39,6 +39,18 @@ describe('weekly templates and materialized sessions', () => {
     for (const channels of [[], ['email', 'email'], ['fax'], ['email', 'sms', 'email'], 'email', null])
       expect(schema.safeParse({ revision: 1, notify: true, channels }).success).toBe(false);
   });
+  it('restores with an optional notice by one or both channels and no note', () => {
+    const contract = scheduleContracts.restoreSession, schema = contract.body;
+    expect(contract).toMatchObject({ method: 'post', path: '/api/schedule/sessions/{id}/restore',
+      permission: { kind: 'staff', capability: 'schedule.manage' } });
+    expect(schema.parse({ revision: 1 })).toEqual({ revision: 1 });
+    for (const channels of [['email'], ['sms'], ['email', 'sms']])
+      expect(schema.parse({ revision: 1, notify: true, channels })).toEqual({ revision: 1, notify: true, channels });
+    for (const extra of [{ note: 'Back on' }, { notify: 'true' }, { channels: [] }, { channels: ['email', 'email'] }, { channels: ['fax'] },
+      { memberIds: [id] }, { gymId: otherId }, { status: 'scheduled' }])
+      expect(schema.safeParse({ revision: 1, ...extra }).success).toBe(false);
+    for (const revision of [undefined, 0, 1.5, '1']) expect(schema.safeParse({ revision }).success).toBe(false);
+  });
   it('preserves local wall time and accepts the repeated DST hour as a positive duration', () => {
     // Kind defaults to a class on create.
     expect(createClassTemplateRequestSchema.parse(template)).toEqual({ ...template, kind: 'class' });
@@ -88,7 +100,7 @@ describe('weekly templates and materialized sessions', () => {
   it('rejects missing revisions on every schedule mutation that edits or deletes a record', () => {
     for (const endpoint of [scheduleContracts.updateTag, scheduleContracts.deleteTag, scheduleContracts.updateTemplate,
       scheduleContracts.deleteTemplate, scheduleContracts.updateSession, scheduleContracts.cancelSession,
-      scheduleContracts.swapCoach, scheduleContracts.updateNotes, scheduleContracts.updateCapacity]) {
+      scheduleContracts.restoreSession, scheduleContracts.swapCoach, scheduleContracts.updateNotes, scheduleContracts.updateCapacity]) {
       expect(endpoint.body.safeParse({}).success).toBe(false);
     }
     expect(classTagSchema.safeParse({ id, name: 'Open', createdAt }).success).toBe(false);
@@ -122,7 +134,7 @@ describe('weekly templates and materialized sessions', () => {
     expectTypeOf<Omit<ClassTemplate, 'programIds' | 'tagIds' | 'createdAt'>>()
       .toExtend<Omit<TemplateRow, 'gymId' | 'createdAt'>>();
     expectTypeOf<Omit<ClassSession, 'programIds' | 'tagIds' | 'createdAt' | 'startsAt' | 'endsAt'>>()
-      .toExtend<Omit<SessionRow, 'gymId' | 'createdAt' | 'startsAt' | 'endsAt' | 'occurrenceStartsAt'>>();
+      .toExtend<Omit<SessionRow, 'gymId' | 'createdAt' | 'startsAt' | 'endsAt' | 'occurrenceStartsAt' | 'restoreCount'>>();
     expectTypeOf<Omit<ClassTag, 'createdAt'>>().toExtend<Omit<TagRow, 'gymId' | 'createdAt'>>();
   });
   it('lets all staff read schedules and edit notes; only scheduling roles change sessions', () => {

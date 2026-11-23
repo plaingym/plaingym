@@ -263,6 +263,39 @@ it('refuses channels without notify before cancelling or queuing anything', asyn
   expect(f.jobs.jobs).toHaveLength(0);
   expect(await f.service.getSession(f.gymId, f.session.id)).toMatchObject({ status: 'scheduled', revision: 1 });
 });
+it('never sends a cancellation notice from before a restore, and gives a later cancellation its own scoped notice', async () => {
+  const f = await fixture(), member = await f.booked();
+  await f.cancel();
+  const first = f.payload();
+  expect(first).not.toHaveProperty('round');
+  await f.service.restoreSession(f.actor, f.session.id, { revision: f.session.revision + 1 });
+  await f.notice.run(first, f.gymId);
+  expect(f.email.messages).toHaveLength(0);
+  await f.service.changeSession(f.actor, f.session.id, 'cancel', { revision: f.session.revision + 2, notify: true, note: 'Closed again' });
+  // Cancelled again, the first cancellation's notice still never sends: it belongs to the session before its restore.
+  await f.notice.run(first, f.gymId);
+  expect(f.email.messages).toHaveLength(0);
+  const jobs = f.jobs.jobs.filter(job => job.name === cancellationNoticeJob);
+  expect(jobs.map(job => job.options.idempotencyKey)).toEqual([`schedule-cancel-notice:${f.session.id}`, `schedule-cancel-notice:${f.session.id}.1`]);
+  expect(jobs[1]!.payload).toEqual({ sessionId: f.session.id, memberIds: [member.id], note: 'Closed again', round: 1 });
+  await f.notice.run(jobs[1]!.payload, f.gymId); await f.notice.run(jobs[1]!.payload, f.gymId);
+  expect(f.email.messages.map(message => message.to)).toEqual([member.email]);
+  expect(await db.forGym(f.gymId, tx => tx.select().from(emailDeliveries))).toMatchObject([
+    { key: `schedule-cancel-notice:${f.session.id}.1:${member.id}`, commandDigest: commandDigest([`${f.session.id}.1`, member.email]), state: 'accepted' }]);
+  const decisions = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'schedule.cancellation_notice_decided')));
+  expect(decisions.map(row => row.after)).toEqual([{ memberId: member.id, status: 'sent', round: 1 }]);
+});
+it('keeps every stored payload shape of a never-restored session byte for byte, and carries a round in both', () => {
+  const sessionId = uuidv7(), memberIds = [uuidv7()];
+  expect(JSON.stringify(cancellationNoticeJobPayload({ sessionId, memberIds, note: '', channels: ['email'] })))
+    .toBe(JSON.stringify({ channels: ['email'], notice: { sessionId, memberIds, note: '' } }));
+  expect(JSON.stringify(cancellationNoticeJobPayload({ sessionId, memberIds, note: '', channels: ['email', 'sms'] })))
+    .toBe(JSON.stringify({ sessionId, memberIds, note: '' }));
+  expect(cancellationNoticeJobPayload({ sessionId, memberIds, note: '', channels: ['sms'], round: 2 }))
+    .toEqual({ channels: ['sms'], notice: { sessionId, memberIds, note: '', round: 2 } });
+  expect(cancellationNoticeJobPayload({ sessionId, memberIds, note: '', round: 2 })).toEqual({ sessionId, memberIds, note: '', round: 2 });
+  for (const round of [0, -1, 1.5, '1']) expect(cancellationNoticePayload.safeParse({ sessionId, memberIds, note: '', round }).success).toBe(false);
+});
 it.each([[['email', 'sms']], [undefined]] as const)('sends the email for channels %j', async channels => {
   const f = await fixture(); await f.booked(); await f.cancel();
   await f.notice.run({ ...(f.payload() as object), channels }, f.gymId);

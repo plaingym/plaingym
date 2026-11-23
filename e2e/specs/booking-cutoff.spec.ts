@@ -66,7 +66,9 @@ for (const width of [360, 1280]) {
         await page.getByRole('checkbox', { name: /Email the 1 booked/ }).check();
         await page.getByRole('button', { name: 'Cancel session', exact: true }).click();
         await expect(page.getByText('This session is already cancelled. No cancellation notice was queued.')).toBeVisible();
-        await expect(page.getByRole('button', { name: 'Cancel session', exact: true })).toBeDisabled();
+        // The refreshed, cancelled session offers a restore where the cancel form was.
+        await expect(page.getByRole('button', { name: 'Cancel session', exact: true })).toHaveCount(0);
+        await expect(page.getByRole('button', { name: 'Restore class', exact: true })).toBeVisible();
         await page.getByText('This session is already cancelled. No cancellation notice was queued.').scrollIntoViewIfNeeded();
       } else {
         await page.clock.setFixedTime(new Date(cutoff));

@@ -35,7 +35,9 @@ export const classSessions = pgTable('class_sessions', {
   // The start its template originally scheduled (null for one-off sessions, kept when the template is deleted); moving the session never changes it.
   occurrenceStartsAt: instant('occurrence_starts_at'),
   coachId: uuid('coach_id'), capacity: integer('capacity'), notes: text('notes'),
-  status: text('status').notNull().default('scheduled'), kind: text('kind').notNull().default('class'), ...revision(),
+  status: text('status').notNull().default('scheduled'), kind: text('kind').notNull().default('class'),
+  // How many times a cancelled session was restored; it scopes each cancellation's and restore's notice keys.
+  restoreCount: integer('restore_count').notNull().default(0), ...revision(),
 }, (t) => [...scoped('class_sessions', t), revisionCheck('class_sessions_revision_check', t.revision),
   index('class_sessions_gym_starts_idx').on(t.gymId, t.startsAt), ref('class_sessions_template_fk', t.gymId, t.templateId, classTemplates),
   ref('class_sessions_coach_fk', t.gymId, t.coachId, staffProfiles),
@@ -45,7 +47,8 @@ export const classSessions = pgTable('class_sessions', {
   check('class_sessions_times_check', sql`${t.endsAt} > ${t.startsAt}`),
   check('class_sessions_capacity_check', sql`${t.capacity} > 0`),
   choice('class_sessions_status_check', t.status, ['scheduled', 'cancelled']),
-  choice('class_sessions_kind_check', t.kind, ['class', 'open_mat'])]).enableRLS();
+  choice('class_sessions_kind_check', t.kind, ['class', 'open_mat']),
+  check('class_sessions_restore_count_check', sql`${t.restoreCount} >= 0`)]).enableRLS();
 export const classSessionPrograms = pgTable('class_session_programs', {
   ...base(), sessionId: uuid('session_id').notNull(), programId: uuid('program_id').notNull(),
 }, (t) => [...scoped('class_session_programs', t), ref('class_session_programs_session_fk', t.gymId, t.sessionId, classSessions),
@@ -75,6 +78,8 @@ export const classBookings = pgTable('class_bookings', {
   status: text('status').notNull().default('booked'), waitlistPosition: integer('waitlist_position'),
   bookedBy: uuid('booked_by').notNull().references(() => authUser.id),
   bookedByKind: text('booked_by_kind').notNull(), cancelledAt: instant('cancelled_at'),
+  // Set only by a session cancellation on each booking it cancels (its prior status and waitlist position), so a restore can bring them back in order.
+  sessionCancelStatus: text('session_cancel_status'), sessionCancelPosition: integer('session_cancel_position'),
 }, (t) => [...scoped('class_bookings', t), ref('class_bookings_member_fk', t.gymId, t.memberId, members),
   ref('class_bookings_session_fk', t.gymId, t.sessionId, classSessions),
   uniqueIndex('class_bookings_active_key').on(t.gymId, t.sessionId, t.memberId).where(sql`${t.status} <> 'cancelled'`),
@@ -84,4 +89,6 @@ export const classBookings = pgTable('class_bookings', {
   choice('class_bookings_status_check', t.status, ['booked', 'waitlisted', 'cancelled']),
   choice('class_bookings_actor_check', t.bookedByKind, ['member', 'staff']),
   check('class_bookings_waitlist_check', sql`(${t.status} = 'waitlisted' and ${t.waitlistPosition} is not null and ${t.waitlistPosition} > 0) or (${t.status} <> 'waitlisted' and ${t.waitlistPosition} is null)`),
+  // A check passes when it evaluates to null, so each branch tests for null explicitly.
+  check('class_bookings_session_cancel_check', sql`(${t.sessionCancelStatus} is null and ${t.sessionCancelPosition} is null) or (${t.status} = 'cancelled' and ${t.sessionCancelStatus} is not null and ${t.sessionCancelStatus} = 'booked' and ${t.sessionCancelPosition} is null) or (${t.status} = 'cancelled' and ${t.sessionCancelStatus} is not null and ${t.sessionCancelStatus} = 'waitlisted' and ${t.sessionCancelPosition} is not null and ${t.sessionCancelPosition} > 0)`),
 ]).enableRLS();

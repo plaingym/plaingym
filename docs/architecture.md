@@ -193,7 +193,9 @@ Email uses the member's own address, then the household billing address.
 Cancellation notices group booked and waitlisted members by destination. They
 list the members covered unless the only recipient is one member reached at
 their own email or consented phone. A household fallback always lists the
-members it covers. See the
+members it covers. A restored class can send a "back on" notice to the members
+whose places came back, by email, text or both, through the same consent, switch
+and cap checks. See the
 [announcements](../apps/server/src/areas/announcements/README.md#class-cancellation-notices)
 and [bookings](../apps/server/src/areas/bookings/README.md#promotion-notices) module notes.
 Billing's optional SMS services use

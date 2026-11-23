@@ -60,7 +60,8 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
     tags?: readonly ClassTag[]; siblings?: readonly ClassSession[]; registries?: ReturnType<typeof createRegistries> }) {
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState(''), [editing, setEditing] = useState(false);
   const [emailMembers, setEmailMembers] = useState(false), [textMembers, setTextMembers] = useState(false);
-  const textHintId = useId();
+  const [restoreEmail, setRestoreEmail] = useState(false), [restoreText, setRestoreText] = useState(false);
+  const textHintId = useId(), restoreHintId = useId();
   const [now, setNow] = useState(Date.now);
   // The start the server refused a cancel for; a session moved since then (here or elsewhere) is judged afresh.
   const [serverStartedAt, setServerStartedAt] = useState<string | null>(null);
@@ -80,6 +81,9 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
   const reachable = offerNotice && counts.booked + counts.waitlisted > 0;
   const emailing = reachable && emailMembers, texting = reachable && textMembers, notifying = emailing || texting;
   const channels: ('email' | 'sms')[] = [...(emailing ? ['email' as const] : []), ...(texting ? ['sms' as const] : [])];
+  // A cancelled session that hasn't started can be restored; its notice goes only to the members whose places come back.
+  const restorable = manage && session.status === 'cancelled' && !started;
+  const restoreChannels: ('email' | 'sms')[] = mayNotify ? [...(restoreEmail ? ['email' as const] : []), ...(restoreText ? ['sms' as const] : [])] : [];
   // Only someone who could see the cancel form is told why it went away. Read through a ref so ticking
   // a notice box doesn't re-arm the start timer.
   const startNotice = useRef('');
@@ -143,6 +147,31 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
       if (kind === 'capacity' || kind === 'cancel') setChanged((value) => value + 1);
     } catch (error) { setNotice(message(error)); } finally { setBusy(false); }
   }
+  async function restore(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formElement = event.currentTarget, params = { path: { id: session.id } };
+    setBusy(true); setNotice('');
+    try {
+      const result = await api.POST('/api/schedule/sessions/{id}/restore', { params,
+        body: { revision: session.revision, ...(restoreChannels.length ? { notify: true, channels: restoreChannels } : {}) } });
+      const error = result.error as { error?: { details?: { reason?: unknown } } } | undefined;
+      const reasons = result.response.status === 409 ? error?.error?.details?.reason : undefined;
+      if (Array.isArray(reasons) && reasons.includes('session_started')) {
+        setServerStartedAt(session.startsAt); setNotice(text('restoreStarted')); return;
+      }
+      if (Array.isArray(reasons) && reasons.includes('not_cancelled')) {
+        setNotice(text('notCancelled'));
+        const refreshed = await api.GET('/api/schedule/sessions/{id}', { params });
+        check(refreshed.response); onSaved(parseResponse(classSessionResponseSchema, refreshed.data).data);
+        setChanged(value => value + 1); return;
+      }
+      check(result.response); markSaved(formElement);
+      onSaved(parseResponse(classSessionResponseSchema, result.data).data); setNotice(text('restored'));
+      setRestoreEmail(false); setRestoreText(false);
+      // Restoring brings bookings back and can promote the waitlist, so the panels that show counts reload.
+      setChanged(value => value + 1);
+    } catch (error) { setNotice(message(error)); } finally { setBusy(false); }
+  }
   const when = dateFormatter('fullDate', options.timezone).format(new Date(session.startsAt));
   if (editing) return <SessionForm session={session} options={options} tags={tags} siblings={siblings}
     onCancel={() => setEditing(false)} onSaved={(next) => {
@@ -173,7 +202,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
       <form key={'capacity-' + session.revision} onSubmit={(event) => void change('capacity', event)} className="flex flex-col gap-2 sm:flex-row sm:items-end">
         <div className="flex-1"><Field label={text('capacity')}><Input name="capacity" type="number" min={1} step={1} defaultValue={session.capacity ?? ''} disabled={busy}/></Field></div>
         <Button type="submit" disabled={busy}>{text('saveCapacity')}</Button></form>
-      {!started && <form onSubmit={(event) => void change('cancel', event)} className="space-y-3">
+      {!started && session.status !== 'cancelled' && <form onSubmit={(event) => void change('cancel', event)} className="space-y-3">
         {offerNotice && <>
           <CheckboxField name="notifyEmail" checked={emailing} disabled={busy || counts.stale || !reachable} onChange={event => setEmailMembers(event.target.checked)}
             label={noticeLabel('email', counts.booked + counts.waitlisted)}/>
@@ -185,7 +214,20 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
           {notifying && <Field label={text('cancelNote')}><Textarea name="note" maxLength={1_000} disabled={busy}/></Field>}
         </>}
         <Button type="submit" variant="outline" className="w-full border-destructive text-destructive sm:w-auto"
-          disabled={busy || session.status === 'cancelled' || ((emailMembers || textMembers) && mayNotify && (!counts || counts.stale))}>{text('cancelSession')}</Button>
+          disabled={busy || ((emailMembers || textMembers) && mayNotify && (!counts || counts.stale))}>{text('cancelSession')}</Button>
+      </form>}
+      {restorable && <form onSubmit={(event) => void restore(event)} className="space-y-3">
+        <p className="text-sm text-muted-foreground">{text('restoreHelp')}</p>
+        {mayNotify && <>
+          <CheckboxField name="restoreEmail" checked={restoreEmail} disabled={busy} onChange={event => setRestoreEmail(event.target.checked)}
+            label={text('restoreEmail')}/>
+          <div>
+            <CheckboxField name="restoreText" checked={restoreText} disabled={busy} onChange={event => setRestoreText(event.target.checked)}
+              aria-describedby={restoreHintId} label={text('restoreText')}/>
+            <p id={restoreHintId} className="text-sm text-muted-foreground">{text('cancelTextHint')}</p>
+          </div>
+        </>}
+        <Button type="submit" className="w-full sm:w-auto" disabled={busy}>{text('restoreSession')}</Button>
       </form>}
     </div>}
     {notes && <form key={'notes-' + session.revision} onSubmit={(event) => void change('notes', event)} className="space-y-2">

@@ -288,6 +288,13 @@
       "when": 1795410371181,
       "tag": "0041_stripe_event_failed_at",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1795430736184,
+      "tag": "0042_session_restore",
+      "breakpoints": true
     }
   ]
 }

@@ -15,7 +15,11 @@ export function recipientAddressDigest(address: string) {
 export function erasedAddressDigest(address: string) {
   return sql<string>`encode(sha256(convert_to('[' || to_json(split_part(${emailDeliveries.key}, ':', 2))::text || ',' || to_json(${address}::text)::text || ']', 'UTF8')), 'hex')`;
 }
-/** Cancellation keys contain IDs only. Kept in SQL so erasure never loads the gym's notice history. */
+/** commandDigest(['restored', notice scope, address]) for a restore notice key. */
+export function erasedRestoreDigest(address: string) {
+  return sql<string>`encode(sha256(convert_to('["restored",' || to_json(split_part(${emailDeliveries.key}, ':', 2))::text || ',' || to_json(${address}::text)::text || ']', 'UTF8')), 'hex')`;
+}
+/** Cancellation and restore notice keys contain IDs only. Kept in SQL so erasure never loads the gym's notice history. */
 export const noticeMemberId = sql<string>`split_part(${emailDeliveries.key}, ':', 3)`;
 export const smsRecipientIncludes = (memberId: string) => sql<boolean>`${announcementSmsRecipients.memberIds} @> ${JSON.stringify([memberId])}::jsonb`;
 export const thirdSmsKeyPart = sql<string>`split_part(${smsDeliveries.key}, ':', 3)`;

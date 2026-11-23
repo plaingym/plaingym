@@ -15,11 +15,14 @@ import { renderCancellationNotice } from '../../emails/announcements/cancellatio
 import { readAddressGroup } from './audience.js';
 import { cancellationDecisionMemberId } from './cancellation.sql.js';
 import { readMemberNoticeEmails } from '../bookings/bookings.recipients.js';
-import { createCancellationSms } from './cancellation.sms.js';
+import { createCancellationSms, noticeScope } from './cancellation.sms.js';
 import type { ClassNoticeSmsOptions } from '../bookings/bookings.sms.js';
 
+export { noticeScope };
 export const cancellationNoticeJob = 'announcements.cancellation';
-const noticeFields = { sessionId: idSchema, memberIds: z.array(idSchema), note: z.string().max(1_000) };
+/** `round` is the session's restore count when it was cancelled; a payload without it is round 0. */
+const noticeFields = { sessionId: idSchema, memberIds: z.array(idSchema), note: z.string().max(1_000),
+  round: z.number().int().positive().optional() };
 /** One session's notice. Without `channels` it goes by email and text, as it did before staff could choose. */
 export const cancellationNoticePayload = z.object({ ...noticeFields, channels: cancellationNoticeChannelsSchema.optional() });
 type Notice = z.infer<typeof cancellationNoticePayload>;
@@ -47,9 +50,10 @@ export interface CancellationNoticeOptions {
   demoEmailFor?(gymId: string): Email;
   sms?: ClassNoticeSmsOptions;
 }
-/** One session's cancellation notice to one address group is keyed `<prefix><session ID>:<first member's ID>`. */
+/** One session's cancellation notice to one address group is keyed `<prefix><notice scope>:<first member's ID>`. */
 export const cancellationNoticeKeyPrefix = 'schedule-cancel-notice:';
-const noticeKey = (sessionId: string, memberId: string) => `${cancellationNoticeKeyPrefix}${sessionId}:${memberId}`;
+const noticeKey = (scoped: string, memberId: string) => `${cancellationNoticeKeyPrefix}${scoped}:${memberId}`;
+const roundOf = (notice: Pick<Notice, 'round'>) => notice.round ?? 0;
 
 export function createCancellationNotice(options: CancellationNoticeOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? systemClock;
@@ -72,10 +76,12 @@ export function createCancellationNotice(options: CancellationNoticeOptions) {
     return scope(gymId, async tx => {
       // Only reservations are serialized: SMTP always runs after this transaction commits.
       const [session] = await tx.select().from(classSessions).where(eq(classSessions.id, notice.sessionId)).for('update');
-      if (!session || session.status !== 'cancelled') return;
+      // A notice from before a restore never sends after it, even when the session is cancelled again.
+      if (!session || session.status !== 'cancelled' || session.restoreCount !== roundOf(notice)) return;
       const { rows: current } = await group(tx, gymId, address, ids);
       if (!current.length) return;
-      const key = noticeKey(notice.sessionId, current[0]!.id), digest = commandDigest([notice.sessionId, address]);
+      const scoped = noticeScope(notice.sessionId, notice.round);
+      const key = noticeKey(scoped, current[0]!.id), digest = commandDigest([scoped, address]);
       // Both stable member keys and destination digests survive retries and address changes/convergence.
       const previous = await tx.select().from(emailDeliveries)
         .where(and(eq(emailDeliveries.gymId, gymId), or(eq(emailDeliveries.key, key), eq(emailDeliveries.commandDigest, digest))));
@@ -83,7 +89,7 @@ export function createCancellationNotice(options: CancellationNoticeOptions) {
         throw new AppError('conflict', 'Cancellation notice is in flight');
       if (previous.length) {
         // Any stored outcome can precede a crash before its audit. Recover the original member's decision without resending.
-        const prefix = `${cancellationNoticeKeyPrefix}${notice.sessionId}:`;
+        const prefix = `${cancellationNoticeKeyPrefix}${scoped}:`;
         const recoverable = previous.flatMap(row => {
           if (!row.key.startsWith(prefix)) return [];
           const memberId = idSchema.safeParse(row.key.slice(prefix.length));
@@ -97,7 +103,7 @@ export function createCancellationNotice(options: CancellationNoticeOptions) {
           const decided = new Set(decisions.map(row => row.memberId));
           for (const row of recoverable) {
             if (decided.has(row.memberId)) continue;
-            await decide(tx, gymId, notice.sessionId, row.memberId, row.state === 'accepted' ? { status: 'sent' }
+            await decide(tx, gymId, notice, row.memberId, row.state === 'accepted' ? { status: 'sent' }
               : { status: 'failed', reason: row.state === 'not_accepted' ? 'not_accepted' : 'unknown' });
             decided.add(row.memberId);
           }
@@ -108,10 +114,11 @@ export function createCancellationNotice(options: CancellationNoticeOptions) {
       return { reserved, session, current };
     });
   }
-  function decide(tx: Transaction, gymId: string, sessionId: string, memberId: string,
+  function decide(tx: Transaction, gymId: string, notice: Pick<Notice, 'sessionId' | 'round'>, memberId: string,
     outcome: { status: 'sent' | 'suppressed' | 'failed'; reason?: string }) {
     return writeAudit(tx, { gymId, actorKind: 'system', action: 'schedule.cancellation_notice_decided',
-      targetType: 'class_session', targetId: sessionId, after: { memberId, ...outcome }, occurredAt: clock.now() });
+      targetType: 'class_session', targetId: notice.sessionId,
+      after: { memberId, ...outcome, ...(notice.round ? { round: notice.round } : {}) }, occurredAt: clock.now() });
   }
   async function sendEmail(notice: Notice, gymId: string) {
     const gym = await settings.get(gymId);
@@ -152,7 +159,16 @@ export function createCancellationNotice(options: CancellationNoticeOptions) {
               logEmailSuppression({ event: 'email.suppressed', gymId, memberId, reason: 'disabled' });
               return { status: 'suppressed', reason: 'disabled' };
             }
-            const checked = await scope(gymId, tx => group(tx, gymId, address, ids));
+            const checked = await scope(gymId, async tx => {
+              const [state] = await tx.select({ status: classSessions.status, restoreCount: classSessions.restoreCount })
+                .from(classSessions).where(eq(classSessions.id, notice.sessionId));
+              return state?.status === 'cancelled' && state.restoreCount === roundOf(notice) ? group(tx, gymId, address, ids) : undefined;
+            });
+            if (!checked) {
+              // Restored since the reservation: this cancellation no longer holds, so nothing is said.
+              logInfo('announcements.cancellation_notice_skipped', { gymId, sessionId: notice.sessionId, memberId, reason: 'restored' });
+              return { status: 'suppressed', reason: 'opt_out' };
+            }
             current = checked.rows;
             if (!current.length) {
               if (checked.blocked) {
@@ -180,7 +196,7 @@ export function createCancellationNotice(options: CancellationNoticeOptions) {
         // This address is decided, including an uncertain acceptance. A failed address must not strand the rest.
         outcome = { status: 'failed', reason: deliveryAcceptance(error) };
       }
-      await scope(gymId, tx => decide(tx, gymId, notice.sessionId, reservation.current[0]!.id, outcome));
+      await scope(gymId, tx => decide(tx, gymId, notice, reservation.current[0]!.id, outcome));
     }
     if (deferred) throw new AppError('conflict', 'Cancellation notice is in flight');
   }
@@ -188,7 +204,7 @@ export function createCancellationNotice(options: CancellationNoticeOptions) {
     async enqueue(transaction: JobTransaction, payload: Notice, timezone: string) {
       const notice = cancellationNoticePayload.parse(payload);
       await options.jobs.enqueue(cancellationNoticeJob, cancellationNoticeJobPayload(notice), { gymId: transaction.gymId, timezone,
-        idempotencyKey: `schedule-cancel-notice:${notice.sessionId}`, maxAttempts: 12 }, transaction);
+        idempotencyKey: `schedule-cancel-notice:${noticeScope(notice.sessionId, notice.round)}`, maxAttempts: 12 }, transaction);
     },
     async run(payload: unknown, gymId: string) {
       const notice = storedNotice.parse(payload);

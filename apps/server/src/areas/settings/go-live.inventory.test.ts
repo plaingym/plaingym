@@ -27,6 +27,8 @@ const boundaries = {
   'areas/billing/alerts/alerts.jobs.ts': 'separate card SMS job delegates to the alert sender; memberSmsEnabled guards the scan and MemberSms rechecks switch, notices consent and cap',
   'areas/billing/memberships.price-notice.ts': 'memberEmailsEnabled before reservation and after SMTP preparation; household recipient preferences, payer erasure and pending changes rechecked before delivery',
   'areas/announcements/cancellation.ts': 'memberEmailsEnabled and grouped member or household billing email preferences rechecked immediately before gym SMTP delivery',
+  'areas/announcements/restored.ts': 'memberEmailsEnabled, the restored session, current places and grouped member or household billing email preferences rechecked immediately before gym SMTP delivery',
+  'areas/announcements/restored.sms.ts': 'restored session, current places and keyed phone digest rechecked; MemberSms enforces notices consent, switch and cap at delivery',
   'areas/announcements/send.delivery.ts': 'memberEmailsEnabled and recipient preferences reloaded by MemberEmail immediately before gym SMTP delivery; an off switch skips the rest',
   'areas/announcements/send.ts': 'preview and send require member switches; sender email tests are exempt and typed-phone text tests bypass consent and switches but consume the daily cap',
   'areas/links/service.delivery.ts': 'memberEmailsEnabled reloaded from persisted settings immediately before delivery',
@@ -68,6 +70,7 @@ const emailPaths = [
   ['public intake notices with staff-only runtime recipients', 'public/pages/pages.test.ts', 'keeps new, existing and enrolled emails indistinguishable without editing existing households'],
   ['announcement preview, send and mid-batch switch-off', 'areas/announcements/send.test.ts', 'skips the remaining recipients when the switch turns off mid-batch'],
   ['class-cancellation notice recheck of the switch', 'areas/announcements/cancellation.test.ts', 'rechecks address groups and the go-live switch after mailer preparation'],
+  ['class-restore notice switches and preferences', 'areas/announcements/restored.test.ts', 'suppresses a channel that is switched off or that the member opted out of'],
   ['runtime public intake staff recipients', 'core/runtime.public-pages.test.ts', 'sends public intake notices only to owner/admin staff even with member emails disabled'],
 ] as const;
 

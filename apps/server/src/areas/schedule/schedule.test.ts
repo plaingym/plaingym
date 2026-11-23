@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { asc, eq } from 'drizzle-orm';
-import { auditEvents, attendances, classBookings, classSessions, classSessionPrograms, classSessionTags, uuidv7, RevisionConflictError } from '@plaingym/db';
+import { and, asc, eq } from 'drizzle-orm';
+import { auditEvents, attendances, classBookings, classSessions, classSessionPrograms, classSessionTags, members, uuidv7, RevisionConflictError } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { canStaff, staffRoles, type StaffRole } from '@plaingym/shared';
@@ -17,6 +17,8 @@ import { createScheduleService } from './schedule.js';
 import { createScheduleRoutes } from './schedule.routes.js';
 import { createScheduleJobs } from './schedule.jobs.js';
 import * as settings from '../settings/settings.js';
+import type { CancellationNotice } from '../announcements/cancellation.js';
+import type { RestoreNotice } from '../announcements/restored.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
 const clock = new TestClock('2026-03-01T00:00:00Z'), service = createScheduleService({ scope: database.forGym, clock });
@@ -109,6 +111,8 @@ function input(name: RouteName, target: Awaited<ReturnType<typeof resources>>, g
   else if (name === 'updateNotes') body = { revision: 1, notes: '<script>plain text</script>' };
   else if (name === 'updateCapacity') body = { revision: 1, capacity: 25 };
   else if (['deleteTag', 'deleteTemplate', 'cancelSession'].includes(name)) body = { revision: 1 };
+  // Restoring needs a cancelled session: the caller cancels it first, which takes revision 2.
+  else if (name === 'restoreSession') body = { revision: 2 };
   return { path: scheduleContracts[name].path.replace('{id}', id) + (name === 'listSessions' ? '?from=2026-01-01T00:00:00Z&until=2027-01-01T00:00:00Z' : ''), body };
 }
 describe('schedule routes and tenant isolation', () => {
@@ -129,6 +133,7 @@ describe('schedule routes and tenant isolation', () => {
     const app = server(role);
     for (const name of Object.keys(scheduleContracts) as RouteName[]) {
       const target = await resources(), contract = scheduleContracts[name], value = input(name, target);
+      if (name === 'restoreSession') await service.changeSession(context(), target.session.id, 'cancel', { revision: 1 });
       const response = await request(app, contract.method, value.path, value.body);
       const allowed = canStaff([role], contract.permission.capability);
       expect(response.status, name).toBe(allowed ? 200 : 403);
@@ -365,5 +370,191 @@ describe('moving generated sessions', () => {
       { ...sessionFields(), coachId: null, programIds: [own.program.id], startsAt: '2026-03-04T00:30:00Z', endsAt: '2026-03-04T01:30:00Z', revision: session!.revision });
     expect(response.status).toBe(404);
     expect((await foreign.sessions())[0]).toEqual(session);
+  });
+});
+describe('restoring a cancelled session', () => {
+  type Name = 'A' | 'B' | 'C' | 'D' | 'E' | 'F';
+  type Booking = typeof classBookings.$inferSelect;
+  /** Capacity 3: A, B and C booked in that order, D and E waitlisted in that order, F cancelled their own place earlier. */
+  async function roster(options: { capacity?: number | null; cutoffMinutes?: number; role?: StaffRole; coached?: boolean } = {}) {
+    const gymId = uuidv7(), at = new TestClock('2026-03-01T00:00:00Z');
+    await factory('gyms', gymId, { timezone: 'America/New_York',
+      ...(options.cutoffMinutes === undefined ? {} : { cancellationCutoffMinutes: options.cutoffMinutes }) });
+    const user = await factory('authUser', gymId);
+    await factory('staffRoles', gymId, { userId: user.id, role: options.role ?? 'owner' });
+    const coach = await factory('staffProfiles', gymId, { userId: options.coached ? user.id : null });
+    const session = await factory('classSessions', gymId, { name: 'Restore test', coachId: coach.id,
+      capacity: options.capacity === undefined ? 3 : options.capacity, startsAt: new Date('2026-03-02T18:00:00Z'), endsAt: new Date('2026-03-02T19:00:00Z') });
+    await factory('classSessionPrograms', gymId, { sessionId: session.id });
+    const ids = {} as Record<Name, string>;
+    // Created out of order, so the restored order can only come from booking times and the old waitlist positions.
+    for (const [name, status, minute, waitlistPosition] of [['C', 'booked', 3, null], ['A', 'booked', 1, null], ['B', 'booked', 2, null],
+      ['E', 'waitlisted', 5, 2], ['D', 'waitlisted', 4, 1], ['F', 'cancelled', 0, null]] as const) {
+      const member = await factory('members', gymId, { firstName: name });
+      ids[name] = member.id;
+      await factory('classBookings', gymId, { sessionId: session.id, memberId: member.id, bookedBy: user.id, status, waitlistPosition,
+        createdAt: new Date(Date.UTC(2026, 1, 20, 12, minute)), cancelledAt: status === 'cancelled' ? new Date('2026-02-25T00:00:00Z') : null });
+    }
+    const enqueue = vi.fn<RestoreNotice['enqueue']>(async () => {}), cancelEnqueue = vi.fn<CancellationNotice['enqueue']>(async () => {});
+    const service = createScheduleService({ scope: database.forGym, clock: at, restore: { enqueue }, cancellation: { enqueue: cancelEnqueue } });
+    const actor = { gymId, actor: { kind: 'user' as const, userId: user.id } };
+    const names = new Map(Object.entries(ids).map(([name, id]) => [id, name as Name]));
+    const bookings = async () => Object.fromEntries((await database.forGym(gymId, tx => tx.select().from(classBookings)
+      .where(eq(classBookings.sessionId, session.id)))).map(row => [names.get(row.memberId)!, row])) as Record<Name, Booking>;
+    const waitlist = (rows: Record<Name, Booking>) => Object.entries(rows).filter(([, row]) => row.status === 'waitlisted')
+      .sort(([, a], [, b]) => a.waitlistPosition! - b.waitlistPosition!).map(([name]) => name);
+    const booked = (rows: Record<Name, Booking>) => Object.entries(rows).filter(([, row]) => row.status === 'booked').map(([name]) => name).sort();
+    const audits = (action: string) => database.forGym(gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, action)));
+    const current = async () => (await database.forGym(gymId, tx => tx.select().from(classSessions).where(eq(classSessions.id, session.id))))[0]!;
+    const cancel = async (notify = false) => service.changeSession(actor, session.id, 'cancel', { revision: (await current()).revision, ...(notify ? { notify } : {}) });
+    const restore = async ({ revision, ...input }: { revision?: number; notify?: boolean; channels?: ('email' | 'sms')[] } = {}) =>
+      service.restoreSession(actor, session.id, { revision: revision ?? (await current()).revision, ...input });
+    const snapshot = () => database.forGym(gymId, async tx => ({ sessions: await tx.select().from(classSessions),
+      bookings: await tx.select().from(classBookings).orderBy(asc(classBookings.id)), audits: await tx.$count(auditEvents) }));
+    return { gymId, at, user, session, ids, enqueue, cancelEnqueue, service, actor, bookings, waitlist, booked, audits, current, cancel, restore, snapshot };
+  }
+  it('marks the places a cancellation cancels and brings them back in order, leaving earlier cancellations alone', async () => {
+    const f = await roster();
+    await f.cancel();
+    const marked = await f.bookings();
+    for (const name of ['A', 'B', 'C'] as const)
+      expect(marked[name]).toMatchObject({ status: 'cancelled', waitlistPosition: null, sessionCancelStatus: 'booked', sessionCancelPosition: null });
+    expect(marked.D).toMatchObject({ status: 'cancelled', waitlistPosition: null, sessionCancelStatus: 'waitlisted', sessionCancelPosition: 1 });
+    expect(marked.E).toMatchObject({ status: 'cancelled', waitlistPosition: null, sessionCancelStatus: 'waitlisted', sessionCancelPosition: 2 });
+    expect(marked.F).toMatchObject({ status: 'cancelled', cancelledAt: new Date('2026-02-25T00:00:00Z'), sessionCancelStatus: null });
+    expect(await f.audits('booking.cancelled')).toHaveLength(5);
+    expect(await f.restore()).toMatchObject({ id: f.session.id, status: 'scheduled', revision: 3 });
+    const rows = await f.bookings();
+    expect(f.booked(rows)).toEqual(['A', 'B', 'C']); expect(f.waitlist(rows)).toEqual(['D', 'E']);
+    for (const name of ['A', 'B', 'C', 'D', 'E'] as const)
+      expect(rows[name]).toMatchObject({ cancelledAt: null, sessionCancelStatus: null, sessionCancelPosition: null });
+    expect(rows.F).toMatchObject({ status: 'cancelled', cancelledAt: new Date('2026-02-25T00:00:00Z'), sessionCancelStatus: null });
+    const restored = await f.audits('booking.restored');
+    expect(restored.map(audit => (audit.after as { memberId: string }).memberId).sort()).toEqual(['A', 'B', 'C', 'D', 'E'].map(name => f.ids[name as Name]).sort());
+    expect(await f.audits('schedule.session.restored')).toMatchObject([{ targetId: f.session.id, before: { status: 'cancelled' }, after: { status: 'scheduled' } }]);
+    expect((await f.current()).restoreCount).toBe(1);
+    expect(f.enqueue).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['lowered to 2', 2, false, ['A', 'B'], ['C', 'D', 'E'], 0],
+    ['raised to 5', 5, false, ['A', 'B', 'C', 'D', 'E'], [], 2],
+    ['cleared', null, false, ['A', 'B', 'C', 'D', 'E'], [], 2],
+    ['raised to 5 after the cancellation cutoff', 5, true, ['A', 'B', 'C'], ['D', 'E'], 0],
+  ] as const)('fills places by the capacity %s while cancelled, then promotes as a capacity change does', async (_change, capacity, late, booked, waitlisted, promoted) => {
+    const f = await roster({ cutoffMinutes: 120 });
+    await f.cancel();
+    await f.service.changeSession(f.actor, f.session.id, 'capacity', { revision: (await f.current()).revision, capacity });
+    if (late) f.at.set(new Date('2026-03-02T17:00:00Z'));
+    await f.restore();
+    const rows = await f.bookings();
+    expect(f.booked(rows)).toEqual(booked); expect(f.waitlist(rows)).toEqual(waitlisted);
+    expect(await f.audits('booking.restored')).toHaveLength(5);
+    expect(await f.audits('booking.promoted')).toHaveLength(promoted);
+  });
+  it('leaves an erased member cancelled and spends their marker', async () => {
+    const f = await roster();
+    await f.cancel();
+    await database.forGym(f.gymId, tx => tx.update(members).set({ anonymizedAt: f.at.now() }).where(eq(members.id, f.ids.B)));
+    await f.restore({ notify: true, channels: ['email'] });
+    const rows = await f.bookings();
+    expect(rows.B).toMatchObject({ status: 'cancelled', sessionCancelStatus: null, sessionCancelPosition: null });
+    // B's place is free, so the first of the old waitlist is promoted into it.
+    expect(f.booked(rows)).toEqual(['A', 'C', 'D']); expect(f.waitlist(rows)).toEqual(['E']);
+    expect(await f.audits('booking.restored')).toHaveLength(4);
+    expect(f.enqueue.mock.calls[0]![1]).toEqual({ sessionId: f.session.id, memberIds: ['A', 'C', 'D', 'E'].map(name => f.ids[name as Name]).sort(),
+      channels: ['email'], round: 1 });
+  });
+  it('restores an empty cancelled session with no booking change and no notice, even when asked to notify', async () => {
+    const f = await roster();
+    const empty = await factory('classSessions', f.gymId, { status: 'cancelled', startsAt: new Date('2026-03-02T18:00:00Z'), endsAt: new Date('2026-03-02T19:00:00Z') });
+    await factory('classSessionPrograms', f.gymId, { sessionId: empty.id });
+    const before = await f.bookings();
+    expect(await f.service.restoreSession(f.actor, empty.id, { revision: empty.revision, notify: true })).toMatchObject({ status: 'scheduled' });
+    expect(await f.bookings()).toEqual(before);
+    expect(await f.audits('booking.restored')).toHaveLength(0);
+    expect(f.enqueue).not.toHaveBeenCalled();
+  });
+  it('queues one notice for every restored member, by both channels unless staff chose one', async () => {
+    const f = await roster();
+    await f.cancel();
+    await f.restore({ notify: true });
+    expect(f.enqueue).toHaveBeenCalledTimes(1);
+    expect(f.enqueue.mock.calls[0]![1]).toEqual({ sessionId: f.session.id,
+      memberIds: ['A', 'B', 'C', 'D', 'E'].map(name => f.ids[name as Name]).sort(), channels: ['email', 'sms'], round: 1 });
+    expect(f.enqueue.mock.calls[0]![2]).toBe('America/New_York');
+    await f.cancel(); await f.restore({ notify: true, channels: ['sms'] });
+    expect(f.enqueue.mock.calls[1]![1]).toMatchObject({ channels: ['sms'], round: 2 });
+  });
+  it('brings back only the places active before the latest cancellation, and scopes a later cancellation notice by the restore count', async () => {
+    const f = await roster();
+    await f.cancel(true);
+    expect(f.cancelEnqueue.mock.calls[0]![1]).not.toHaveProperty('round');
+    await f.restore();
+    // A cancels their own restored place; the session is then cancelled and restored again.
+    await database.forGym(f.gymId, tx => tx.update(classBookings).set({ status: 'cancelled', cancelledAt: f.at.now() })
+      .where(and(eq(classBookings.sessionId, f.session.id), eq(classBookings.memberId, f.ids.A))));
+    await f.cancel(true);
+    expect(f.cancelEnqueue.mock.calls[1]![1]).toMatchObject({ round: 1 });
+    expect(f.cancelEnqueue.mock.calls[1]![1].memberIds).toEqual(['B', 'C', 'D', 'E'].map(name => f.ids[name as Name]).sort());
+    await f.restore();
+    const rows = await f.bookings();
+    expect(rows.A).toMatchObject({ status: 'cancelled', sessionCancelStatus: null });
+    expect(f.booked(rows)).toEqual(['B', 'C', 'D']); expect(f.waitlist(rows)).toEqual(['E']);
+    expect(await f.audits('booking.restored')).toHaveLength(9);
+    expect((await f.current()).restoreCount).toBe(2);
+  });
+  it('refuses a scheduled session, a stale revision and a started session without changing anything', async () => {
+    const f = await roster();
+    let before = await f.snapshot();
+    await expect(f.restore()).rejects.toMatchObject({ code: 'conflict', details: { reason: ['not_cancelled'] },
+      message: 'This session isn\'t cancelled any more. No notice was queued.' });
+    expect(await f.snapshot()).toEqual(before);
+    await f.cancel(); before = await f.snapshot();
+    await expect(f.restore({ revision: 1 })).rejects.toBeInstanceOf(RevisionConflictError);
+    expect(await f.snapshot()).toEqual(before);
+    for (const instant of ['2026-03-02T18:00:00Z', '2026-03-02T20:00:00Z']) {
+      f.at.set(new Date(instant));
+      await expect(f.restore({ notify: true })).rejects.toMatchObject({ code: 'conflict', details: { reason: ['session_started'] },
+        message: 'This session has started and can\'t be restored.' });
+      expect(await f.snapshot()).toEqual(before);
+    }
+    await expect(f.restore({ channels: ['email'] })).rejects.toMatchObject({ code: 'invalid_request', details: { reason: ['channels_without_notify'] } });
+    expect(f.enqueue).not.toHaveBeenCalled();
+  });
+  it('lets only one of two concurrent restores succeed, without duplicating a booking', async () => {
+    const f = await roster();
+    await f.cancel();
+    const revision = (await f.current()).revision;
+    const results = await Promise.allSettled([f.restore({ revision }), f.restore({ revision })]);
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    const reason: unknown = results.find(result => result.status === 'rejected')!.reason;
+    expect(reason instanceof RevisionConflictError || (reason as { details?: { reason?: string[] } }).details?.reason?.[0] === 'not_cancelled').toBe(true);
+    const rows = await f.bookings();
+    expect(f.booked(rows)).toEqual(['A', 'B', 'C']); expect(f.waitlist(rows)).toEqual(['D', 'E']);
+    expect(await f.audits('booking.restored')).toHaveLength(5);
+    expect(await f.audits('schedule.session.restored')).toHaveLength(1);
+  });
+  it('lets a coach restore any session, but notify only the members of their own', async () => {
+    const other = await roster({ role: 'coach' });
+    await other.cancel();
+    await expect(other.restore({ notify: true })).rejects.toMatchObject({ code: 'forbidden' });
+    expect((await other.current()).status).toBe('cancelled');
+    expect(await other.restore()).toMatchObject({ status: 'scheduled' });
+    const own = await roster({ role: 'coach', coached: true });
+    await own.cancel();
+    expect(await own.restore({ notify: true })).toMatchObject({ status: 'scheduled' });
+    expect(own.enqueue).toHaveBeenCalledTimes(1);
+  });
+  it('denies front desk, refuses notify-only channels, and hides another gym\'s session through the route', async () => {
+    const { session } = await resources();
+    await service.changeSession(context(), session.id, 'cancel', { revision: 1 });
+    const path = `/api/schedule/sessions/${session.id}/restore`;
+    expect((await request(server('front_desk'), 'POST', path, { revision: 2 })).status).toBe(403);
+    expect((await request(server('owner', gymB), 'POST', path, { revision: 2 })).status).toBe(404);
+    expect((await request(server(), 'POST', path, { revision: 2, channels: ['email'] })).status).toBe(400);
+    expect((await service.getSession(gymA, session.id))).toMatchObject({ status: 'cancelled', revision: 2 });
+    const restored = await request(server('coach'), 'POST', path, { revision: 2 });
+    expect(restored.status).toBe(200);
+    expect(scheduleContracts.restoreSession.response.parse(await restored.json()).data).toMatchObject({ status: 'scheduled', revision: 3 });
   });
 });

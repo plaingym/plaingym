@@ -1,0 +1,11 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "subject": "Back on: {name}",
+  "when": "{name} on {date} at {time} is going ahead after all.",
+  "places": "The places cancelled with this class are back. Check the schedule to see whether each one is booked or on the waitlist.",
+  "members": "Places restored for: {names}",
+  "schedule": "View the schedule",
+  "footer": "You received this notice because you or someone in your household booked this session.",
+  "sms": "{name} on {date} at {time} is back on. Places restored for: {names}. Check the schedule for each place.",
+  "sms_self": "{name} on {date} at {time} is back on, and your place is restored. Check the schedule for it."
+}
