@@ -20,9 +20,13 @@ Turning billing off later pauses new charges at once; it is the emergency brake.
 
 To offer bank payments on join, onboarding, payment-method update and invoice links,
 turn on **Accept bank payments** under **Settings → Integrations → Payments**.
-Enable ACH Direct Debit for USD or Canadian pre-authorized debits for CAD in the
-Stripe Dashboard. For CAD, keep Stripe's mandate confirmation and debit emails
-enabled under **Settings → Customer emails**. A bank payment can take up to four
+That switch turns bank payments on and off. Your Stripe account must have ACH
+Direct Debit (USD) or Canadian pre-authorized debits (CAD) activated; after that,
+the Dashboard's on/off setting for the method doesn't apply, because the app names
+the payment methods on each Stripe Checkout page. If Stripe refuses the method, the
+app offers cards only and Payments shows a warning. For CAD, keep **Send Canada PAD
+mandate, debit initiation, and microdeposit verification emails** on under
+**Settings → Business → Customer emails** in the Stripe Dashboard. A bank payment can take up to four
 business days to settle in the US or seven in Canada. The first processing
 payment starts the membership. A later failure enters the usual billing follow-up.
 
@@ -33,6 +37,9 @@ payment starts the membership. A later failure enters the usual billing follow-u
    Integrations → Payments** (or in the wizard).
 2. Add a plan, create a member and a membership, and switch **Billing** on. Use Stripe's
    test cards on a pay or card link to see a charge, a receipt and a failed payment.
+   A new membership whose next billing date is today has no invoice yet: the first
+   invoice appears when the daily charge run reaches its billing date. To test a
+   payment now, use **Add one-off charge** on **Invoices** and pay its link.
 3. Check the **System health** page: webhooks processed, charge runs, no failed jobs.
 4. Switch **Billing** off again before the real members are in.
 
@@ -49,6 +56,7 @@ Work down the **Readiness checklist** on **Settings → Go live**. Each line say
 | Payments | A Stripe key is configured. A test key counts too, so check that it is your **live** key (step 1 below). |
 | Saved cards | Every household with a paid membership has a usable default payment method ([card-recollection.md](card-recollection.md)). |
 | Waivers | Active members have signed every current waiver. |
+| Online joining | Billing is on, Stripe is connected, and one to eight waivers or agreements are current, so /join can take members. It stays *Needs attention* while billing is off, so it clears only when you switch billing on in §3. |
 | Email delivery | Email is set up and a test message arrived. |
 | Backups | Backups are set up and the key is stored safely. |
 | Payment notifications | At least one Stripe notification was processed, and none are waiting or failed. |
@@ -95,6 +103,11 @@ Then:
 5. **Check the Stripe webhook.** The Payments section should show the endpoint as
    registered. The *Payment notifications* item needs a processed event: the first
    payment method a member saves through a campaign link gives it one.
+
+Mail from a new sending domain often lands in spam at first, even when it is set up
+correctly. Send yourself a test, open the message's **Show original** (Gmail; other
+providers have a similar view), check that SPF, DKIM and DMARC say PASS, and mark
+early messages **Not spam**.
 
 ## 3. Switch over
 

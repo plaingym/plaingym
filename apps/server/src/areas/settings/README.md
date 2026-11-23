@@ -4,8 +4,11 @@
 `integrations.manage`, the current gym revision and `bankDebitsEnabled`. The
 default is off. Enabling requires USD or CAD and writes `settings.bank_debits.changed`.
 GET on the same resource returns the time of the most recent bank payment refusal
-when it follows the last switch change. Payments shows the Stripe Dashboard step
-and that warning. The CAD go-live checklist also reminds the owner about mandate emails.
+when it follows the last switch change. The switch turns bank payments on and off,
+because Checkout Sessions name their methods and the Stripe Dashboard's per-method
+setting doesn't apply; the Stripe account must have the method activated, and
+Payments shows the refusal warning. The CAD go-live checklist also reminds the owner
+about mandate emails (Stripe Dashboard → Settings → Business → Customer emails).
 
 After a restore, a payment check counts only for the Stripe mode it read. The
 report records `stripeMode` from the payments adapter; older reports without a

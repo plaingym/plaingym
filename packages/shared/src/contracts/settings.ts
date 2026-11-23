@@ -86,7 +86,7 @@ export const updateGoLiveRequestSchema = goLiveSwitchesSchema.partial().extend({
   revision: revisionSchema, confirmedPastDueDates: z.array(goLivePastDueDateSchema).optional(),
 }).refine((value) => value.billingEnabled !== undefined || value.memberEmailsEnabled !== undefined || value.memberSmsEnabled !== undefined, 'Supply at least one change');
 export const goLiveChecklistItemSchema = z.strictObject({
-  id: z.enum(['gym_details', 'members_imported', 'schedule_ready', 'stripe_ready', 'cards_collected', 'waivers_signed', 'smtp_ready', 'sms_ready', 'backup_ready', 'webhook_ready', 'reconciliation_complete', 'past_due_dates']),
+  id: z.enum(['gym_details', 'members_imported', 'schedule_ready', 'stripe_ready', 'cards_collected', 'waivers_signed', 'online_joining', 'smtp_ready', 'sms_ready', 'backup_ready', 'webhook_ready', 'reconciliation_complete', 'past_due_dates']),
   status: z.enum(['ready', 'needs_attention', 'not_applicable']), message: z.string(),
 });
 export const goLiveChecklistResponseSchema = z.strictObject({ data: z.strictObject({

@@ -95,7 +95,10 @@ The wizard's steps:
    to say where it went until you choose **Continue**. Many hosting providers block
    outgoing mail on ports 25, 465 and 587: if the test says the app couldn't connect, use your sending
    service's alternative port, such as 2525. Follow your provider's SPF
-   and DKIM instructions. Once email works, sign-in switches to emailed links
+   and DKIM instructions. Mail from a new sending domain often lands in spam at
+   first, even when it is set up correctly: open the test message's **Show original**
+   (Gmail; other providers have a similar view), check that SPF, DKIM and DMARC say
+   PASS, and mark early messages **Not spam**. Once email works, sign-in switches to emailed links
    (`AUTH_PASSWORD_LOGIN=auto`).
 
    An optional **Google sign-in** page follows: enter a Google OAuth client's ID
@@ -122,6 +125,9 @@ The wizard's steps:
 After setup, billing and member emails are still paused. Turn them on in
 **Settings → Go live** once its checklist is clear: payments configured, cards on
 file for paid memberships, current waivers signed, email and backups set up.
+The checklist also has an **Online joining** line: it needs billing on, Stripe
+connected and one to eight current waivers or agreements, so it clears only once
+billing is on.
 
 The admin's **Settings** covers the gym's details, booking rules, billing rules,
 currency, drop-in fee, go-live and Google sign-in. Its **Integrations** section
@@ -201,11 +207,14 @@ section says so and offers no form: see [Google sign-in](configuration.md#google
 
 ## Stripe
 
-To collect from bank accounts, enable **ACH Direct Debit** for USD or
-**Pre-authorized debits** for CAD in the Stripe Dashboard, then enable
-**Accept bank payments** in **Settings → Integrations → Payments**. Leave
-Stripe's pre-authorized debit emails enabled for Canadian accounts so members
-receive mandate confirmations and debit notices.
+To collect from bank accounts, make sure your Stripe account has **ACH Direct
+Debit** (USD) or **Pre-authorized debits** (CAD) activated, then enable
+**Accept bank payments** in **Settings → Integrations → Payments**. That switch
+turns bank payments on and off: the app names the payment methods on each Checkout
+page, so the Dashboard's on/off setting for the method doesn't apply. For Canadian
+accounts, keep **Send Canada PAD mandate, debit initiation, and microdeposit
+verification emails** on under **Settings → Business → Customer emails** in the
+Stripe Dashboard so members receive mandate confirmations and debit notices.
 
 Each gym uses its own Stripe account, and payments go straight to it. In the
 Stripe dashboard, create a restricted key with:

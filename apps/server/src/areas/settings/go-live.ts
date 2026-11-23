@@ -5,7 +5,7 @@ import { forGym, gyms, invoices, members, households, classTemplates, membership
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { localDate } from '@plaingym/shared/time';
 import { locales } from '@plaingym/shared/locales';
-import { goLiveChecklistResponseSchema, updateGoLiveRequestSchema, type GoLiveChecklistItem, type UpdateGoLiveRequest } from '@plaingym/shared/contracts';
+import { goLiveChecklistResponseSchema, maxJoinDocuments, updateGoLiveRequestSchema, type GoLiveChecklistItem, type UpdateGoLiveRequest } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import type { WebhookHealthQuery } from '../../core/interfaces/webhook-health.js';
@@ -23,6 +23,14 @@ type Status = GoLiveChecklistItem['status'];
 const item = (id: GoLiveChecklistItem['id'], status: Status, message?: string): GoLiveChecklistItem =>
   ({ id, status, message: message ?? t(`settings/go-live:check.${id}.${status}`) });
 const ready = (value: unknown): Status => value ? 'ready' : 'needs_attention';
+/** Mirrors when the public join page is available: billing on, a payment provider, and one to eight current documents. */
+function onlineJoining(billingEnabled: boolean, stripe: boolean, documents: number) {
+  const missing = [!billingEnabled && 'billing', !stripe && 'stripe', documents === 0 && 'no_documents',
+    documents > maxJoinDocuments && 'too_many_documents'].filter((key): key is string => Boolean(key));
+  return missing.length === 0 ? item('online_joining', 'ready')
+    : item('online_joining', 'needs_attention', [t('settings/go-live:check.online_joining.needs_attention'),
+      ...missing.map(key => t(`settings/go-live:check.online_joining.${key}`))].join(' '));
+}
 /** Credentials and opaque settings are read here, never returned or audited. */
 const projection = {
   revision: gyms.revision, timezone: gyms.timezone, billingEnabled: gyms.billingEnabled, memberEmailsEnabled: gyms.memberEmailsEnabled, memberSmsEnabled: gyms.memberSmsEnabled,
@@ -114,6 +122,7 @@ export function createGoLiveService(options: {
         .orderBy(waiverTemplates.name, desc(waiverTemplates.version));
       const stripe = payments ?? Boolean(gym.stripeConfigured);
       const recovery = await reconciliation(tx, stripe);
+      const joining = onlineJoining(gym.billingEnabled, stripe, currentWaivers.filter(w => !w.retiredAt).length);
       const today = localDate(clock.now(), gym.timezone), thisMonth = today.slice(0, 7);
       const pastDueMemberships = await pastDue(tx, today);
       const setup = (gym.settings as { setup?: { completed?: boolean } }).setup;
@@ -129,6 +138,7 @@ export function createGoLiveService(options: {
             && (!card.expiryYear || !card.expiryMonth || `${card.expiryYear}-${String(card.expiryMonth).padStart(2, '0')}` >= thisMonth))))),
         item('waivers_signed', !people.length || !currentWaivers.some(w => !w.retiredAt) ? 'not_applicable'
           : ready(await signedLinkWaiversComplete(tx, people.map(p => p.id)))),
+        joining,
         item('smtp_ready', ready(smtp)),
         smsCheck ?? item('sms_ready', gym.memberSmsEnabled ? 'needs_attention' : 'not_applicable'),
         item('backup_ready', ready(gym.backupPublicKey && gym.backupDestination)),

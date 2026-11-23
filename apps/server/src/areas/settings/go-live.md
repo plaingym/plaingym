@@ -2,7 +2,7 @@
 
 # Go-live switches
 
-`createGoLiveService({ smtpConfigured, smsConfigured, smsStatus, scope, clock, webhooks })` supplies the go-live
+`createGoLiveService({ smtpConfigured, paymentsConfigured, smsConfigured, smsStatus, scope, clock, webhooks })` supplies the go-live
 GET and PATCH contracts. Runtime composition calls `configureGoLive` with the gym's
 SMTP resolver (or the demo transport's configured check). Until configured, routes
 return 503. Route generation can discover both endpoints without opening a database
@@ -32,6 +32,12 @@ trial and pending memberships need a linked customer and an unrevoked default ca
 every current, non-retired waiver/agreement family. An older signed version does
 not satisfy the current version, and a retired latest version never revives an old
 template. With no applicable memberships or waivers those checks are not applicable.
+The `online_joining` item mirrors when the public join page is available and is
+never not applicable: it is ready with billing on, a payment provider and one to
+eight current (non-retired) waiver or agreement families, and otherwise needs
+attention. Its message lists each missing reason in order: billing off, no payment
+provider, no current document, and more than eight current documents. It advises
+and blocks nothing.
 Payment configuration comes from the runtime's payments resolver
 (`paymentsConfigured`), so demo sandboxes on the shared test account count as
 configured; without it, the gym's stored Stripe settings decide. Turning billing
