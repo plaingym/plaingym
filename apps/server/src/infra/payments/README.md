@@ -5,7 +5,10 @@
 of attached cards (1–100, default 100), returning masked card details, processor
 creation times and an opaque next cursor. It requires the customer's metadata to
 name this gym and refuses metadata naming another household, cards from another
-customer or gym, and malformed pages. It never adopts an untagged customer or
+customer, and malformed pages. A listed method whose own metadata names another
+gym or household is left out and reported in `skippedForeign` (its ID and type);
+the cursor still continues after the last listed method. The customer's own
+metadata still refuses the whole page. It never adopts an untagged customer or
 changes Stripe's default. A rejected continuation raises `CardCursorRefused`;
 ownership refusals raise `CardImportRefused`. `FakePayments` implements the same contract.
 

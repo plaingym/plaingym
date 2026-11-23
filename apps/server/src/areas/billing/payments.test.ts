@@ -96,6 +96,18 @@ describe('staff import of externally attached cards', () => {
     f.provider.recordPaymentMethod({ id, customerId, createdAt, brand: 'visa', last4: '4242', expiresMonth: 12, expiresYear: 2035 });
   }
   async function empty(f: Fixture) { await db.forGym(f.gymId, tx => tx.delete(paymentMethods)); }
+  const actions = (f: Pick<Fixture, 'gymId'>, action: string) =>
+    db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, action)));
+  /** A Stripe adapter over synthetic API objects: the household's customer with the given metadata, and its cards. */
+  function stripeCustomer(f: Pick<Fixture, 'gymId'>, metadata: Record<string, string>) {
+    const stripe = new StripeFixtures(f.gymId);
+    stripe.objects.clear();
+    stripe.objects.set('cus_fixture', { id: 'cus_fixture', object: 'customer', email: 'payer@example.invalid', metadata });
+    const card = (id: string, tags: Record<string, string> = {}) => stripe.objects.set(id, { id, object: 'payment_method',
+      customer: 'cus_fixture', created: stripe.now, type: 'card', metadata: tags,
+      card: { brand: 'visa', last4: '4242', exp_month: 12, exp_year: 2035 } });
+    return { stripe, card, provider: new StripePayments(f.gymId, { transport: stripe, webhookSecret: 'fixture-signing-secret' }) };
+  }
   it.each([
     ['USD', 'us_bank_account', 'acss_debit'],
     ['CAD', 'acss_debit', 'us_bank_account'],
@@ -293,6 +305,125 @@ describe('staff import of externally attached cards', () => {
     const list = vi.spyOn(f.provider, 'listCustomerCards');
     await expect(f.service.importCustomerCards(f.context, f.home.id)).rejects.toMatchObject({ details: { reason: ['card_import_no_customer'] } });
     expect(list).not.toHaveBeenCalled(); expect(f.jobs.jobs).toHaveLength(0);
+  });
+  it('tags an untagged customer a people import linked, audits the adoption and imports its card', async () => {
+    const f = await fixture(); await empty(f);
+    const { stripe, card, provider } = stripeCustomer(f, {});
+    card('pm_csv_card');
+    const service = createPaymentService({ ...f.options, paymentsFor: async () => provider });
+    vi.spyOn(f.provider, 'listCustomerCards').mockImplementation(provider.listCustomerCards.bind(provider));
+    await expect(service.importCustomerCards(f.context, f.home.id)).resolves.toEqual({ queued: true });
+    expect(stripe.objects.get('cus_fixture')).toMatchObject({ metadata: { gym_id: f.gymId } });
+    const { requestId } = f.jobs.jobs[0]!.payload as { requestId: string };
+    const adopted = await actions(f, 'billing.customer.adopted');
+    expect(adopted).toMatchObject([{ targetType: 'household', targetId: f.home.id }]);
+    expect(adopted.map(row => row.after)).toEqual([{ customerId: 'cus_fixture', requestId, source: 'card_import' }]);
+    await f.jobs.runNext();
+    expect(await rows(f)).toMatchObject([{ processorId: 'pm_csv_card', householdId: f.home.id, isDefault: true }]);
+    expect(await actions(f, 'billing.card.import_finished')).toMatchObject([{ after: { requestId, outcome: 'finished' } }]);
+  });
+  it.each(['another household', 'deleted'] as const)('refuses a customer of %s without queueing, auditing or tagging it', async kind => {
+    const f = await fixture();
+    const { stripe, provider } = stripeCustomer(f, { gym_id: f.gymId, household_id: uuidv7() });
+    if (kind === 'deleted') stripe.objects.set('cus_fixture', { id: 'cus_fixture', object: 'customer', deleted: true });
+    const service = createPaymentService({ ...f.options, paymentsFor: async () => provider });
+    await expect(service.importCustomerCards(f.context, f.home.id)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['card_import_refused'] } });
+    expect(f.jobs.jobs).toHaveLength(0);
+    expect(await actions(f, 'billing.customer.adopted')).toHaveLength(0);
+    expect(await actions(f, 'billing.card.import_requested')).toHaveLength(0);
+    expect(stripe.requests.filter(input => input.method === 'POST' && input.path === '/v1/customers/cus_fixture')).toHaveLength(0);
+  });
+  it.each([
+    () => Object.assign(new Error('Stripe unavailable'), { statusCode: 503 }),
+    () => Object.assign(new Error('Rate limited'), { statusCode: 429 }),
+    () => Object.assign(new Error('Connection lost'), { type: 'StripeConnectionError' }),
+    () => new TypeError('fetch failed'),
+    () => Object.assign(new Error('Key rejected'), { statusCode: 401, type: 'StripeAuthenticationError' }),
+    () => Object.assign(new Error('Restricted key'), { statusCode: 403, type: 'StripePermissionError' }),
+  ])('rejects with an adoption outage or key failure without queueing or auditing (%#)', async failure => {
+    const f = await fixture(), provider = new FakePayments(f.gymId, f.clock);
+    provider.seedCustomer({ id: 'cus_fixture', email: 'payer@example.invalid', gymId: null });
+    const error = failure();
+    vi.spyOn(provider, 'adoptCustomer').mockRejectedValue(error);
+    const service = createPaymentService({ ...f.options, paymentsFor: async () => provider });
+    await expect(service.importCustomerCards(f.context, f.home.id)).rejects.toBe(error);
+    expect(f.jobs.jobs).toHaveLength(0);
+    expect(await actions(f, 'billing.customer.adopted')).toHaveLength(0);
+    expect(await actions(f, 'billing.card.import_requested')).toHaveLength(0);
+  });
+  it('queues a gym-tagged customer with one ownership check and no adoption', async () => {
+    const f = await fixture();
+    const adopt = vi.spyOn(f.provider, 'adoptCustomer'), list = vi.spyOn(f.provider, 'listCustomerCards');
+    await expect(f.service.importCustomerCards(f.context, f.home.id)).resolves.toEqual({ queued: true });
+    expect(adopt).not.toHaveBeenCalled(); expect(list).toHaveBeenCalledOnce();
+    expect(f.jobs.jobs).toHaveLength(1);
+    expect(await actions(f, 'billing.customer.adopted')).toHaveLength(0);
+    expect(await actions(f, 'billing.card.import_requested')).toHaveLength(1);
+  });
+  it('fills the details of a card saved by ID only, keeping its row and default, once', async () => {
+    const f = await fixture(); await empty(f);
+    const saved = await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_csv', type: 'card',
+      brand: null, last4: null, expiryMonth: null, expiryYear: null, isDefault: true });
+    attached(f, 'pm_csv');
+    await f.service.importCustomerCards(f.context, f.home.id); await f.jobs.runNext();
+    expect(await rows(f)).toMatchObject([{ id: saved.id, processorId: 'pm_csv', brand: 'visa', last4: '4242',
+      expiryMonth: 12, expiryYear: 2035, isDefault: true, revokedAt: null }]);
+    const filled = await actions(f, 'billing.card.import_details_filled');
+    expect(filled).toMatchObject([{ targetType: 'payment_method', targetId: saved.id, after: { householdId: f.home.id } }]);
+    expect(await actions(f, 'billing.card.imported')).toHaveLength(0);
+    await f.service.importCustomerCards(f.context, f.home.id); await f.jobs.runNext();
+    expect(await actions(f, 'billing.card.import_details_filled')).toHaveLength(1);
+    expect(await actions(f, 'billing.card.imported')).toHaveLength(0);
+  });
+  it('leaves a revoked card without details and a card with details as they are', async () => {
+    const f = await fixture(); await empty(f);
+    await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_revoked', type: 'card',
+      brand: null, last4: null, expiryMonth: null, expiryYear: null, revokedAt: f.clock.now() });
+    await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_known', type: 'card',
+      brand: 'mastercard', last4: '1111', expiryMonth: 1, expiryYear: 2030, isDefault: true });
+    attached(f, 'pm_revoked'); attached(f, 'pm_known');
+    const before = await rows(f);
+    await f.service.importCustomerCards(f.context, f.home.id); await f.jobs.runNext();
+    expect(await rows(f)).toEqual(expect.arrayContaining(before));
+    expect(await rows(f)).toHaveLength(2);
+    expect(await actions(f, 'billing.card.import_details_filled')).toHaveLength(0);
+  });
+  it.each(['gym', 'household'] as const)('skips and audits a card tagged for another %s and imports the rest over two pages', async tag => {
+    const f = await fixture(); await empty(f);
+    const { card, provider } = stripeCustomer(f, { gym_id: f.gymId, household_id: f.home.id });
+    card('pm_foreign_tag', tag === 'gym' ? { gym_id: uuidv7() } : { household_id: uuidv7() });
+    for (let i = 0; i < 101; i++) card('pm_tagged_' + i);
+    vi.spyOn(f.provider, 'listCustomerCards').mockImplementation(provider.listCustomerCards.bind(provider));
+    await f.service.importCustomerCards(f.context, f.home.id);
+    const { requestId } = f.jobs.jobs[0]!.payload as { requestId: string };
+    await f.jobs.runNext(); await f.jobs.runNext();
+    expect(f.jobs.jobs.every(job => job.status === 'completed' && job.attempt === 1)).toBe(true);
+    const cards = await rows(f);
+    expect(cards).toHaveLength(101); expect(cards.some(row => row.processorId === 'pm_foreign_tag')).toBe(false);
+    expect(cards.filter(row => row.isDefault)).toHaveLength(1);
+    expect((await actions(f, 'billing.card.import_skipped')).map(row => row.after))
+      .toEqual([{ requestId, processorId: 'pm_foreign_tag', reason: 'tagged_elsewhere' }]);
+    expect(await actions(f, 'billing.card.import_finished')).toMatchObject([{ after: { outcome: 'finished', skippedCards: 1 } }]);
+    expect(await actions(f, 'billing.card.imported')).toHaveLength(101);
+  });
+  it('continues a card-only listing after a skipped card that ends its page', async () => {
+    const f = await fixture('GBP'); await empty(f);
+    for (let i = 0; i < 99; i++) attached(f, 'pm_newer_' + i, new Date('2026-10-20T00:00:00Z'));
+    f.provider.recordPaymentMethod({ id: 'pm_foreign_tag', customerId: 'cus_fixture', createdAt: new Date('2026-10-10T00:00:00Z'),
+      brand: 'visa', last4: '4242', expiresMonth: 12, expiresYear: 2035, gymId: uuidv7() });
+    attached(f, 'pm_older_0', new Date('2026-10-01T00:00:00Z')); attached(f, 'pm_older_1', new Date('2026-10-01T00:00:00Z'));
+    const list = vi.spyOn(f.provider, 'listCustomerCards');
+    await f.service.importCustomerCards(f.context, f.home.id);
+    list.mockClear();
+    await f.jobs.runNext();
+    await expect(list.mock.results[0]!.value).resolves.toMatchObject({ nextCursor: 'pm_foreign_tag',
+      skippedForeign: [{ id: 'pm_foreign_tag', type: 'card' }] });
+    expect(await rows(f)).toHaveLength(99);
+    await f.jobs.runNext();
+    expect(list).toHaveBeenLastCalledWith('cus_fixture', expect.objectContaining({ cursor: 'pm_foreign_tag' }));
+    expect(f.jobs.jobs.every(job => job.status === 'completed' && job.attempt === 1)).toBe(true);
+    expect(await rows(f)).toHaveLength(101);
+    expect(await actions(f, 'billing.card.import_finished')).toMatchObject([{ after: { outcome: 'finished', skippedCards: 1 } }]);
   });
   it('skips and audits another household card, finishes later pages and chooses a default', async () => {
     const f = await fixture(); await empty(f);

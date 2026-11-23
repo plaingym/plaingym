@@ -108,14 +108,47 @@ it('records and replays the typed fake cursor refusal', async () => {
   await expect(recorded.listCustomerCards(customerId, { householdId, cursor: 'pm_missing' })).rejects.toBeInstanceOf(CardCursorRefused);
   await expect(replayPayments(recorder.tape, gymId).listCustomerCards(customerId, { householdId, cursor: 'pm_missing' })).rejects.toBeInstanceOf(CardCursorRefused);
 });
-it.each([
-  { customer: 'cus_foreign' }, { metadata: { gym_id: 'other-gym' } },
-])('refuses an inconsistent provider list: %j', async changed => {
+function listing(changed: ObjectData) {
   const f = stripe(), card = { ...f.transport.objects.get(ids[0]!)!, ...changed };
   const transport: PaymentTransport = { request: input => input.path === '/v1/payment_methods'
     ? Promise.resolve({ data: [card], has_more: false }) : f.transport.request(input) };
-  await expect(new StripePayments(gymId, { transport, webhookSecret: 'fixture-secret' }).listCustomerCards(customerId, { householdId }))
-    .rejects.toThrow('another customer or gym');
+  return new StripePayments(gymId, { transport, webhookSecret: 'fixture-secret' });
+}
+it('refuses an inconsistent provider list', async () => {
+  await expect(listing({ customer: 'cus_foreign' }).listCustomerCards(customerId, { householdId })).rejects.toThrow('another customer or gym');
+});
+it.each([
+  { metadata: { gym_id: 'other-gym' } }, { metadata: { household_id: 'other-household' } },
+])('reports a listed method tagged elsewhere and leaves it out: %j', async changed => {
+  expect(await listing(changed).listCustomerCards(customerId, { householdId }))
+    .toEqual({ cards: [], nextCursor: null, skippedForeign: [{ id: ids[0], type: 'card' }] });
+});
+it('keeps a continuation cursor on a skipped method and records and replays the page', async () => {
+  const f = stripe();
+  f.transport.objects.get(ids[99]!)!.metadata = { gym_id: 'other-gym' };
+  const recorder = new FixtureRecorder(gymId), recorded = recorder.wrap(f.payments);
+  const page = await recorded.listCustomerCards(customerId, { householdId });
+  expect(page).toMatchObject({ nextCursor: ids[99], skippedForeign: [{ id: ids[99], type: 'card' }] });
+  expect(page.cards).toHaveLength(99);
+  expect(page.cards.map(card => card.id)).not.toContain(ids[99]);
+  expect(await replayPayments(JSON.parse(JSON.stringify(recorder.tape)), gymId).listCustomerCards(customerId, { householdId })).toEqual(page);
+});
+it('reports a fake method recorded for another gym and leaves it out', async () => {
+  const payments = new FakePayments(gymId, new TestClock('2026-01-01T00:00:00Z'));
+  payments.seedCustomer({ id: customerId, email: 'payer@example.invalid', householdId });
+  payments.recordPaymentMethod({ id: 'pm_own', customerId, last4: '4242', brand: 'visa', expiresMonth: 12, expiresYear: 2035,
+    createdAt: new Date('2026-01-02T00:00:00Z') });
+  payments.recordPaymentMethod({ id: 'pm_other_gym', customerId, last4: '4242', brand: 'visa', expiresMonth: 12, expiresYear: 2035,
+    gymId: 'other-gym' });
+  payments.recordPaymentMethod({ id: 'pm_other_bank', customerId, type: 'us_bank_account', last4: '6789', gymId: 'other-gym' });
+  const page = await payments.listCustomerCards(customerId, { householdId });
+  expect(page).toMatchObject({ cards: [{ id: 'pm_own' }], nextCursor: null, skippedForeign: [{ id: 'pm_other_gym', type: 'card' }] });
+  expect(page.cards).toHaveLength(1);
+  expect((await payments.listCustomerCards(customerId, { householdId, types: ['card', 'us_bank_account'] })).skippedForeign)
+    .toEqual(expect.arrayContaining([{ id: 'pm_other_gym', type: 'card' }, { id: 'pm_other_bank', type: 'us_bank_account' }]));
+  const recorder = new FixtureRecorder(gymId), recorded = recorder.wrap(payments);
+  const recordedPage = await recorded.listCustomerCards(customerId, { householdId });
+  expect(await replayPayments(JSON.parse(JSON.stringify(recorder.tape)), gymId).listCustomerCards(customerId, { householdId })).toEqual(recordedPage);
 });
 it.each([
   { data: [], has_more: true }, { data: null, has_more: false },

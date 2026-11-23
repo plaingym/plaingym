@@ -117,10 +117,10 @@ it('keeps refusal feedback and permits a retry', async () => {
     .mockResolvedValueOnce(Response.json({ data: { queued: true } }));
   start(fetcher);
   fireEvent.click(screen.getByRole('button', { name: 'Import cards from Stripe' }));
-  await screen.findByText(/Stripe customer is not tagged/);
+  await screen.findByText(/Stripe customer belongs to another gym or household, or was deleted/);
   fireEvent.click(screen.getByRole('button', { name: 'Import cards from Stripe' }));
   await screen.findByText(/Card import queued/);
-  expect(screen.queryByText(/Stripe customer is not tagged/)).toBeNull();
+  expect(screen.queryByText(/Stripe customer belongs to another gym or household/)).toBeNull();
 });
 it('disables duplicate submissions while the request is pending', async () => {
   let finish!: (response: Response) => void;

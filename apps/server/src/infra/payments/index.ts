@@ -200,7 +200,12 @@ export interface ClearedCustomerEmail { matched: boolean; placeholderMethods: re
 export class CardImportRefused extends Error {}
 /** The continuation card no longer exists in the customer's attached-card list. */
 export class CardCursorRefused extends Error {}
-export interface CustomerCardPage { readonly cards: readonly (CardPaymentMethod | BankPaymentMethodForImport)[]; readonly nextCursor: string | null }
+export interface CustomerCardPage {
+  readonly cards: readonly (CardPaymentMethod | BankPaymentMethodForImport)[];
+  readonly nextCursor: string | null;
+  /** Listed methods tagged for another gym or household; not imported. */
+  readonly skippedForeign?: readonly { readonly id: string; readonly type: PaymentMethodType }[];
+}
 export interface CustomerCardQuery {
   readonly householdId?: string;
   readonly cursor?: string;
@@ -920,12 +925,14 @@ export class FakePayments implements Payments {
     const start = options.cursor ? methods.findIndex(({ method }) => method.id === options.cursor) + 1 : 0;
     if (options.cursor && !start) throw new CardCursorRefused('Invalid card cursor');
     const page = methods.slice(start, start + limit);
-    if (page.some(({ gymId }) => gymId !== undefined && gymId !== this.gymId))
-      throw new CardImportRefused('Card belongs to another customer or gym');
-    const cards = page.map(({ method }) => method)
+    const foreign = ({ gymId }: { gymId?: string }) => gymId !== undefined && gymId !== this.gymId;
+    const skippedForeign = page.filter(entry => foreign(entry) && types.has(entry.method.type))
+      .map(({ method }) => ({ id: method.id, type: method.type }));
+    const cards = page.filter(entry => !foreign(entry)).map(({ method }) => method)
       .filter(method => types.has(method.type) && (method.type === 'card' || hasBankLast4(method.last4)))
       .map(method => options.includeMandates && method.type === 'acss_debit' ? this.#bankWithMandate(method) : method);
-    return structuredClone({ cards, nextCursor: start + limit < methods.length ? page.at(-1)!.method.id : null });
+    return structuredClone({ cards, nextCursor: start + limit < methods.length ? page.at(-1)!.method.id : null,
+      ...(skippedForeign.length ? { skippedForeign } : {}) });
   }
   /** The stored name, email and personal details, as the provider would show them. */
   customer(customerId: string): ({ name: string | null; email: string | null } & Required<CustomerDetails>) | undefined {

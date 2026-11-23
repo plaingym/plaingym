@@ -6,7 +6,7 @@
   "importCardsHelp": "Import cards attached to this household’s Stripe customer outside the app. An existing default stays selected. With no default, the newest card whose stored expiry has not passed is selected; if every card has expired, the newest is selected. Removed cards stay removed.",
   "importCardsQueued": "Card import queued. It runs in the background. Refresh payment methods to see new cards. If none appear, ask an owner or admin to check the import's audit trail and failed jobs on the health page.",
   "errors.card_import_no_customer": "This household has no linked Stripe customer. Link its customer before importing cards.",
-  "errors.card_import_refused": "These cards could not be imported because the Stripe customer is not tagged for this gym and household. Ask an owner or admin to check the customer.",
+  "errors.card_import_refused": "These cards could not be imported because the Stripe customer belongs to another gym or household, or was deleted. Ask an owner or admin to check the customer in Stripe.",
   "errors.card_import_changed": "The household’s Stripe customer or payment configuration changed. Refresh the page and request the import again.",
   "title": "Invoices",
   "invoice": "Invoice details",

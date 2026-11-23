@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { forGym, paymentMethods, uuidv7 } from '@plaingym/db';
 import { createTranslator, type Clock } from '@plaingym/shared';
@@ -45,11 +45,15 @@ export function importedBankDetails(method: Exclude<PaymentMethod, { type: 'card
 }
 
 function validatePage(page: CustomerCardPage, customerId: string, cursor: string | null | undefined, types: readonly PaymentMethodType[]) {
+  const skipped = page.skippedForeign ?? [];
   // A mixed listing, and a bank listing that drops an account without masked digits, can continue from a method it filtered out.
-  if (page.cards.length > customerCardChunkSize || page.nextCursor === cursor
-    || types.length === 1 && types[0] === 'card' && page.nextCursor !== null && page.nextCursor !== page.cards.at(-1)?.id)
+  // A card-only listing continues from its last card or its last method tagged for another gym or household.
+  if (page.cards.length + skipped.length > customerCardChunkSize || page.nextCursor === cursor
+    || types.length === 1 && types[0] === 'card' && page.nextCursor !== null
+      && page.nextCursor !== page.cards.at(-1)?.id && page.nextCursor !== skipped.at(-1)?.id)
     throw new Error('Invalid card pagination');
-  if (page.cards.some(method => method.customerId !== customerId || !Number.isFinite(method.createdAt.getTime()) || !types.includes(method.type)))
+  if (page.cards.some(method => method.customerId !== customerId || !Number.isFinite(method.createdAt.getTime()) || !types.includes(method.type))
+    || skipped.some(method => !types.includes(method.type) || page.cards.some(card => card.id === method.id)))
     throw new Error('Imported payment method identity is unresolved');
 }
 
@@ -132,22 +136,41 @@ export function createCustomerCardImportJobs(options: CustomerCardImportOptions)
       }
       if ((await readGymSettings(tx, gymId)).currency !== currency) return 'listing_changed';
       let skippedCards = payload.skippedCards;
-      let skippedBankAccounts = payload.skippedBankAccounts + skippedPage.cards.length;
+      // The other bank type's listing is skipped whole, including any method tagged elsewhere.
+      let skippedBankAccounts = payload.skippedBankAccounts + skippedPage.cards.length + (skippedPage.skippedForeign?.length ?? 0);
       let skippedMandatePermissions = payload.skippedMandatePermissions;
       let { importedCards, importedBankAccounts } = payload;
+      for (const method of page.skippedForeign ?? []) {
+        if (method.type === 'card') skippedCards++;
+        else skippedBankAccounts++;
+        await catalogAudit(tx, actor, options.clock, 'billing.card.import_skipped', 'household', household.id, undefined,
+          { requestId: payload.requestId, processorId: method.id, reason: 'tagged_elsewhere' });
+      }
       // One lookup per chunk keeps the transaction short while it holds the gym settings and household locks.
       const stored = new Map(page.cards.length === 0 ? [] : (await tx.select({ processorId: paymentMethods.processorId,
-        householdId: paymentMethods.householdId }).from(paymentMethods)
-        .where(inArray(paymentMethods.processorId, page.cards.map(card => card.id)))).map(row => [row.processorId, row.householdId]));
+        id: paymentMethods.id, householdId: paymentMethods.householdId, type: paymentMethods.type, last4: paymentMethods.last4,
+        revokedAt: paymentMethods.revokedAt, processorCreatedAt: paymentMethods.processorCreatedAt }).from(paymentMethods)
+        .where(inArray(paymentMethods.processorId, page.cards.map(card => card.id)))).map(row => [row.processorId, row]));
       for (const method of page.cards) {
         const isCard = method.type === 'card';
-        const owner = stored.get(method.id);
-        if (owner !== undefined) {
-          if (owner !== household.id) {
+        const row = stored.get(method.id);
+        if (row !== undefined) {
+          if (row.householdId !== household.id) {
             if (isCard) skippedCards++;
             else skippedBankAccounts++;
             await catalogAudit(tx, actor, options.clock, 'billing.card.import_skipped', 'household', household.id, undefined,
               { requestId: payload.requestId, processorId: method.id, reason: 'another_household' });
+          } else if (method.type === 'card' && row.type === 'card' && row.revokedAt === null && row.last4 === null) {
+            // A card saved by ID alone (a people CSV) gets its details; its default and removal state stay as they are.
+            // The conditions are repeated in the update, so a row removed or filled since the lookup stays as it is.
+            const [filled] = await tx.update(paymentMethods).set({ brand: method.brand ?? null, last4: method.last4,
+              expiryMonth: method.expiresMonth, expiryYear: method.expiresYear,
+              processorCreatedAt: row.processorCreatedAt ?? method.createdAt })
+              .where(and(eq(paymentMethods.id, row.id), eq(paymentMethods.type, 'card'), isNull(paymentMethods.revokedAt),
+                isNull(paymentMethods.last4)))
+              .returning({ id: paymentMethods.id });
+            if (filled) await catalogAudit(tx, actor, options.clock, 'billing.card.import_details_filled', 'payment_method', row.id,
+              undefined, { householdId: household.id, requestId: payload.requestId });
           }
           continue; // Includes revoked rows: importing is never consent to restore a removed card.
         }
@@ -159,12 +182,13 @@ export function createCustomerCardImportJobs(options: CustomerCardImportOptions)
               reason: method.mandateReadDenied ? 'mandate_read_denied' : 'mandate_unavailable' });
           continue;
         }
-        stored.set(method.id, household.id);
         const id = uuidv7();
         const details = isCard
           ? { brand: method.brand ?? null, last4: method.last4, expiryMonth: method.expiresMonth,
             expiryYear: method.expiresYear, processorCreatedAt: method.createdAt }
           : importedBankDetails(method);
+        stored.set(method.id, { processorId: method.id, id, householdId: household.id, type: method.type,
+          last4: details.last4, revokedAt: null, processorCreatedAt: details.processorCreatedAt });
         await tx.insert(paymentMethods).values({ id, gymId, householdId: household.id, processorId: method.id,
           ...details, createdAt: options.clock.now(), isDefault: false });
         if (isCard) importedCards++;

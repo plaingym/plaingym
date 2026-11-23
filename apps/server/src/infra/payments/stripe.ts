@@ -743,15 +743,21 @@ export class StripePayments implements Payments {
     });
     if (!Array.isArray(page.data) || page.data.length > limit || typeof page.has_more !== 'boolean') throw new Error('Invalid card page');
     const ids = new Set<string>(), cards: CustomerCardPage['cards'][number][] = [];
+    const skippedForeign: { id: string; type: PaymentMethodType }[] = [];
     for (const value of page.data) {
-      const method = data(value), owner = data(method.metadata ?? {}).gym_id;
-      if (id(method.customer) !== customerId || owner !== undefined && owner !== this.gymId)
-        throw new CardImportRefused('Card belongs to another customer or gym');
+      const method = data(value), tags = data(method.metadata ?? {});
+      if (id(method.customer) !== customerId) throw new CardImportRefused('Card belongs to another customer or gym');
       const methodId = id(method.id); this.#path('payment_methods', methodId);
       if (ids.has(methodId)) throw new Error('Invalid card pagination');
       ids.add(methodId);
       if (singleType && method.type !== singleType) throw new Error('Invalid card details');
       if (!types.has(method.type as PaymentMethodType)) continue;
+      // A method tagged for another gym or household is reported and left out; the customer's own tags decide the page.
+      if (tags.gym_id !== undefined && tags.gym_id !== this.gymId
+        || tags.household_id !== undefined && tags.household_id !== options.householdId) {
+        skippedForeign.push({ id: methodId, type: method.type as PaymentMethodType });
+        continue;
+      }
       if (method.type === 'card') {
         const card = data(method.card);
         if (typeof card.last4 !== 'string' || !/^[0-9]{4}$/.test(card.last4)
@@ -771,7 +777,7 @@ export class StripePayments implements Payments {
         }));
       }
     }
-    return { cards, nextCursor };
+    return { cards, nextCursor, ...(skippedForeign.length ? { skippedForeign } : {}) };
   }
   async findCustomerByEmail(email: string): Promise<readonly CustomerMatch[]> {
     assertNoTransaction('payments.findCustomerByEmail');

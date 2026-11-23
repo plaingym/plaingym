@@ -90,10 +90,14 @@ you may be able to reuse its saved cards and compatible bank accounts:
 ## Afterwards
 
 Staff with payment collection permission can import attached cards and compatible
-bank accounts from the linked, gym-tagged Stripe customer on a member's
-**Invoices** tab or in invoice details.
+bank accounts from the household's linked Stripe customer on a member's
+**Invoices** tab or in invoice details. This also works for a customer linked by a
+people CSV: the import tags it for the gym first. A customer tagged for another gym or
+household, or a deleted one, is refused.
 Choose **Import cards from Stripe**, then **Refresh payment methods** after the background
-import finishes. Both views let staff make a payment method default or remove it, including
+import finishes. The import also fills in the brand, last four and expiry of a card the CSV
+import saved by ID only, and skips a card tagged for another gym or household.
+Both views let staff make a payment method default or remove it, including
 before the first invoice. The audit trail records import outcomes and skipped payment methods.
 
 Removing a default payment method promotes the newest remaining method with no expiry

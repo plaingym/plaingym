@@ -137,6 +137,24 @@ for a Stripe customer already linked to the household. USD imports US bank
 accounts and CAD imports Canadian bank accounts. The job counts the other bank
 account type as skipped. Gyms using other currencies list cards only.
 
+The staff request checks the customer before queueing the job. A customer a
+people import linked but never tagged is adopted first: the request tags it
+with the gym (never the household), checks it again, and records
+`billing.customer.adopted` (`source: card_import`) with the import request
+under the household lock. A customer tagged for another gym or household, or
+a deleted one, is refused with nothing queued. A gym-tagged customer is not
+adopted again.
+
+The job fills the brand, last four and expiry of the household's own active
+card rows that have none (a card a people import saved by ID only) and records
+`billing.card.import_details_filled`; it leaves their default and removal state
+as they are and never changes a row that already has details or was removed.
+A listed method whose own Stripe metadata names another gym or household is
+skipped, counted and audited (`billing.card.import_skipped`, reason
+`tagged_elsewhere`), and the import carries on. A change to the customer's own
+metadata during the import still ends it as stale (`ownership_refused`) without
+choosing a default.
+
 Imported bank accounts store the masked digits and bank name supplied by Stripe
 and use the same default selection as cards. The job stores a Canadian bank
 account only when Stripe returns an active reusable mandate from off-session

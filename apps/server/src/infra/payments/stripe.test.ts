@@ -150,7 +150,8 @@ it('preserves a rerecorded fake bank method type and clears its old gym tag', as
   payments.seedCustomer({ id: customerId, email: 'payer@example.invalid' });
   payments.recordPaymentMethod({ id, customerId, type: 'us_bank_account', last4: '6789', gymId: 'other-gym' });
   const options = { types: ['us_bank_account'] as const };
-  await expect(payments.listCustomerCards(customerId, options)).rejects.toThrow('another customer or gym');
+  expect(await payments.listCustomerCards(customerId, options)).toEqual({ cards: [], nextCursor: null,
+    skippedForeign: [{ id, type: 'us_bank_account' }] });
 
   payments.recordPaymentMethod({ id, customerId, last4: '0123' });
   const method = { id, customerId, last4: '0123', type: 'us_bank_account', createdAt: new Date('2026-10-23T12:00:00Z') };

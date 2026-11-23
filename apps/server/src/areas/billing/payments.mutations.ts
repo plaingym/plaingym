@@ -18,7 +18,7 @@ import { paymentConflict, paymentUnavailable } from './payments.errors.js';
 import { markRefundSending, markRefundSent, pastRefundWindow, sameRefund, settleLapsed } from './transitions/lapsed-refunds.js';
 import { duplicateReservation } from './transitions/store.js';
 import { withJobTransaction } from '../../infra/jobs/index.js';
-import { CardImportRefused } from '../../infra/payments/index.js';
+import { CardImportRefused, isProviderOutage } from '../../infra/payments/index.js';
 import { customerCardImportJob } from './customer-card-import.js';
 
 type Options = PaymentOptions & { scope: typeof forGym; clock: Clock; transitions: InvoiceTransitions; settings: GymSettingsAccessor };
@@ -68,10 +68,24 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
       if (!jobs || !paymentsFor) paymentUnavailable('payments_unavailable', 'Card import is not configured');
       const customerId = loaded.household.stripeCustomerId, provider = await paymentsFor(context.gymId);
       if (!provider) paymentUnavailable('payments_unavailable', 'Payments are not configured');
-      try { await provider.listCustomerCards(customerId, { householdId, limit: 1 }); }
-      catch (error) {
-        if (error instanceof CardImportRefused) paymentConflict('card_import_refused', 'Customer is not owned by this gym and household');
+      const owned = () => provider.listCustomerCards(customerId, { householdId, limit: 1 }).then(() => true, error => {
+        if (error instanceof CardImportRefused) return false;
         throw error;
+      });
+      let adopted = false;
+      if (!await owned()) {
+        // A people import links a customer without tagging it. Tag an untagged one for this gym, as charges and Checkout do;
+        // a customer of another gym, or a deleted one, stays refused. A customer tagged for another household fails the recheck.
+        try { await provider.adoptCustomer(customerId); }
+        catch (error) {
+          // Rate limits, outages, lost connections and a rejected or restricted key are not ownership refusals.
+          const { statusCode: status, type } = (error ?? {}) as { statusCode?: unknown; type?: unknown };
+          if (isProviderOutage(error) || status === 401 || status === 403 || type === 'StripePermissionError'
+            || error instanceof TypeError) throw error;
+          paymentConflict('card_import_refused', 'Customer is not owned by this gym and household');
+        }
+        if (!await owned()) paymentConflict('card_import_refused', 'Customer is not owned by this gym and household');
+        adopted = true;
       }
       const requestId = uuidv7(), gym = await settings.get(context.gymId);
       await withJobTransaction(scope, context.gymId, async transaction => {
@@ -79,6 +93,8 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
         if (!await stripeWriteCurrent(tx, context.gymId, loaded.switched)) paymentConflict('card_import_changed', 'Stripe configuration changed; request the import again');
         if ((await loadHousehold(tx, householdId, true)).stripeCustomerId !== customerId)
           paymentConflict('card_import_changed', 'Household customer changed; request the import again');
+        if (adopted) await catalogAudit(tx, context, clock, 'billing.customer.adopted', 'household', householdId, undefined,
+          { customerId, requestId, source: 'card_import' });
         await catalogAudit(tx, context, clock, 'billing.card.import_requested', 'household', householdId, undefined, { requestId });
         await jobs.enqueue(customerCardImportJob, { householdId, customerId, requestId, switched: loaded.switched },
           { gymId: context.gymId, timezone: gym.timezone, idempotencyKey: requestId, maxAttempts: 8 }, transaction);
