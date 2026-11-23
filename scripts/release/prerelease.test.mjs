@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -167,9 +168,15 @@ test('each signing key is reachable only from its own job, and no workflow write
   assert.doesNotMatch(prerelease, /secrets\./);
 });
 
-test('the prerelease publish refuses lookup errors and an image tag from another commit', () => {
+test('the prerelease publish refuses lookup errors, existing releases and image tags from another commit', () => {
   const release = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8');
   const nightly = job(release, 'publish-prerelease');
+  assert.deepEqual(nightly.match(/^ {6}- uses: .+$/gm), [
+    '      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6',
+    '      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6',
+    '      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2',
+    '      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2',
+  ]);
   // Only exit 2 from the tag lookup means "not tagged"; a failure to look is not an answer.
   assert.match(nightly, /tag_status=0; git ls-remote --exit-code --tags origin "refs\/tags\/\$VERSION" >\/dev\/null \|\| tag_status=\$\?/);
   assert.match(nightly, /if \[ "\$tag_status" -eq 0 \]; then echo "::error::\$VERSION is already tagged\."; exit 1; fi/);
@@ -178,23 +185,69 @@ test('the prerelease publish refuses lookup errors and an image tag from another
   assert.match(nightly, /if release_error=\$\(gh api "repos\/\$GITHUB_REPOSITORY\/releases\/tags\/\$VERSION" --silent 2>&1\); then echo "::error::\$VERSION is already released\."; exit 1; fi/);
   assert.match(nightly, /case "\$release_error" in \*"\(HTTP 404\)"\*\) ;; \*\) echo "::error::Could not check whether \$VERSION is released\."; exit 1 ;; esac/);
   assert.doesNotMatch(nightly, /gh release view/);
+  assert.ok(nightly.includes("drafts=$(gh api \"repos/$GITHUB_REPOSITORY/releases?per_page=100\" --paginate --jq '.[] | select(.tag_name == env.VERSION) | .id')"));
+  assert.match(nightly, /\|\| \{ echo "::error::Could not check whether \$VERSION has a draft release\."; exit 1; \}/);
+  assert.match(nightly, /if \[ -n "\$drafts" \]; then echo "::error::A draft release for \$VERSION exists .*Delete it in the repository's Releases, then run Prerelease again\."; exit 1; fi/);
   // An image tag from an earlier night is only pushed again for this commit; all three tags are checked.
   for (const suffix of ['', '-amd64', '-arm64']) assert.match(nightly, new RegExp(`"ghcr\\.io/\\$owner/app:\\$image_tag${suffix}"`));
   // imagetools' `json` template pretty-prints, so the label is only compact after whitespace is stripped.
   assert.match(nightly, /tr -d '\[:space:\]'.*org\.opencontainers\.image\.revision/);
   assert.match(nightly, /org\.opencontainers\.image\.revision.*\$GITHUB_SHA/);
-  assert.match(nightly, /already exists for another commit; nothing was published\./);
+  const conflict = nightly.indexOf('already exists for another commit; nothing was published.');
+  const recovery = nightly.indexOf("::error::An earlier night pushed $VERSION's images for commit");
+  assert.ok(conflict >= 0 && recovery > conflict, 'the recovery message follows the image conflict');
+  assert.match(nightly.slice(recovery), /commit \$\{found:-unknown\}.*versions tagged \$image_tag, \$image_tag-amd64 and \$image_tag-arm64/);
   assert.match(nightly, /Could not read the revision of \$ref\./);
   assert.match(nightly, /Could not check whether \$ref exists\./);
+  assert.ok(nightly.includes("grep -Eqi 'manifest unknown|no such manifest'"));
+  assert.doesNotMatch(nightly, /\|not found'/);
   // The image guard runs once the registry login is done and before publish.sh pushes anything.
   const login = nightly.indexOf('docker login ghcr.io');
   const guard = nightly.indexOf('docker manifest inspect');
   const push = nightly.indexOf('publish.sh --prerelease');
   assert.ok(login >= 0 && guard > login && push > guard, 'the image guard sits after docker login and before publish.sh');
-  // Both lookup guards run before the signing key is written.
+  // All lookups finish before the signing key is written.
   const key = nightly.indexOf('> "$RUNNER_TEMP/key.pem"');
   const tagGuard = nightly.indexOf('tag_status=0');
-  const releaseGuard = nightly.indexOf('release_error=$(');
-  assert.ok(tagGuard >= 0 && releaseGuard >= 0 && key > tagGuard && key > releaseGuard,
-    'the tag and release guards sit before key.pem is written');
+  const releaseGuard = nightly.indexOf('case "$release_error"');
+  const draftGuard = nightly.indexOf('drafts=$(gh api');
+  assert.ok(tagGuard >= 0 && releaseGuard > tagGuard && draftGuard > releaseGuard && login > draftGuard,
+    'the tag, published release and draft guards run before registry login');
+  const guardEnd = nightly.indexOf('\n          done', guard);
+  assert.ok(guardEnd > guard && key > guardEnd && push > key,
+    'key.pem is written after the image guard and before publish.sh');
+});
+
+test('the prerelease image guard accepts missing manifests and refuses a credential helper error', (t) => {
+  const bash = spawnSync('bash', ['--version'], { encoding: 'utf8', timeout: 5_000 });
+  if (bash.error?.code === 'ENOENT') return t.skip('bash is unavailable');
+  // On Windows, `bash` may be the WSL launcher, which doesn't pass this test's environment through.
+  if (process.platform === 'win32' && !/msys|cygwin/i.test(bash.stdout ?? '')) return t.skip('bash is not Git Bash');
+  assert.ifError(bash.error);
+  assert.equal(bash.status, 0);
+
+  const release = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8');
+  const nightly = job(release, 'publish-prerelease');
+  const loop = nightly.match(/^ {10}for ref in .*; do\n[\s\S]*?^ {10}done$/m);
+  assert.ok(loop, 'the image guard loop');
+  const directory = mkdtempSync(join(tmpdir(), 'prerelease-image-guard-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  writeFileSync(join(directory, 'docker'), '#!/bin/sh\nprintf "%s\\n" "$DOCKER_INSPECT_ERROR" >&2\nexit 1\n', { mode: 0o755 });
+  const script = 'export PATH="$PWD:$PATH" RUNNER_TEMP="$PWD"\nowner=x\nimage_tag=v0.3.0\n' + loop[0];
+
+  for (const [stderr, status] of [
+    ['manifest unknown', 0],
+    ['no such manifest: ghcr.io/x/app:v0.3.0', 0],
+    ['error getting credentials - err: exec: "docker-credential-x": executable file not found in $PATH', 1],
+  ]) {
+    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', script], {
+      cwd: directory,
+      env: { ...process.env, DOCKER_INSPECT_ERROR: stderr, GITHUB_SHA: 'current-commit' },
+      encoding: 'utf8',
+      timeout: 5_000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, status, stderr);
+    if (status === 1) assert.match(result.stdout, /Could not check whether ghcr\.io\/x\/app:v0\.3\.0 exists/);
+  }
 });

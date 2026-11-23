@@ -962,3 +962,11 @@ latest changes, not for a gym's live data.
   is never pushed again. Its notes say what it is, its migrations and rollback floor,
   and list the commits since the previous prerelease. A tag created this way doesn't
   start the Release workflow's tag run.
+* **A night that stops after pushing images.** If a run pushes `ghcr.io/OWNER/app:v0.Y.Z`
+  but fails before creating the release, later runs that plan the same version refuse it,
+  naming the commit the images carry. Re-run that night's run (it publishes the same
+  commit; its build files are kept 3 days, so after that re-run all its jobs), or delete
+  the three package versions tagged `v0.Y.Z`, `v0.Y.Z-amd64` and `v0.Y.Z-arm64`, then
+  run **Prerelease** again. A run stopped while uploading its release files also leaves
+  a draft release, which is refused until it is deleted; its images are already pushed,
+  so then recover as above.

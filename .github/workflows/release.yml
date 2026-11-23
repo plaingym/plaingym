@@ -331,21 +331,15 @@ jobs:
           [ -n "$floor" ] || { echo '::error::The build recorded no rollback floor.'; exit 1; }
           [ -f deploy/prerelease-signing.pem ] || { echo '::error::deploy/prerelease-signing.pem is missing.'; exit 1; }
           [ -n "$PRERELEASE_SIGNING_KEY" ] || { echo '::error::The PRERELEASE_SIGNING_KEY secret is not set.'; exit 1; }
-          # A version already tagged or released is never pushed again. A lookup that fails is not an answer.
+          # Refuse existing tags and releases, including drafts, and fail closed on lookup errors.
           tag_status=0; git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null || tag_status=$?
           if [ "$tag_status" -eq 0 ]; then echo "::error::$VERSION is already tagged."; exit 1; fi
           if [ "$tag_status" -ne 2 ]; then echo "::error::Could not check whether $VERSION is tagged."; exit 1; fi
           if release_error=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION" --silent 2>&1); then echo "::error::$VERSION is already released."; exit 1; fi
           case "$release_error" in *"(HTTP 404)"*) ;; *) echo "::error::Could not check whether $VERSION is released."; exit 1 ;; esac
-          printf '%s\n' "$PRERELEASE_SIGNING_KEY" > "$RUNNER_TEMP/key.pem"
+          drafts=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[] | select(.tag_name == env.VERSION) | .id') || { echo "::error::Could not check whether $VERSION has a draft release."; exit 1; }
+          if [ -n "$drafts" ]; then echo "::error::A draft release for $VERSION exists (a night stopped while uploading its files). Delete it in the repository's Releases, then run Prerelease again."; exit 1; fi
           trap 'rm -f "$RUNNER_TEMP/key.pem"; docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
-          # The secret must match the committed prerelease key, and must not be the release key, before anything is pushed.
-          printf 'key check\n' > "$RUNNER_TEMP/probe"
-          openssl pkeyutl -sign -inkey "$RUNNER_TEMP/key.pem" -rawin -in "$RUNNER_TEMP/probe" -out "$RUNNER_TEMP/probe.sig"
-          openssl pkeyutl -verify -pubin -inkey deploy/prerelease-signing.pem -rawin -in "$RUNNER_TEMP/probe" -sigfile "$RUNNER_TEMP/probe.sig"
-          if openssl pkeyutl -verify -pubin -inkey deploy/release-signing.pem -rawin -in "$RUNNER_TEMP/probe" -sigfile "$RUNNER_TEMP/probe.sig" >/dev/null 2>&1; then
-            echo '::error::PRERELEASE_SIGNING_KEY is the release key.'; exit 1
-          fi
           printf '%s\n' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
           # A tag left by an earlier night is pushed again only for this commit.
@@ -358,15 +352,25 @@ jobs:
               expected=$(printf '"org.opencontainers.image.revision":"%s"' "$GITHUB_SHA")
               if [ "$revisions" != "$expected" ]; then
                 echo "::error::$ref already exists for another commit; nothing was published."
+                found=$(printf '%s\n' "$revisions" | grep -vF "\"$GITHUB_SHA\"" | sed -n '1s/.*"org.opencontainers.image.revision":"\([^"]*\)".*/\1/p' || true)
+                echo "::error::An earlier night pushed $VERSION's images for commit ${found:-unknown} but stopped before creating its release. Re-run that night's Prerelease run, or delete the package versions tagged $image_tag, $image_tag-amd64 and $image_tag-arm64 (the repository's Packages, app), then run Prerelease again."
                 exit 1
               fi
-            elif grep -Eqi 'manifest unknown|no such manifest|not found' "$RUNNER_TEMP/inspect.err"; then
+            elif grep -Eqi 'manifest unknown|no such manifest' "$RUNNER_TEMP/inspect.err"; then
               continue
             else
               echo "::error::Could not check whether $ref exists."
               exit 1
             fi
           done
+          printf '%s\n' "$PRERELEASE_SIGNING_KEY" > "$RUNNER_TEMP/key.pem"
+          # The secret must match the committed prerelease key, and must not be the release key, before anything is pushed.
+          printf 'key check\n' > "$RUNNER_TEMP/probe"
+          openssl pkeyutl -sign -inkey "$RUNNER_TEMP/key.pem" -rawin -in "$RUNNER_TEMP/probe" -out "$RUNNER_TEMP/probe.sig"
+          openssl pkeyutl -verify -pubin -inkey deploy/prerelease-signing.pem -rawin -in "$RUNNER_TEMP/probe" -sigfile "$RUNNER_TEMP/probe.sig"
+          if openssl pkeyutl -verify -pubin -inkey deploy/release-signing.pem -rawin -in "$RUNNER_TEMP/probe" -sigfile "$RUNNER_TEMP/probe.sig" >/dev/null 2>&1; then
+            echo '::error::PRERELEASE_SIGNING_KEY is the release key.'; exit 1
+          fi
           sh deploy/release/publish.sh --prerelease --registry ghcr.io --name "$owner/app" \
             --version "$VERSION" --revision "$GITHUB_SHA" --migrations packages/db/src/migrations \
             --rollback-floor "$floor" \
