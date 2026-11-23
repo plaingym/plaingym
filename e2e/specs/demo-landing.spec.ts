@@ -75,8 +75,8 @@ for (const width of [360, 768, 1280]) for (const colorScheme of themes) {
     const stylesLoaded = page.waitForResponse(response => new URL(response.url()).pathname === '/public/pages/styles.css');
     const pageStyles = page.waitForResponse(response => /^\/demo-assets\/landing-[a-f0-9]{16}\.css$/.test(new URL(response.url()).pathname));
     const response = await open(page, width, colorScheme);
-    expect(response.headers()['content-security-policy']).toContain("script-src 'self'");
-    expect(response.headers()['content-security-policy']).toContain("style-src 'self'");
+    const policy = response.headers()['content-security-policy']?.split('; ');
+    expect(policy).toContain("style-src 'self'");
     await expect(page.getByRole('heading', { level: 1, name: 'PlainGym', exact: true })).toBeVisible();
     const links = page.getByRole('main').getByRole('link');
     await expect(links.nth(0)).toHaveText('Try the demo');
@@ -84,7 +84,11 @@ for (const width of [360, 768, 1280]) for (const colorScheme of themes) {
     await expect(links.nth(1)).toHaveText('GitHub');
     await expect(links.nth(1)).toHaveAttribute('href', 'https://github.com/plaingym/plaingym');
     await expect(page.getByRole('link', { name: 'Source code', exact: true })).toHaveAttribute('href', '/source');
-    await expect(page.locator('script')).toHaveAttribute('src', menuScriptPath);
+    const script = page.locator('script');
+    await expect(script).toHaveAttribute('src', menuScriptPath);
+    expect(policy?.filter(part => part.startsWith('script-src '))).toEqual([
+      `script-src ${new URL(entryOrigin).host}${await script.getAttribute('src')}`,
+    ]);
     await expect(page.locator('script:not([src]), [style]')).toHaveCount(0);
     // Explain the general lifetime without showing a particular sandbox's expiry notice.
     await expect(page.getByText('Private copies expire after inactivity and are deleted within 24 hours.', { exact: true })).toBeVisible();
@@ -233,19 +237,75 @@ test.describe('demo product phone menu', () => {
     await expect(menu).toBeHidden();
   });
 
-  test('closes the phone menu after a section link and lets it reopen at 360px', async ({ page }) => {
-    await open(page, 360, 'light');
-    const menuButton = header(page).getByRole('button', { name: 'Menu', exact: true });
-    const menu = header(page).locator('#site-menu');
-    for (const [name, id] of [['Features', 'features'], ['Why PlainGym', 'strengths']] as const) {
-      await menuButton.tap();
-      await expect(menu.getByRole('link')).toHaveCount(5);
-      await menu.getByRole('link', { name, exact: true }).tap();
-      await expect(page).toHaveURL(new RegExp(`#${id}$`));
-      await expect(page.locator('#' + id)).toBeInViewport();
-      await expect(page.locator('#site-menu:popover-open')).toHaveCount(0);
+  async function openPhoneMenuPage(page: Page, variant: 'popover' | 'details fallback') {
+    if (variant === 'details fallback') {
+      await page.addInitScript(() => {
+        for (const method of ['showPopover', 'hidePopover', 'togglePopover']) Reflect.deleteProperty(HTMLElement.prototype, method);
+      });
+      // Chromium still recognizes the CSS selector with the methods removed. Activate the existing fallback rules.
+      const client = new Client(entryOrigin);
+      await page.route('**/demo-assets/landing-*.css', async route => {
+        const { status, text } = await client.request(route.request().url());
+        const stylesheet = text.replace('@supports not selector(:popover-open)', '@supports selector(:popover-open)');
+        await route.fulfill({ status, contentType: 'text/css', body: stylesheet });
+      });
     }
-  });
+    await open(page, 360, 'light');
+    const bar = header(page);
+    return variant === 'details fallback'
+      ? { menuButton: bar.locator('.demo-menu-fallback > summary'), openMenu: bar.locator('.demo-menu-fallback[open]') }
+      : { menuButton: bar.getByRole('button', { name: 'Menu', exact: true }), openMenu: bar.locator('#site-menu:popover-open') };
+  }
+
+  for (const variant of ['popover', 'details fallback'] as const) {
+    test(`closes the phone menu after a section link and moves focus at 360px (${variant})`, async ({ page }, info) => {
+      const { menuButton, openMenu } = await openPhoneMenuPage(page, variant);
+      for (const [name, id] of [['Features', 'features'], ['Why PlainGym', 'strengths']] as const) {
+        await menuButton.tap();
+        await expect(openMenu.getByRole('link')).toHaveCount(5);
+        if (variant === 'details fallback' && id === 'features') {
+          await page.screenshot({ path: info.outputPath('product-360-details-fallback-menu.png') });
+        }
+        const link = openMenu.getByRole('link', { name, exact: true });
+        await link.focus();
+        await link.tap();
+        await expect(page).toHaveURL(new RegExp(`#${id}$`));
+        await expect(openMenu).toHaveCount(0);
+        const heading = page.locator('#' + id);
+        await expect(heading).toBeFocused();
+        await expect(heading).toBeInViewport();
+        await expect.poll(() => heading.evaluate(node => {
+          const bottom = document.querySelector('body > header')!.getBoundingClientRect().bottom;
+          return node.getBoundingClientRect().top - bottom;
+        })).toBeGreaterThanOrEqual(-1);
+        await page.keyboard.press('Tab');
+        await expect(page.locator('main a[href="#feature-members"]')).toBeFocused();
+      }
+    });
+
+    test(`keeps the phone menu open for modified and middle clicks at 360px (${variant})`, async ({ page }) => {
+      const { menuButton, openMenu } = await openPhoneMenuPage(page, variant);
+      await menuButton.tap();
+      const link = openMenu.getByRole('link', { name: 'Features', exact: true });
+      // Prevent new tabs and windows after the document's menu handler has handled the real clicks.
+      await page.evaluate(() => {
+        window.addEventListener('click', event => event.preventDefault());
+        window.addEventListener('auxclick', event => event.preventDefault());
+      });
+      for (const modifier of ['ControlOrMeta', 'Shift', 'Alt'] as const) {
+        await link.click({ modifiers: [modifier] });
+        await expect(openMenu).toBeVisible();
+      }
+      await link.click({ button: 'middle' });
+      await expect(openMenu).toBeVisible();
+      // Browsers fire auxclick, not click, for a real middle click, so also send a click event with that button.
+      await link.evaluate(node => node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 1 })));
+      await expect(openMenu).toBeVisible();
+      await link.evaluate(node => node.addEventListener('click', event => event.preventDefault(), { once: true }));
+      await link.click();
+      await expect(openMenu).toBeVisible();
+    });
+  }
 });
 
 // T1029: on a phone held upright, an opened screenshot is shown large enough to read and scrolls inside the lightbox.

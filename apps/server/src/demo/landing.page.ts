@@ -11,8 +11,10 @@ import screenshots from './screenshots.json' with { type: 'json' };
 
 const english = { 'demo/product': messages };
 const tEnglish = createTranslator(english);
-export const demoLandingDirectives = ["default-src 'none'", "script-src 'self'", "style-src 'self'", "img-src 'self'",
-  "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'"];
+export function demoLandingDirectives(menuScriptSource?: string): readonly string[] {
+  return ["default-src 'none'", `script-src ${menuScriptSource ?? "'none'"}`, "style-src 'self'", "img-src 'self'",
+    "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'"];
+}
 export const featureKeys = ['members', 'ranks', 'schedule', 'kiosk', 'portal', 'billing', 'waivers', 'join', 'reports', 'server'] as const;
 type FeatureKey = typeof featureKeys[number];
 // The markup never changes, so render each icon once rather than on every request.
@@ -52,7 +54,7 @@ const iconTile = 'inline-flex h-12 w-12 shrink-0 items-center justify-center rou
 const sectionTitle = 'text-3xl font-bold tracking-tight sm:text-4xl';
 const muted = 'text-muted-foreground dark:text-gray-400';
 
-/** The entry-host product page uses one script to close the phone menu after a link is followed. */
+/** The entry-host product page uses one script to close the phone menu after an unmodified primary click follows a link, and to move focus to a section link's heading. */
 export function demoLandingPage(showcaseHref: string | undefined, source: string,
     { stylesheetFile, menuScriptFile, catalog = english }: {
       stylesheetFile?: string | undefined; menuScriptFile?: string | undefined; catalog?: LocaleCatalog;

@@ -13,12 +13,15 @@ below it. From the `md` breakpoint the header is a row. Below that it keeps **Tr
 the demo** and a menu button that opens the same links in a popover, fixed just
 below the header wherever the page is scrolled, with a `<details>` fallback where
 popovers are missing. Escape or a tap outside closes the popover. A small script
-closes either phone menu after a link is followed. Without the script a
+closes either phone menu after an unmodified primary click follows a link and
+moves keyboard focus to the heading for section links. Without the script a
 followed link leaves it open, so the scroll padding accounts for the panel's maximum
 height. Longer menus scroll inside the panel. The footer lists source, license and
 self-hosting links beside the running version. For other source URLs the license and
 guide links open the configured source via `/source`.
-The page uses the public stylesheet and native links. Its policy allows same-origin scripts.
+The page uses the public stylesheet and native links. Its content security
+policy allows only the current content-hashed menu script, or disallows scripts
+when that asset is unavailable.
 Its controls have their own hover, active and keyboard-focus styles in light and
 dark, and colour transitions stop under reduced motion.
 Ten feature sections have inline SVG icons and seeded screenshots; each lists the

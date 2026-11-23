@@ -44,10 +44,12 @@ it('serves the entry root as HTML with ordered CTAs, the showcase start URL, sou
   expect(response.status).toBe(200);
   expect(response.headers.get('content-type')).toContain('text/html');
   expect(response.headers.get('cache-control')).toBe('no-store');
-  expect(response.headers.get('content-security-policy')?.split(';').map(part => part.trim()).filter(part => !part.startsWith('report-'))).toEqual([
-    "default-src 'none'", "script-src 'self'", "style-src 'self'", "img-src 'self'", "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'",
-  ]);
   const html = await response.text();
+  const scriptPath = html.match(/<script src="([^"]+)"/)?.[1];
+  expect(scriptPath).toMatch(/^\/demo-assets\/landing-menu-[a-f0-9]{16}\.js$/);
+  expect(response.headers.get('content-security-policy')?.split(';').map(part => part.trim()).filter(part => !part.startsWith('report-'))).toEqual([
+    "default-src 'none'", `script-src ${new URL(origin).host}${scriptPath}`, "style-src 'self'", "img-src 'self'", "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'",
+  ]);
   const links = [...html.replace(/<svg\b.*?<\/svg>/g, '').replace(/<span class="shrink-0[^"]*"><\/span>/g, '')
     .matchAll(/<a href="([^"]+)"[^>]*>([^<]+)<\/a>/g)].map(match => [match[1], match[2]]);
   expect(links).toEqual(expect.arrayContaining([
@@ -173,7 +175,6 @@ it('has a header with section links, native phone menus and icons on both calls 
   // Every menu control is a 44 px target, and the page links its own stylesheet by content hash.
   expect(header).not.toMatch(/<(?:a|button|summary)\b(?![^>]*min-h-11)[^>]*>/);
   expect(html).toContain(`<link rel="stylesheet" href="/demo-assets/${stylesheetName(css)}"/>`);
-  expect(response.headers.get('content-security-policy')).toContain("script-src 'self'");
   expect(html).not.toMatch(/\sstyle\s*=|\sonclick=/i);
 });
 it('keeps the running version in the footer after the source, license and self-hosting links', () => {
@@ -299,7 +300,7 @@ it('renders the landing page and logs once when its stylesheet is missing', asyn
     expect(logs).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('"asset":"landing.css"'));
   } finally { setLogSink(previous); }
 });
-it('keeps the native menus when the phone menu script is missing', async () => {
+it('keeps the native menus and disallows scripts when the phone menu script is missing', async () => {
   const previous = setLogSink(vi.fn());
   try {
     const app = appFor(true, { readAsset: async file => {
@@ -308,6 +309,7 @@ it('keeps the native menus when the phone menu script is missing', async () => {
     } });
     const page = await app.request(origin + '/');
     expect(page.status).toBe(200);
+    expect(page.headers.get('content-security-policy')?.split('; ').filter(part => part.startsWith('script-src '))).toEqual(["script-src 'none'"]);
     const html = await page.text();
     expect(html).not.toMatch(/<script\b/i);
     expect(html).toContain('id="site-menu" popover="auto"');

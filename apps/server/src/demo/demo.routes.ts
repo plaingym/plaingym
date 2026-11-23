@@ -165,12 +165,15 @@ export function createDemoRoutes(service: DemoService, options: {
           return c.res;
         });
         app.get('/', async (c, next) => {
-          if (!isInstallHost(c.req.header('host') ?? new URL(c.req.url).host)) return next();
+          const host = c.req.header('host') ?? new URL(c.req.url).host;
+          if (!isInstallHost(host)) return next();
           await authorize({ kind: 'public' })(c, async () => {
             const [showcase, stylesheet, menuScript] = await Promise.all([options.pool?.showcase(), assets.stylesheet(), assets.menuScript()]);
-            c.header('cache-control', 'no-store'); setPolicy(c, demoLandingDirectives);
+            const menuScriptFile = menuScript?.file;
+            c.header('cache-control', 'no-store');
+            setPolicy(c, demoLandingDirectives(menuScriptFile ? `${host}/demo-assets/${menuScriptFile}` : undefined));
             c.res = c.html(demoLandingPage(showcase, options.sourceUrl ?? defaultSourceUrl, {
-              stylesheetFile: stylesheet?.file, menuScriptFile: menuScript?.file,
+              stylesheetFile: stylesheet?.file, menuScriptFile,
             }));
           });
           return c.res;
