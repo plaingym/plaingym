@@ -78,8 +78,10 @@ use English formatting, as the signed-link pages do. The PDF is stored under
 `<gymId>/receipts/` and marked deleted at once, like waiver PDFs, so the upload
 sweep removes it. Demo sandboxes instead cache one generated PDF per receipt
 content, capped at 1 MiB, until sandbox cleanup. Once a sandbox holds 64 cached
-receipt copies, each new receipt is served from a fresh copy marked deleted at
-once, which sandbox cleanup removes. General uploads stay disabled.
+receipt copies, a new receipt is served from a fresh copy marked deleted at
+once, and repeat downloads of the same content within five minutes reuse that
+copy; sandbox cleanup removes them. Only digest-named copies count toward the
+64. General uploads stay disabled.
 
 ## Waivers
 

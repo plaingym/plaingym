@@ -2,7 +2,8 @@
 import { expect, it, vi } from 'vitest';
 import { uuidv7 } from '@plaingym/db';
 import { FakeUploads } from '../infra/storage/index.js';
-import { DemoUploads } from './uploads.js';
+import { DemoUploads, demoReceiptReuseLimit, demoReceiptReuseSize } from './uploads.js';
+import { TestClock } from '../core/clock.js';
 
 it('coalesces generated receipts and refuses oversized, non-PDF or misplaced writes', async () => {
   const gymId = uuidv7(), source = new FakeUploads(gymId), uploads = new DemoUploads(source);
@@ -28,9 +29,9 @@ const receiptBytes = new TextEncoder().encode('%PDF-1.7 generated receipt');
 function receiptKey(gymId: string, invoiceId: string, seed: number): string {
   return `${gymId}/receipts/${invoiceId}/${seed.toString(16).padStart(64, '0')}.pdf`;
 }
-async function fillReceipts(gymId: string, uploads: DemoUploads, render: () => Promise<Uint8Array>) {
+async function fillReceipts(gymId: string, uploads: DemoUploads, render: () => Promise<Uint8Array>, count = receiptLimit) {
   const invoiceId = uuidv7(), freshKey = () => `${gymId}/receipts/${invoiceId}/${uuidv7()}.pdf`;
-  const keys = Array.from({ length: receiptLimit }, (_, index) => receiptKey(gymId, invoiceId, index));
+  const keys = Array.from({ length: count }, (_, index) => receiptKey(gymId, invoiceId, index));
   for (const key of keys) expect(await uploads.receiptPdf(key, render, freshKey)).toBe(key);
   return { invoiceId, freshKey, keys };
 }
@@ -95,6 +96,100 @@ it('coalesces concurrent over-limit receipts onto one swept copy', async () => {
   expect(first).toBe(second);
   expect(first).not.toBe(overflow);
   expect((await source.head(first))?.deletedAt).toBeDefined();
+  expect(render).toHaveBeenCalledOnce();
+});
+
+async function overflowFixture() {
+  const gymId = uuidv7(), clock = new TestClock('2026-01-01T00:00:00.000Z');
+  const source = new FakeUploads(gymId, clock), uploads = new DemoUploads(source, () => clock.now().getTime());
+  const render = vi.fn(async () => receiptBytes);
+  const { invoiceId, freshKey } = await fillReceipts(gymId, uploads, render);
+  render.mockClear();
+  return { gymId, clock, source, uploads, render, invoiceId, freshKey };
+}
+function deletedCopies(source: FakeUploads, gymId: string, invoiceId: string) {
+  return source.list(`${gymId}/receipts/${invoiceId}/`).then(list => list.filter(info => info.deletedAt));
+}
+
+it('reuses an over-limit receipt copy for five minutes and renders again at the boundary', async () => {
+  const { gymId, clock, source, uploads, render, invoiceId, freshKey } = await overflowFixture();
+  const overflow = receiptKey(gymId, invoiceId, receiptLimit);
+  const first = await uploads.receiptPdf(overflow, render, freshKey);
+  expect(first).not.toBe(overflow);
+  expect(first.slice(0, first.lastIndexOf('/'))).toBe(overflow.slice(0, overflow.lastIndexOf('/')));
+  expect((await source.head(first))?.deletedAt).toBeDefined();
+  expect(await deletedCopies(source, gymId, invoiceId)).toHaveLength(1);
+  clock.advance(299_999);
+  expect(await uploads.receiptPdf(overflow, render, freshKey)).toBe(first);
+  expect(render).toHaveBeenCalledOnce();
+  expect(await deletedCopies(source, gymId, invoiceId)).toHaveLength(1);
+  clock.advance(1);
+  const second = await uploads.receiptPdf(overflow, render, freshKey);
+  expect(second).not.toBe(first);
+  expect(render).toHaveBeenCalledTimes(2);
+  expect(await deletedCopies(source, gymId, invoiceId)).toHaveLength(2);
+});
+
+it('keeps a separate over-limit copy for each receipt content', async () => {
+  const { gymId, source, uploads, render, invoiceId, freshKey } = await overflowFixture();
+  const firstKey = receiptKey(gymId, invoiceId, receiptLimit), secondKey = receiptKey(gymId, invoiceId, receiptLimit + 1);
+  const first = await uploads.receiptPdf(firstKey, render, freshKey);
+  const second = await uploads.receiptPdf(secondKey, render, freshKey);
+  expect(first).not.toBe(second);
+  expect(await uploads.receiptPdf(firstKey, render, freshKey)).toBe(first);
+  expect(await uploads.receiptPdf(secondKey, render, freshKey)).toBe(second);
+  expect(render).toHaveBeenCalledTimes(2);
+  for (const key of [first, second]) {
+    expect(key.slice(0, key.lastIndexOf('/'))).toBe(firstKey.slice(0, firstKey.lastIndexOf('/')));
+    expect((await source.head(key))?.deletedAt).toBeDefined();
+  }
+});
+
+it('renders a new over-limit copy after the reused copy is swept', async () => {
+  const { gymId, clock, source, uploads, render, invoiceId, freshKey } = await overflowFixture();
+  const overflow = receiptKey(gymId, invoiceId, receiptLimit);
+  const first = await uploads.receiptPdf(overflow, render, freshKey);
+  clock.advance(1_000);
+  expect(await uploads.receiptPdf(overflow, render, freshKey)).toBe(first);
+  expect(render).toHaveBeenCalledOnce();
+  expect(await source.sweep({ before: clock.now() })).toEqual([first]);
+  const second = await uploads.receiptPdf(overflow, render, freshKey);
+  expect(second).not.toBe(first);
+  expect(render).toHaveBeenCalledTimes(2);
+  expect((await source.head(second))?.deletedAt).toBeDefined();
+});
+
+it('counts only digest-named copies toward the sandbox limit', async () => {
+  const gymId = uuidv7(), clock = new TestClock('2026-01-01T00:00:00.000Z');
+  const source = new FakeUploads(gymId, clock), uploads = new DemoUploads(source, () => clock.now().getTime());
+  const render = vi.fn(async () => receiptBytes);
+  const { invoiceId, freshKey } = await fillReceipts(gymId, uploads, render, receiptLimit - 1);
+  const leftover = `${gymId}/receipts/${invoiceId}/${uuidv7()}.pdf`;
+  await source.put(leftover, receiptBytes, 'application/pdf');
+  const key = receiptKey(gymId, invoiceId, receiptLimit - 1);
+  expect(await uploads.receiptPdf(key, render, freshKey)).toBe(key);
+  const live = (await source.list(`${gymId}/receipts/`)).filter(info => !info.deletedAt);
+  expect(live.filter(info => /\/[0-9a-f]{64}\.pdf$/.test(info.key))).toHaveLength(receiptLimit);
+  expect(live).toHaveLength(receiptLimit + 1);
+});
+
+it('bounds the over-limit reuse map', async () => {
+  const { gymId, uploads, render, invoiceId, freshKey } = await overflowFixture();
+  for (let index = 0; index < demoReceiptReuseLimit + 1; index++)
+    await uploads.receiptPdf(receiptKey(gymId, invoiceId, receiptLimit + index), render, freshKey);
+  expect(demoReceiptReuseSize()).toBe(demoReceiptReuseLimit);
+});
+
+it('coalesces concurrent over-limit downloads and reuses the result', async () => {
+  const { gymId, uploads, render, invoiceId, freshKey } = await overflowFixture();
+  const overflow = receiptKey(gymId, invoiceId, receiptLimit);
+  const [first, second] = await Promise.all([
+    uploads.receiptPdf(overflow, render, freshKey),
+    uploads.receiptPdf(overflow, render, freshKey),
+  ]);
+  expect(first).toBe(second);
+  expect(render).toHaveBeenCalledOnce();
+  expect(await uploads.receiptPdf(overflow, render, freshKey)).toBe(first);
   expect(render).toHaveBeenCalledOnce();
 });
 

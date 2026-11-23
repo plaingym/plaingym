@@ -9,6 +9,10 @@ import { parseSignatureImageKey } from '../areas/waivers/signature-image-key.js'
 const t = createTranslator(locales.en ?? {});
 
 export const demoReceiptCopyLimit = 64;
+export const demoReceiptReuseMs = 300_000;
+export const demoReceiptReuseLimit = 1_000;
+const overLimitCopies = new Map<string, { key: string; until: number }>();
+export function demoReceiptReuseSize(): number { return overLimitCopies.size; }
 
 const pending = new Map<string, Promise<string>>();
 function pdfKey(key: string): string | undefined {
@@ -18,7 +22,7 @@ function pdfKey(key: string): string | undefined {
 
 /** Narrow waiver and receipt operations; the shared Uploads interface refuses general visitor puts. */
 export class DemoUploads implements Uploads {
-  constructor(private readonly source: Uploads) {}
+  constructor(private readonly source: Uploads, private readonly now: () => number = () => Date.now()) {}
   async put(): ReturnType<Uploads['put']> {
     assertNoTransaction('storage.put');
     throw new AppError('forbidden', t('demo/demo:uploadsDisabled'));
@@ -51,7 +55,7 @@ export class DemoUploads implements Uploads {
         return fallback;
       },
       rethrowUnusableWinner: true,
-      full: async () => (await this.source.list(key.slice(0, 36) + '/receipts/')).filter(info => !info.deletedAt).length >= demoReceiptCopyLimit,
+      full: async () => (await this.source.list(key.slice(0, 36) + '/receipts/')).filter(info => !info.deletedAt && /\/[0-9a-f]{64}\.pdf$/.test(info.key)).length >= demoReceiptCopyLimit,
     });
   }
   async #cachedPdf(key: string, o: {
@@ -69,8 +73,26 @@ export class DemoUploads implements Uploads {
           if (o.cached(cached)) return key;
           throw new AppError('not_found', 'Resource not found');
         }
+        if (o.full) {
+          const reusable = overLimitCopies.get(key);
+          if (reusable) {
+            if (reusable.until > this.now()) {
+              const copy = await this.source.head(reusable.key);
+              if (copy?.contentType === 'application/pdf') return reusable.key;
+            }
+            overLimitCopies.delete(key);
+          }
+        }
         const bytes = await o.render();
-        if (o.full && await o.full()) return await this.#ephemeral(o.fallbackKey(), bytes);
+        if (o.full && await o.full()) {
+          const fallback = await this.#ephemeral(o.fallbackKey(), bytes);
+          if (overLimitCopies.size >= demoReceiptReuseLimit && !overLimitCopies.has(key)) {
+            const oldest = overLimitCopies.keys().next().value;
+            if (oldest !== undefined) overLimitCopies.delete(oldest);
+          }
+          overLimitCopies.set(key, { key: fallback, until: this.now() + demoReceiptReuseMs });
+          return fallback;
+        }
         try { await this.source.put(key, bytes, 'application/pdf'); }
         catch (error) {
           const winner = await this.source.head(key);

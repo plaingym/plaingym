@@ -291,8 +291,10 @@ per PDF. A digest of the receipt content names its immutable cached copy;
 repeated downloads reuse it, while a refund or other content change creates a new
 copy. Concurrent requests share generation, and sandbox deletion removes these
 copies with the rest of its upload prefix. Once a sandbox holds 64 cached
-receipt copies, each new receipt is served from a fresh copy marked deleted at
-once, which sandbox cleanup removes. This path accepts no visitor files.
+receipt copies, a new receipt is served from a fresh copy marked deleted at
+once, and repeat downloads of the same content within five minutes reuse that
+copy; sandbox cleanup removes them. Only digest-named copies count toward the
+64. This path accepts no visitor files.
 
 `gym-app seed <gym-uuid>` and `pnpm seed <gym-uuid>` run the registered seed steps.
 Demo and gym-deletion HTTP contracts live in `@plaingym/shared/contracts`.
