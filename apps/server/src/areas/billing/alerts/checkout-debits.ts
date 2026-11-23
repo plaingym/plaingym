@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, countDistinct, eq, exists, isNotNull, isNull, notExists, or } from 'drizzle-orm';
-// eslint-disable-next-line database/system-tables -- Extract the Checkout intent ID and Stripe generation from gym-scoped audits to match payments and late debit resolutions.
+// eslint-disable-next-line database/system-tables -- Extract the Checkout intent ID and Stripe generation from gym-scoped audits, and order processing intents by sequence.
 import { sql } from 'drizzle-orm';
 import { auditEvents, forGym, invoices, payments } from '@plaingym/db';
 import { AppError, canStaff } from '@plaingym/shared';
@@ -8,7 +8,7 @@ import { extensionDashboardWidgetSchema } from '@plaingym/shared/contracts';
 import type { z } from 'zod';
 import type { DashboardWidgetProvider } from '../../../core/interfaces/extensions.js';
 import { checkoutReviewAction, lateProcessingResolved } from '../runner/reconciliation.js';
-import { invoiceLateProcessing } from '../transitions/bank.js';
+import { invoiceLateProcessing, invoiceProcessing } from '../transitions/bank.js';
 import { latestTestSwitchId } from '../stripe-writes.js';
 
 const widgetId = 'billing.checkout-debits';
@@ -35,10 +35,20 @@ export function createCheckoutDebitReviewProvider(options: { scope?: typeof forG
           .where(and(matchingAudit, eq(auditEvents.action, lateProcessingResolved)));
         const paid = tx.select({ id: payments.id }).from(payments)
           .where(and(eq(payments.gymId, invoices.gymId), eq(payments.paymentIntentId, findings.intentId)));
+        // An invoice without a processing audit counts any finding; otherwise only its latest processing intent does.
+        const processingAudit = tx.select({ id: auditEvents.id }).from(auditEvents)
+          .where(and(eq(auditEvents.gymId, invoices.gymId), eq(auditEvents.targetType, 'invoice'),
+            eq(auditEvents.targetId, invoices.id), eq(auditEvents.action, invoiceProcessing)));
+        const latestProcessingIntent = tx.select({ intentId: auditedIntentId }).from(auditEvents)
+          .where(and(eq(auditEvents.gymId, invoices.gymId), eq(auditEvents.targetType, 'invoice'),
+            eq(auditEvents.targetId, invoices.id), eq(auditEvents.action, invoiceProcessing)))
+          .orderBy(sql`(${auditEvents.after}->>'sequence')::int desc nulls last`).limit(1);
+        const processing = and(eq(invoices.status, 'processing'),
+          or(notExists(processingAudit), sql`${findings.intentId} = ${latestProcessingIntent}`));
         return tx.select({ count: countDistinct(invoices.id) }).from(invoices)
           .innerJoin(findings, eq(findings.invoiceId, invoices.id))
           .where(and(eq(invoices.gymId, context.gymId), notExists(paid),
-            or(eq(invoices.status, 'processing'), and(exists(late), notExists(resolved)))));
+            or(processing, and(exists(late), notExists(resolved)))));
       });
       if (!total!.count) return null;
       return { id: widgetId, titleKey: 'billing/alerts:checkoutDebitsTitle', status: 'ready', kind: 'count', count: total!.count };

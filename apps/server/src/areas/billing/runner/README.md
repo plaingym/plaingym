@@ -227,7 +227,7 @@ applies the processing-failure transition when Stripe reports a failure or
 cancellation. The invoice failure audit carries the normalized failure code.
 For `customer_mismatch`, `pending` or `attempt_resolved`, the sweep leaves the
 invoice unchanged, reports the intent as `checkout_debit` and writes one
-`billing.runner.checkout_debit_unresolved` audit per invoice and reason. The
+`billing.runner.checkout_debit_unresolved` audit per invoice, reason and intent. The
 hourly job completes for these findings and can check the intent again on its
 next run. An intent Stripe still reports as `processing` continues settling.
 Staff with billing access see the affected invoices in the dashboard's bank

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { households, uuidv7 } from '@plaingym/db';
+import { households, invoices, uuidv7 } from '@plaingym/db';
 import { createCheckoutDebitReviewProvider } from './checkout-debits.js';
 import { checkoutReviewAction, lateProcessingResolved } from '../runner/reconciliation.js';
 import { stripeTestClearedAction } from '../stripe-writes.js';
@@ -77,6 +77,76 @@ describe('Checkout debit dashboard widget', () => {
     expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 1, issues: [] });
     expect((await f.read()).payments).toEqual(expect.arrayContaining([expect.objectContaining({ paymentIntentId })]));
     expect(await read(f)).toBeNull();
+  });
+
+  it('counts a later mismatched late intent after the invoice paid the first', async () => {
+    const f = await fixture({ currency: 'USD' });
+    const { bill, paymentIntentId: first } = await startCheckout(f, true);
+    const context = { gymId: f.gymId, actor: { kind: 'system' as const } };
+    await setCustomer(f, 'cus_other');
+    f.provider.settleCharge(first, 'succeeded');
+    expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 1, issues: [
+      { kind: 'checkout_debit', id: first, reason: 'customer_mismatch' },
+    ] });
+    expect(await read(f)).toHaveProperty('count', 1);
+
+    // Recording the first intent clears its finding; the second settles across the same paid invoice.
+    await setCustomer(f, 'cus_test');
+    expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 1, issues: [] });
+    expect(await read(f)).toBeNull();
+
+    const session = await f.provider.createCheckout({ mode: 'payment', customerId: 'cus_test', invoiceId: bill.id,
+      amount: bill.amountCents, currency: 'usd', bankDebit: { type: 'us_bank_account' },
+      successUrl: 'https://gym.example.invalid/success', cancelUrl: 'https://gym.example.invalid/cancel',
+      saveForOffSession: true, idempotencyKey: 'checkout-debit-later' });
+    const second = f.provider.completeCheckout(session.id, { method: 'us_bank_account' }).chargeId!;
+    await f.transitions.paymentProcessing(context, { invoiceId: bill.id, paymentIntentId: second });
+    await setCustomer(f, 'cus_other');
+    f.provider.settleCharge(second, 'succeeded');
+    f.clock.advance(11 * 86400_000);
+    expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 1, issues: [
+      { kind: 'checkout_debit', id: second, reason: 'customer_mismatch' },
+    ] });
+    expect(await read(f)).toHaveProperty('count', 1);
+
+    await setCustomer(f, 'cus_test');
+    expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 1, issues: [] });
+    expect(await read(f)).toBeNull();
+  });
+
+  it('ignores a pending finding for an earlier intent after a new processing attempt starts', async () => {
+    const f = await fixture({ currency: 'USD' });
+    const { bill, paymentIntentId: first } = await startCheckout(f);
+    const context = { gymId: f.gymId, actor: { kind: 'system' as const } };
+    const current = await f.provider.findCharge({ kind: 'charge', id: first });
+    if (current.status !== 'processing') throw new Error('Expected a processing debit');
+    vi.spyOn(f.provider, 'findCharge').mockResolvedValueOnce({ ...current, status: 'pending' });
+    expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 1, issues: [
+      { kind: 'checkout_debit', id: first, reason: 'pending' },
+    ] });
+    expect(await read(f)).toHaveProperty('count', 1);
+
+    await f.transitions.processingFailed(context, { invoiceId: bill.id, paymentIntentId: first, code: 'insufficient_funds' });
+    const session = await f.provider.createCheckout({ mode: 'payment', customerId: 'cus_test', invoiceId: bill.id,
+      amount: bill.amountCents, currency: 'usd', bankDebit: { type: 'us_bank_account' },
+      successUrl: 'https://gym.example.invalid/success', cancelUrl: 'https://gym.example.invalid/cancel',
+      saveForOffSession: true, idempotencyKey: 'checkout-debit-retry' });
+    const second = f.provider.completeCheckout(session.id, { method: 'us_bank_account' }).chargeId!;
+    await f.transitions.paymentProcessing(context, { invoiceId: bill.id, paymentIntentId: second });
+    expect(await read(f)).toBeNull();
+
+    await factory('auditEvents', f.gymId, { action: checkoutReviewAction, targetType: 'invoice', targetId: bill.id,
+      after: { reason: 'pending', paymentIntentId: second } });
+    expect(await read(f)).toHaveProperty('count', 1);
+  });
+
+  it('counts a processing invoice with a finding and no processing audit', async () => {
+    const f = await fixture({ currency: 'USD' });
+    const bill = await invoice(f);
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'processing' }).where(eq(invoices.id, bill.id)));
+    await factory('auditEvents', f.gymId, { action: checkoutReviewAction, targetType: 'invoice', targetId: bill.id,
+      after: { reason: 'pending', paymentIntentId: 'pi_without_processing_audit' } });
+    expect(await read(f)).toHaveProperty('count', 1);
   });
 
   it('drops a late finding from Stripe test mode once a switch to live clears it', async () => {

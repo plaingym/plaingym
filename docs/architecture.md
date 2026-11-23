@@ -295,9 +295,10 @@ source of truth; Stripe is the processor. In outline:
   sweep checks a debit older than ten days by intent ID. For a Checkout debit it
   records a confirmed settlement or applies a reported failure or cancellation.
   A customer mismatch, a pending intent, or an already resolved runner attempt
-  produces one audit per invoice and reason, and the hourly job continues.
+  produces one audit per invoice, reason and intent, and the hourly job continues.
   The staff dashboard counts affected invoices while the intent remains
-  unrecorded and the invoice is processing or its late debit is unresolved.
+  unrecorded and is the latest intent of a processing invoice, or its late
+  debit is unresolved.
   The sweep also checks late processing audits on terminal invoices. A settled debit
   on one of those invoices is recorded as a duplicate and reserved for refund
   once the customer matches. A late debit Stripe reports as failed gets a

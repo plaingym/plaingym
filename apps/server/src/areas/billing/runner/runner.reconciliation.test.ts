@@ -11,7 +11,7 @@ import { createRunnerJobs } from './runner.jobs.js';
 import { createRestoreCheckLease } from '../../health/restore.billing-lease.js';
 import { createPaymentService } from '../payments.js';
 import { useRunnerFixture, gate, type Fixture } from './runner.fixture.test-helper.js';
-import { lateProcessingResolved } from './reconciliation.js';
+import { checkoutReviewAction, lateProcessingResolved } from './reconciliation.js';
 
 const { db, factory, fixture, invoice, checkout } = useRunnerFixture();
 
@@ -263,6 +263,40 @@ describe('bank debit reconciliation', () => {
       { inspected: 1, issues: [] }, { inspected: 1, issues: [] },
     ]);
     expect((await f.read()).audits.filter(event => event.action === lateProcessingResolved)).toHaveLength(1);
+  });
+
+  it('writes a review audit per late intent when a second intent mismatches on the same paid invoice', async () => {
+    const { f, bill, paymentIntentId: first } = await startLateCheckout();
+    await db.forGym(f.gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_other' }).where(eq(households.id, f.home.id)));
+    f.provider.settleCharge(first, 'succeeded');
+    f.clock.advance(11 * day);
+    expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 1, issues: [
+      { kind: 'checkout_debit', id: first, reason: 'customer_mismatch' },
+    ] });
+
+    // Recording the first intent leaves the invoice paid and its finding resolved by the payment.
+    await db.forGym(f.gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_test' }).where(eq(households.id, f.home.id)));
+    expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 1, issues: [] });
+
+    const session = await f.provider.createCheckout({ mode: 'payment', customerId: 'cus_test', invoiceId: bill.id,
+      amount: bill.amountCents, currency: 'usd', bankDebit: { type: 'us_bank_account' },
+      successUrl: 'https://gym.example.invalid/success', cancelUrl: 'https://gym.example.invalid/cancel',
+      saveForOffSession: true, idempotencyKey: 'checkout-cash-race-2' });
+    const second = f.provider.completeCheckout(session.id, { method: 'us_bank_account' }).chargeId!;
+    expect(await f.transitions.paymentProcessing(actor(f), { invoiceId: bill.id, paymentIntentId: second }))
+      .toMatchObject({ outcome: 'ignored', invoice: { status: 'paid' } });
+    await db.forGym(f.gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_other' }).where(eq(households.id, f.home.id)));
+    f.provider.settleCharge(second, 'succeeded');
+    f.clock.advance(11 * day);
+
+    expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 1, issues: [
+      { kind: 'checkout_debit', id: second, reason: 'customer_mismatch' },
+    ] });
+    const reviews = (await f.read()).audits.filter(event => event.action === checkoutReviewAction).map(event => event.after);
+    expect(reviews).toHaveLength(2);
+    expect(reviews).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reason: 'customer_mismatch', paymentIntentId: first }),
+      expect.objectContaining({ reason: 'customer_mismatch', paymentIntentId: second })]));
   });
 
   it.each(['processing', 'succeeded'] as const)('reads a late Checkout debit Stripe still reports as %s on every sweep', async status => {

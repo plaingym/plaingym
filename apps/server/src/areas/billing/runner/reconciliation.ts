@@ -123,11 +123,13 @@ export function createReconciliation(options: Options) {
         || (checkout && invoice.id !== checkout.invoiceId)
         || (outcome.metadata.attemptId && outcome.metadata.attemptId !== attempt?.id)) return 'unresolved';
       const reportCheckout = async (reason: CheckoutReview) => {
-        // The invoice lock serializes the first audit, including two sweeps of the same invoice.
+        // The invoice lock serializes the first audit for this intent, including two sweeps of the same invoice.
         const previous = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
           eq(auditEvents.targetType, 'invoice'), eq(auditEvents.targetId, invoice.id), eq(auditEvents.action, checkoutReviewAction)));
-        if (!previous.some(event => (event.after as { reason?: CheckoutReview } | null)?.reason === reason))
-          await audit(tx, context, clock, checkoutReviewAction, 'invoice', invoice.id, { reason, paymentIntentId: outcome.id });
+        if (!previous.some(event => {
+          const after = event.after as { reason?: CheckoutReview; paymentIntentId?: string } | null;
+          return after?.reason === reason && after.paymentIntentId === outcome.id;
+        })) await audit(tx, context, clock, checkoutReviewAction, 'invoice', invoice.id, { reason, paymentIntentId: outcome.id });
         return reason;
       };
       if (checkout && !checkout.late && invoice.status !== 'processing' && outcome.status !== 'succeeded') return undefined;

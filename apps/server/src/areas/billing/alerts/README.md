@@ -115,10 +115,12 @@ dispute email links to `/admin/billing/invoices/<invoiceId>` on the gym's config
 
 The `billing.checkout-debits` dashboard count requires `billing.read`. It counts
 each invoice once when a reconciliation finding names a Checkout intent with no
-recorded payment. Eligible invoices are those in processing and those with a
-late processing audit for the same intent that the sweep has yet to resolve,
-except one from Stripe test mode cleared by a switch to live, which the sweep
-no longer reads. The widget is omitted when the count is zero.
+recorded payment. A processing invoice counts only a finding on its latest
+processing intent, while one with no processing audit counts any finding. An
+invoice not in processing needs a late processing audit for the same intent that
+the sweep has yet to resolve, except one from Stripe test mode cleared by a switch
+to live, which the sweep no longer reads. The widget is omitted when the count is
+zero.
 
 Card reminders take the household address and its opt-out/deliverability check from
 the household recipient helper (`areas/members/household-recipient.ts`), shared with
