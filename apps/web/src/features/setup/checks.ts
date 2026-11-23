@@ -13,19 +13,31 @@ export function schemaCheck(schema: Schema, problem: string, convert: (value: st
 const owner = setupOwnerRequestSchema.shape, gym = setupGymDetailsSchema.shape, storage = setupS3CredentialsSchema.shape;
 const smtp = setupSmtpRequestSchema.options[1].shape, website = setupWebsiteRequestSchema.options[1].shape;
 /**
- * A backup endpoint must be the service's address, not a bucket's: Cloudflare R2 shows a per-bucket "S3 API" address
- * (`https://<account>.r2.cloudflarestorage.com/<bucket>`), and with path-style requests every call then went to
- * `/<bucket>/<bucket>/…`. Refused when the path's last segment is the bucket typed in the same form.
+ * Splits Cloudflare R2's per-bucket "S3 API" address (`https://<account>.r2.cloudflarestorage.com/<bucket>`) into the
+ * service endpoint and the bucket it points at. Only an `https:` URL with exactly one path segment and no query,
+ * fragment or user info is an S3 API address; anything else, including a segment that can't be decoded, returns null.
  */
+export function splitBucketAddress(address: string): { endpoint: string; bucket: string } | null {
+  const trimmed = address.trim();
+  if (!URL.canParse(trimmed)) return null;
+  const url = new URL(trimmed);
+  if (url.protocol !== 'https:' || url.search || url.hash || url.username || url.password) return null;
+  const segments = url.pathname.split('/').filter(Boolean);
+  const segment = segments[0];
+  if (segments.length !== 1 || segment === undefined) return null;
+  try { return { endpoint: url.origin, bucket: decodeURIComponent(segment) }; } catch { return null; }
+}
 const lastPathSegment = (address: string) => URL.canParse(address) ? new URL(address).pathname.split('/').filter(Boolean).at(-1) : undefined;
 const fieldValue = (form: HTMLFormElement | null, name: string) => {
   const input = form?.elements.namedItem(name);
   return input instanceof HTMLInputElement ? input.value.trim() : '';
 };
 const endpointCheck: FieldCheck = (value, form) => {
-  if (!storage.endpoint.safeParse(value.trim()).success) return 'check.url';
+  const trimmed = value.trim();
+  if (!storage.endpoint.safeParse(trimmed).success) return 'check.url';
   const named = fieldValue(form, 'bucket');
-  return named && lastPathSegment(value.trim()) === named ? 'check.bucketPath' : null;
+  if (named && lastPathSegment(trimmed) === named) return 'check.bucketPath';
+  return splitBucketAddress(trimmed) !== null && named !== '' ? 'check.bucketPath' : null;
 };
 /** Each wizard field's format check, from the same shared schema its request uses. */
 export const fieldChecks: Readonly<Record<string, FieldCheck>> = {
@@ -45,10 +57,7 @@ export const fieldChecks: Readonly<Record<string, FieldCheck>> = {
   testTo: schemaCheck(smtp.testTo, 'check.email', (value) => value.trim()),
   endpoint: endpointCheck,
   region: schemaCheck(storage.region, 'check.required'),
-  bucket: (value, form) => {
-    if (!storage.bucket.safeParse(value).success) return 'check.required';
-    return lastPathSegment(fieldValue(form, 'endpoint')) === value.trim() ? 'check.bucketInEndpoint' : null;
-  },
+  bucket: schemaCheck(storage.bucket, 'check.required'),
   accessKeyId: schemaCheck(storage.accessKeyId, 'check.required'),
   secretAccessKey: schemaCheck(storage.secretAccessKey, 'check.required'),
   clientId: schemaCheck(googleClientValueSchema, 'check.googleValue'),

@@ -16,7 +16,8 @@ import { createRegistries } from '../../lib/registries.js';
 import { setupClient, type createSetupClient } from './api.js';
 import { SetupActions, SetupSecondaryActions } from './actions.js';
 import { hostTimezone } from './host-timezone.js';
-import { DraftContext, Field } from './field.js';
+import { DraftContext, Field, setValue } from './field.js';
+import { splitBucketAddress } from './checks.js';
 import { SmtpPortHint } from './smtp-port-hint.js';
 import { BackupKeyPanel, ConfirmKeySection, confirmKeyLabels } from './backup-key.js';
 import { GoogleClientFields, GoogleRedirect } from '../settings/auth.js';
@@ -31,8 +32,16 @@ function destination(data: FormData): SetupS3Credentials {
     accessKeyId: text(data, 'accessKeyId'), secretAccessKey: text(data, 'secretAccessKey') };
 }
 function Destination() {
-  return <><Field name="endpoint" type="url" hint={t('setup/setup:endpointHint')} /><Field name="region" value="auto" /><Field name="bucket" />
-    <Field name="accessKeyId" /><Field name="secretAccessKey" type="password" /></>;
+  /** R2's per-bucket address fills both fields, unless the owner has already typed another bucket. */
+  const takeBucket = (input: HTMLInputElement) => {
+    const split = splitBucketAddress(input.value), bucket = input.form?.elements.namedItem('bucket');
+    if (!split || !(bucket instanceof HTMLInputElement) || !['', split.bucket].includes(bucket.value.trim())) return null;
+    setValue(input, split.endpoint); setValue(bucket, split.bucket);
+    return t('setup/setup:check.bucketFromEndpoint', { bucket: split.bucket });
+  };
+  return <><Field name="endpoint" type="url" hint={t('setup/setup:endpointHint')} onLeave={takeBucket} recheckWith={['bucket']} />
+    <Field name="region" value="auto" /><Field name="bucket" />
+    <Field name="accessKeyId" confirmOk={false} /><Field name="secretAccessKey" type="password" confirmOk={false} /></>;
 }
 
 /**

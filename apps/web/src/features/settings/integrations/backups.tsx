@@ -11,6 +11,8 @@ import { Label } from '../../../components/ui/label.js';
 import { CheckboxField } from '../../../components/ui/select.js';
 import { FormMessage } from '../../../components/ui/alert.js';
 import { BackupKeyPanel, ConfirmKeySection, confirmKeyLabels } from '../../setup/backup-key.js';
+import { splitBucketAddress } from '../../setup/checks.js';
+import { setValue } from '../../setup/field.js';
 import { failedText, integrationsOf, refusedText, text, type useIntegrations } from './state.js';
 import { BackupActions } from '../../health/backups.js';
 
@@ -24,10 +26,16 @@ export const destinationCheckTimeoutMs = 2 * 60_000;
 const gigabytes = (bytes: number) => new Intl.NumberFormat('en', { maximumFractionDigits: 1 }).format(bytes / 1e9) + ' GB';
 /** What the health check knows about the last snapshot: undefined while it loads or when it couldn't be checked. */
 export type LastSnapshot = { at: string | null; noneUnderCurrentKey: boolean } | 'unknown' | undefined;
-function Field({ name, type = 'text', value, text: shown, idPrefix = 'integrations-backup-' }: { name: string; type?: string; value?: string | undefined; text?: string; idPrefix?: string }) {
+function Field({ name, type = 'text', value, text: shown, idPrefix = 'integrations-backup-', onBlur, onChange, note }: {
+  name: string; type?: string; value?: string | undefined; text?: string; idPrefix?: string;
+  onBlur?: ((input: HTMLInputElement) => void) | undefined; onChange?: (() => void) | undefined; note?: string | null | undefined;
+}) {
+  const id = idPrefix + name, noteId = 'integrations-backup-' + name + '-note';
   return <div className="grid min-w-0 gap-2">
-    <Label htmlFor={idPrefix + name}>{shown ?? label(name)}</Label>
-    <Input id={idPrefix + name} name={name} type={type} required defaultValue={value} autoComplete={type === 'password' ? 'new-password' : 'off'}/>
+    <Label htmlFor={id}>{shown ?? label(name)}</Label>
+    <Input id={id} name={name} type={type} required defaultValue={value} autoComplete={type === 'password' ? 'new-password' : 'off'}
+      aria-describedby={note ? noteId : undefined} onBlur={onBlur ? (event) => onBlur(event.currentTarget) : undefined} onChange={onChange}/>
+    {note && <p role="status" id={noteId} className="text-sm">{note}</p>}
   </div>;
 }
 /**
@@ -40,6 +48,14 @@ export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { ba
   const [busy, setBusy] = useState(false), [open, setOpen] = useState(false), [credentialsOpen, setCredentialsOpen] = useState(false);
   const [created, setCreated] = useState<{ privateKey: string; publicKey: string } | null>(null);
   const [message, setMessage] = useState<{ kind: 'status' | 'alert'; text: string } | null>(null);
+  const [bucketNote, setBucketNote] = useState<string | null>(null);
+  /** R2's per-bucket address fills both fields, unless the owner has already typed another bucket. */
+  const takeBucket = (input: HTMLInputElement) => {
+    const split = splitBucketAddress(input.value), bucket = input.form?.elements.namedItem('bucket');
+    if (!split || !(bucket instanceof HTMLInputElement) || !['', split.bucket].includes(bucket.value.trim())) return;
+    setValue(input, split.endpoint); setValue(bucket, split.bucket);
+    setBucketNote(text('backups.bucketFromEndpoint', { bucket: split.bucket }));
+  };
   const run = async (action: () => Promise<void>) => {
     setMessage(null); setBusy(true);
     try { await action(); } catch (error) { setMessage({ kind: 'alert', text: failedText(error) }); } finally { setBusy(false); }
@@ -107,12 +123,12 @@ export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { ba
         <CheckboxField required label={label('savedKey')}/>
         <div className="flex flex-col gap-3 sm:flex-row">
           <Button type="submit">{busy ? confirmKeyLabels.checking() : confirmKeyLabels.submit()}</Button>
-          <Button type="button" variant="outline" onClick={() => { setCreated(null); setCredentialsOpen(false); setOpen(true); }}>{label('start')}</Button>
+          <Button type="button" variant="outline" onClick={() => { setCreated(null); setCredentialsOpen(false); setBucketNote(null); setOpen(true); }}>{label('start')}</Button>
         </div>
       </fieldset>
     </form></ConfirmKeySection>}
     {!pending && (!open || backups.configured) && <div className="flex flex-col gap-3 sm:flex-row">
-      {!open && <Button type="button" variant="outline" onClick={() => { setMessage(null); setCredentialsOpen(false); setOpen(true); }}>{label(backups.configured ? 'change' : 'setUp')}</Button>}
+      {!open && <Button type="button" variant="outline" onClick={() => { setMessage(null); setCredentialsOpen(false); setBucketNote(null); setOpen(true); }}>{label(backups.configured ? 'change' : 'setUp')}</Button>}
       {backups.configured && !credentialsOpen && <Button type="button" variant="outline" onClick={() => { setMessage(null); setOpen(false); setCredentialsOpen(true); }}>{label('changeCredentials')}</Button>}
     </div>}
     {credentialsOpen && backups.configured && !pending && <form onSubmit={replaceCredentials} aria-label={label('changeCredentials')}>
@@ -126,7 +142,7 @@ export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { ba
     {open && <form onSubmit={generate} aria-label={label(backups.configured ? 'change' : 'setUp')}>
       <fieldset disabled={busy} className="grid min-w-0 gap-4">
         <p className="text-sm text-muted-foreground">{label('hint')}</p>
-        <Field name="endpoint" type="url" value={backups.destination?.endpoint}/>
+        <Field name="endpoint" type="url" value={backups.destination?.endpoint} onBlur={takeBucket} onChange={() => setBucketNote(null)} note={bucketNote}/>
         <Field name="region" value={backups.destination?.region ?? 'auto'}/>
         <Field name="bucket" value={backups.destination?.bucket}/>
         <Field name="accessKeyId"/>

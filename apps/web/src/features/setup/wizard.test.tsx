@@ -9,6 +9,7 @@ import { ShellServicesContext } from '../../app/context.js';
 import type { ShellServices } from '../../app/services.js';
 import { ApiError, onApiError } from '../../lib/api.js';
 import { SetupWizard } from './wizard.js';
+import { splitBucketAddress } from './checks.js';
 import { createSetupClient } from './api.js';
 import { createRegistries, type ExtensionView } from '../../lib/registries.js';
 
@@ -118,8 +119,8 @@ describe('setup wizard', () => {
     await screen.findByRole('button', { name: 'Generate backup key' });
     await userEvent.type(screen.getByLabelText('S3-compatible endpoint URL'), 'https://s3.example.test');
     await userEvent.type(screen.getByLabelText('Storage bucket'), 'backups');
-    await userEvent.type(screen.getByLabelText('Storage access key ID'), 'access');
-    await userEvent.type(screen.getByLabelText('Storage secret access key'), 'secret');
+    await userEvent.type(screen.getByLabelText('S3 access key ID'), 'access');
+    await userEvent.type(screen.getByLabelText('S3 secret access key (not the Cloudflare API token value)'), 'secret');
     await userEvent.click(screen.getByRole('button', { name: 'Generate backup key' }));
     expect((await screen.findByRole('alert')).textContent).toContain('list, write, read and delete');
     expect(document.body.textContent).not.toContain('server detail');
@@ -399,8 +400,8 @@ async function sendTestEmail() {
 async function generateKey() {
   await userEvent.type(await screen.findByLabelText('S3-compatible endpoint URL'), 'https://s3.example.test');
   await userEvent.type(screen.getByLabelText('Storage bucket'), 'gym-backups');
-  await userEvent.type(screen.getByLabelText('Storage access key ID'), 'access');
-  await userEvent.type(screen.getByLabelText('Storage secret access key'), 'private-storage-secret');
+  await userEvent.type(screen.getByLabelText('S3 access key ID'), 'access');
+  await userEvent.type(screen.getByLabelText('S3 secret access key (not the Cloudflare API token value)'), 'private-storage-secret');
   await userEvent.click(screen.getByRole('button', { name: 'Generate backup key' }));
   await screen.findByText(privateKey);
 }
@@ -548,8 +549,8 @@ describe('setup wizard confirmations', () => {
       ? Promise.resolve(Response.json({ error: { code: 'invalid_request', message: 'x', details: { destination: ['unreachable'] } } }, { status: 400 })) : answer(path, options));
     await userEvent.type(await screen.findByLabelText('S3-compatible endpoint URL'), 'https://s3.example.test');
     await userEvent.type(screen.getByLabelText('Storage bucket'), 'b');
-    await userEvent.type(screen.getByLabelText('Storage access key ID'), 'a');
-    await userEvent.type(screen.getByLabelText('Storage secret access key'), 's');
+    await userEvent.type(screen.getByLabelText('S3 access key ID'), 'a');
+    await userEvent.type(screen.getByLabelText('S3 secret access key (not the Cloudflare API token value)'), 's');
     await userEvent.click(screen.getByRole('button', { name: 'Generate backup key' }));
     const alert = await screen.findByRole('alert');
     expect(alert.dataset.variant).toBe('error');
@@ -603,17 +604,189 @@ describe('setup wizard field checks', () => {
     expect(address.getAttribute('aria-invalid')).toBeNull();
     expect(described(address)).toBe('');
   });
-  it('refuses a backup endpoint that ends with the bucket name', async () => {
+  it('splits an R2 address that ends with the bucket name', async () => {
     start(7);
-    const endpoint = await screen.findByLabelText('S3-compatible endpoint URL');
-    await userEvent.type(screen.getByLabelText('Storage bucket'), 'gym-backups');
+    const endpoint = await screen.findByLabelText('S3-compatible endpoint URL') as HTMLInputElement;
+    const bucket = screen.getByLabelText('Storage bucket') as HTMLInputElement;
+    await userEvent.type(bucket, 'gym-backups');
     await userEvent.type(endpoint, 'https://account.r2.cloudflarestorage.com/gym-backups'); await userEvent.tab();
-    expect(endpoint.getAttribute('aria-invalid')).toBe('true');
-    expect(described(endpoint)).toContain('Use the address without the bucket name.');
+    expect(endpoint.value).toBe('https://account.r2.cloudflarestorage.com');
+    expect(bucket.value).toBe('gym-backups');
+    expect(described(endpoint)).toContain('Using bucket gym-backups from this address.');
+    expect(described(endpoint)).toContain('Looks right');
     await userEvent.clear(endpoint); await userEvent.type(endpoint, 'https://account.r2.cloudflarestorage.com');
     expect(described(endpoint)).toContain('Looks right');
     await userEvent.clear(endpoint); await userEvent.type(endpoint, 'not an address');
     expect(described(endpoint)).toContain('Enter a full address starting with https://.');
+  });
+});
+
+describe('splitBucketAddress', () => {
+  const described = (input: HTMLElement) => (input.getAttribute('aria-describedby') ?? '').split(' ').map((id) => document.getElementById(id)?.textContent ?? '').join(' ');
+  const r2 = 'https://account.r2.cloudflarestorage.com/o1test';
+  it('splits R2 per-bucket S3 API addresses and decodes the bucket', () => {
+    expect(splitBucketAddress(' https://account.r2.cloudflarestorage.com/o1test '))
+      .toEqual({ endpoint: 'https://account.r2.cloudflarestorage.com', bucket: 'o1test' });
+    expect(splitBucketAddress('https://account.r2.cloudflarestorage.com/o1%20test'))
+      .toEqual({ endpoint: 'https://account.r2.cloudflarestorage.com', bucket: 'o1 test' });
+  });
+  it.each(['not an address', 'http://account.r2.cloudflarestorage.com/o1test', 'https://account.r2.cloudflarestorage.com/o1test?x=1',
+    'https://account.r2.cloudflarestorage.com/o1test#part', 'https://user:secret@account.r2.cloudflarestorage.com/o1test',
+    'https://account.r2.cloudflarestorage.com/a/b', 'https://account.r2.cloudflarestorage.com/', 'https://account.r2.cloudflarestorage.com/%E0%A4%A'])('returns null for %s',
+  (address) => expect(splitBucketAddress(address)).toBeNull());
+  it('clears the split note when the endpoint changes', async () => {
+    start(7);
+    const url = await screen.findByLabelText('S3-compatible endpoint URL') as HTMLInputElement;
+    await userEvent.type(url, r2);
+    await userEvent.tab();
+    expect(described(url)).toContain('Using bucket o1test from this address.');
+    await userEvent.type(url, 'x');
+    expect(described(url)).not.toContain('Using bucket o1test from this address.');
+  });
+});
+
+describe('setup wizard storage fields', () => {
+  const described = (input: HTMLElement) => (input.getAttribute('aria-describedby') ?? '').split(' ').map((id) => document.getElementById(id)?.textContent ?? '').join(' ');
+  const r2 = 'https://account.r2.cloudflarestorage.com/o1test';
+  const storageLabels = ['S3-compatible endpoint URL', 'Storage region', 'Storage bucket', 'S3 access key ID', 'S3 secret access key (not the Cloudflare API token value)'];
+  it('splits an R2 bucket address into the endpoint and the bucket', async () => {
+    const { fetcher } = start(7);
+    const url = await screen.findByLabelText('S3-compatible endpoint URL') as HTMLInputElement;
+    const name = screen.getByLabelText('Storage bucket') as HTMLInputElement;
+    await userEvent.type(url, r2);
+    await userEvent.tab();
+    expect(url.value).toBe('https://account.r2.cloudflarestorage.com');
+    expect(name.value).toBe('o1test');
+    expect(described(url)).toContain('Using bucket o1test from this address.');
+    expect(described(url)).toContain('Looks right');
+    expect(url.getAttribute('aria-invalid')).toBeNull();
+    expect(name.getAttribute('aria-invalid')).toBeNull();
+    await userEvent.type(screen.getByLabelText('S3 access key ID'), 'access');
+    await userEvent.type(screen.getByLabelText('S3 secret access key (not the Cloudflare API token value)'), 'private-storage-secret');
+    await userEvent.click(screen.getByRole('button', { name: 'Generate backup key' }));
+    await screen.findByText(privateKey);
+    const call = fetcher.mock.calls.find(([path]) => path === '/api/setup/backups');
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ revision: 1, destination: { endpoint: 'https://account.r2.cloudflarestorage.com', region: 'auto',
+      bucket: 'o1test', accessKeyId: 'access', secretAccessKey: 'private-storage-secret' } });
+  });
+  it('splits when the bucket already holds the address’s last segment', async () => {
+    start(7);
+    const url = await screen.findByLabelText('S3-compatible endpoint URL') as HTMLInputElement;
+    const name = screen.getByLabelText('Storage bucket') as HTMLInputElement;
+    await userEvent.type(name, 'o1test');
+    await userEvent.type(url, r2);
+    await userEvent.tab();
+    expect(url.value).toBe('https://account.r2.cloudflarestorage.com');
+    expect(name.value).toBe('o1test');
+    expect(described(url)).toContain('Using bucket o1test from this address.');
+    expect(described(url)).toContain('Looks right');
+  });
+  it('keeps a typed bucket and shows the mismatch until the endpoint is left again', async () => {
+    start(7);
+    const url = await screen.findByLabelText('S3-compatible endpoint URL') as HTMLInputElement;
+    const name = screen.getByLabelText('Storage bucket') as HTMLInputElement;
+    await userEvent.type(name, 'other');
+    await userEvent.type(url, r2);
+    await userEvent.tab();
+    expect(url.value).toBe(r2);
+    expect(url.getAttribute('aria-invalid')).toBe('true');
+    expect(described(url)).toContain('Use the address without the bucket name.');
+    expect(name.value).toBe('other');
+    await userEvent.clear(name);
+    await userEvent.type(name, 'o1test');
+    expect(described(url)).toContain('Use the address without the bucket name.');
+    expect(url.getAttribute('aria-invalid')).toBe('true');
+    url.focus();
+    await userEvent.tab();
+    expect(url.value).toBe('https://account.r2.cloudflarestorage.com');
+    expect(name.value).toBe('o1test');
+    expect(described(url)).toContain('Using bucket o1test from this address.');
+    expect(described(url)).toContain('Looks right');
+    expect(url.getAttribute('aria-invalid')).toBeNull();
+  });
+  it('leaves a plain endpoint unchanged without a note', async () => {
+    start(7);
+    const url = await screen.findByLabelText('S3-compatible endpoint URL') as HTMLInputElement;
+    const name = screen.getByLabelText('Storage bucket') as HTMLInputElement;
+    await userEvent.type(url, 'https://s3.example.test');
+    await userEvent.tab();
+    expect(url.value).toBe('https://s3.example.test');
+    expect(name.value).toBe('');
+    expect(described(url)).not.toContain('Using bucket');
+    expect(described(url)).toContain('Looks right');
+  });
+  it('leaves a virtual-hosted endpoint unchanged without a note', async () => {
+    start(7);
+    const url = await screen.findByLabelText('S3-compatible endpoint URL') as HTMLInputElement;
+    const name = screen.getByLabelText('Storage bucket') as HTMLInputElement;
+    await userEvent.type(url, 'https://o1test.account.r2.cloudflarestorage.com');
+    await userEvent.tab();
+    expect(url.value).toBe('https://o1test.account.r2.cloudflarestorage.com');
+    expect(name.value).toBe('');
+    expect(described(url)).not.toContain('Using bucket');
+    expect(described(url)).toContain('Looks right');
+  });
+  it('does not split an address with more than one path segment', async () => {
+    start(7);
+    const url = await screen.findByLabelText('S3-compatible endpoint URL') as HTMLInputElement;
+    const name = screen.getByLabelText('Storage bucket') as HTMLInputElement;
+    await userEvent.type(url, 'https://account.r2.cloudflarestorage.com/a/b');
+    await userEvent.tab();
+    expect(url.value).toBe('https://account.r2.cloudflarestorage.com/a/b');
+    expect(name.value).toBe('');
+    expect(described(url)).not.toContain('Using bucket');
+  });
+  it('labels the key fields as S3 keys and never says they look right', async () => {
+    start(7);
+    const id = await screen.findByLabelText('S3 access key ID') as HTMLInputElement;
+    const secret = screen.getByLabelText('S3 secret access key (not the Cloudflare API token value)') as HTMLInputElement;
+    await userEvent.type(id, 'access');
+    await userEvent.tab();
+    expect(described(id)).not.toContain('Looks right');
+    expect(id.getAttribute('aria-invalid')).toBeNull();
+    await userEvent.type(secret, 'secret');
+    await userEvent.tab();
+    expect(described(secret)).not.toContain('Looks right');
+    expect(secret.getAttribute('aria-invalid')).toBeNull();
+    await userEvent.clear(id);
+    await userEvent.tab();
+    expect(described(id)).toContain('Fill in this field.');
+    await userEvent.clear(secret);
+    await userEvent.tab();
+    expect(described(secret)).toContain('Fill in this field.');
+  });
+  it('splits the R2 address in the restore form too', async () => {
+    const { fetcher } = start();
+    await userEvent.click(await screen.findByRole('button', { name: 'Restore a backup' }));
+    const url = await screen.findByLabelText('S3-compatible endpoint URL') as HTMLInputElement;
+    const name = screen.getByLabelText('Storage bucket') as HTMLInputElement;
+    await userEvent.type(url, r2);
+    await userEvent.tab();
+    expect(url.value).toBe('https://account.r2.cloudflarestorage.com');
+    expect(name.value).toBe('o1test');
+    expect(described(url)).toContain('Using bucket o1test from this address.');
+    await userEvent.type(screen.getByLabelText('S3 access key ID'), 'access');
+    await userEvent.type(screen.getByLabelText('S3 secret access key (not the Cloudflare API token value)'), 'private-storage-secret');
+    await userEvent.type(screen.getByLabelText('Snapshot ID or snapshots/ID/ prefix'), 'snapshots/abc/');
+    await userEvent.type(screen.getByLabelText('Backup private key'), 'AGE-SECRET-KEY-1EXAMPLE');
+    await userEvent.click(screen.getByRole('button', { name: 'Restore a backup' }));
+    const call = fetcher.mock.calls.find(([path]) => path === '/api/setup/restore');
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ choice: 'restore', source: { endpoint: 'https://account.r2.cloudflarestorage.com', region: 'auto',
+      bucket: 'o1test', accessKeyId: 'access', secretAccessKey: 'private-storage-secret' }, snapshotPrefix: 'snapshots/abc/', privateKey: 'AGE-SECRET-KEY-1EXAMPLE' });
+  });
+  it('keeps every storage input inside a form', async () => {
+    start(7);
+    await screen.findByLabelText('S3-compatible endpoint URL');
+    const backupForms = storageLabels.map((label) => (screen.getByLabelText(label) as HTMLInputElement).form);
+    expect(backupForms.every(Boolean)).toBe(true);
+    expect(new Set(backupForms).size).toBe(1);
+    cleanup();
+    start();
+    await userEvent.click(await screen.findByRole('button', { name: 'Restore a backup' }));
+    await screen.findByLabelText('S3-compatible endpoint URL');
+    const restoreForms = storageLabels.map((label) => (screen.getByLabelText(label) as HTMLInputElement).form);
+    expect(restoreForms.every(Boolean)).toBe(true);
+    expect(new Set(restoreForms).size).toBe(1);
   });
 });
 
@@ -679,7 +852,7 @@ describe('setup wizard resume', () => {
     // Reopened before confirming: the destination comes back, and a new key is made for it.
     start(7);
     expect((await screen.findByLabelText('S3-compatible endpoint URL') as HTMLInputElement).value).toBe('https://s3.example.test');
-    expect((screen.getByLabelText('Storage secret access key') as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText('S3 secret access key (not the Cloudflare API token value)') as HTMLInputElement).value).toBe('');
   });
   it('resumes past backups set up later, at step 9 with a way back', async () => {
     const { fetcher } = start(7, [0, 1, 2, 3, 4, 5, 6], undefined, { backupsLater: true });
@@ -700,8 +873,8 @@ describe('setup wizard restore progress', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Restore a backup' }));
     await userEvent.type(screen.getByLabelText('S3-compatible endpoint URL'), 'https://s3.example.test');
     await userEvent.type(screen.getByLabelText('Storage bucket'), 'backups');
-    await userEvent.type(screen.getByLabelText('Storage access key ID'), 'access');
-    await userEvent.type(screen.getByLabelText('Storage secret access key'), 'secret');
+    await userEvent.type(screen.getByLabelText('S3 access key ID'), 'access');
+    await userEvent.type(screen.getByLabelText('S3 secret access key (not the Cloudflare API token value)'), 'secret');
     await userEvent.type(screen.getByLabelText('Snapshot ID or snapshots/ID/ prefix'), '019a0af0-9c00-7000-8000-0000000000cc');
     await userEvent.click(screen.getByLabelText('Backup private key')); await userEvent.paste(privateKey);
     await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Restore a backup' }));

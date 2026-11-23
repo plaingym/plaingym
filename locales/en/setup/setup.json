@@ -72,8 +72,8 @@
   "endpoint": "S3-compatible endpoint URL",
   "region": "Storage region",
   "bucket": "Storage bucket",
-  "accessKeyId": "Storage access key ID",
-  "secretAccessKey": "Storage secret access key",
+  "accessKeyId": "S3 access key ID",
+  "secretAccessKey": "S3 secret access key (not the Cloudflare API token value)",
   "snapshotPrefix": "Snapshot ID or snapshots/ID/ prefix",
   "privateKey": "Backup private key",
   "restoreHint": "Use the original backup private key and storage destination. A successful restore skips setup and keeps billing paused.",
@@ -123,6 +123,6 @@
   "check.url": "Enter a full address starting with https://.",
   "check.port": "Enter a port number from 1 to 65535.",
   "check.bucketPath": "Use the address without the bucket name.",
-  "check.bucketInEndpoint": "The endpoint above ends with this bucket: use the endpoint address without the bucket name.",
+  "check.bucketFromEndpoint": "Using bucket {bucket} from this address.",
   "check.googleValue": "Paste the value without spaces (at most 512 characters)."
 }

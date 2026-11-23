@@ -53,8 +53,8 @@ export async function guards(context: BrowserContext, target: Target) {
 async function destination(page: Page, config: Config) {
   for(const [label, value] of [
     ['S3-compatible endpoint URL', config.s3.endpoint], ['Storage region', config.s3.region],
-    ['Storage bucket', config.s3.bucket], ['Storage access key ID', config.s3.accessKeyId],
-    ['Storage secret access key', config.s3.secretAccessKey],
+    ['Storage bucket', config.s3.bucket], ['S3 access key ID', config.s3.accessKeyId],
+    ['S3 secret access key (not the Cloudflare API token value)', config.s3.secretAccessKey],
   ]) await page.getByLabel(label, { exact: true }).fill(value);
 }
 const next = (page: Page) => page.getByRole('button', { name: 'Save and continue', exact: true }).click();

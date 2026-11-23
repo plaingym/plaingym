@@ -60,8 +60,8 @@ describe('Settings → Backups', () => {
     const setup = screen.getByRole('form', { name: 'Set up backups' });
     await user.type(within(setup).getByLabelText('Storage endpoint URL'), 'https://s3.example.test');
     await user.type(within(setup).getByLabelText('Bucket'), 'new-bucket');
-    await user.type(within(setup).getByLabelText('Storage access key ID'), 'access-id');
-    await user.type(within(setup).getByLabelText('Storage secret access key'), 'access-secret');
+    await user.type(within(setup).getByLabelText('S3 access key ID'), 'access-id');
+    await user.type(within(setup).getByLabelText('S3 secret access key (not the Cloudflare API token value)'), 'access-secret');
     const stalled = stalledRequests(), timers = holdTimeouts(saveTimeoutMs, destinationCheckTimeoutMs);
     try {
       client.POST.mockImplementation(stalled.answer);
@@ -81,8 +81,8 @@ describe('Settings → Backups', () => {
     const setup = screen.getByRole('form', { name: 'Set up backups' });
     await user.type(within(setup).getByLabelText('Storage endpoint URL'), 'https://s3.example.test');
     await user.type(within(setup).getByLabelText('Bucket'), 'new-bucket');
-    await user.type(within(setup).getByLabelText('Storage access key ID'), 'access-id');
-    await user.type(within(setup).getByLabelText('Storage secret access key'), 'access-secret');
+    await user.type(within(setup).getByLabelText('S3 access key ID'), 'access-id');
+    await user.type(within(setup).getByLabelText('S3 secret access key (not the Cloudflare API token value)'), 'access-secret');
     await user.click(within(setup).getByRole('button', { name: 'Generate backup key' }));
     expect(client.POST).toHaveBeenCalledWith('/api/settings/integrations/backups', { signal: expect.any(AbortSignal), body: { revision: 3, destination: { endpoint: 'https://s3.example.test',
       region: 'auto', bucket: 'new-bucket', accessKeyId: 'access-id', secretAccessKey: 'access-secret' } } });
@@ -130,8 +130,8 @@ describe('Settings → Backups', () => {
     await user.click(screen.getByRole('button', { name: 'Change storage credentials' }));
     expect(screen.queryByRole('form', { name: 'Change destination or key' })).toBeNull();
     const replace = screen.getByRole('form', { name: 'Change storage credentials' });
-    await user.type(within(replace).getByLabelText('Storage access key ID'), 'rotated-id');
-    await user.type(within(replace).getByLabelText('Storage secret access key'), 'rotated-secret');
+    await user.type(within(replace).getByLabelText('S3 access key ID'), 'rotated-id');
+    await user.type(within(replace).getByLabelText('S3 secret access key (not the Cloudflare API token value)'), 'rotated-secret');
     const healthReads = () => client.GET.mock.calls.filter(([path]) => path === '/api/health').length;
     await waitFor(() => expect(healthReads()).toBeGreaterThan(0));
     const readsBefore = healthReads();
@@ -151,8 +151,8 @@ describe('Settings → Backups', () => {
     const user = userEvent.setup(); renderSection();
     await user.click(await screen.findByRole('button', { name: 'Change storage credentials' }));
     const form = screen.getByRole('form', { name: 'Change storage credentials' });
-    await user.type(within(form).getByLabelText('Storage access key ID'), 'wrong-id');
-    await user.type(within(form).getByLabelText('Storage secret access key'), 'wrong-secret');
+    await user.type(within(form).getByLabelText('S3 access key ID'), 'wrong-id');
+    await user.type(within(form).getByLabelText('S3 secret access key (not the Cloudflare API token value)'), 'wrong-secret');
     await user.click(within(form).getByRole('button', { name: 'Check and save credentials' }));
     expect((await screen.findByRole('alert')).textContent).toBe('The storage destination refused the new credentials. Check the access key ID and secret; nothing was changed.');
     expect(screen.getByRole('form', { name: 'Change storage credentials' })).toBeDefined();
@@ -180,7 +180,7 @@ describe('Settings → Backups', () => {
     const user = userEvent.setup(); renderSection();
     await user.click(await screen.findByRole('button', { name: 'Set up backups' }));
     const setup = screen.getByRole('form', { name: 'Set up backups' });
-    for (const [field, value] of [['Storage endpoint URL', 'https://typo.example.test'], ['Bucket', 'b'], ['Storage access key ID', 'id'], ['Storage secret access key', 's']])
+    for (const [field, value] of [['Storage endpoint URL', 'https://typo.example.test'], ['Bucket', 'b'], ['S3 access key ID', 'id'], ['S3 secret access key (not the Cloudflare API token value)', 's']])
       await user.type(within(setup).getByLabelText(field!), value!);
     await user.click(within(setup).getByRole('button', { name: 'Generate backup key' }));
     expect((await screen.findByRole('alert')).textContent).toContain('nothing was changed');
@@ -199,6 +199,40 @@ describe('Settings → Backups', () => {
     // The error variant, focused so an owner scrolled down sees it.
     expect(alert.dataset.variant).toBe('error');
     await vi.waitFor(() => expect(document.activeElement).toBe(alert));
+  });
+  it('splits an R2 bucket address in the change form, labels the keys as S3, and keeps every field in a form', async () => {
+    current = configured;
+    client.POST.mockResolvedValueOnce(reply(200, { data: { privateKey, publicKey, integrations: current } }));
+    const user = userEvent.setup(); renderSection();
+    await user.click(await screen.findByRole('button', { name: 'Change destination or key' }));
+    const form = screen.getByRole('form', { name: 'Change destination or key' });
+    const endpoint = within(form).getByLabelText('Storage endpoint URL') as HTMLInputElement;
+    const bucket = within(form).getByLabelText('Bucket') as HTMLInputElement;
+    const fields = [endpoint, within(form).getByLabelText('Region'), bucket,
+      within(form).getByLabelText('S3 access key ID'), within(form).getByLabelText('S3 secret access key (not the Cloudflare API token value)')] as HTMLInputElement[];
+    expect(fields.every((input) => input.form !== null)).toBe(true);
+    expect(new Set(fields.map((input) => input.form)).size).toBe(1);
+    await user.clear(bucket);
+    await user.clear(endpoint);
+    await user.type(endpoint, 'https://account.r2.cloudflarestorage.com/o1test');
+    await user.tab();
+    expect(endpoint.value).toBe('https://account.r2.cloudflarestorage.com');
+    expect(bucket.value).toBe('o1test');
+    const described = (input: HTMLElement) => (input.getAttribute('aria-describedby') ?? '').split(' ').map((id) => document.getElementById(id)?.textContent ?? '').join(' ');
+    expect(described(endpoint)).toContain('Using bucket o1test from this address.');
+    await user.type(endpoint, 'x');
+    expect(described(endpoint)).not.toContain('Using bucket o1test from this address.');
+    await user.clear(endpoint);
+    await user.type(endpoint, 'https://account.r2.cloudflarestorage.com/o1test');
+    await user.tab();
+    expect(endpoint.value).toBe('https://account.r2.cloudflarestorage.com');
+    expect(within(form).getByLabelText('S3 access key ID')).toBeDefined();
+    expect(within(form).getByLabelText('S3 secret access key (not the Cloudflare API token value)')).toBeDefined();
+    await user.type(within(form).getByLabelText('S3 access key ID'), 'access-id');
+    await user.type(within(form).getByLabelText('S3 secret access key (not the Cloudflare API token value)'), 'access-secret');
+    await user.click(within(form).getByRole('button', { name: 'Generate backup key' }));
+    expect(client.POST).toHaveBeenCalledWith('/api/settings/integrations/backups', { signal: expect.any(AbortSignal), body: { revision: 3, destination: {
+      endpoint: 'https://account.r2.cloudflarestorage.com', region: 'auto', bucket: 'o1test', accessKeyId: 'access-id', secretAccessKey: 'access-secret' } } });
   });
   it('has no backups part in multi-gym mode, and only the SMS cap is editable in a sandbox', async () => {
     current = { ...integrations, backups: null }; renderSection();
