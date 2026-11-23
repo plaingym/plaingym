@@ -207,8 +207,8 @@ both addresses are verified: Google's, and the login's own (an email link verifi
 it). A login set up with a password on an install without email has an unverified
 address, so it can't use Google. The app stores no Google tokens. To turn Google
 sign-in off, use **Turn off Google sign-in** in Settings for a client entered in the
-app (refused while Google is your only way to sign in), or remove both variables and
-restart; people then sign in another way.
+app (it asks you to confirm first, and is refused while Google is your only way to
+sign in), or remove both variables and restart; people then sign in another way.
 
 ## Tenancy and demo
 

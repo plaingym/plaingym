@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { parseResponse } from '../../lib/response.js';
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { googleCallbackPath, googleLoginResponseSchema, type GoogleLogin } from '@plaingym/shared/contracts';
 import { bootstrapKey } from '../../app/context.js';
 import { api } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 import { Button } from '../../components/ui/button.js';
+import { Dialog, DialogActions, DialogCancel } from '../../components/ui/dialog.js';
 import { Alert, FormMessage } from '../../components/ui/alert.js';
 import { ErrorState } from '../../components/ui/states.js';
 import { useGymSettings } from './gym-settings.js';
@@ -35,26 +36,45 @@ const reasonOf = (body: unknown) => {
   return Array.isArray(first) && typeof first[0] === 'string' ? first[0] : null;
 };
 const refusals: Record<string, string> = { only_sign_in: 'onlySignIn', install_configured: 'installConfigured', not_configured: 'notConfigured', google_rejected: 'rejected' };
+/** Split a value after each dot and slash with a zero-width break, without changing the text itself. */
+function breakable(text: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  let run = '';
+  for (const character of text) {
+    run += character;
+    if (character === '.' || character === '/') {
+      nodes.push(run);
+      nodes.push(<wbr key={nodes.length}/>);
+      run = '';
+    }
+  }
+  if (run) nodes.push(run);
+  return nodes;
+}
 
 /** The redirect URI the gym's OAuth client must list. The admin runs on the gym's canonical origin, the one Google returns to. */
 export function GoogleRedirect() {
   return <div className="min-w-0 space-y-1">
     <p className="text-sm font-medium" id="google-redirect-label">{label('redirect')}</p>
-    <code aria-labelledby="google-redirect-label" className="block break-all rounded-md bg-muted px-3 py-2 text-sm">{window.location.origin + googleCallbackPath}</code>
+    <code aria-labelledby="google-redirect-label" className="block break-words rounded-md bg-muted px-3 py-2 text-sm">{breakable(window.location.origin + googleCallbackPath)}</code>
     <p className="text-sm text-muted-foreground">{label('redirectHelp')}</p>
   </div>;
 }
 /**
  * The client ID and secret fields, shared by this section and the setup wizard's Google page. Each checks its format as
- * the owner leaves it; `rejected` marks both when Google's token endpoint refused the pair.
+ * the owner leaves it; `rejected` marks both when Google's token endpoint refused the pair. `refusalHidden` keeps that
+ * line as the fields' description without showing it again beside a form alert, and `checks` turns off the format check
+ * where only Google can decide the pair.
  */
-export function GoogleClientFields({ idPrefix, rejected = false, onEdit }: { idPrefix: string; rejected?: boolean; onEdit?: () => void }) {
+export function GoogleClientFields({ idPrefix, rejected = false, refusalHidden = false, checks = true, onEdit }:
+  { idPrefix: string; rejected?: boolean; refusalHidden?: boolean; checks?: boolean; onEdit?: () => void }) {
   const refusal = rejected ? idPrefix + '-rejected' : undefined;
   return <>
-    <Field name="clientId" id={idPrefix + '-client-id'} label={label('clientId')} maxLength={512} invalid={rejected} describedBy={refusal} onEdit={onEdit}/>
+    <Field name="clientId" id={idPrefix + '-client-id'} label={label('clientId')} maxLength={512} invalid={rejected} describedBy={refusal}
+      check={checks ? undefined : null} hint={checks ? undefined : label('checkedOnSave')} onEdit={onEdit}/>
     <Field name="clientSecret" type="password" id={idPrefix + '-client-secret'} label={label('clientSecret')} maxLength={512} hint={label('secretHint')}
-      invalid={rejected} describedBy={refusal} onEdit={onEdit}/>
-    {refusal && <p id={refusal} className="text-sm font-medium text-destructive">{label('rejected')}</p>}
+      invalid={rejected} describedBy={refusal} check={checks ? undefined : null} onEdit={onEdit}/>
+    {refusal && <p id={refusal} className={refusalHidden ? 'sr-only' : 'text-sm font-medium text-destructive'}>{label('rejected')}</p>}
   </>;
 }
 /** What a save's reply says of Google's check: accepted, or saved unchecked. Both name the one thing left to try. */
@@ -70,7 +90,8 @@ export function GoogleLoginSettings() {
   const cache = useQueryClient(), gym = useGymSettings();
   const query = useGoogleLogin(true);
   const [busy, setBusy] = useState<'save' | 'remove' | null>(null), [message, setMessage] = useState<Message | null>(null), [open, setOpen] = useState(false);
-  const [rejected, setRejected] = useState(false);
+  const [rejected, setRejected] = useState(false), [confirming, setConfirming] = useState(false);
+  const removing = useRef(false);
   if (query.isError) return <ErrorState message={label('loadError')} onRetry={() => void query.refetch()} retryLabel={label('reload')}/>;
   const google = query.data;
   if (!google || !googleSectionListed(google)) return null;
@@ -105,13 +126,15 @@ export function GoogleLoginSettings() {
     finally { setBusy(null); }
   }
   async function remove() {
+    if (removing.current) return;
+    removing.current = true;
     setMessage(null); setBusy('remove');
     try {
       const reply = await change((revision, signal) => api.DELETE('/api/settings/integrations/google', { signal, body: { revision } }));
       if (reply.status < 300) setMessage({ kind: 'status', text: label('removed') });
       else failure(reply.status, reply.reason);
     } catch { setMessage({ kind: 'alert', text: label('error') }); }
-    finally { setBusy(null); }
+    finally { removing.current = false; setBusy(null); }
   }
   const formOpen = google.editable && (google.source === 'none' || open);
   return <div className="min-w-0 space-y-3">
@@ -120,7 +143,7 @@ export function GoogleLoginSettings() {
     {google.source === 'install' && <p className="text-sm text-muted-foreground">{label('source')}</p>}
     {google.source === 'gym' && <div className="min-w-0 space-y-1 text-sm">
       <p>{label('sourceGym')}</p>
-      <p className="[overflow-wrap:anywhere]">{label('clientIdShown', { clientId: google.clientId ?? '' })}</p>
+      <p className="break-words">{breakable(label('clientIdShown', { clientId: google.clientId ?? '' }))}</p>
       <p>{label('secretSet')}</p>
     </div>}
     {google.installProblem && <Alert variant={google.source === 'gym' ? 'info' : 'error'} role="note">{label('installProblem.' + google.installProblem.reason, { variable: google.installProblem.variable })}</Alert>}
@@ -129,20 +152,32 @@ export function GoogleLoginSettings() {
     <GoogleRedirect/>
     {(google.source === 'gym' || google.unreadable) && <div className="grid min-w-0 gap-2">
       {google.removeBlocked && <p className="text-sm text-muted-foreground">{label('onlySignIn')}</p>}
-      <div className="flex flex-col gap-3 sm:flex-row">
-        {!formOpen && <Button type="button" variant="outline" disabled={busy !== null} onClick={() => { setMessage(null); setOpen(true); }}>{label('replace')}</Button>}
-        <Button type="button" variant="outline" disabled={busy !== null || google.removeBlocked} onClick={() => void remove()}>{label(busy === 'remove' ? 'removing' : 'remove')}</Button>
+      <div className="flex flex-col items-start gap-3 sm:flex-row">
+        {!formOpen && <Button type="button" variant="outline" disabled={busy !== null} onClick={() => { setMessage(null); setRejected(false); setOpen(true); }}>{label('replace')}</Button>}
+        <Button type="button" variant="outline" disabled={busy !== null || google.removeBlocked}
+          onClick={() => { setMessage(null); setRejected(false); setConfirming(true); }}>{label(busy === 'remove' ? 'removing' : 'remove')}</Button>
       </div>
     </div>}
     {formOpen && <form onSubmit={(event) => void save(event)} aria-label={label(google.source === 'gym' ? 'replace' : 'setUp')}>
       <fieldset disabled={busy !== null} className="grid min-w-0 gap-4">
         <p className="text-sm text-muted-foreground">{label('setupHelp')}</p>
-        <GoogleClientFields idPrefix="settings-google" rejected={rejected} onEdit={() => { if (rejected) { setRejected(false); setMessage(null); } }}/>
-        <div className="flex flex-col gap-3 sm:flex-row">
+        <GoogleClientFields idPrefix="settings-google" rejected={rejected} refusalHidden checks={false}
+          onEdit={() => { if (rejected) { setRejected(false); setMessage(null); } }}/>
+        <div className="flex flex-col items-start gap-3 sm:flex-row">
           <Button type="submit">{label(busy === 'save' ? 'saving' : 'save')}</Button>
-          {google.source === 'gym' && <Button type="button" variant="outline" onClick={() => setOpen(false)}>{label('cancel')}</Button>}
+          {google.source === 'gym' && <Button type="button" variant="outline" onClick={() => { setRejected(false); setOpen(false); }}>{label('cancel')}</Button>}
         </div>
       </fieldset>
     </form>}
+    {confirming && <Dialog title={label('turnOffTitle')} closeLabel={label('close')} onClose={() => setConfirming(false)}>
+      <div className="space-y-3">
+        <p>{label('turnOffBody')}</p>
+        <p>{label('turnOffSecret')}</p>
+      </div>
+      <DialogActions>
+        <Button variant="destructive" onClick={() => { setConfirming(false); void remove(); }}>{label('remove')}</Button>
+        <DialogCancel variant="outline">{label('cancel')}</DialogCancel>
+      </DialogActions>
+    </Dialog>}
   </div>;
 }

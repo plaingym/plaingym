@@ -195,9 +195,9 @@ Owners also set up, replace or turn off Google sign-in in **Settings → Google
 sign-in**, which shows the redirect URI to register with Google. The client secret
 is never shown again (only that one is set), a change takes effect on the next
 sign-in, and the audit log records each change without the client ID or secret.
-Turning it off is refused while Google is your only way to sign in. When `.env`
-sets `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, the section says so and offers
-no form: see [Google sign-in](configuration.md#google-sign-in).
+Turning it off asks you to confirm first and is refused while Google is your only
+way to sign in. When `.env` sets `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, the
+section says so and offers no form: see [Google sign-in](configuration.md#google-sign-in).
 
 ## Stripe
 
