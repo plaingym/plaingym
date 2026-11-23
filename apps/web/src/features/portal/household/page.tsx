@@ -93,6 +93,7 @@ function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope
                 await cache.invalidateQueries({ queryKey: [...scope.key, 'household'] });
               } finally { finishMemberAction(member.id); }
             }}/>}
+          {payer && member.id !== context.memberId && member.dateOfBirth === null && <p className="text-sm text-muted-foreground">{text('smsNeedsBirthDate', { name: `${member.firstName} ${member.lastName}` })}</p>}
           {editable(member) && <div><Button variant="outline" disabled={pending} onClick={() => setEditingId(member.id)}>{text('edit')}</Button></div>}
         </StackedItem>;
       })}</StackedList>}

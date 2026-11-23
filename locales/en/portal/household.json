@@ -3,6 +3,7 @@
   "nav": "Household",
   "householdChanged": "Your household changed. Please review this household and check any unfinished work before continuing.",
   "savePhoneBeforeConsent": "Save your phone number before agreeing to text notices.",
+  "smsNeedsBirthDate": "Ask the gym to add {name}'s date of birth so you can manage their text message consent as their parent or guardian.",
   "dismissChange": "Dismiss notice",
   "title": "Household",
   "description": "Contact details for your household and the people in it.",

@@ -90,7 +90,7 @@ module is off) and sign in. In the **Account** menu, members can choose **Light*
 | **Progress** | Everyone | Current rank and what's next in each program, promotion history and attendance. |
 | **Billing** | Everyone (invoices: payers) | A **Class credits** card shows how many classes are left and when the soonest credits expire, for each household member who holds credits (a payer sees every such member; other adults see only their own, or "No class credits"; read-only, and nothing is sold here). Payers also get invoices, **pay** an open one or **update the card** on Stripe's hosted page, and receipts for paid invoices. |
 | **Waivers** | Everyone | Documents waiting to be signed and signed copies as PDFs. A payer signs for a child whose recorded date of birth is under 18; for a member with no date of birth, the page asks the payer to have the gym add it. |
-| **Household** | Payers (members read-only) | Contact details, and each person's profile and memberships. |
+| **Household** | Payers (members read-only) | Contact details, and each person's profile and memberships. A payer gives text message consent for themself and for a child whose recorded date of birth is under 18; for a member with no date of birth, the page asks the payer to have the gym add it. |
 
 To install the portal, a member uses the browser's *Add to home screen* / *Install
 app* option.

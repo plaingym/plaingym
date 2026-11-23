@@ -863,6 +863,47 @@ describe('portal household page', () => {
     expect(screen.queryByLabelText('Household name')).toBeNull();
     expect(view.fetcher.mock.calls.map(([path]) => String(path)).filter(path => path.startsWith('/api/portal/'))).toEqual(['/api/portal/context', `/api/portal/members/${ids.adult}`]);
   });
+  it('tells a payer to have the gym add a missing birth date before text consent', async () => {
+    mount(<PortalHousehold />, path => path === '/api/portal/household' ? { data: household }
+      : path.startsWith('/api/portal/members?') ? page(people) : undefined, { context: payer });
+    await screen.findByText('Jordan Rivera');
+    const jordan = within(memberRow('Jordan'));
+    expect(jordan.getByText("Ask the gym to add Jordan Rivera's date of birth so you can manage their text message consent as their parent or guardian.")).toBeDefined();
+    expect(jordan.queryByRole('button', { name: 'Agree to notices' })).toBeNull();
+    expect(jordan.queryByRole('button', { name: 'Agree to announcements' })).toBeNull();
+    expect(jordan.queryByRole('button', { name: 'Edit details' })).toBeNull();
+  });
+  it('leaves a child with a recorded birth date their consent controls and no missing birth date text', async () => {
+    mount(<PortalHousehold />, path => path === '/api/portal/household' ? { data: household }
+      : path.startsWith('/api/portal/members?') ? page(people) : undefined, { context: payer });
+    await screen.findByText('Kim Rivera');
+    const kim = within(memberRow('Kim'));
+    expect(kim.getByRole('button', { name: 'Agree to notices' })).toBeDefined();
+    expect(kim.getByRole('button', { name: 'Edit details' })).toBeDefined();
+    expect(kim.queryByText(/Ask the gym to add/)).toBeNull();
+  });
+  it('leaves an adult with a recorded birth date no consent controls and no missing birth date text', async () => {
+    mount(<PortalHousehold />, path => path === '/api/portal/household' ? { data: household }
+      : path.startsWith('/api/portal/members?') ? page(people) : undefined, { context: payer });
+    await screen.findByText('Alex Rivera');
+    const alex = within(memberRow('Alex'));
+    expect(alex.queryByText(/Ask the gym to add/)).toBeNull();
+    expect(alex.queryByRole('button', { name: 'Agree to notices' })).toBeNull();
+  });
+  it('never asks a payer for their own missing birth date', async () => {
+    const withoutPayerBirthDate = people.map((member, index) => index === 0 ? { ...member, dateOfBirth: null } : member);
+    mount(<PortalHousehold />, path => path === '/api/portal/household' ? { data: household }
+      : path.startsWith('/api/portal/members?') ? page(withoutPayerBirthDate) : undefined, { context: payer });
+    await screen.findByText('Pat Rivera');
+    const pat = within(memberRow('Pat'));
+    expect(pat.getByRole('button', { name: 'Agree to notices' })).toBeDefined();
+    expect(pat.queryByText(/Ask the gym to add/)).toBeNull();
+  });
+  it('never asks a member to have the gym add their own birth date', async () => {
+    mount(<PortalHousehold />, path => path === `/api/portal/members/${ids.adult}` ? { data: { ...people[2], dateOfBirth: null } } : undefined, { context: adult });
+    expect(await screen.findByRole('button', { name: 'Agree to notices' })).toBeDefined();
+    expect(screen.queryByText(/Ask the gym to add/)).toBeNull();
+  });
   it('keeps a payer household draft through consent changes and saves it with the latest revision', async () => {
     let current: Household = { ...household, phone: '+12025550123', sms: { phoneValid: true, phoneE164: '+12025550123', notices: null } };
     const view = mount(<PortalHousehold />, (path, init) => {
