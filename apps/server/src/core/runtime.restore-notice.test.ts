@@ -24,7 +24,7 @@ it('restores a cancelled session with the notice option through the runtime comp
 
   const cancelled = await request('cancel', { revision: session.revision });
   expect(cancelled.status, await cancelled.clone().text()).toBe(200);
-  const { revision } = await cancelled.json() as { revision: number };
+  const { data: { revision } } = await cancelled.json() as { data: { revision: number } };
 
   // The restore route accepts the notice option (not 503: the service is configured) and the barrel registered the job.
   const restored = await request('restore', { revision, notify: true, channels: ['email'] });
