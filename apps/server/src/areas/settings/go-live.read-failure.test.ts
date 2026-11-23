@@ -26,9 +26,11 @@ function captureLogs() {
   return { lines, entries: () => lines.map((line) => JSON.parse(line) as Record<string, unknown>), restore: () => setLogSink(previous) };
 }
 const item = (checklist: Awaited<ReturnType<GoLiveService['checklist']>>, id: string) => checklist.items.find((entry) => entry.id === id)!;
-async function fixture(stripeConfig: string | null = null) {
+async function fixture(stripeConfig: string | null = null, options: { joinable?: boolean } = {}) {
   const gymId = uuidv7();
-  await factory('gyms', gymId, { billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false, stripeConfig });
+  await factory('gyms', gymId, { billingEnabled: !!options.joinable, memberEmailsEnabled: false, memberSmsEnabled: false, stripeConfig });
+  // Everything else online joining needs: billing on, one current document and one active plan.
+  if (options.joinable) { await factory('waiverTemplates', gymId); await factory('plans', gymId); }
   const userId = (await factory('authUser', gymId)).id;
   const revision = async () => (await scope(gymId, (tx) => tx.select({ revision: gyms.revision }).from(gyms).where(eq(gyms.id, gymId))))[0]!.revision;
   return { gymId, userId, revision, context: { gymId, actor: { kind: 'user' as const, userId } } };
@@ -46,17 +48,48 @@ function app(service: GoLiveService, gymId: string, userId: string) {
 }
 
 describe('go-live read failures', () => {
-  it('falls back to a stored Stripe setting when the payments read fails in the checklist', async () => {
+  it('shows Payments as unchecked when the payments read fails, even with a stored Stripe setting', async () => {
     const f = await fixture('encrypted-stripe-config');
     const service = createGoLiveService({ scope, clock, smtpConfigured: async () => false, paymentsConfigured: failingPayments });
     const logs = captureLogs();
     try {
       const checklist = await service.checklist(f.gymId);
-      expect(item(checklist, 'stripe_ready').status).toBe('ready');
+      expect(item(checklist, 'stripe_ready')).toEqual({ id: 'stripe_ready', status: 'needs_attention',
+        message: 'Stripe could not be checked. Check the saved keys in Settings → Integrations → Payments.' });
       expect(logs.entries()).toEqual([{ time: expect.any(String), level: 'warn', event: 'settings.go_live.read_failed',
         gymId: f.gymId, read: 'payments', error: 'Error' }]);
       expect(logs.lines.join('\n')).not.toContain('private key');
     } finally { logs.restore(); }
+  });
+
+  it('treats Stripe as missing for online joining when the payments read fails', async () => {
+    const failing = await fixture('encrypted-stripe-config', { joinable: true });
+    const logs = captureLogs();
+    try {
+      const checklist = await createGoLiveService({ scope, clock, smtpConfigured: async () => false, paymentsConfigured: failingPayments })
+        .checklist(failing.gymId);
+      expect(item(checklist, 'online_joining').status).toBe('needs_attention');
+      expect(item(checklist, 'online_joining').message).toContain('Connect Stripe in Settings → Integrations → Payments.');
+    } finally { logs.restore(); }
+    const working = await fixture('encrypted-stripe-config', { joinable: true });
+    const checklist = await createGoLiveService({ scope, clock, smtpConfigured: async () => false, paymentsConfigured: async () => true })
+      .checklist(working.gymId);
+    expect(item(checklist, 'online_joining').status).toBe('ready');
+  });
+
+  it('keeps the stored Stripe setting for webhook and card items when the payments read fails', async () => {
+    const f = await fixture('encrypted-stripe-config', { joinable: true });
+    // A paid membership without a saved card, so the card item applies only while Stripe counts as configured.
+    const household = await factory('households', f.gymId);
+    const member = await factory('members', f.gymId, { householdId: household.id, status: 'active' });
+    await factory('memberships', f.gymId, { householdId: household.id, memberId: member.id, status: 'active' });
+    const logs = captureLogs();
+    const failed = await createGoLiveService({ scope, clock, smtpConfigured: async () => false, paymentsConfigured: failingPayments })
+      .checklist(f.gymId).finally(() => logs.restore());
+    const working = await createGoLiveService({ scope, clock, smtpConfigured: async () => false, paymentsConfigured: async () => true }).checklist(f.gymId);
+    for (const id of ['webhook_ready', 'cards_collected']) expect(item(failed, id).status).toBe(item(working, id).status);
+    expect(item(failed, 'webhook_ready').status).toBe('needs_attention');
+    expect(item(failed, 'cards_collected').status).toBe('needs_attention');
   });
 
   it('needs attention when the payments read fails and no Stripe setting is stored', async () => {

@@ -26,10 +26,13 @@ const item = (id: GoLiveChecklistItem['id'], status: Status, message?: string): 
 const ready = (value: unknown): Status => value ? 'ready' : 'needs_attention';
 /** The safe part of a failed resolver read: a message can quote credentials or submitted values. */
 const errorName = (error: unknown) => error instanceof Error ? error.name : typeof error;
-/** Mirrors when the public join page is available: billing on, a payment provider, and one to eight current documents. */
-function onlineJoining(billingEnabled: boolean, stripe: boolean, documents: number) {
+/**
+ * Mirrors when the public join page is available: billing on, a payment provider, one to eight current documents,
+ * and at least one plan it can list.
+ */
+function onlineJoining(billingEnabled: boolean, stripe: boolean, documents: number, plans: number) {
   const missing = [!billingEnabled && 'billing', !stripe && 'stripe', documents === 0 && 'no_documents',
-    documents > maxJoinDocuments && 'too_many_documents'].filter((key): key is string => Boolean(key));
+    documents > maxJoinDocuments && 'too_many_documents', plans === 0 && 'no_plans'].filter((key): key is string => Boolean(key));
   return missing.length === 0 ? item('online_joining', 'ready')
     : item('online_joining', 'needs_attention', [t('settings/go-live:check.online_joining.needs_attention'),
       ...missing.map(key => t(`settings/go-live:check.online_joining.${key}`))].join(' '));
@@ -94,8 +97,8 @@ export function createGoLiveService(options: {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const webhooks = options.webhooks ?? createWebhookHealthQuery(scope);
   /**
-   * The runtime resolver can throw when the saved configuration is unreadable. The checklist falls back to the gym's
-   * stored Stripe setting, while a switch save treats `null` as a failed read and refuses to turn billing on.
+   * The runtime resolver can throw when the saved configuration is unreadable. The checklist shows Payments as unchecked
+   * and Online joining as missing Stripe, while a switch save treats `null` as a failed read and refuses to turn billing on.
    */
   async function readPayments(gymId: string): Promise<boolean | null | undefined> {
     if (!options.paymentsConfigured) return undefined;
@@ -135,9 +138,14 @@ export function createGoLiveService(options: {
         .where(and(eq(paymentMethods.isDefault, true), isNull(paymentMethods.revokedAt)));
       const currentWaivers = await tx.selectDistinctOn([waiverTemplates.name]).from(waiverTemplates)
         .orderBy(waiverTemplates.name, desc(waiverTemplates.version));
+      // Mirrors `joinable` in public/pages/join.service.ts: the join page lists only active plans in the gym's currency.
+      const joinablePlans = await tx.$count(plans, and(eq(plans.active, true), eq(plans.currency, gym.currency)));
       const stripe = payments ?? Boolean(gym.stripeConfigured);
+      // A failed resolver read blocks billing and /join, so Payments and Online joining don't trust the stored setting.
+      const paymentsReadFailed = payments === null;
       const recovery = await reconciliation(tx, stripe);
-      const joining = onlineJoining(gym.billingEnabled, stripe, currentWaivers.filter(w => !w.retiredAt).length);
+      const joining = onlineJoining(gym.billingEnabled, paymentsReadFailed ? false : stripe,
+        currentWaivers.filter(w => !w.retiredAt).length, joinablePlans);
       const today = localDate(clock.now(), gym.timezone), thisMonth = today.slice(0, 7);
       const pastDueMemberships = await pastDue(tx, today);
       const setup = (gym.settings as { setup?: { completed?: boolean } }).setup;
@@ -146,7 +154,8 @@ export function createGoLiveService(options: {
         item('gym_details', ready(!setup || setup.completed)),
         item('members_imported', ready(member)),
         item('schedule_ready', ready(template)),
-        item('stripe_ready', ready(stripe), gym.bankDebitsEnabled && gym.currency === 'CAD'
+        paymentsReadFailed ? item('stripe_ready', 'needs_attention', t('settings/go-live:check.stripe_ready.read_failed'))
+        : item('stripe_ready', ready(stripe), gym.bankDebitsEnabled && gym.currency === 'CAD'
           ? t('settings/go-live:check.stripe_ready.' + ready(stripe)) + ' ' + t('settings/go-live:padEmails') : undefined),
         item('cards_collected', !stripe || !billable.length ? 'not_applicable'
           : ready(billable.every(home => home.customerId && cards.some(card => card.householdId === home.householdId

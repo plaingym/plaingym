@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
-import { waiverTemplates, uuidv7 } from '@plaingym/db';
+import { plans, waiverTemplates, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { maxJoinDocuments } from '@plaingym/shared/contracts';
@@ -14,15 +14,19 @@ const clock = new TestClock('2026-10-26T06:30:00Z');
 const intro = 'Visitors see “Online joining is not available right now” at /join.';
 const billing = 'Turn billing on.', stripe = 'Connect Stripe in Settings → Integrations → Payments.';
 const documents = 'Add a waiver or agreement in Waivers and agreements.';
+const noPlans = 'Add an active plan in the gym\'s currency.';
 
-async function fixture(options: { billingEnabled?: boolean; stripe?: boolean; waivers?: number } = {}) {
-  const { billingEnabled = true, stripe: connected = true, waivers = 1 } = options;
+async function fixture(options: { billingEnabled?: boolean; stripe?: boolean; waivers?: number; plans?: number; resolver?: boolean } = {}) {
+  const { billingEnabled = true, stripe: connected = true, waivers = 1, plans: planCount = 1, resolver = true } = options;
   const gymId = uuidv7();
   await factory('gyms', gymId, { billingEnabled, ...(connected ? { stripeConfig: 'opaque-encrypted-configuration' } : {}) });
   for (let index = 0; index < waivers; index++) await factory('waiverTemplates', gymId, { name: `Waiver ${index}` });
-  const service = createGoLiveService({ scope: db.forGym, clock, smtpConfigured: async () => true, paymentsConfigured: async () => connected });
-  const joining = async () => (await service.checklist(gymId)).items.find(item => item.id === 'online_joining')!;
-  return { gymId, joining };
+  for (let index = 0; index < planCount; index++) await factory('plans', gymId);
+  const service = createGoLiveService({ scope: db.forGym, clock, smtpConfigured: async () => true,
+    ...(resolver ? { paymentsConfigured: async () => connected } : {}) });
+  const find = async (id: string) => (await service.checklist(gymId)).items.find(item => item.id === id)!;
+  const joining = () => find('online_joining');
+  return { gymId, joining, find };
 }
 
 describe('go-live online joining item', () => {
@@ -53,9 +57,45 @@ describe('go-live online joining item', () => {
     expect((await (await fixture({ billingEnabled: false, stripe: false, waivers: 0 })).joining()).message)
       .toBe(`${intro} ${billing} ${stripe} ${documents}`);
   });
+  it('lists the missing plan last', async () => {
+    expect((await (await fixture({ billingEnabled: false, stripe: false, waivers: 0, plans: 0 })).joining()).message)
+      .toBe(`${intro} ${billing} ${stripe} ${documents} ${noPlans}`);
+  });
   it('counts only this gym\'s documents', async () => {
     const empty = await fixture({ waivers: 0 });
     await fixture({ waivers: 2 });
     expect((await empty.joining()).message).toBe(`${intro} ${documents}`);
+  });
+  it('asks for a plan when there is none', async () => {
+    expect(await (await fixture({ plans: 0 })).joining())
+      .toEqual({ id: 'online_joining', status: 'needs_attention', message: `${intro} ${noPlans}` });
+  });
+  it('asks for a plan when the only plan is inactive', async () => {
+    const inactive = await fixture();
+    await db.forGym(inactive.gymId, tx => tx.update(plans).set({ active: false }).where(eq(plans.gymId, inactive.gymId)));
+    expect(await inactive.joining()).toEqual({ id: 'online_joining', status: 'needs_attention', message: `${intro} ${noPlans}` });
+  });
+  it('accepts an active free plan', async () => {
+    const free = await fixture();
+    await db.forGym(free.gymId, tx => tx.update(plans).set({ amountCents: 0 }).where(eq(plans.gymId, free.gymId)));
+    expect((await free.joining()).status).toBe('ready');
+  });
+  it('counts only this gym\'s plans', async () => {
+    const empty = await fixture({ plans: 0 });
+    await fixture({ plans: 1 });
+    expect(await empty.joining()).toEqual({ id: 'online_joining', status: 'needs_attention', message: `${intro} ${noPlans}` });
+  });
+});
+
+describe('go-live online joining without a payments resolver', () => {
+  it('is ready when the gym has a stored Stripe configuration', async () => {
+    const f = await fixture({ resolver: false });
+    expect((await f.joining()).status).toBe('ready');
+    expect((await f.find('stripe_ready')).status).toBe('ready');
+  });
+  it('asks for Stripe when the gym has no stored configuration', async () => {
+    const f = await fixture({ resolver: false, stripe: false });
+    expect(await f.joining()).toEqual({ id: 'online_joining', status: 'needs_attention', message: `${intro} ${stripe}` });
+    expect(await f.find('stripe_ready')).toEqual({ id: 'stripe_ready', status: 'needs_attention', message: 'Payments are not configured yet.' });
   });
 });

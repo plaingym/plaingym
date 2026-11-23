@@ -33,19 +33,22 @@ every current, non-retired waiver/agreement family. An older signed version does
 not satisfy the current version, and a retired latest version never revives an old
 template. With no applicable memberships or waivers those checks are not applicable.
 The `online_joining` item mirrors when the public join page is available and is
-never not applicable: it is ready with billing on, a payment provider and one to
-eight current (non-retired) waiver or agreement families, and otherwise needs
+never not applicable: it is ready with billing on, a payment provider, one to
+eight current (non-retired) waiver or agreement families, and at least one active
+plan in the gym's currency (the plans the join page lists), and otherwise needs
 attention. Its message lists each missing reason in order: billing off, no payment
-provider, no current document, and more than eight current documents. It advises
-and blocks nothing.
+provider, no current document, more than eight current documents, and no active
+plan in the gym's currency. It advises and blocks nothing.
 Payment configuration comes from the runtime's payments resolver
 (`paymentsConfigured`), so demo sandboxes on the shared test account count as
 configured; without it, the gym's stored Stripe settings decide. Turning billing
 on reads the resolver before the write transaction. A failed read returns
 `unavailable` with `details.billingEnabled: ["read_failed"]` after the revision
-guard and before reconciliation or any writes. A failed Stripe read in the
-checklist falls back to the stored Stripe setting. A failed Stripe read (in the
-checklist or a billing save) and a failed SMS read in a texts save are logged as
+guard and before reconciliation or any writes. When the payments resolver fails,
+the checklist shows Payments as needing attention with a read-failure text and
+treats Stripe as missing for Online joining; the other items keep the stored Stripe
+setting. Without a resolver, the stored setting decides everything. A failed Stripe
+read (in the checklist or a billing save) and a failed SMS read in a texts save are logged as
 `settings.go_live.read_failed` with the gym ID, the read and the error name.
 
 Webhook readiness uses `WebhookHealthQuery`, implemented by the real inbox by
