@@ -152,14 +152,16 @@ describe('billing workflows through services, signed webhooks and PostgreSQL job
     expect((await f.read()).invoices[0]!.status).toBe('paid'); expect((await f.read()).attempts).toHaveLength(1);
   });
 
-  it.each(['pm_0341', 'pm_3184'])('one-off %s remains open without dunning or retries after day 7', async card => {
+  it.each(['pm_0341', 'pm_3184'])('one-off %s stays open with one notice and no retries after day 7', async card => {
     const f = await workflowFixture(db, { empty: true, card });
     const bill = await f.service.createOneOff(f.context, { source: 'custom', householdId: f.home.id, dueOn: '2028-03-01',
       description: 'Private lesson', amountCents: 10000, currency: 'USD' });
     await f.service.charge(f.context, bill.id); await f.drain();
     f.clock.set('2028-03-15T16:00:00Z'); await f.runJob('billing.runner.daily');
     expect((await f.read()).invoices[0]!.status).toBe('open'); expect((await f.read()).attempts).toHaveLength(1);
-    expect(f.email.messages).toEqual([]); expect((await f.read()).jobs.filter(j => j.status === 'pending')).toEqual([]);
+    expect(f.email.messages).toHaveLength(1);
+    expect(f.email.messages[0]!.subject).toContain(card === 'pm_0341' ? 'Payment needed' : 'Authentication needed');
+    expect((await f.read()).jobs.filter(j => j.status === 'pending')).toEqual([]);
   });
 
   it('one-off card collection succeeds once and webhook replay does not duplicate its receipt', async () => {

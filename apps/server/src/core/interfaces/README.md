@@ -25,7 +25,8 @@ are implemented here.
   atomically (receipt, membership activation, dunning, duplicate refund and staff
   notice). No fake performs network calls, schedules retries, or calculates tax.
   Issued invoices and attempts are seeded explicitly. Late failures cannot reopen
-  paid invoices, and one-off failures never schedule dunning. A provider canceled
+  paid invoices, and one-off failures never schedule retries (the fake also sends
+  no staff-charge notice). A provider canceled
   outcome is stored as failed: with declineCode confirm_abandoned when the attempt
   was still pending (its intent was never confirmed, so the invoice, dunning and
   retries are untouched), otherwise with intent_canceled as a decline. Both codes

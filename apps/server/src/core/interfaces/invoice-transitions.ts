@@ -80,8 +80,9 @@ export interface InvoiceTransitionResult {
  * The sole invoice-state writer. Implementations atomically deduplicate, audit,
  * persist payments/refunds and enqueue receipt, activation and dunning work.
  * Network calls occur after committing. A duplicate card payment is refunded
- * and reported to staff; it never pays an invoice twice. One-off failures do
- * not enter dunning. Payment outcomes never reopen paid, refunded or void invoices. The one backward move is a
+ * and reported to staff; it never pays an invoice twice. One-off failures never
+ * go past due or schedule retries; a declined or action-needed staff charge of a saved method on a one-off still
+ * queues the failed-payment notice (the fake below doesn't model staff reservations). Payment outcomes never reopen paid, refunded or void invoices. The one backward move is a
  * processor refund that fails after it succeeded (same processor refund ID): its amount is released, the invoice's
  * refund status is recomputed (back to partially refunded or paid) and staff are notified. Staff are notified once for
  * every processor refund that ends failed: first recorded failed, pending to failed, or reversed. A canceled refund is

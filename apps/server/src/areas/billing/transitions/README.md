@@ -64,7 +64,10 @@ pending attempt, or writes a late processing audit for an unrecorded Checkout
 intent without an attempt. The invoice keeps its terminal state. `cardSucceeded` records a settled debit as
 `bank_debit`. A cycle or assignment invoice returns to past due after a bank
 failure, and a past-due assignment invoice stays past due on a later card
-decline. A one-off charge returns to open. A closed account is revoked by its
+decline. A one-off charge returns to open. If staff charged its saved method
+(the runner's `mode: 'staff'`) and the card was declined or needs
+authentication, the payer still gets the failed-payment notice (email, and a
+text where SMS is on and consented) with pay and update-card links. A closed account is revoked by its
 processor method ID and the household receives an update-method link. The
 transition records `billing.payment_method.unsaved_revoked` with the invoice ID
 and processor method ID when the household has no saved row for the account. The
@@ -284,7 +287,12 @@ The runner also cancels an older action-needed intent before reserving another
 attempt and applies the cancellation result; if the old intent succeeded, it
 settles the invoice instead of creating another charge. Paid invoices suppress queued dunning/retries. The last unpaid retry
 leaves the invoice past due. One-off failures return the invoice to open and
-never enqueue dunning or retries.
+never enqueue retries. Only a declined or action-needed staff charge enqueues
+the failed-payment notice: `failedInvoice` reads the attempt's
+`billing.runner.reserved` audit and marks that `dunning` effect `staffCharge`.
+Cancelling that action-needed intent later (before another charge or a cash
+payment) sends nothing more. Automatic, retry and Checkout failures of a
+one-off send nothing.
 
 Runner collection is explicit for staff one-offs. Daily collection includes only
 cycles and assignment one-offs; the assignment route invokes `collectAssigned`

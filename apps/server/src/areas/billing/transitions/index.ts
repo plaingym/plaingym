@@ -211,7 +211,7 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Billi
         if (terminal(invoice) || row.attemptNumber < latest.attemptNumber || alreadyResolved) return result('ignored', invoice);
         if (invoice.status === 'processing' && row.status !== 'processing' && (await processingIntents(tx, invoice.id)).at(-1) !== request.paymentIntentId)
           return result('ignored', invoice);
-        return failedInvoice(tx, context, invoice, row.id, bankCode, row.savedPaymentMethod);
+        return failedInvoice(tx, context, invoice, row.id, bankCode, row.savedPaymentMethod, request.outcome === 'canceled');
       });
     },
     async refund(context: MutationContext, request: RefundTransition) {
@@ -236,7 +236,7 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Billi
     },
   };
   async function failedInvoice(tx: Transaction, context: MutationContext, invoice: InvoiceRow, attemptId?: string,
-    failureCode?: CheckoutFailureCode, processorId?: string) {
+    failureCode?: CheckoutFailureCode, processorId?: string, canceled = false) {
     const bankCode = failureCode === 'insufficient_funds' || failureCode === 'payment_method_unusable' ? failureCode : undefined;
     const checkoutFailureCode = attemptId ? undefined : failureCode;
     // An assignment invoice a bank failure made past due stays past due on a later card failure, so its retries continue.
@@ -252,8 +252,11 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Billi
     if (stop && !await recorded(tx, retriesStopped, invoice.id)) await audit(tx, context, clock, retriesStopped, 'invoice', invoice.id, { bankCode });
     const source = { ...(attemptId ? { attemptId } : {}), ...(bankCode ? { bankCode } : {}),
       ...(checkoutFailureCode && !bankCode ? { checkoutBankFailure: true as const } : {}) };
-    if (recurring || bankCode === 'payment_method_unusable')
-      await effect(tx, context, clock, { kind: 'dunning', invoiceId: invoice.id, ...source });
+    // A declined or action-needed staff charge of a saved method on a one-off: the payer hears of it, with no retries.
+    // Cancelling an action-needed intent (before another charge or a cash payment) sends nothing: that attempt was notified.
+    const staffCharge = !canceled && !recurring && !bankCode && !!attemptId && await staffReserved(tx, attemptId);
+    if (recurring || bankCode === 'payment_method_unusable' || staffCharge)
+      await effect(tx, context, clock, { kind: 'dunning', invoiceId: invoice.id, ...source, ...(staffCharge ? { staffCharge: true as const } : {}) });
     if (recurring && !stop && !await recorded(tx, 'billing.invoice.dunning_started', invoice.id) && !await recorded(tx, retriesStopped, invoice.id)) {
       const { retryDays } = await readBillingRules(tx, context.gymId);
       await audit(tx, context, clock, 'billing.invoice.dunning_started', 'invoice', invoice.id, { ...source, retryDays });
@@ -279,6 +282,12 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Billi
     refund: (context, request) => published(context, service.refund(context, request)),
     processorRefund: (context, request) => published(context, service.processorRefund(context, request)),
   };
+}
+const attemptReserved = 'billing.runner.reserved'; // Written by the runner's reserve (runner/index.ts) in the reservation transaction.
+/** Whether staff charged this attempt (the runner's `mode: 'staff'`); an attempt with no reservation audit is not. */
+async function staffReserved(tx: Transaction, attemptId: string) {
+  const row = await recorded(tx, attemptReserved, attemptId);
+  return (row?.after as { mode?: unknown } | null | undefined)?.mode === 'staff';
 }
 function samePayment(row: PaymentRow, request: CardSuccess | ManualPayment, method: string) {
   return row.invoiceId === request.invoiceId && row.amountCents === request.amountCents && row.currency === request.currency

@@ -1463,14 +1463,15 @@ describe('one-off collection and payment durability', () => {
     const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.refund.requested')));
     expect(audits).toEqual([]);
   });
-  it.each(['declined', 'authentication_required'] as const)('keeps a %s one-off open with no dunning or retry effects', async outcome => {
+  it.each(['declined', 'authentication_required'] as const)('keeps a %s one-off open with the failed-payment notice and no retry', async outcome => {
     const f = await fixture(); f.provider.respondNextConfirmation(outcome);
     const attempt = await f.service.charge(f.context, f.invoice.id);
     expect(attempt.status).toBe(outcome === 'declined' ? 'failed' : 'requires_action');
     expect((await f.service.getInvoice(f.gymId, f.invoice.id)).invoice.status).toBe('open');
-    const effects = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.transition.effect.created')));
-    expect(effects.some(e => ['dunning', 'retry'].includes((e.after as { kind: string }).kind))).toBe(false);
-    expect(f.jobs.jobs).toHaveLength(0);
+    const effects = (await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.transition.effect.created'))))
+      .map(e => e.after as { kind: string; staffCharge?: boolean });
+    expect(effects.filter(e => e.kind === 'dunning')).toMatchObject([{ staffCharge: true }]);
+    expect(effects.filter(e => e.kind === 'retry')).toEqual([]);
   });
   it('snapshots charge type, inclusive/exclusive taxes, and custom cents on separate invoices', async () => {
     const f = await fixture(), tax = await factory('taxRates', f.gymId, { rateMillionths: 100_000, inclusive: false });

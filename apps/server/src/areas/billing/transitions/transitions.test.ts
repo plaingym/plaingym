@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { and, asc, eq, gte, notInArray } from 'drizzle-orm';
-import { auditEvents, invoiceLineItems, invoices, members, memberships, paymentAttempts, payments, refunds, signedLinks, uuidv7 } from '@plaingym/db';
+import { auditEvents, invoiceLineItems, invoices, members, memberships, paymentAttempts, payments, refunds, signedLinks, uuidv7, writeAudit } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../../core/clock.js';
@@ -25,7 +25,7 @@ import { createTransitionEffects } from './effects.js';
 import { createTransitionJobs } from './transitions.jobs.js';
 import { createTransitionNotifications } from './notifications.js';
 import { applyChargeOutcome } from './outcomes.js';
-import { effectCreated, effectCompleted, effectPublished } from './store.js';
+import { effectCreated, effectCompleted, effectPublished, type TransitionEffect } from './store.js';
 import { refundRetryWindowMs, refundSettleSkewMs } from './lapsed-refunds.js';
 import { invoiceTransitionsContract } from '../../../core/interfaces/invoice-transitions.contract.js';
 import type { InvoiceEffect } from '../../../core/interfaces/invoice-transitions.js';
@@ -254,6 +254,101 @@ describe('invoice transitions with real PostgreSQL', () => {
     await f.transitions.cardFailed(f.context, { ...f.failure, outcome }); await f.drain();
     expect((await f.read()).invoice.status).toBe('open'); expect(f.jobs.jobs).toEqual([]); expect(f.email.messages).toEqual([]);
     expect((await f.read()).audits.filter(a => a.action === effectCreated)).toEqual([]);
+  });
+  describe('a declined staff charge of a one-off', () => {
+    // The runner writes this audit when it reserves an attempt; staff charges carry mode 'staff'.
+    async function reserve(f: Fixture, attemptId: string, attemptNumber: number, mode: 'staff' | 'automatic' | 'retry' = 'staff') {
+      const user = await factory('authUser', f.gymId);
+      await db.forGym(f.gymId, tx => writeAudit(tx, { gymId: f.gymId, actorKind: 'user', actorUserId: user.id,
+        action: 'billing.runner.reserved', targetType: 'payment_attempt', targetId: attemptId,
+        after: { invoiceId: f.invoice.id, attemptNumber, mode }, occurredAt: f.clock.now() }));
+    }
+    const created = async (f: Fixture) => (await f.read()).audits.filter(a => a.action === effectCreated).map(a => a.after as TransitionEffect);
+    const notices = (f: Fixture) => f.email.messages.filter(m => /needed for invoice/.test(m.subject));
+    async function declined(outcome: 'failed' | 'requires_action' = 'failed') {
+      const f = await fixture('one_off'); await reserve(f, f.attempt.id, 1);
+      expect((await f.transitions.cardFailed(f.context, { ...f.failure, outcome })).outcome).toBe('applied');
+      return f;
+    }
+    it.each([['failed', 'Payment needed for invoice 1'], ['requires_action', 'Authentication needed for invoice 1']] as const)(
+      'sends one failed-payment notice for %s, keeps the invoice open and schedules no retries', async (outcome, subject) => {
+      const f = await declined(outcome); await f.drain();
+      const rows = await f.read();
+      expect(rows.invoice.status).toBe('open');
+      expect(await created(f)).toEqual([{ kind: 'dunning', invoiceId: f.invoice.id, attemptId: f.attempt.id, staffCharge: true }]);
+      expect(rows.audits.filter(a => a.action === 'billing.invoice.dunning_started' || a.action === 'billing.invoice.payment_failed')).toEqual([]);
+      expect(f.email.messages).toMatchObject([{ to: 'payer@example.invalid', subject }]);
+      expect(f.email.messages[0]!.text.match(/https:\/\/gym.example.invalid\/l\//g)).toHaveLength(2);
+      expect(f.retry).not.toHaveBeenCalled();
+    });
+    it.each(['automatic', 'retry', 'none'] as const)('sends nothing when the attempt reservation is %s', async mode => {
+      const f = await fixture('one_off');
+      if (mode !== 'none') await reserve(f, f.attempt.id, 1, mode);
+      await f.transitions.cardFailed(f.context, f.failure); await f.drain();
+      expect(await created(f)).toEqual([]); expect(f.email.messages).toEqual([]);
+    });
+    it('ignores a replay of the same decline', async () => {
+      const f = await declined(); await f.drain();
+      expect((await f.transitions.cardFailed(f.context, f.failure)).outcome).toBe('ignored'); await f.drain();
+      expect((await created(f)).filter(e => e.kind === 'dunning')).toHaveLength(1); expect(f.email.messages).toHaveLength(1);
+    });
+    it('sends no second notice when the action-needed charge is then cancelled', async () => {
+      const f = await declined('requires_action'); await f.drain();
+      expect((await f.transitions.cardFailed(f.context, { ...f.failure, outcome: 'canceled' })).outcome).toBe('applied');
+      await f.drain();
+      expect((await f.read()).attempts[0]).toMatchObject({ status: 'failed', declineCode: 'intent_canceled' });
+      expect((await created(f)).filter(e => e.kind === 'dunning')).toHaveLength(1);
+      expect(f.email.messages).toMatchObject([{ subject: 'Authentication needed for invoice 1' }]);
+      expect((await f.read()).invoice.status).toBe('open');
+    });
+    it('sends a second declined staff charge its own notice', async () => {
+      const f = await declined(); await f.drain();
+      const attemptId = uuidv7();
+      const intent = await f.provider.createCharge({ amount: f.invoice.amountCents, currency: 'cad', customerId: 'cus_test', paymentMethodId: 'pm_test',
+        invoiceId: f.invoice.id, attemptId, idempotencyKey: `${f.invoice.id}:2:create` });
+      await factory('paymentAttempts', f.gymId, { id: attemptId, invoiceId: f.invoice.id, attemptNumber: 2, savedPaymentMethod: 'pm_test', paymentIntentId: intent.id });
+      await reserve(f, attemptId, 2);
+      expect((await f.transitions.cardFailed(f.context, { ...f.failure, attemptId, paymentIntentId: intent.id })).outcome).toBe('applied');
+      await f.drain();
+      expect((await created(f)).filter(e => e.kind === 'dunning' && e.staffCharge)).toHaveLength(2);
+      expect(f.email.messages).toHaveLength(2);
+      const tokens = f.email.messages.map(m => [...m.text.matchAll(/https:\/\/gym.example.invalid\/l\/([\w-]+)/g)].map(match => match[1]));
+      expect(new Set(tokens.flat()).size).toBe(4);
+      expect((await f.read()).invoice.status).toBe('open');
+    });
+    it('sends nothing when staff void the invoice before the notice runs', async () => {
+      const f = await declined();
+      await f.transitions.voidInvoice(f.context, { invoiceId: f.invoice.id, reason: 'Unpaid invoice' }); await f.drain();
+      expect(notices(f)).toEqual([]);
+      const rows = await f.read();
+      const dunning = rows.audits.find(a => a.action === effectCreated && (a.after as InvoiceEffect).kind === 'dunning')!;
+      expect(rows.audits.filter(a => a.action === effectCompleted && a.targetId === dunning.targetId)).toHaveLength(1);
+      expect(f.jobs.jobs.filter(job => job.status === 'failed' || job.status === 'queued' && job.runAt <= f.clock.now())).toEqual([]);
+    });
+    it('sends only the receipt when the invoice is paid before the notice runs', async () => {
+      const f = await declined();
+      await f.transitions.manualPayment(f.context, f.manual); await f.drain();
+      expect(notices(f)).toEqual([]);
+      expect(f.email.messages).toHaveLength(1); expect(f.email.messages[0]!.subject).toContain('Receipt');
+    });
+    it('sends nothing for an attempt a newer one replaced before the notice runs', async () => {
+      const f = await declined();
+      await factory('paymentAttempts', f.gymId, { invoiceId: f.invoice.id, attemptNumber: 2, paymentIntentId: 'pi_new', status: 'pending' });
+      await f.drain();
+      expect(notices(f)).toEqual([]);
+    });
+    it('keeps a bank-debit failure on its current effects, without the staff mark', async () => {
+      const f = await fixture('one_off'); await reserve(f, f.attempt.id, 1);
+      const plain = await fixture('one_off');
+      for (const g of [f, plain]) await g.transitions.cardFailed(g.context, { ...g.failure, outcome: 'insufficient_funds' });
+      // The same effects as an unreserved attempt, with the fixture's own IDs taken out.
+      const shape = (rows: TransitionEffect[], g: Fixture) => rows.map(({ invoiceId, attemptId, ...rest }) =>
+        JSON.stringify({ ...rest, invoice: invoiceId === g.invoice.id, attempt: attemptId === undefined || attemptId === g.attempt.id })).sort();
+      const effects = await created(f);
+      expect(effects.length).toBeGreaterThan(0);
+      expect(effects.some(e => e.staffCharge)).toBe(false);
+      expect(shape(effects, f)).toEqual(shape(await created(plain), plain));
+    });
   });
   it.each([['pending', 'confirm_abandoned'], ['requires_action', 'intent_canceled']] as const)(
     'persists cancellation of a %s attempt across a service restart and ignores stale success even without attemptId', async (status, code) => {

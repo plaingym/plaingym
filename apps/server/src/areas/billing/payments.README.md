@@ -15,7 +15,9 @@ sweep recovers a failed settlement once the invoice is due, including pack sales
 If settlement throws after issuance commits, both sale paths log
 `billing.one_off.settle_failed` and return the issued open invoice successfully;
 staff can inspect it without retrying issuance and creating a second invoice.
-A failed or action-required positive one-off stays open without dunning.
+A failed or action-required positive one-off stays open without retries. A
+declined or action-needed staff charge of its saved method sends the payer the
+failed-payment notice.
 `issueOneOff` shares tax locks, detach rechecks, invoice insertion and its audit
 between ordinary one-offs and pack sales.
 

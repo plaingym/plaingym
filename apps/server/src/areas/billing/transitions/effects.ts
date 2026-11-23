@@ -293,7 +293,7 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       await credits.reverse(gymId, invoice.id);
     } else if (work.kind === 'dunning') {
       const bankFailure = work.bankCode || work.checkoutBankFailure;
-      if ((invoice.kind === 'cycle' || bankFailure) && ['open', 'past_due'].includes(invoice.status)
+      if ((invoice.kind === 'cycle' || bankFailure || work.staffCharge) && ['open', 'past_due'].includes(invoice.status)
         && (bankFailure && !work.attemptId || attempt?.id === latestAttempt?.id))
         await options.notifications.dunning({ ...data, actionRequired: attempt?.status === 'requires_action',
           ...(work.bankCode ? { bankCode: work.bankCode } : {}) });

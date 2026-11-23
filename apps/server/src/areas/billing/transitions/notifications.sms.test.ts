@@ -73,6 +73,16 @@ it.each(['insufficient_funds', 'payment_method_unusable'] as const)('texts the b
   expect(body).toContain(bankCode === 'insufficient_funds' ? 'Pay the invoice' : 'Add a new payment method');
   expect(body).toContain('/l/');
 });
+it('texts the failed-payment notice and both links for an open one-off invoice', async () => {
+  const f = await fixture();
+  const [invoice] = await scope(f.gymId, tx => tx.update(invoices).set({ kind: 'one_off', status: 'open' })
+    .where(eq(invoices.id, f.invoice.id)).returning());
+  await createTransitionSmsNotifications(f.options).dunning({ ...f.notice, invoice: snapshot(invoice!), actionRequired: false });
+  expect(f.text.messages).toHaveLength(1);
+  expect(f.text.messages[0]).toMatchObject({ to: phone });
+  expect(f.text.messages[0]!.body).toContain('Payment of');
+  expect(f.text.messages[0]!.body.match(/\/l\//g)).toHaveLength(2);
+});
 
 describe.each(senders)('$name SMS with real Postgres and RLS', sender => {
   it('texts a billing parent with no member record once for three children across concurrent retries and restart', async () => {

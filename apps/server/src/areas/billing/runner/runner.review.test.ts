@@ -117,12 +117,16 @@ describe('runner review regression cases with PostgreSQL', () => {
     expect(rows.attempts).toHaveLength(outcome === 'cancel' ? 2 : 1);
     if (outcome === 'cancel') expect(rows.attempts[0]!.declineCode).toBe('intent_canceled');
   });
-  it('allows an audited staff charge after a declined one-off, without dunning', async () => {
+  it('allows an audited staff charge after a declined one-off, with a notice and no retries', async () => {
     const f = await fixture(), bill = await oneOff(f), user = await factory('authUser', f.gymId);
     const request = { mode: 'staff' as const, context: { gymId: f.gymId, actor: { kind: 'user' as const, userId: user.id } } };
     f.provider.respondNextConfirmation('declined');
     expect(await f.runner.charge(f.gymId, bill.id, request)).toEqual({ status: 'failed' });
     expect((await f.read()).invoices[0]!.status).toBe('open');
+    const effects = (await f.read()).audits.filter(row => row.action === 'billing.transition.effect.created')
+      .map(row => row.after as { kind: string; staffCharge?: boolean });
+    expect(effects.filter(e => e.kind === 'dunning')).toMatchObject([{ staffCharge: true }]);
+    expect(effects.filter(e => e.kind === 'retry')).toEqual([]);
     expect(await f.runner.charge(f.gymId, bill.id, request)).toEqual({ status: 'succeeded' });
     const rows = await f.read(); expect(rows.attempts).toHaveLength(2);
     expect(rows.audits.filter(row => row.action === 'billing.runner.reserved').every(row => row.actorUserId === user.id)).toBe(true);
