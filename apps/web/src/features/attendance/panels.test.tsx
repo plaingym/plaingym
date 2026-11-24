@@ -9,7 +9,7 @@ import { ApiError } from '../../lib/api.js';
 import { registration } from './registrations.js';
 import { SessionCountsProvider, usePublishSessionCounts, useSessionChanged, type SessionCounts } from '../../lib/session-summary.js';
 import { Dialog } from '../../components/ui/dialog.js';
-const client = vi.hoisted(() => ({ members: vi.fn(), roster: vi.fn(), record: vi.fn(), undo: vi.fn(), totals: vi.fn(), labels: vi.fn() }));
+const client = vi.hoisted(() => ({ members: vi.fn(), roster: vi.fn(), record: vi.fn(), undo: vi.fn(), totals: vi.fn(), labels: vi.fn(), visitExists: vi.fn() }));
 vi.mock('./client.js', () => ({ attendanceClient: client }));
 vi.mock('../../app/context.js', () => ({ useBootstrap: () => ({ data: { gym: { timezone: 'America/New_York' } } }) }));
 const memberId = '00000000-0000-7000-8000-000000000001';
@@ -51,8 +51,9 @@ beforeEach(() => {
   });
   client.totals.mockResolvedValue({ memberId, total: 1200, classes: 1200, openMat: 1200, byProgram: [{ programId, count: 1200 }], byTag: [{ tagId, count: 1200 }] });
   client.labels.mockResolvedValue({ programs: [{ id: programId, name: 'Fundamentals', active: true }], tags: [{ id: tagId, name: 'Practice' }] });
+  client.visitExists.mockImplementation(async (id: string) => rows.some(entry => entry.attendance?.id === id));
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 const listed = () => within(screen.getByRole('list')).getAllByRole('listitem').map(item => item.textContent);
 describe('registered attendance panels', () => {
   it('explains that repeat open-mat check-ins reuse the gym-local day visit', async () => {
@@ -573,7 +574,7 @@ describe('registered attendance panels', () => {
     await chooseWalkIn(user);
     await screen.findByRole('button', { name: 'Sam Ng is checked in' });
     expect(banner('Sam Ng is checked in.')).toContain('This member needs more credits.');
-    // A read of page one without Sam Ng while checkedIn stays 1 keeps the past-tense feedback (single-page wording).
+    // On a single-page roster (total <= 50), a read lacking the walk-in clears the feedback even if the count stays 1.
     const singlePageTotal = page();
     client.roster.mockResolvedValueOnce({
       data: singlePageTotal.data.filter(entry => (entry.booking?.memberId ?? entry.attendance?.memberId) !== walkInId),
@@ -581,12 +582,16 @@ describe('registered attendance panels', () => {
       counts: { booked: 1, waitlisted: 0, checkedIn: 1 },
     });
     await reread();
-    const singlePageLine = /^Recorded a walk-in for Sam Ng at 6:05\sPM\.$/;
-    await screen.findByText(singlePageLine);
-    expect(banner(singlePageLine)).toContain('This member needs more credits.');
-    // On a multi-page roster without Sam Ng and the same checkedIn count, neutral wording stays.
+    await waitFor(() => expect(screen.queryByText(/Sam Ng/)).toBeNull());
+    expect(screen.queryByText(/needs more credits/)).toBeNull();
+    // Re-record Sam Ng to test the multi-page steps: pushed off-page keeps neutral wording, and clears when undone.
+    rows = rows.filter(entry => entry.memberId !== walkInId);
+    await reread();
+    await chooseWalkIn(user);
+    await screen.findByRole('button', { name: 'Sam Ng is checked in' });
+    const withSam = page();
     client.roster.mockResolvedValueOnce({
-      data: singlePageTotal.data.filter(entry => (entry.booking?.memberId ?? entry.attendance?.memberId) !== walkInId),
+      data: withSam.data.filter(entry => (entry.booking?.memberId ?? entry.attendance?.memberId) !== walkInId),
       pagination: { total: 51 },
       counts: { booked: 50, waitlisted: 0, checkedIn: 1 },
     });
@@ -599,6 +604,186 @@ describe('registered attendance panels', () => {
     await reread();
     await waitFor(() => expect(screen.queryByText(multiPageLine)).toBeNull());
     expect(screen.queryByText(/needs more credits/)).toBeNull();
+  });
+  it('keeps an undone booked row disabled until a reload succeeds, and drops a walk-in count and total when reload fails', async () => {
+    rows[0]!.attendance = { id: 'visit', source: 'coach' };
+    const user = userEvent.setup(), view = render(<AttendanceRosterPanel sessionId={sessionId}/>);
+    await user.click(await screen.findByRole('button', { name: 'Undo check-in for River Lee' }));
+    client.roster.mockRejectedValueOnce(new Error('offline'));
+    await user.click(screen.getByRole('button', { name: 'Undo check-in' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Refresh attendance to try again.');
+    expect(screen.getByText('River Lee')).toBeDefined();
+    expect((screen.getByRole('button', { name: 'Check in River Lee' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('0 checked in')).toBeDefined();
+    await user.click(screen.getByRole('button', { name: 'Refresh attendance' }));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Check in River Lee' }) as HTMLButtonElement).disabled).toBe(false));
+    view.unmount();
+
+    rows = [
+      { memberId: walkInId, displayName: 'Sam Ng', booking: null, attendance: { id: 'visit-sam', source: 'coach' } },
+      ...Array.from({ length: 50 }, (_, index) => booked('booked-' + index, 'Booked ' + index)),
+    ];
+    client.roster.mockImplementation(async (_sessionId: string, offset: number) => ({ ...page(), data: page().data.slice(offset, offset + 50) }));
+    render(<AttendanceRosterPanel sessionId={sessionId}/>);
+    await screen.findByRole('button', { name: 'Undo check-in for Sam Ng' });
+    expect(screen.getByRole('button', { name: 'Next page' })).toBeDefined();
+    await user.click(screen.getByRole('button', { name: 'Undo check-in for Sam Ng' }));
+    client.roster.mockRejectedValueOnce(new Error('offline'));
+    await user.click(screen.getByRole('button', { name: 'Undo check-in' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Refresh attendance to try again.');
+    expect(screen.queryByText('Sam Ng')).toBeNull();
+    expect(screen.getByText('0 checked in')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Next page' })).toBeNull();
+  });
+  it('ignores a walk-in choice while another save is running without re-searching', async () => {
+    const user = userEvent.setup(); render(<AttendanceRosterPanel sessionId={sessionId}/>);
+    await screen.findByText('River Lee');
+    const picker = screen.getByRole<HTMLInputElement>('combobox', { name: 'Check in someone else' });
+    await user.type(picker, 'Sam Ng');
+    const option = await screen.findByRole('option', { name: 'Sam Ng' });
+    let resolveRecord!: (value: Awaited<ReturnType<typeof recordVisit>>) => void;
+    client.record.mockImplementationOnce(() => new Promise(resolve => { resolveRecord = resolve; }));
+    act(() => {
+      screen.getByRole('button', { name: 'Check in River Lee' }).click();
+      option.click();
+    });
+    await act(() => new Promise(resolve => setTimeout(resolve, 300)));
+    expect(client.members).toHaveBeenCalledTimes(1);
+    expect(client.record).toHaveBeenCalledTimes(1);
+    expect(client.record).toHaveBeenCalledWith({ memberId, sessionId, programId: null });
+    rows[0]!.attendance = { id: 'visit-' + memberId, source: 'coach' };
+    await act(async () => { resolveRecord({ id: 'visit-' + memberId, source: 'coach', occurredAt: '2026-11-20T23:05:00.000Z', memberId }); });
+    await screen.findByRole('button', { name: 'River Lee is checked in' });
+    await user.click(picker);
+    await user.keyboard('{ArrowDown}');
+    expect(screen.getByRole('option', { name: 'Sam Ng' })).toBeDefined();
+    expect(client.members).toHaveBeenCalledTimes(1);
+  });
+  it('keeps off-page feedback on a replayed check-in and verifies before clearing on a lower count', async () => {
+    rows = [
+      ...Array.from({ length: 50 }, (_, index) => booked('booked-' + index, 'Booked ' + index)),
+      { ...booked('other-1', 'Ada One'), attendance: { id: 'visit-other-1', source: 'kiosk' } },
+      { ...booked('other-2', 'Bo Two'), attendance: { id: 'visit-other-2', source: 'kiosk' } },
+      { ...booked(walkInId, 'Sam Ng'), attendance: { id: 'visit-sam', source: 'kiosk' } },
+    ];
+    client.roster.mockImplementation(async (_sessionId: string, offset: number) => ({ ...page(), data: page().data.slice(offset, offset + 50) }));
+    client.record.mockResolvedValueOnce({ id: 'visit-sam', memberId: walkInId, source: 'kiosk', occurredAt: '2026-11-20T23:05:00.000Z', needsCredits: true });
+    rows[50]!.attendance = null;
+    rows[51]!.attendance = null;
+    const user = userEvent.setup(), { reread } = countsDialog();
+    await screen.findByText('Booked 0');
+    await chooseWalkIn(user);
+    const acknowledged = /^Checked in Sam Ng at 6:05\sPM\.$/;
+    await screen.findByText(acknowledged);
+    expect(banner(acknowledged)).toContain('This member needs more credits.');
+    expect(client.visitExists).not.toHaveBeenCalled();
+
+    // Another member checks in on page two (count 2), then is undone elsewhere (count 1) while Sam Ng still exists.
+    rows[50]!.attendance = { id: 'visit-other-1', source: 'kiosk' };
+    await reread();
+    rows[50]!.attendance = null;
+    client.visitExists.mockResolvedValueOnce(true);
+    await reread();
+    await waitFor(() => expect(client.visitExists).toHaveBeenCalledWith('visit-sam', walkInId, sessionId));
+    expect(banner(acknowledged)).toContain('This member needs more credits.');
+
+    // A rejected verification check keeps the feedback.
+    rows[50]!.attendance = { id: 'visit-other-1', source: 'kiosk' };
+    await reread();
+    rows[50]!.attendance = null;
+    client.visitExists.mockRejectedValueOnce(new Error('offline'));
+    await reread();
+    await waitFor(() => expect(client.visitExists).toHaveBeenCalledTimes(2));
+    expect(banner(acknowledged)).toContain('This member needs more credits.');
+
+    // Once Sam Ng is actually undone elsewhere, visitExists returns false and clears the feedback and warning.
+    rows[52]!.attendance = null;
+    await reread();
+    await waitFor(() => expect(screen.queryByText(acknowledged)).toBeNull());
+    expect(screen.queryByText(/needs more credits/)).toBeNull();
+  });
+  it('expires the own-change follow-up skip after 10 seconds when Bookings stays stale', async () => {
+    let now = 1_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    rows = [booked(memberId, 'River Lee')];
+    const { dialog, Session } = bookingsDialog();
+    const user = userEvent.setup(); render(<Session/>);
+    await screen.findByText('River Lee');
+    let reads = await settledReads(2);
+    dialog.failNextChange();
+    await user.click(screen.getByRole('button', { name: 'Check in River Lee' }));
+    await screen.findByRole('button', { name: 'River Lee is checked in' });
+    reads = await settledReads(reads + 1);
+    act(() => dialog.change(() => undefined, 'stale'));
+    await settledReads(reads);
+    now += 11_000;
+    act(() => dialog.change(() => rows.push(booked('b2', 'Cy Three'))));
+    await screen.findByText('Cy Three');
+    await settledReads(reads + 1);
+  });
+  it('shows the load-failed alert when a follow-up interrupts a pending Refresh and fails', async () => {
+    rows = [booked(memberId, 'River Lee')];
+    const { dialog, Session } = bookingsDialog();
+    const user = userEvent.setup(); render(<Session/>);
+    await screen.findByText('River Lee');
+    await settledReads(2);
+    client.roster.mockImplementationOnce(() => new Promise(() => undefined));
+    await user.click(screen.getByRole('button', { name: 'Refresh attendance' }));
+    client.roster.mockRejectedValueOnce(new Error('offline'));
+    act(() => dialog.change(() => undefined));
+    expect((await screen.findByRole('alert')).textContent).toContain('The roster could not be loaded. Refresh attendance to try again.');
+    expect(screen.queryByText('This roster may be out of date. Refresh attendance to try again.')).toBeNull();
+  });
+  it('reads additional walk-in pages when the first page is full of listed members, and stops at one under 50', async () => {
+    rows = Array.from({ length: 50 }, (_, index) => booked('m-' + index, 'Member ' + index));
+    client.members.mockImplementation(async (_search: string, offset = 0) => offset === 0
+      ? Array.from({ length: 50 }, (_, index) => ({ id: 'm-' + index, firstName: 'Member', lastName: String(index) }))
+      : [{ id: walkInId, firstName: 'Sam', lastName: 'Ng' }]);
+    const user = userEvent.setup(), view = render(<AttendanceRosterPanel sessionId={sessionId}/>);
+    await screen.findByText('Member 0');
+    await user.type(screen.getByRole('combobox', { name: 'Check in someone else' }), 'Sam');
+    expect(await screen.findByRole('option', { name: 'Sam Ng' })).toBeDefined();
+    expect(client.members.mock.calls.map(([search, offset = 0]) => [search, offset])).toEqual([['Sam', 0], ['Sam', 50]]);
+    view.unmount();
+
+    client.members.mockReset();
+    client.members.mockResolvedValueOnce([{ id: 'm-0', firstName: 'Member', lastName: '0' }, { id: walkInId, firstName: 'Sam', lastName: 'Ng' }]);
+    render(<AttendanceRosterPanel sessionId={sessionId}/>);
+    await screen.findByText('Member 0');
+    await user.type(screen.getByRole('combobox', { name: 'Check in someone else' }), 'Sam');
+    expect(await screen.findByRole('option', { name: 'Sam Ng' })).toBeDefined();
+    expect(client.members).toHaveBeenCalledTimes(1);
+  });
+  it('keeps the pager and checked-in count after a failed Next page and lets Previous page load page one', async () => {
+    rows = Array.from({ length: 51 }, (_, index) => booked('booked-' + index, 'Booked ' + index));
+    client.roster.mockImplementation(async (_sessionId: string, offset: number) => ({ ...page(), data: page().data.slice(offset, offset + 50) }));
+    const user = userEvent.setup(); render(<AttendanceRosterPanel sessionId={sessionId}/>);
+    await screen.findByText('Booked 0');
+    client.roster.mockRejectedValueOnce(new Error('offline'));
+    await user.click(screen.getByRole('button', { name: 'Next page' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('The roster could not be loaded. Refresh attendance to try again.');
+    expect(screen.queryByRole('list')).toBeNull();
+    expect(screen.queryByText('Booked 0')).toBeNull();
+    expect(screen.getByText('0 checked in')).toBeDefined();
+    const prev = screen.getByRole('button', { name: 'Previous page' }) as HTMLButtonElement;
+    expect(prev.disabled).toBe(false);
+    await user.click(prev);
+    await screen.findByText('Booked 0');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+  it('does not show the old page again when stepping back after a failed Next page and that read fails too', async () => {
+    rows = Array.from({ length: 51 }, (_, index) => booked('booked-' + index, 'Booked ' + index));
+    client.roster.mockImplementation(async (_sessionId: string, offset: number) => ({ ...page(), data: page().data.slice(offset, offset + 50) }));
+    const user = userEvent.setup(); render(<AttendanceRosterPanel sessionId={sessionId}/>);
+    await screen.findByText('Booked 0');
+    client.roster.mockRejectedValueOnce(new Error('offline')).mockRejectedValueOnce(new Error('offline'));
+    await user.click(screen.getByRole('button', { name: 'Next page' }));
+    await screen.findByRole('alert');
+    await user.click(screen.getByRole('button', { name: 'Previous page' }));
+    await waitFor(() => expect(client.roster).toHaveBeenLastCalledWith(sessionId, 0));
+    await screen.findByRole('alert');
+    expect(screen.queryByText('Booked 0')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Previous page' })).toBeDefined();
   });
   it('leaves members already listed on the roster page out of walk-in suggestions', async () => {
     rows = [booked(memberId, 'River Lee'), { memberId: 'k1', displayName: 'Kim Kiosk', booking: null, attendance: { id: 'visit-k1', source: 'kiosk' } }];

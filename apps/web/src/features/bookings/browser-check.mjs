@@ -42,7 +42,7 @@ Object.assign(bookingClient, {
 // The coach check-in roster reads its own eligible roster, unaffected by the simulated bookings failure.
 Object.assign(attendanceClient, { members:async()=>[member],
   roster:async()=>{const gone=booking.status==='cancelled',waiting=booking.status==='waitlisted';
-    return {data:gone?[]:[{displayName:member.firstName+' '+member.lastName,booking,attendance:null}],pagination:{limit:50,offset:0,total:gone?0:1},counts:{booked:gone||waiting?0:1,waitlisted:waiting?1:0,checkedIn:window.visitRecorded?1:0}};},
+    return {data:gone?[]:[{displayName:member.firstName+' '+member.lastName,booking,attendance:null}],pagination:{limit:50,offset:0,total:window.visitRecorded?51:gone?0:1},counts:{booked:gone||waiting?0:1,waitlisted:waiting?1:0,checkedIn:window.visitRecorded?1:0}};},
   record:async()=>(window.visitRecorded=true,{id:'visit',memberId,sessionId,programId:null,source:'coach',kind:'class',occurredAt:'2026-11-02T18:00:00Z',createdAt:'2026-11-02T18:00:00Z',needsCredits:true}) });
 const dialogSession={id:sessionId,name:'Fundamentals',startsAt:'2026-11-02T18:00:00Z',endsAt:'2026-11-02T19:00:00Z',coachId:null,status:'scheduled',capacity:5,notes:null,kind:'class',programIds:[],tagIds:[],revision:1};
 const options={timezone:'America/New_York',programs:[],coaches:[]};
@@ -152,12 +152,12 @@ try {
     const sent = { channels: ['email'], note: 'Class moved to Monday' };
     expect(await page.evaluate(() => [globalThis.cancelCalls, globalThis.dialogClosed ?? false])).toEqual([[sent, sent], false]);
     await expect(page.getByRole('button', { name: 'Check in Alexandria Rivera-Martinez', exact: true })).toHaveCount(0);
-    // A walk-in the roster page doesn't list gets a past-tense acknowledgment with its credit notice, kept by later reads.
+    // A walk-in the roster page doesn't list (the roster spans more than one page) gets a past-tense acknowledgment with its credit notice, kept by later reads.
     const walkIn = page.getByRole('combobox', { name: 'Check in someone else', exact: true });
     await walkIn.fill('Alexandria');
     await expect(page.getByRole('option', { name: 'Alexandria Rivera-Martinez', exact: true })).toBeVisible();
     await walkIn.press('Enter');
-    const acknowledged = page.getByText(/^Recorded a walk-in for Alexandria Rivera-Martinez at 1:00\sPM\.$/);
+    const acknowledged = page.getByText(/^Checked in Alexandria Rivera-Martinez at 1:00\sPM\.$/);
     await expect(acknowledged).toBeVisible();
     await expect(page.getByText('Checked in without spending a credit. This member needs more credits.')).toBeVisible();
     await page.evaluate(() => globalThis.dispatchEvent(new Event('focus')));

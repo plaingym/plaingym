@@ -31,13 +31,36 @@ describe('attendance HTTP client', () => {
     fetcher.mockResolvedValueOnce(Response.json({ data: [], pagination: { limit: 50, offset: 0, total: 0 } }));
     await expect(attendanceClient.roster(id(2), 0)).rejects.toThrow();
   });
-  it('looks up walk-ins among eligible members only', async () => {
+  it('looks up walk-ins among eligible members only and supports paging', async () => {
     const fetcher = vi.fn().mockResolvedValue(Response.json({ data: [], pagination: { limit: 50, offset: 0, total: 0 } }));
     vi.stubGlobal('fetch', fetcher);
     expect(await attendanceClient.members('River')).toEqual([]);
     const url = new URL(String(fetcher.mock.calls[0]![0]), 'https://gym.test');
     expect(url.pathname).toBe('/api/members');
     expect(Object.fromEntries(url.searchParams)).toEqual({ search: 'River', checkInEligible: 'true', limit: '50', offset: '0' });
+    fetcher.mockResolvedValueOnce(Response.json({ data: [], pagination: { limit: 50, offset: 50, total: 0 } }));
+    expect(await attendanceClient.members('River', 50)).toEqual([]);
+    const pageTwo = new URL(String(fetcher.mock.calls[1]![0]), 'https://gym.test');
+    expect(Object.fromEntries(pageTwo.searchParams)).toEqual({ search: 'River', checkInEligible: 'true', limit: '50', offset: '50' });
+  });
+  it('checks whether a specific visit still exists for the member and session', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(Response.json({ data: [entry(10)], pagination: { limit: 1, offset: 0, total: 1 } }))
+      .mockResolvedValueOnce(Response.json({ data: [entry(11)], pagination: { limit: 1, offset: 0, total: 1 } }))
+      .mockResolvedValueOnce(Response.json({ data: [], pagination: { limit: 1, offset: 0, total: 0 } }));
+    vi.stubGlobal('fetch', fetcher);
+    expect(await attendanceClient.visitExists(id(10), id(1), id(2))).toBe(true);
+    const url = new URL(String(fetcher.mock.calls[0]![0]), 'https://gym.test');
+    expect(url.pathname).toBe('/api/attendance');
+    expect(Object.fromEntries(url.searchParams)).toEqual({ memberId: id(1), sessionId: id(2), limit: '1', offset: '0' });
+    expect(fetcher.mock.calls[0]![1]).toMatchObject({ credentials: 'same-origin', redirect: 'error' });
+    expect(await attendanceClient.visitExists(id(10), id(1), id(2))).toBe(false);
+    expect(await attendanceClient.visitExists(id(10), id(1), id(2))).toBe(false);
+    await expect(attendanceClient.visitExists(id(10), 'invalid', id(2))).rejects.toThrow();
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    fetcher.mockResolvedValueOnce(Response.json({ error: 'private detail' }, { status: 500 }));
+    await expect(attendanceClient.visitExists(id(10), id(1), id(2))).rejects.toThrow('Attendance request failed');
+    fetcher.mockResolvedValueOnce(Response.json({ data: [{ id: id(10) }], pagination: { limit: 1, offset: 0, total: 1 } }));
+    await expect(attendanceClient.visitExists(id(10), id(1), id(2))).rejects.toThrow();
   });
   it('validates coach input and cannot submit an arbitrary source or import key', async () => {
     const fetcher = vi.fn().mockResolvedValue(Response.json({ data: entry(10) }));

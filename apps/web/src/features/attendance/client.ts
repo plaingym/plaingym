@@ -23,8 +23,14 @@ async function catalog<T>(path: string, parse: (value: unknown) => { data: T[]; 
 }
 export const attendanceClient = {
   /** Walk-in suggestions: members who can be checked in, never erased or Cancelled ones. */
-  async members(search: string): Promise<Member[]> {
-    return parseResponse(memberListResponseSchema, await get('/api/members', { search, checkInEligible: 'true', limit: 50, offset: 0 })).data;
+  async members(search: string, offset = 0): Promise<Member[]> {
+    return parseResponse(memberListResponseSchema, await get('/api/members', { search, checkInEligible: 'true', limit: 50, offset })).data;
+  },
+  /** Checks whether an attendance record still exists for a member and session. */
+  async visitExists(attendanceId: string, memberId: string, sessionId: string): Promise<boolean> {
+    attendanceContracts.list.query.parse({ memberId, sessionId, limit: 1, offset: 0 });
+    return parseResponse(attendanceContracts.list.response,
+      await get(attendanceContracts.list.path, { memberId, sessionId, limit: 1, offset: 0 })).data.some(row => row.id === attendanceId);
   },
   /** The session's eligible roster: booked members, then the waitlist in queue order, then walk-ins. */
   async roster(sessionId: string, offset: number) {

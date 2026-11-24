@@ -6,7 +6,6 @@
   "walkIn": "Check in someone else",
   "walkInError": "Members could not be searched. Please try again.",
   "walkInRecorded": "{name} is checked in.",
-  "walkInRecordedAt": "Recorded a walk-in for {name} at {time}.",
   "checkInRecordedAt": "Checked in {name} at {time}.",
   "waitlisted": "Waitlisted · #{rank}",
   "refresh": "Refresh attendance",
