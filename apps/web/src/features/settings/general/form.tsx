@@ -73,14 +73,21 @@ export function GeneralSettingsForm() {
       const send = (revision: number, signal: AbortSignal) => {
         // A new zone must follow the shared rule, so it is sent only when it changed: a stored zone the rule would
         // refuse (such as `CET`) saves with every other field unchanged and is never rewritten.
-        if (kind === 'general') return api.PATCH('/api/settings', { signal, body: { revision, name: value('name'),
-          ...(value('timezone') !== settings.timezone ? { timezone: value('timezone') } : {}),
-          address: { line1: value('line1'), line2: value('line2'), city: value('city'), region: value('region'), postalCode: value('postalCode'),
-            // Send the typed code so the server names any unsupported country as a field error on `address.country`.
-            ...(value('country') ? { country: value('country').toUpperCase() as PatchCountry } : {}) },
-          // A queued website upload may have changed the logo since this form was submitted; without cached settings, keep the loaded logo.
-          branding: { primaryColor: value('primaryColor'), logoKey: (cache.getQueryData<{ settings: GymSettings }>(gymSettingsKey)?.settings ?? settings).branding.logoKey ?? null },
-          websiteEnabled: form.has('websiteEnabled'), existingSiteUrl: value('existingSiteUrl') || null } });
+        if (kind === 'general') {
+          const country = value('country').toUpperCase();
+          // Send the typed code so the server names any unsupported country as a field error on `address.country`.
+          const address = { line1: value('line1'), line2: value('line2'), city: value('city'), region: value('region'), postalCode: value('postalCode'),
+            ...(country ? { country: country as PatchCountry } : {}) };
+          // The server replaces every known address key when `address` is sent, so omit it unless an address field changed.
+          const addressChanged = (['line1', 'line2', 'city', 'region', 'postalCode'] as const).some((key) => address[key] !== (settings.address[key] ?? '').trim())
+            || country !== (settings.address.country ?? '').trim().toUpperCase();
+          return api.PATCH('/api/settings', { signal, body: { revision, name: value('name'),
+            ...(value('timezone') !== settings.timezone ? { timezone: value('timezone') } : {}),
+            ...(addressChanged ? { address } : {}),
+            // A queued website upload may have changed the logo since this form was submitted; without cached settings, keep the loaded logo.
+            branding: { primaryColor: value('primaryColor'), logoKey: (cache.getQueryData<{ settings: GymSettings }>(gymSettingsKey)?.settings ?? settings).branding.logoKey ?? null },
+            websiteEnabled: form.has('websiteEnabled'), existingSiteUrl: value('existingSiteUrl') || null } });
+        }
         if (kind === 'booking') return api.PATCH('/api/settings/booking', { signal, body: {
           revision, bookingWindowDays: Number(value('bookingWindowDays')), cancellationCutoffMinutes: Number(value('cancellationCutoffMinutes')),
           openMatCountsAsClass: form.has('openMatCountsAsClass') } });

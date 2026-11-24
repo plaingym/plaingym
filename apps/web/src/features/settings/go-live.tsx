@@ -39,6 +39,7 @@ const checkRunning = (body: unknown) => {
 export function GoLiveSettings() {
   const cache = useQueryClient();
   const [lastChecklist, rememberChecklist] = useState<Checklist | null>(null);
+  const [ownRead, setOwnRead] = useState<'pending' | 'failed' | null>(null);
   const [saving, setBusy] = useState(false);
   const [message, setMessage] = useState<'error' | 'timeout' | 'changed' | 'justSaved' | 'smsProviderRequired'
     | 'smsProviderReadFailed' | 'paymentsReadFailed' | null>(null);
@@ -47,10 +48,17 @@ export function GoLiveSettings() {
   // The switches save the gym revision that every section of the page shares, so another section's save doesn't stale them.
   const gym = useGymSettings(), settings = gym.settings;
   const query = useGoLiveChecklist(settings?.revision, gym.epoch);
-  // Retain the displayed controls while a new revision is loading or failed; they stay locked until it answers.
-  const checklist = query.data ?? lastChecklist, readError = query.isError, busy = saving || query.isFetching;
+  // Retain the displayed controls while a new revision or explicit reload is loading or failed; background focus reads keep controls enabled.
+  const checklist = query.data ?? lastChecklist;
+  const background = query.isFetching && query.data !== undefined && ownRead !== 'pending';
+  const busy = saving || (query.isFetching && !background);
+  const readError = query.isError && (query.data === undefined || ownRead === 'failed');
   useEffect(() => { if (query.data) rememberChecklist(query.data); }, [query.data]);
-  const reloadChecklist = () => { void query.refetch(); };
+  useEffect(() => { setOwnRead(null); }, [query.dataUpdatedAt]);
+  const reloadChecklist = () => {
+    setOwnRead('pending');
+    void query.refetch().then(result => setOwnRead(result.isError ? 'failed' : null));
+  };
   const setChecklist = (next: ReturnType<typeof parseChecklist>) => {
     void cache.cancelQueries({ queryKey: goLiveKey(settings?.revision, gym.epoch) });
     cache.setQueryData(goLiveKey(settings?.revision, gym.epoch), next);

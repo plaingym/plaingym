@@ -163,6 +163,68 @@ describe('general settings timezone', () => {
     expect(within(general).queryByRole('alert')).toBeNull();
     expect(client.PATCH.mock.calls[0]![1].body).not.toHaveProperty('timezone');
   });
+  it('omits an unchanged address when saving, so a stored unsupported country like UK does not block other edits', async () => {
+    client.PATCH.mockReset();
+    const stored = { ...settings, address: { line1: '10 High St', city: 'London', country: 'UK' } };
+    client.PATCH.mockImplementation(async (_path: string, { body }: { body: Partial<GymSettings> }) => reply(200, { data: { ...stored, ...body, revision: 4 } }));
+    const general = await renderForm(stored);
+    fireEvent.change(within(general).getByLabelText('Gym name'), { target: { value: 'Renamed UK' } });
+    fireEvent.click(within(general).getByRole('button', { name: 'Save changes' }));
+    await vi.waitFor(() => expect(client.PATCH).toHaveBeenCalledTimes(1));
+    const body = client.PATCH.mock.calls[0]![1].body as Record<string, unknown>;
+    expect(body).toMatchObject({ revision: 3, name: 'Renamed UK' });
+    expect(body).not.toHaveProperty('address');
+    expect(await screen.findByText('Changes saved.')).toBeDefined();
+  });
+  it('omits an address whose stored values only differ from the typed ones by surrounding spaces', async () => {
+    client.PATCH.mockReset();
+    const stored = { ...settings, address: { line1: '10 High St ', city: ' London', country: 'UK' } };
+    client.PATCH.mockImplementation(async (_path: string, { body }: { body: Partial<GymSettings> }) => reply(200, { data: { ...stored, ...body, revision: 4 } }));
+    const general = await renderForm(stored);
+    fireEvent.change(within(general).getByLabelText('Gym name'), { target: { value: 'Renamed Padded' } });
+    fireEvent.click(within(general).getByRole('button', { name: 'Save changes' }));
+    await vi.waitFor(() => expect(client.PATCH).toHaveBeenCalledTimes(1));
+    expect(client.PATCH.mock.calls[0]![1].body).not.toHaveProperty('address');
+  });
+  it('sends the full address with stored UK when another address field changes, and marks country on 400 unsupported_country', async () => {
+    client.PATCH.mockReset();
+    client.PATCH.mockResolvedValueOnce({ response: { ok: false, status: 400 }, error: { error: { code: 'invalid_request',
+      message: 'The request is invalid.', details: { 'address.country': ['unsupported_country'] } }, requestId: 'r' } });
+    const stored = { ...settings, address: { line1: '10 High St', city: 'London', country: 'UK' } };
+    const general = await renderForm(stored);
+    fireEvent.change(within(general).getByLabelText('City'), { target: { value: 'Manchester' } });
+    fireEvent.click(within(general).getByRole('button', { name: 'Save changes' }));
+    await vi.waitFor(() => expect(client.PATCH).toHaveBeenCalledTimes(1));
+    expect(client.PATCH).toHaveBeenCalledWith('/api/settings', { signal: expect.any(AbortSignal), body: expect.objectContaining({
+      address: { line1: '10 High St', line2: '', city: 'Manchester', region: '', postalCode: '', country: 'UK' },
+    }) });
+    const countryInput = within(general).getByLabelText('Country code');
+    await vi.waitFor(() => expect(countryInput.getAttribute('aria-invalid')).toBe('true'));
+    const error = document.getElementById(countryInput.getAttribute('aria-describedby')!)!;
+    expect(error.textContent).toContain('two-letter country code');
+  });
+  it('sends uppercased country when changed from GB to canada, and sends address without country when emptied', async () => {
+    client.PATCH.mockReset();
+    const stored = { ...settings, address: { line1: '10 High St', city: 'London', country: 'GB' } };
+    client.PATCH.mockResolvedValueOnce({ response: { ok: false, status: 400 }, error: { error: { code: 'invalid_request',
+      message: 'The request is invalid.', details: { 'address.country': ['invalid'] } }, requestId: 'r' } })
+      .mockImplementationOnce(async (_path: string, { body }: { body: Partial<GymSettings> }) => reply(200, { data: { ...stored, ...body, revision: 4 } }));
+    const general = await renderForm(stored);
+    const countryInput = within(general).getByLabelText('Country code');
+    fireEvent.change(countryInput, { target: { value: 'canada' } });
+    fireEvent.click(within(general).getByRole('button', { name: 'Save changes' }));
+    await vi.waitFor(() => expect(countryInput.getAttribute('aria-invalid')).toBe('true'));
+    expect(client.PATCH).toHaveBeenNthCalledWith(1, '/api/settings', { signal: expect.any(AbortSignal), body: expect.objectContaining({
+      address: { line1: '10 High St', line2: '', city: 'London', region: '', postalCode: '', country: 'CANADA' },
+    }) });
+    fireEvent.change(countryInput, { target: { value: '' } });
+    fireEvent.click(within(general).getByRole('button', { name: 'Save changes' }));
+    await vi.waitFor(() => expect(client.PATCH).toHaveBeenCalledTimes(2));
+    const secondBody = client.PATCH.mock.calls[1]![1].body as { address?: Record<string, unknown> };
+    expect(secondBody.address).toEqual({ line1: '10 High St', line2: '', city: 'London', region: '', postalCode: '' });
+    expect(secondBody.address).not.toHaveProperty('country');
+    expect(await screen.findByText('Changes saved.')).toBeDefined();
+  });
 });
 
 describe('general settings and the cached shell summary', () => {

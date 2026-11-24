@@ -365,4 +365,57 @@ describe('go-live settings', () => {
     await act(async () => { resolveFocus(reply(200, restored(2))); });
     expect(screen.getByText(/Objects checked: 1,200. Unresolved: 0/)).toBeDefined();
   });
+  it('keeps switches, rerun and the past-due dialog active while a focus refetch is pending', async () => {
+    let resolveFocus!: (value: unknown) => void;
+    const initial = { data: { ...restored(0).data, pastDueMemberships: overdue().data.pastDueMemberships } };
+    live.mockResolvedValueOnce(reply(200, initial)).mockImplementationOnce(() => new Promise((resolve) => { resolveFocus = resolve; }));
+    const user = userEvent.setup(); start();
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
+    const dialog = screen.getByRole('dialog', { name: 'Review past billing dates' });
+    act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+    await vi.waitFor(() => expect(resolveFocus).toBeDefined());
+    expect(screen.queryByText('Saving…')).toBeNull();
+    expect((screen.getByRole('button', { name: 'Turn on: Billing' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: 'Turn on: Member emails' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: 'Turn on: Member texts' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: 'Check restored payments again' }) as HTMLButtonElement).disabled).toBe(false);
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await act(async () => { resolveFocus(reply(200, initial)); });
+  });
+  it('keeps controls enabled without an alert when a focus refetch fails, then adopts the next successful focus read', async () => {
+    live.mockResolvedValueOnce(reply(200, restored(2))).mockResolvedValueOnce(reply(500)).mockResolvedValueOnce(reply(200, restored(0)));
+    start();
+    expect(await screen.findByText(/Objects checked: 1,200. Unresolved: 2/)).toBeDefined();
+    act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+    await vi.waitFor(() => expect(live).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect((screen.getByRole('button', { name: 'Turn on: Billing' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: 'Check restored payments again' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByText(/Objects checked: 1,200. Unresolved: 2/)).toBeDefined();
+    act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+    expect(await screen.findByText(/Objects checked: 1,200. Unresolved: 0/)).toBeDefined();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+  it('locks controls with Saving while a 409 follow-up read runs, and shows the refusal text in the read-failure alert if it fails', async () => {
+    let resolveReload!: (value: unknown) => void;
+    live.mockResolvedValueOnce(reply(200, checklist())).mockImplementationOnce(() => new Promise((resolve) => { resolveReload = resolve; }))
+      .mockResolvedValueOnce(reply(200, checklist(4, true)));
+    client.PATCH.mockResolvedValueOnce(reply(409));
+    const user = userEvent.setup(); start();
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
+    await vi.waitFor(() => expect(resolveReload).toBeDefined());
+    expect(screen.getByText('Saving…')).toBeDefined();
+    expect((screen.getByRole('button', { name: 'Turn on: Billing' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Turn on: Member emails' }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => { resolveReload(reply(500)); });
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('These settings changed elsewhere, so the switch was not changed');
+    expect(alert.textContent).toContain('The request failed');
+    expect((screen.getByRole('button', { name: 'Turn on: Billing' }) as HTMLButtonElement).disabled).toBe(true);
+    await user.click(within(alert).getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByRole('button', { name: 'Turn off: Billing' })).toBeDefined();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
 });
