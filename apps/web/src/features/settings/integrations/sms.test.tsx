@@ -149,6 +149,19 @@ describe('SMS integration form', () => {
     await user.selectOptions(screen.getByLabelText('Send using'), 'service');
     expect(screen.queryByText(noCountryHint)).toBeNull();
   });
+  it('does not demand a country code in the test number hint', async () => {
+    const user = userEvent.setup(); renderSection();
+    await user.click(await screen.findByRole('button', { name: 'Connect SMS provider' }));
+    expect(await screen.findByText('Enter the number you want to test. Only that number receives this test. Settings are saved after the account check and test both succeed.')).toBeDefined();
+  });
+  it('explains the assumed calling code when the stored gym country is unsupported', async () => {
+    const base = client.GET.getMockImplementation()!;
+    client.GET.mockImplementation(async (path: string) => path === '/api/settings'
+      ? reply(200, { data: { ...settings, address: { country: 'UK' } } }) : base(path));
+    const user = userEvent.setup(); renderSection();
+    await user.click(await screen.findByRole('button', { name: 'Connect SMS provider' }));
+    expect(await screen.findByText(noCountryHint)).toBeDefined();
+  });
   it('shows no calling code hint when the gym country is set', async () => {
     const base = client.GET.getMockImplementation()!;
     client.GET.mockImplementation(async (path: string) => path === '/api/settings'

@@ -329,6 +329,12 @@ describe('SMS integration settings', () => {
     expect(send).toHaveBeenCalledExactlyOnceWith({ to: '+12025550123', body: 'Test gym: PlainGym SMS test.' });
     expect((await row()).smsConfig).not.toBeNull();
   });
+  it('treats a stored unsupported gym country as none', async () => {
+    await database.forGym(gymId, tx => tx.update(gyms).set({ address: { country: 'UK' } }));
+    const result = await save(server(), { sender: { from: '+1 (415) 555-2671' }, testTo: '(202) 555-0123' });
+    expect(result.status).toBe(200);
+    expect(send).toHaveBeenCalledExactlyOnceWith({ to: '+12025550123', body: 'Test gym: PlainGym SMS test.' });
+  });
   it('with no gym country, reads a national test number with another From calling code', async () => {
     await database.forGym(gymId, tx => tx.update(gyms).set({ address: {} }));
     const result = await save(server(), { sender: { from: '+44 20 7946 0018' }, testTo: '020 7946 0018' });

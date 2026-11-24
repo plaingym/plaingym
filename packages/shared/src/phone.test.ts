@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it } from 'vitest';
-import { callingCodeOf, normalizePhone, normalizePhoneWithCallingCode } from './phone.js';
+import { callingCodeOf, normalizePhone, normalizePhoneWithCallingCode, supportedCountry } from './phone.js';
+it.each([['GB', 'GB'], ['US', 'US'], ['UK', undefined], ['', undefined], [null, undefined], [undefined, undefined], [44, undefined]] as const)(
+  'reads a supported country only: %s', (country, expected) => {
+    expect(supportedCountry(country)).toBe(expected);
+  });
 it.each([
   ['(202) 555-0123', 'US', '+12025550123'], ['020 7946 0018', 'GB', '+442079460018'],
   ['+44 20 7946 0018', null, '+442079460018'], ['2025550123', null, null],

@@ -122,6 +122,18 @@ describe('settings service and routes', () => {
     expect((await patch(app, '/api/settings', { revision: saved.revision + 1, timezone: ' America/Toronto ' })).status).toBe(200);
     expect((await service.get(gymId)).timezone).toBe('America/Toronto');
   });
+  it('refuses a gym country the phone library does not support, and saves GB', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId);
+    const app = server('owner', gymId);
+    const before = await service.get(gymId);
+    const refused = await patch(app, '/api/settings', { revision: before.revision, address: { country: 'UK' } });
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toMatchObject({ error: { code: 'invalid_request', details: { 'address.country': ['unsupported_country'] } } });
+    expect(await service.get(gymId)).toEqual(before);
+    const saved = await patch(app, '/api/settings', { revision: before.revision, address: { country: 'GB' } });
+    expect(saved.status).toBe(200);
+    expect((await service.get(gymId)).address.country).toBe('GB');
+  });
   it('names every refused field of a general update, each with its own code, and leaves the gym unchanged', async () => {
     const gymId = uuidv7(); await factory('gyms', gymId);
     const app = server('owner', gymId);

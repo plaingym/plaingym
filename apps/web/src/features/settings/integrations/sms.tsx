@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useState, type FormEvent } from 'react';
 import { saveSmsIntegrationResponseSchema, type SmsIntegration } from '@plaingym/shared/contracts';
+import { callingCode } from '@plaingym/shared/phone-countries';
 import { api } from '../../../lib/api.js';
 import { t } from '../../../lib/i18n.js';
 import { parseResponse } from '../../../lib/response.js';
@@ -124,7 +125,7 @@ export function SmsIntegrationSection({ sms, editable, state }: { sms: SmsIntegr
           {sms.baseUrl !== undefined && <Field name="baseUrl" type="url" value={sms.baseUrl} required={false}/>}
           <Field name="testTo" type="tel"/>
           <p className="text-sm text-muted-foreground">{label('testHint')}</p>
-          {senderKind === 'from' && gym.settings && !gym.settings.address.country && <p className="text-sm text-muted-foreground">{label('testHintNoCountry')}</p>}
+          {senderKind === 'from' && gym.settings && callingCode(gym.settings.address.country) === null && <p className="text-sm text-muted-foreground">{label('testHintNoCountry')}</p>}
           <div className="flex flex-col gap-3 sm:flex-row">
             <Button type="submit">{label(busy ? 'saving' : 'save')}</Button>
             <Button variant="outline" onClick={() => setOpen(false)}>{label('cancel')}</Button>

@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { isSupportedCountry, parsePhoneNumberFromString, type CountryCode } from 'libphonenumber-js/max';
 
+/** The country when the phone library supports it, else undefined: an unsupported or unset country counts as none. */
+export function supportedCountry(country: unknown): string | undefined {
+  return typeof country === 'string' && isSupportedCountry(country.toUpperCase()) ? country : undefined;
+}
 /** A consentable SMS number. No country means an explicit international number is required. */
 export function normalizePhone(phone: string | null | undefined, country?: string | null): string | null {
   if (!phone || phone.length > 100) return null;
