@@ -221,6 +221,25 @@ describe('last-backup inventory cache', () => {
     await health.read(context);
     expect(list).toHaveBeenCalledTimes(4);
   });
+  it('drops the stored inventory 60 seconds after it is stored, on an unref-ed timer', async () => {
+    await snapshot();
+    const timers = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      const health = provider(), list = vi.spyOn(store, 'listObjects');
+      await health.read(context);
+      const expiries = timers.mock.results.filter((_, index) => timers.mock.calls[index]?.[1] === 60_000)
+        .map((result, index) => ({ timer: result.value as NodeJS.Timeout, run: timers.mock.calls.filter((call) => call[1] === 60_000)[index]![0] as () => void }));
+      expect(expiries).toHaveLength(1);
+      expect(expiries[0]!.timer.hasRef()).toBe(false);
+      expect(list).toHaveBeenCalledTimes(2);
+      clock.advance(30_000);
+      await health.read(context);
+      expect(list).toHaveBeenCalledTimes(2);
+      expiries[0]!.run();
+      await health.read(context);
+      expect(list).toHaveBeenCalledTimes(4);
+    } finally { timers.mockRestore(); }
+  });
   it('reads the bucket again after a new run or a finished backup or prune', async () => {
     await snapshot();
     const health = provider(), list = vi.spyOn(store, 'listObjects');

@@ -57,6 +57,41 @@ describe('health tile time limit', () => {
       expect(vi.getTimerCount()).toBe(0);
     } finally { process.off('unhandledRejection', unhandled); }
   });
+  it('shares one read per gym and tile, and starts a new one once it settles', async () => {
+    let calls = 0;
+    const slow = healthProvider(b, () => { calls++; return new Promise<HealthTile>((resolve) => { setTimeout(() => resolve(tileOf(b)), 7000); }); });
+    const service = createHealthService([slow], options);
+    const first = service.get(context);
+    await vi.advanceTimersByTimeAsync(1000);
+    const second = service.get(context);
+    expect(calls).toBe(1);
+    const other = service.get({ ...context, gymId: uuidv7() });
+    expect(calls).toBe(2);
+    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(0);
+    const answers = [await first];
+    expect(calls).toBe(2);
+    await vi.advanceTimersByTimeAsync(1000);
+    answers.push(await second, await other);
+    for (const response of answers) {
+      expect(response.data.tiles.find((tile) => tile.id === b)).toMatchObject({ message: 'Still checking. Refresh in a moment.' });
+    }
+    // The first read settles at 7 s; the next request starts a new one.
+    await vi.advanceTimersByTimeAsync(1000);
+    const third = service.get(context);
+    expect(calls).toBe(3);
+    await vi.advanceTimersByTimeAsync(5000);
+    await third;
+  });
+  it('starts a separate read for another tile', async () => {
+    let calls = 0;
+    const never = (id: HealthTile['id']) => healthProvider(id, () => { calls++; return new Promise<HealthTile>(() => undefined); });
+    const service = createHealthService([never(a), never(b)], options);
+    const result = service.get(context);
+    expect(calls).toBe(2);
+    await vi.advanceTimersByTimeAsync(5000);
+    await result;
+  });
   it('leaves no timer running when every tile answers at once', async () => {
     const service = createHealthService([after(a, 0), after(c, 0)], options);
     expect((await service.get(context)).data.tiles.filter((tile) => tile.message.startsWith('Answered '))).toHaveLength(2);

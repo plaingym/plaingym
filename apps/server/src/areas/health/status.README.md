@@ -6,9 +6,10 @@ including providers that are not configured. Each provider uses the frozen
 `HealthTileProvider` interface; failures and malformed payloads become an unavailable
 tile without exposing exception messages. Each tile has 5 seconds to answer; after that
 it reads "Still checking" and the other tiles render (the slow check keeps running and
-its late result is discarded). A tile slower than 2 seconds logs `health.tile_slow`
+its late result is discarded; a refresh while it runs waits on that same check, one per
+gym and tile, instead of starting another). A tile slower than 2 seconds logs `health.tile_slow`
 with its tile ID and duration only. The Last backup tile reuses its bucket inventory
-for up to one minute, dropped when a backup or prune finishes or the destination or
+for up to one minute (it is released from memory after that), dropped sooner when a backup or prune finishes or the destination or
 the backup runs change; pruning always reads the bucket itself.
 
 The Invoice effects tile (`invoice_effects`) stays in error while any invoice

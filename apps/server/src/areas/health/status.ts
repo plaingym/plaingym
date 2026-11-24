@@ -23,23 +23,37 @@ export function createHealthService(providers: readonly HealthTileProvider<Healt
   const { tileTimeoutMs = 5000, slowTileMs = 2000, now = () => performance.now() } = options;
   const registry = new Map(providers.map((provider) => [provider.id, provider]));
   if (registry.size !== providers.length) throw new Error('Duplicate health provider');
+  const inFlight = new Map<string, Promise<HealthTile>>();
   return { async get(context: StaffProviderContext) {
     if (!canStaff(context.roles, 'settings.manage')) throw new AppError('forbidden', 'Access denied');
     const tiles = await Promise.all(healthTileIds.map(async (id): Promise<HealthTile> => {
       const provider = registry.get(id);
       if (!provider) return { id, status: 'not_configured', checkedAt: null, details: null, message: statusMessage('notSetUp') };
       const started = now();
-      // Never rejects: every error becomes the failed-check tile.
-      const read = (async (): Promise<HealthTile> => {
-        try {
-          if (!canStaff(context.roles, provider.permission)) throw new Error('Provider permission denied');
-          const tile = healthTileSchema.parse(provider.schema.parse(await provider.read(context)));
-          if (tile.id !== id) throw new Error('Provider returned another tile');
-          return tile;
-        } catch {
-          return { id, status: 'unavailable', checkedAt: context.clock.now().toISOString(), details: null, message: statusMessage('checkFailed') };
+      const failed = (): HealthTile => ({ id, status: 'unavailable', checkedAt: context.clock.now().toISOString(), details: null, message: statusMessage('checkFailed') });
+      // Never rejects: every error becomes the failed-check tile. A request that finds a read in flight for the
+      // same gym and tile waits for it instead of starting another; the permission is still checked per request.
+      let read: Promise<HealthTile>;
+      if (!canStaff(context.roles, provider.permission)) read = Promise.resolve(failed());
+      else {
+        const key = context.gymId + ':' + id;
+        const running = inFlight.get(key);
+        if (running) read = running;
+        else {
+          const fresh = (async (): Promise<HealthTile> => {
+            try {
+              const tile = healthTileSchema.parse(provider.schema.parse(await provider.read(context)));
+              if (tile.id !== id) throw new Error('Provider returned another tile');
+              return tile;
+            } catch {
+              return failed();
+            }
+          })();
+          inFlight.set(key, fresh);
+          void fresh.finally(() => { if (inFlight.get(key) === fresh) inFlight.delete(key); });
+          read = fresh;
         }
-      })();
+      }
       let timer: ReturnType<typeof setTimeout> | undefined;
       const limit = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), tileTimeoutMs); });
       const tile = await Promise.race([read, limit]);

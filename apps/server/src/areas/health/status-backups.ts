@@ -38,6 +38,7 @@ export function createBackupHealthProvider(options: {
   // Only the inventory is reused, never the tile: ages and rules are computed from it on every read.
   // The key covers the destination, the keys, the runs and the backup generation; only its hash is kept.
   let cached: { key: string; storedAt: number; state: BackupInventory } | null = null;
+  let expiry: ReturnType<typeof setTimeout> | undefined;
   const loading = new Map<string, Promise<BackupInventory>>();
   const cachedInventory = (settings: InstallBackupConfig, key: string, now: number): Promise<BackupInventory> => {
     if (cached && cached.key === key && now - cached.storedAt < 60_000) return Promise.resolve(cached.state);
@@ -50,7 +51,15 @@ export function createBackupHealthProvider(options: {
     })();
     loading.set(key, load);
     // A failed load is never cached; a load the page gave up on still serves the next refresh.
-    load.then((state) => { if (!cached || cached.storedAt <= now) cached = { key, storedAt: now, state }; }, () => undefined)
+    load.then((state) => {
+      if (cached && cached.storedAt > now) return;
+      cached = { key, storedAt: now, state };
+      // Drop the inventory once it is stale instead of holding the listings until the next read.
+      if (expiry) clearTimeout(expiry);
+      const stored = cached;
+      expiry = setTimeout(() => { if (cached === stored) cached = null; expiry = undefined; }, 60_000);
+      expiry.unref();
+    }, () => undefined)
       .finally(() => { loading.delete(key); });
     return load;
   };
