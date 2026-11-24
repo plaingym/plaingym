@@ -25,7 +25,7 @@ async function fetchGoogleLogin(): Promise<GoogleLogin> {
 }
 /** The gym's Google sign-in settings, shared by the section and the settings page's decision to list it. */
 export function useGoogleLogin(enabled: boolean) {
-  return useQuery({ queryKey: googleLoginKey, queryFn: fetchGoogleLogin, enabled, staleTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false });
+  return useQuery({ queryKey: googleLoginKey, queryFn: fetchGoogleLogin, enabled, staleTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false, retryOnMount: false });
 }
 /** Whether the settings page lists the section: not where the gym can't have Google sign-in (no client, and none to enter). */
 export const googleSectionListed = (google: GoogleLogin | undefined) => google !== undefined && (google.source !== 'none' || google.editable || google.installProblem !== undefined);

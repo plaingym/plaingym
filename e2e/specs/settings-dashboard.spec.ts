@@ -111,6 +111,8 @@ for (const width of [360, 1280]) test(`website saves after a brand color change 
       }
       return route.fulfill({ json: { data: website } });
     }
+    if (path === '/api/settings/integrations/google') return route.fulfill({ json: { data: { source: 'none', editable: false,
+      unreadable: false, clientId: null, clientSecretSet: false, removeBlocked: false, revision: 3 } } });
     return route.fulfill({ status: 404, json: { error: { code: 'not_found' } } });
   });
   await page.goto(gymOrigin + '/admin/settings');

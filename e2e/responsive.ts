@@ -129,6 +129,8 @@ export async function accessibleThemes(page: Page, info: TestInfo, name: string,
   // Media changes can schedule transitions after getAnimations() takes its snapshot.
   // Audit the resting palette in each theme, including elements mounted during the scan.
   // Modify a same-origin stylesheet through CSSOM: inline style tags are refused by the app's CSP.
+  await page.waitForFunction(() => [...document.styleSheets].some(sheet => !sheet.href || new URL(sheet.href).origin === location.origin), undefined, { timeout: 10_000 })
+    .catch((error: unknown) => { if (!/Timeout/.test(String(error))) throw error; });
   const resting = await page.evaluateHandle(() => {
     const sheet = [...document.styleSheets].find(sheet => !sheet.href || new URL(sheet.href).origin === location.origin);
     if (!sheet) throw new Error('No same-origin stylesheet for the theme audit');

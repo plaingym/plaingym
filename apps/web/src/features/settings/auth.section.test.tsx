@@ -256,6 +256,35 @@ describe('Settings → Google sign-in', () => {
     expect(await screen.findByText('Google sign-in settings could not be loaded.')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Reload' })).toBeDefined();
   });
+  it('requests a missing Google sign-in read once even when listed mounts the section, and reloads on click', async () => {
+    function SettingsHarness() {
+      const listed = registration.settingsSections![0]!.listed!();
+      return <div data-testid="section">{listed ? <GoogleLoginSettings/> : null}</div>;
+    }
+    const googleCalls = () => server.GET.mock.calls.filter(([path]) => path === '/api/settings/integrations/google');
+    let status = 404;
+    server.GET.mockImplementation(async (path: string) => path === '/api/settings' ? reply(200, { data: settings })
+      : status === 200 ? reply(200, { data: google }) : reply(status));
+    cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={cache}><SettingsHarness/></QueryClientProvider>);
+    expect(await screen.findByText('Google sign-in settings could not be loaded.')).toBeDefined();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(googleCalls()).toHaveLength(1);
+    expect(screen.getByText('Google sign-in settings could not be loaded.')).toBeDefined();
+
+    status = 200;
+    await userEvent.click(screen.getByRole('button', { name: 'Reload' }));
+    expect(await screen.findByText(/Google sign-in is off/)).toBeDefined();
+    expect(screen.getByLabelText('Client ID')).toBeDefined();
+    expect(googleCalls()).toHaveLength(2);
+
+    cleanup();
+    server.GET.mockClear();
+    cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={cache}><SettingsHarness/></QueryClientProvider>);
+    expect(await screen.findByText(/Google sign-in is off/)).toBeDefined();
+    expect(googleCalls()).toHaveLength(1);
+  });
   it('aborts a save that times out', async () => {
     section();
     expect(await screen.findByText(/Google sign-in is off/)).toBeDefined();
