@@ -116,8 +116,8 @@ export default defineConfig(
     rules: { 'no-restricted-syntax': ['error',
       ...((missing) => [
         `CallExpression[callee.property.name=/^toLocale(String|DateString|TimeString)$/]${missing}`,
-        `:matches(NewExpression, CallExpression)[callee.object.name='Intl'][callee.property.name=/^(NumberFormat|DateTimeFormat|RelativeTimeFormat|PluralRules|ListFormat|DisplayNames)$/]${missing}:not(MemberExpression[property.name='resolvedOptions'] > *)`,
-      ])(":matches([arguments.length=0], [arguments.0.type='Identifier'][arguments.0.name='undefined'], [arguments.0.type='ArrayExpression'][arguments.0.elements.length=0], [arguments.0.type='Literal'][arguments.0.value=null], [arguments.0.type='UnaryExpression'][arguments.0.operator='void'])")
+        `:matches(NewExpression, CallExpression)[callee.object.name='Intl'][callee.property.name=/^(NumberFormat|DateTimeFormat|RelativeTimeFormat|PluralRules|ListFormat|DisplayNames|Collator|Segmenter)$/]${missing}:not(MemberExpression[property.name='resolvedOptions'] > *)`,
+      ])(":matches([arguments.length=0], [arguments.0.type='Identifier'][arguments.0.name='undefined'], [arguments.0.type='ArrayExpression'][arguments.0.elements.length=0], [arguments.0.type='Literal'][arguments.0.value=null], [arguments.0.type='UnaryExpression'][arguments.0.operator='void'], [arguments.0.type='TSAsExpression'][arguments.0.expression.type='Identifier'][arguments.0.expression.name='undefined'], [arguments.0.type='TSNonNullExpression'][arguments.0.expression.type='Identifier'][arguments.0.expression.name='undefined'], [arguments.0.type='SpreadElement'])")
         .map(selector => ({ selector, message: 'Display formatting uses the fixed en locale: formatCount (lib/count.ts), lib/instant.ts, or an explicit \'en\'.' })),
     ] },
   },

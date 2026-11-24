@@ -28,12 +28,13 @@ and legal-record timestamps unchanged. Choose singular/plural messages using
 the numeric value before formatting.
 
 Vitest pins the default number and date locale to `en` in `test/locale.ts`, so tests can't
-see a locale-less `Intl` call; lint refuses those (no arguments, `undefined`, `[]`, `null`,
-or `void 0`) and locale-less `toLocaleString()` / `toLocaleDateString()` /
-`toLocaleTimeString()` across all six `Intl` constructors (`NumberFormat`,
-`DateTimeFormat`, `RelativeTimeFormat`, `PluralRules`, `ListFormat`, `DisplayNames`) in
-`apps/web/src` (`no-restricted-syntax` in `eslint.config.mjs`). CI also runs the suite
-with a German system locale.
+see a locale-less `Intl` call; lint refuses those (no arguments, `undefined`, `undefined as …`,
+`undefined!`, `[]`, `null`, `void 0`, or a spread first argument) and locale-less
+`toLocaleString()` / `toLocaleDateString()` / `toLocaleTimeString()` across all eight
+`Intl` constructors (`NumberFormat`, `DateTimeFormat`, `RelativeTimeFormat`, `PluralRules`,
+`ListFormat`, `DisplayNames`, `Collator`, `Segmenter`) in `apps/web/src`
+(`no-restricted-syntax` in `eslint.config.mjs`). CI also runs the suite with a German
+system locale.
 
 **Mobile-first.** Build every screen for a 360 px wide phone first, then scale
 up: Tailwind base classes are the phone layout, and `sm:` / `md:` / `lg:` add

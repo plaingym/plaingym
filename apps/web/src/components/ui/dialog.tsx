@@ -17,8 +17,8 @@ export function lockPageScroll() {
   if (pageScrollLocks++ === 0) {
     const { scrollX, scrollY } = window;
     const { style } = document.documentElement;
-    // Reserve the scrollbar's gutter only when the page had a scrollbar, so a short page doesn't shift.
-    const hadScrollbar = window.innerWidth - document.documentElement.clientWidth > 0;
+    // Reserve the scrollbar's gutter only when the page had a scrollbar (a difference of 1 px or less is zoom rounding, not a scrollbar), so a short page doesn't shift.
+    const hadScrollbar = window.innerWidth - document.documentElement.clientWidth > 1;
     // A shorthand can read as empty when only one axis has an inline value.
     const overflowProperties = style.overflow ? ['overflow'] : ['overflow', 'overflow-x', 'overflow-y'];
     const properties = [...overflowProperties, 'scrollbar-gutter'].map(name => ({
@@ -228,7 +228,7 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
     <div className="flex min-h-0 w-full flex-1 flex-col">
       <div className="flex items-start gap-3 border-b border-border px-4 py-3 sm:px-6">
         <div className="min-w-0 flex-1 space-y-1 py-2">
-          <h2 id={titleId} className="wrap-anywhere text-lg font-semibold">{title}</h2>
+          <h2 id={titleId} className="text-lg font-semibold">{title}</h2>
           {description && <p id={descriptionId} className="text-sm text-muted-foreground">{description}</p>}
         </div>
         <Button variant="ghost" size="icon" aria-label={closeLabel} disabled={!dismissible || busy > 0} onClick={requestClose}><CloseIcon /></Button>

@@ -29,6 +29,13 @@ describe('display locale lint rule', () => {
     'new Intl.PluralRules(undefined);',
     'new Intl.ListFormat([]);',
     "new Intl.DisplayNames(undefined, { type: 'region' });",
+    'new Intl.Collator();',
+    'new Intl.Collator(undefined, { numeric: true });',
+    'new Intl.Segmenter();',
+    'new Intl.NumberFormat(undefined as never);',
+    '(5).toLocaleString(undefined!);',
+    '(5).toLocaleString(...[]);',
+    'new Intl.DateTimeFormat(...args);',
   ])('refuses %s', async code => {
     expect(await restricted(code)).toHaveLength(1);
   });
@@ -43,6 +50,9 @@ describe('display locale lint rule', () => {
     "new Intl.RelativeTimeFormat('en', { numeric: 'always' });",
     "new Intl.DisplayNames('en', { type: 'region' });",
     "new Intl.PluralRules('en');",
+    "new Intl.Collator('en').compare('a', 'b');",
+    "new Intl.Segmenter('en', { granularity: 'word' });",
+    "new Intl.NumberFormat('en' as const);",
   ])('allows %s', async code => {
     expect(await restricted(code)).toHaveLength(0);
   });

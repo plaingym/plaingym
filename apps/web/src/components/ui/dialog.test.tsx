@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useRef, useState } from 'react';
 import { Dialog, DialogActions, DialogCancel, DialogRecoveryContext, useDialogOperation, useDialogSaved } from './dialog.js';
+import { breaksAnywhere } from './wrap.test-helper.js';
 
 beforeEach(() => { vi.spyOn(window, 'scrollTo').mockImplementation(() => {}); });
 afterEach(() => {
@@ -27,6 +28,8 @@ function stubRoot({ innerWidth, clientWidth, left = 0, width = clientWidth }: { 
 
 it.each([
   { clientWidth: 1000, gutter: '' },
+  { clientWidth: 999, gutter: '' },
+  { clientWidth: 998, gutter: 'stable' },
   { clientWidth: 985, gutter: 'stable' },
 ])('reserves the scrollbar gutter only when the page had a scrollbar (clientWidth $clientWidth)', ({ clientWidth, gutter }) => {
   stubRoot({ innerWidth: 1000, clientWidth });
@@ -367,4 +370,11 @@ it('blocks Escape, backdrop and close during operations, then permits dismissal'
   expect(close).not.toHaveBeenCalled(); expect((screen.getByRole('button', { name: 'Close' }) as HTMLButtonElement).disabled).toBe(true);
   view.rerender(<Dialog title="Edit" closeLabel="Close" onClose={close}><Operation busy={false} /></Dialog>);
   fireEvent(screen.getByRole('dialog'), new Event('cancel', { cancelable: true })); expect(close).toHaveBeenCalledOnce();
+});
+it('inherits overflow-wrap: anywhere on the title without repeating wrap-anywhere', () => {
+  const longTitle = 'A'.repeat(60);
+  render(<Dialog title={longTitle} closeLabel="Close" onClose={vi.fn()}>Body</Dialog>);
+  const heading = screen.getByRole('heading', { level: 2, name: longTitle });
+  expect(heading.classList.contains('wrap-anywhere')).toBe(false);
+  expect(breaksAnywhere(heading)).toBe(true);
 });
