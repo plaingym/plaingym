@@ -149,4 +149,58 @@ describe('health tile time limit', () => {
       { time: expect.any(String), level: 'warn', event: 'health.tile_slow', tile: c, ms: 5000, timedOut: true },
     ]);
   });
+  it('keeps at most two pending reads per gym and tile when a provider never settles', async () => {
+    let calls = 0;
+    const never = healthProvider(b, () => { calls++; return new Promise<HealthTile>(() => undefined); });
+    const service = createHealthService([never], options);
+    const r0 = service.get(context);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect((await r0).data.tiles.find((tile) => tile.id === b)).toMatchObject({ message: 'Still checking. Refresh in a moment.' });
+    await vi.advanceTimersByTimeAsync(26_000);
+    const r31 = service.get(context);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect((await r31).data.tiles.find((tile) => tile.id === b)).toMatchObject({ message: 'Still checking. Refresh in a moment.' });
+    for (const [stepMs, request] of [[26_000, 62], [26_000, 93], [26_000, 124]] as const) {
+      await vi.advanceTimersByTimeAsync(stepMs);
+      expect(Date.now()).toBe(request * 1000);
+      const response = service.get(context);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect((await response).data.tiles.find((tile) => tile.id === b)).toMatchObject({ message: 'Still checking. Refresh in a moment.' });
+    }
+    expect(calls).toBe(2);
+  });
+  it('starts a new read once the replaced read settles while keeping at most two pending', async () => {
+    let calls = 0;
+    let resolveFirst!: (tile: HealthTile) => void;
+    const provider = healthProvider(b, () => {
+      calls++;
+      return new Promise<HealthTile>((resolve) => {
+        if (calls === 1) resolveFirst = resolve;
+      });
+    });
+    const service = createHealthService([provider], options);
+    const r0 = service.get(context);
+    await vi.advanceTimersByTimeAsync(5000);
+    await r0;
+    await vi.advanceTimersByTimeAsync(26_000);
+    const r31 = service.get(context);
+    await vi.advanceTimersByTimeAsync(5000);
+    await r31;
+    await vi.advanceTimersByTimeAsync(26_000); // 62 s
+    const r62 = service.get(context);
+    await vi.advanceTimersByTimeAsync(5000);
+    await r62;
+    await vi.advanceTimersByTimeAsync(26_000); // 93 s
+    const r93 = service.get(context);
+    expect(calls).toBe(2);
+    resolveFirst(tileOf(b));
+    await vi.advanceTimersByTimeAsync(1000); // 94 s; also flushes microtasks for replaced.delete
+    const r94 = service.get(context);
+    expect(calls).toBe(3);
+    await vi.advanceTimersByTimeAsync(31_000); // 125 s: second and third are both still pending
+    const r125 = service.get(context);
+    expect(calls).toBe(3);
+    await vi.advanceTimersByTimeAsync(5000);
+    await Promise.all([r93, r94, r125]);
+  });
 });

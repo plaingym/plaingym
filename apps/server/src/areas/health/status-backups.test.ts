@@ -336,9 +336,247 @@ describe('last-backup inventory cache', () => {
       const second = health.read(context);
       await waitEntered;
       clock.advance(70_000);
+      const before = timers.mock.calls.length;
       release();
       expect(await second).toMatchObject({ status: 'healthy' });
-      expect(timers.mock.calls.some((call) => call[1] === 0)).toBe(true);
+      const created = timers.mock.calls.slice(before)
+        .map((call, offset) => ({ delay: call[1], timer: timers.mock.results[before + offset]?.value as NodeJS.Timeout | undefined }))
+        .filter((entry) => entry.timer && !entry.timer.hasRef());
+      expect(created).toHaveLength(1);
+      expect(created[0]!.delay).toBe(0);
     } finally { timers.mockRestore(); }
+  });
+  it('closes the oldest destination when a third listing starts and each subsequent replacement', async () => {
+    await snapshot();
+    let entered = 0;
+    let notifyEntered: (() => void) | undefined;
+    const waitEntered = (target: number) => entered >= target ? Promise.resolve() : new Promise<void>((resolve) => { notifyEntered = resolve; });
+    vi.spyOn(store, 'listObjects').mockImplementation(() => {
+      entered++;
+      notifyEntered?.();
+      return new Promise(() => undefined);
+    });
+    const closes: ReturnType<typeof vi.fn<() => void>>[] = [];
+    const health = createBackupHealthProvider({
+      scope: database.forSystem,
+      config: async () => settings,
+      store: () => { const c = vi.fn<() => void>(); closes.push(c); return { store, close: c }; },
+    });
+    void health.read(context);
+    await waitEntered(1);
+    expect(closes).toHaveLength(1);
+    expect(closes[0]).not.toHaveBeenCalled();
+    clock.advance(31_000);
+    void health.read(context);
+    await waitEntered(2);
+    expect(closes).toHaveLength(2);
+    expect(closes[0]).not.toHaveBeenCalled();
+    expect(closes[1]).not.toHaveBeenCalled();
+    clock.advance(31_000);
+    void health.read(context);
+    await waitEntered(3);
+    expect(closes).toHaveLength(3);
+    expect(closes[0]).toHaveBeenCalledTimes(1);
+    expect(closes[1]).not.toHaveBeenCalled();
+    expect(closes[2]).not.toHaveBeenCalled();
+    clock.advance(31_000);
+    void health.read(context);
+    await waitEntered(4);
+    expect(closes).toHaveLength(4);
+    expect(closes[0]).toHaveBeenCalledTimes(1);
+    expect(closes[1]).toHaveBeenCalledTimes(1);
+    expect(closes[2]).not.toHaveBeenCalled();
+    expect(closes[3]).not.toHaveBeenCalled();
+  });
+  it('closes an old-key listing once it passes maxLoadingAgeMs on a read under the new key', async () => {
+    await snapshot();
+    const realList = store.listObjects.bind(store);
+    let listCalls = 0;
+    let enteredFirst!: () => void;
+    const firstEntered = new Promise<void>((resolve) => { enteredFirst = resolve; });
+    vi.spyOn(store, 'listObjects').mockImplementation((prefix) => {
+      listCalls++;
+      if (listCalls === 1) {
+        enteredFirst();
+        return new Promise(() => undefined);
+      }
+      return realList(prefix);
+    });
+    const closes: ReturnType<typeof vi.fn<() => void>>[] = [];
+    const health = createBackupHealthProvider({
+      scope: database.forSystem,
+      config: async () => settings,
+      store: () => { const c = vi.fn<() => void>(); closes.push(c); return { store, close: c }; },
+    });
+    void health.read(context);
+    await firstEntered;
+    await snapshot();
+    clock.advance(10_000);
+    expect(await health.read(context)).toMatchObject({ status: 'healthy' });
+    expect(closes[0]).not.toHaveBeenCalled();
+    clock.advance(21_000);
+    expect(await health.read(context)).toMatchObject({ status: 'healthy' });
+    expect(closes[0]).toHaveBeenCalledTimes(1);
+  });
+  it('closes each early-closed destination once on late resolution and leaves no unhandled rejection on late failure', async () => {
+    await snapshot();
+    const realList = store.listObjects.bind(store);
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      let listCalls = 0;
+      const settles: Array<{ resolve: (v: Awaited<ReturnType<typeof realList>>) => void; reject: (e: Error) => void }> = [];
+      let entered = 0;
+      let notifyEntered: (() => void) | undefined;
+      const waitEntered = (target: number) => entered >= target ? Promise.resolve() : new Promise<void>((resolve) => { notifyEntered = resolve; });
+      vi.spyOn(store, 'listObjects').mockImplementation((prefix) => {
+        listCalls++;
+        if (listCalls <= 4) {
+          entered++;
+          notifyEntered?.();
+          return new Promise((resolve, reject) => { settles.push({ resolve, reject }); });
+        }
+        return realList(prefix);
+      });
+      const closes: ReturnType<typeof vi.fn<() => void>>[] = [];
+      const health = createBackupHealthProvider({
+        scope: database.forSystem,
+        config: async () => settings,
+        store: () => { const c = vi.fn<() => void>(); closes.push(c); return { store, close: c }; },
+      });
+      const first = health.read(context);
+      await waitEntered(1);
+      clock.advance(31_000);
+      const second = health.read(context);
+      await waitEntered(2);
+      clock.advance(31_000);
+      const third = health.read(context);
+      await waitEntered(3);
+      expect(closes[0]).toHaveBeenCalledTimes(1);
+      clock.advance(31_000);
+      const fourth = health.read(context);
+      await waitEntered(4);
+      expect(closes[1]).toHaveBeenCalledTimes(1);
+      settles[0]!.resolve([]);
+      await first;
+      expect(closes[0]).toHaveBeenCalledTimes(1);
+      settles[1]!.reject(new Error('socket destroyed'));
+      expect(await second).toMatchObject({ status: 'error' });
+      await new Promise((resolve) => { process.nextTick(resolve); });
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(closes[1]).toHaveBeenCalledTimes(1);
+      settles[2]!.resolve([]);
+      settles[3]!.resolve([]);
+      await Promise.all([third, fourth]);
+    } finally { process.off('unhandledRejection', unhandled); }
+  });
+  it('treats a clock stepped back as stale for cached inventories and in-flight listings', async () => {
+    await snapshot();
+    const realList = store.listObjects.bind(store);
+    const list = vi.spyOn(store, 'listObjects');
+    const health = provider();
+    await health.read(context);
+    expect(list).toHaveBeenCalledTimes(2);
+    clock.set('2026-10-22T11:59:50Z');
+    await health.read(context);
+    expect(list).toHaveBeenCalledTimes(4);
+    clock.set('2026-10-22T11:59:55Z');
+    await health.read(context);
+    expect(list).toHaveBeenCalledTimes(4);
+
+    invalidateBackupHealth();
+    clock.set(start);
+    let calls = 0;
+    let enteredFirst!: () => void;
+    const firstEntered = new Promise<void>((resolve) => { enteredFirst = resolve; });
+    let resolveFirst!: (keys: Awaited<ReturnType<typeof realList>>) => void;
+    list.mockImplementation((prefix) => {
+      calls++;
+      if (calls === 1) {
+        enteredFirst();
+        return new Promise((resolve) => { resolveFirst = resolve; });
+      }
+      return realList(prefix);
+    });
+    const first = health.read(context);
+    await firstEntered;
+    expect(calls).toBe(1);
+    clock.set('2026-10-22T11:59:00Z');
+    expect(await health.read(context)).toMatchObject({ status: 'healthy' });
+    expect(calls).toBe(3);
+    resolveFirst([]);
+    await first;
+  });
+  it('clamps the cache expiry delay to 60,000 ms when the clock steps back during a listing', async () => {
+    await snapshot();
+    const realList = store.listObjects.bind(store);
+    const timers = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      let release!: () => void;
+      let entered!: () => void;
+      const waitEntered = new Promise<void>((resolve) => { entered = resolve; });
+      vi.spyOn(store, 'listObjects').mockImplementation(async (prefix) => {
+        if (prefix === 'snapshots/') {
+          entered();
+          await new Promise<void>((resolve) => { release = resolve; });
+        }
+        return realList(prefix);
+      });
+      const health = provider();
+      const readPromise = health.read(context);
+      await waitEntered;
+      clock.set('2026-10-22T11:55:00Z');
+      const before = timers.mock.calls.length;
+      release();
+      expect(await readPromise).toMatchObject({ status: 'healthy' });
+      const created = timers.mock.calls.slice(before)
+        .map((call, offset) => ({ delay: call[1], timer: timers.mock.results[before + offset]?.value as NodeJS.Timeout | undefined }))
+        .filter((entry) => entry.timer && !entry.timer.hasRef());
+      expect(created).toHaveLength(1);
+      expect(created[0]!.delay).toBe(60_000);
+    } finally { timers.mockRestore(); }
+  });
+  it('respects maxLoadingAgeMs option and defaults to 30 s', async () => {
+    await snapshot();
+    const realList = store.listObjects.bind(store);
+    const runAgeCheck = async (customAgeMs: number | undefined, joinAdvanceMs: number, replaceAdvanceMs: number) => {
+      let listCalls = 0;
+      let enteredFirst!: () => void;
+      const firstEntered = new Promise<void>((resolve) => { enteredFirst = resolve; });
+      let resolveFirst!: (keys: Awaited<ReturnType<typeof realList>>) => void;
+      const spy = vi.spyOn(store, 'listObjects').mockImplementation((prefix) => {
+        listCalls++;
+        if (listCalls === 1) {
+          enteredFirst();
+          return new Promise((resolve) => { resolveFirst = resolve; });
+        }
+        return realList(prefix);
+      });
+      let scopeDone: (() => void) | undefined;
+      const health = createBackupHealthProvider({
+        scope: async (fn) => { try { return await database.forSystem(fn); } finally { scopeDone?.(); } },
+        config: async () => settings,
+        store: () => ({ store, close }),
+        ...(customAgeMs !== undefined ? { maxLoadingAgeMs: customAgeMs } : {}),
+      });
+      const first = health.read(context);
+      await firstEntered;
+      expect(listCalls).toBe(1);
+      clock.advance(joinAdvanceMs);
+      const waitScope = new Promise<void>((resolve) => { scopeDone = resolve; });
+      const second = health.read(context);
+      await waitScope;
+      await Promise.resolve();
+      expect(listCalls).toBe(1);
+      clock.advance(replaceAdvanceMs);
+      expect(await health.read(context)).toMatchObject({ status: 'healthy' });
+      expect(listCalls).toBe(3);
+      resolveFirst([]);
+      await Promise.all([first, second]);
+      spy.mockRestore();
+      invalidateBackupHealth();
+    };
+    await runAgeCheck(10_000, 10_000, 1_000);
+    await runAgeCheck(undefined, 30_000, 1_000);
   });
 });

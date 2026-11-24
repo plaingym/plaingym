@@ -13,6 +13,7 @@ export function healthProvider(id: HealthTile['id'], read: (context: StaffProvid
     return read(context);
   } };
 }
+export const healthReadAgeMs = 30_000;
 /**
  * One failed or slow check cannot hide the remaining checks. Provider errors never reach the browser.
  * A tile that has not answered within `tileTimeoutMs` reads "still checking"; its provider keeps running and its
@@ -20,10 +21,12 @@ export function healthProvider(id: HealthTile['id'], read: (context: StaffProvid
  */
 export function createHealthService(providers: readonly HealthTileProvider<HealthTile>[],
   options: { tileTimeoutMs?: number; slowTileMs?: number; maxReadAgeMs?: number; now?: () => number } = {}) {
-  const { tileTimeoutMs = 5000, slowTileMs = 2000, maxReadAgeMs = 30_000, now = () => performance.now() } = options;
+  const { tileTimeoutMs = 5000, slowTileMs = 2000, maxReadAgeMs = healthReadAgeMs, now = () => performance.now() } = options;
   const registry = new Map(providers.map((provider) => [provider.id, provider]));
   if (registry.size !== providers.length) throw new Error('Duplicate health provider');
-  const inFlight = new Map<string, { read: Promise<HealthTile>; startedAt: number; loggedSlow: boolean }>();
+  type Entry = { read: Promise<HealthTile>; startedAt: number; loggedSlow: boolean };
+  const inFlight = new Map<string, Entry>();
+  const replaced = new Map<string, Entry>();
   return { async get(context: StaffProviderContext) {
     if (!canStaff(context.roles, 'settings.manage')) throw new AppError('forbidden', 'Access denied');
     const tiles = await Promise.all(healthTileIds.map(async (id): Promise<HealthTile> => {
@@ -31,17 +34,22 @@ export function createHealthService(providers: readonly HealthTileProvider<Healt
       if (!provider) return { id, status: 'not_configured', checkedAt: null, details: null, message: statusMessage('notSetUp') };
       const failed = (): HealthTile => ({ id, status: 'unavailable', checkedAt: context.clock.now().toISOString(), details: null, message: statusMessage('checkFailed') });
       // Never rejects: every error becomes the failed-check tile. A request that finds a read in flight for the
-      // same gym and tile waits for it instead of starting another unless it is older than maxReadAgeMs; the permission is still checked per request.
-      let entry: { read: Promise<HealthTile>; startedAt: number; loggedSlow: boolean };
+      // same gym and tile waits for it instead of starting another unless it is older than maxReadAgeMs and no
+      // replaced read is still pending; the permission is still checked per request.
+      let entry: Entry;
       if (!canStaff(context.roles, provider.permission)) {
         entry = { read: Promise.resolve(failed()), startedAt: now(), loggedSlow: false };
       } else {
         const key = context.gymId + ':' + id;
         const running = inFlight.get(key);
-        if (running && now() - running.startedAt <= maxReadAgeMs) entry = running;
+        if (running && (now() - running.startedAt <= maxReadAgeMs || replaced.has(key))) entry = running;
         else {
+          if (running) {
+            replaced.set(key, running);
+            void running.read.finally(() => { if (replaced.get(key) === running) replaced.delete(key); });
+          }
           const startedAt = now();
-          const fresh = {
+          const fresh: Entry = {
             read: (async (): Promise<HealthTile> => {
               try {
                 const tile = healthTileSchema.parse(provider.schema.parse(await provider.read(context)));

@@ -7,10 +7,8 @@ import { createS3Client, S3BackupObjectStore, type BackupObjectStore } from '../
 import { isBackupsUnconfigured, loadBackupConfig, type InstallBackupConfig } from './restore.config.js';
 import { guardSnapshot, inventory, prunePlan, UnverifiedInventory, type BackupInventory, type RunStatuses } from './backups.retention.js';
 import { backupHealthGeneration } from './backups.health-cache.js';
-import { healthProvider, statusMessage } from './status.js';
+import { healthProvider, healthReadAgeMs, statusMessage } from './status.js';
 import { backupFailureCause, type BackupFailureCause } from './backups.failure.js';
-
-const maxLoadingAgeMs = 30_000;
 
 const causeMessages: Record<Exclude<BackupFailureCause, 'other'>, string> = {
   credentials_rejected: 'backupCredentialsRejected', bucket_missing: 'backupBucketMissing', endpoint_unreachable: 'backupEndpointUnreachable',
@@ -21,7 +19,9 @@ export function createBackupHealthProvider(options: {
   scope?: typeof forSystem;
   config?: () => Promise<InstallBackupConfig | null>;
   store?: (config: InstallBackupConfig) => { store: BackupObjectStore; close(): void };
+  maxLoadingAgeMs?: number;
 } = {}) {
+  const maxLoadingAgeMs = options.maxLoadingAgeMs ?? healthReadAgeMs;
   const env = options.env ?? process.env, scope = options.scope ?? forSystem;
   const config = options.config ?? (async () => {
     if (env.TENANCY === 'multi') return null;
@@ -39,33 +39,68 @@ export function createBackupHealthProvider(options: {
     .where(inArray(backupRuns.objectPrefix, [...prefixes])))).map((run) => [run.prefix, run.status]));
   // Only the inventory is reused, never the tile: ages and rules are computed from it on every read.
   // The key covers the destination, the keys, the runs and the backup generation; only its hash is kept.
-  let cached: { key: string; storedAt: number; state: BackupInventory } | null = null;
+  let cached: { key: string; storedAt: number; seq: number; state: BackupInventory } | null = null;
   let expiry: ReturnType<typeof setTimeout> | undefined;
-  const loading = new Map<string, { startedAt: number; load: Promise<BackupInventory> }>();
+  let nextSeq = 0;
+  type LoadingEntry = { startedAt: number; load: Promise<BackupInventory>; close: () => void };
+  const loading = new Map<string, LoadingEntry>();
+  const replacedLoads = new Map<string, LoadingEntry>();
   const cachedInventory = (settings: InstallBackupConfig, key: string, now: () => number): Promise<BackupInventory> => {
     const loadStart = now();
-    if (cached && cached.key === key && loadStart - cached.storedAt < 60_000) return Promise.resolve(cached.state);
+    const isStale = (startedAt: number) => {
+      const age = loadStart - startedAt;
+      return age > maxLoadingAgeMs || age < 0;
+    };
+    const evictOtherKeys = (map: Map<string, LoadingEntry>) => {
+      for (const [entryKey, entry] of map) {
+        if (entryKey !== key && isStale(entry.startedAt)) {
+          entry.close();
+          map.delete(entryKey);
+        }
+      }
+    };
+    // Evict stale loads under superseded keys even on a cache hit so a fast listing under the new key does not keep them open.
+    evictOtherKeys(loading);
+    evictOtherKeys(replacedLoads);
+    if (cached && cached.key === key && loadStart - cached.storedAt >= 0 && loadStart - cached.storedAt < 60_000) {
+      return Promise.resolve(cached.state);
+    }
     const inFlight = loading.get(key);
-    if (inFlight && loadStart - inFlight.startedAt <= maxLoadingAgeMs) return inFlight.load;
+    if (inFlight && !isStale(inFlight.startedAt)) return inFlight.load;
+    if (inFlight) {
+      replacedLoads.get(key)?.close();
+      replacedLoads.set(key, inFlight);
+    }
+    let close = () => undefined;
     const load = (async () => {
       const destination = open(settings);
+      let closed = false;
+      close = () => {
+        if (closed) return;
+        closed = true;
+        destination.close();
+      };
       try { return await inventory(destination.store, settings.blobKey, runStatuses); }
-      finally { destination.close(); }
+      finally { close(); }
     })();
-    const entry = { startedAt: loadStart, load };
+    const seq = ++nextSeq;
+    const entry: LoadingEntry = { startedAt: loadStart, load, close };
     loading.set(key, entry);
     // A failed load is never cached; a load the page gave up on, or one a fresh load replaced, still serves the
     // next refresh unless a load that started later has already been stored.
     load.then((state) => {
-      if (cached && cached.storedAt > loadStart) return;
-      cached = { key, storedAt: loadStart, state };
+      if (cached && cached.seq > seq) return;
+      cached = { key, storedAt: loadStart, seq, state };
       // Drop the inventory once it is stale instead of holding the listings until the next read.
       if (expiry) clearTimeout(expiry);
       const stored = cached;
-      expiry = setTimeout(() => { if (cached === stored) cached = null; expiry = undefined; }, Math.max(0, 60_000 - (now() - loadStart)));
+      expiry = setTimeout(() => { if (cached === stored) cached = null; expiry = undefined; }, Math.min(60_000, Math.max(0, 60_000 - (now() - loadStart))));
       expiry.unref();
     }, () => undefined)
-      .finally(() => { if (loading.get(key) === entry) loading.delete(key); });
+      .finally(() => {
+        if (loading.get(key) === entry) loading.delete(key);
+        if (replacedLoads.get(key) === entry) replacedLoads.delete(key);
+      });
     return load;
   };
   return healthProvider('last_backup', async (context) => {
