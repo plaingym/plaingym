@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Isolated fixtures switch the persisted member email and SMS notices.
 import { auditEvents, classBookings, classSessions, emailDeliveries, gyms, households, members, smsDailyUsage, smsDeliveries, uuidv7 } from '@plaingym/db';
+// eslint-disable-next-line no-restricted-imports, database/system-tables -- Maintenance connection deletes audit_events rows to simulate a lost audit write before retry.
+import { openConnection } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { isInTransaction } from '@plaingym/shared/transaction';
@@ -502,4 +504,110 @@ it('records chosen channels on booking.cancelled and writes one booking.cancel_n
   expect(suppressed.sms.messages).toHaveLength(0);
   expect(await db.forGym(suppressed.gymId, tx => tx.$count(auditEvents,
     and(eq(auditEvents.targetId, suppressed.booking.id), eq(auditEvents.action, 'booking.cancel_notice_sent'))))).toBe(0);
+});
+
+async function deleteSentAudits(bookingId: string, channel: 'email' | 'sms') {
+  const maintenance = openConnection(db.maintenanceUrl, 1);
+  try {
+    await maintenance.sql`delete from audit_events where action = 'booking.cancel_notice_sent' and target_id = ${bookingId} and after->>'channel' = ${channel}`;
+  } finally { await maintenance.close(); }
+}
+
+it.each(['email', 'sms'] as const)('audits an accepted %s channel on retry after a lost audit without resending', async channel => {
+  const f = await fixture();
+  await f.cancel([channel]);
+  await f.run();
+  const sentAudits = () => db.forGym(f.gymId, tx => tx.select({ actorKind: auditEvents.actorKind, targetType: auditEvents.targetType,
+    targetId: auditEvents.targetId, after: auditEvents.after })
+    .from(auditEvents).where(and(eq(auditEvents.targetId, f.booking.id), eq(auditEvents.action, 'booking.cancel_notice_sent'))));
+  expect(await sentAudits()).toEqual([
+    { actorKind: 'system', targetType: 'class_booking', targetId: f.booking.id, after: { channel } },
+  ]);
+
+  await deleteSentAudits(f.booking.id, channel);
+  expect(await sentAudits()).toHaveLength(0);
+
+  // Second run finds the accepted delivery and restores the single sent audit without sending again.
+  await f.run();
+  expect(await sentAudits()).toEqual([
+    { actorKind: 'system', targetType: 'class_booking', targetId: f.booking.id, after: { channel } },
+  ]);
+  expect(f.email.messages).toHaveLength(channel === 'email' ? 1 : 0);
+  expect(f.sms.messages).toHaveLength(channel === 'sms' ? 1 : 0);
+
+  // Third run keeps the single audit and still sends nothing more.
+  await f.run();
+  expect(await sentAudits()).toHaveLength(1);
+  expect(f.email.messages).toHaveLength(channel === 'email' ? 1 : 0);
+  expect(f.sms.messages).toHaveLength(channel === 'sms' ? 1 : 0);
+});
+
+it.each(['email', 'sms'] as const)('writes no sent audit when the %s delivery stays unknown across retries', async channel => {
+  const f = await fixture();
+  await f.cancel([channel]);
+  if (channel === 'email') f.email.respondNext(new DeliveryError('unknown', 'SMTP reply lost'));
+  else f.sms.respondNext(new DeliveryError('unknown', 'Provider reply lost'));
+  await expect(f.run()).rejects.toThrow();
+  await f.run();
+  expect(f.email.messages).toHaveLength(0);
+  expect(f.sms.messages).toHaveLength(0);
+  if (channel === 'email') {
+    expect(await db.forGym(f.gymId, tx => tx.select({ state: emailDeliveries.state }).from(emailDeliveries))).toEqual([{ state: 'unknown' }]);
+  } else {
+    expect(await db.forGym(f.gymId, tx => tx.select({ state: smsDeliveries.state }).from(smsDeliveries))).toEqual([{ state: 'unknown' }]);
+  }
+  expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents,
+    and(eq(auditEvents.targetId, f.booking.id), eq(auditEvents.action, 'booking.cancel_notice_sent'))))).toBe(0);
+});
+
+it('logs bookings.cancel_notice_skipped with channel for missing mailer, missing recipient, and deleted booking at SMS last check', async () => {
+  const noMailer = await fixture();
+  await noMailer.cancel(['email']);
+  const noMailerDelivery = createBookingDelivery({ scope: db.forGym, clock: noMailer.clock, jobs: noMailer.jobs, mailer: async () => null });
+  const noMailerLogs = await captureLogs(() => noMailerDelivery.sendCancelNotice(noMailer.notices()[0]!.payload, noMailer.gymId));
+  expect(noMailerLogs.filter(line => line.event === 'bookings.cancel_notice_skipped')).toEqual([
+    expect.objectContaining({ gymId: noMailer.gymId, bookingId: noMailer.booking.id, channel: 'email', reason: 'no_mailer' }),
+  ]);
+
+  const noEmail = await fixture();
+  await db.forGym(noEmail.gymId, tx => tx.update(households).set({ email: null }).where(eq(households.id, noEmail.home.id)));
+  await noEmail.cancel(['email']);
+  const noEmailLogs = await captureLogs(() => noEmail.run());
+  expect(noEmail.email.messages).toHaveLength(0);
+  expect(noEmailLogs.filter(line => line.event === 'bookings.cancel_notice_skipped')).toEqual([
+    expect.objectContaining({ gymId: noEmail.gymId, bookingId: noEmail.booking.id, channel: 'email', reason: 'no_recipient' }),
+  ]);
+
+  const noPhone = await fixture();
+  await db.forGym(noPhone.gymId, tx => tx.update(households).set({ smsNoticesConsentAt: null, smsNoticesConsentSource: null })
+    .where(eq(households.id, noPhone.home.id)));
+  await noPhone.cancel(['sms']);
+  const noPhoneLogs = await captureLogs(() => noPhone.run());
+  expect(noPhone.sms.messages).toHaveLength(0);
+  expect(noPhoneLogs.filter(line => line.event === 'bookings.cancel_notice_skipped')).toEqual([
+    expect.objectContaining({ gymId: noPhone.gymId, bookingId: noPhone.booking.id, channel: 'sms', reason: 'no_recipient' }),
+  ]);
+
+  const missingAtLastCheck = await fixture();
+  await missingAtLastCheck.cancel(['sms']);
+  const real = createGymSettingsAccessor({ scope: db.forGym }); let pending = true;
+  const settings: GymSettingsAccessor = { async get(id) {
+    const value = await real.get(id);
+    if (pending && missingAtLastCheck.resolver.resolve.mock.calls.length) {
+      pending = false;
+      await db.forGym(id, tx => tx.delete(classBookings).where(eq(classBookings.id, missingAtLastCheck.booking.id)));
+    }
+    return value;
+  } };
+  const lastCheckDelivery = createBookingDelivery({ scope: db.forGym, clock: missingAtLastCheck.clock,
+    jobs: new FakeJobs(missingAtLastCheck.clock), settings, mailer: async () => missingAtLastCheck.email,
+    sms: { resolver: missingAtLastCheck.resolver, phoneDigest: createSmsPhoneDigest('cancel-notice-test') } });
+  const deletedLogs = await captureLogs(() => lastCheckDelivery.sendCancelNotice(missingAtLastCheck.notices()[0]!.payload, missingAtLastCheck.gymId));
+  expect(pending).toBe(false);
+  expect(missingAtLastCheck.sms.messages).toHaveLength(0);
+  expect(await db.forGym(missingAtLastCheck.gymId, tx => tx.select().from(smsDailyUsage))).toEqual([]);
+  expect(await db.forGym(missingAtLastCheck.gymId, tx => tx.select({ state: smsDeliveries.state }).from(smsDeliveries))).toEqual([{ state: 'not_accepted' }]);
+  expect(deletedLogs.filter(line => line.event === 'bookings.cancel_notice_skipped')).toEqual([
+    expect.objectContaining({ gymId: missingAtLastCheck.gymId, bookingId: missingAtLastCheck.booking.id, channel: 'sms', reason: 'not_current' }),
+  ]);
 });

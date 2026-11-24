@@ -667,13 +667,21 @@ describe('weekly class capacity and the coach hint', () => {
     ['session edit form', coaches => <SessionForm session={session} options={{ ...options, coaches }} tags={[]} siblings={[]} onSaved={vi.fn()} onCancel={vi.fn()}/>],
   ];
   it.each(coachSelects)('explains where coaches come from under the %s, with a Staff link for owners and admins', (_name, view) => {
-    vi.mocked(useBootstrap).mockReturnValue({ data: undefined } as ReturnType<typeof useBootstrap>);
+    vi.mocked(useBootstrap).mockReturnValue({ data: undefined, isPending: true } as ReturnType<typeof useBootstrap>);
     render(view([], ['owner']));
     const pendingHint = screen.getByText(coachesHelpPending);
     expect(screen.getAllByLabelText('Coach').find(element => element.tagName === 'SELECT')!.getAttribute('aria-describedby')).toBe(pendingHint.parentElement!.id);
     expect(screen.queryByRole('link', { name: 'Open Staff' })).toBeNull();
     expect(screen.queryByText(coachesHelp)).toBeNull();
     expect(screen.queryByText(coachesHelpAsk)).toBeNull();
+    cleanup();
+    vi.mocked(useBootstrap).mockReturnValue({ data: undefined, isPending: false, isError: true } as ReturnType<typeof useBootstrap>);
+    render(view([], ['owner']));
+    const failedHint = screen.getByText(coachesHelpAsk);
+    expect(screen.getAllByLabelText('Coach').find(element => element.tagName === 'SELECT')!.getAttribute('aria-describedby')).toBe(failedHint.parentElement!.id);
+    expect(screen.queryByText(coachesHelpPending)).toBeNull();
+    expect(screen.queryByText(coachesHelp)).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Open Staff' })).toBeNull();
     cleanup();
     for (const role of ['owner', 'admin'] as const) {
       bootstrap([role]); render(view([], [role]));

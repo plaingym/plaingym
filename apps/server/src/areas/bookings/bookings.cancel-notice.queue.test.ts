@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import '@hono/zod-openapi';
 import { expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
-import { classBookings, emailDeliveries, uuidv7 } from '@plaingym/db';
+import { and, eq } from 'drizzle-orm';
+import { auditEvents, classBookings, emailDeliveries, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { createApp } from '../../core/app.js';
@@ -142,4 +142,37 @@ it('rolls back the cancellation, its promotion request and its notice together',
   expect(await f.queue.existingJobs(cancelNoticeJob, [`booking-cancel-notice:${f.a.id}`], { gymId: f.gymId })).toEqual([]);
   expect(await f.queue.runNext()).toBe(false);
   expect(f.sent()).toEqual([]);
+});
+
+it('writes the sent audit on a real queue retry after an accepted delivery failed to record its audit', async () => {
+  const f = await fixture();
+  const fake = new FakeEmail();
+  let failAudit = true, outcomeRecorded = false;
+  const scope: typeof db.forGym = (gymId, fn) => {
+    if (failAudit && fake.messages.some(message => message.to === 'ana@example.test')) {
+      if (outcomeRecorded) { failAudit = false; return Promise.reject(new Error('audit write failed')); }
+      outcomeRecorded = true;
+    }
+    return db.forGym(gymId, fn);
+  };
+  const crashing = createBookingDelivery({ scope, clock: f.clock, jobs: f.queue, mailer: async () => fake });
+  const registry = new PostgresJobs({ database: db, clock: f.clock, perGymConcurrency: 1, leaseMs: 86_400_000 });
+  createServerRegistry({ jobs: createBookingJobs(() => crashing) }).registerJobs(registry, new Set());
+
+  expect((await f.cancel(f.a.id, { notify: true, channels: ['email'] })).status).toBe(200);
+  // Promotion runs first, then Ana's notice sends the email and persists accepted before failing on the audit write.
+  expect(await registry.runNext()).toBe(true);
+  expect(await registry.runNext()).toBe(true);
+  expect(failAudit).toBe(false);
+  expect(fake.messages.filter(message => message.to === 'ana@example.test')).toHaveLength(1);
+  expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents,
+    and(eq(auditEvents.targetId, f.a.id), eq(auditEvents.action, 'booking.cancel_notice_sent'))))).toBe(0);
+
+  f.clock.advance(1_000);
+  expect(await registry.runNext()).toBe(true);
+  await f.drain();
+  expect(fake.messages.filter(message => message.to === 'ana@example.test')).toHaveLength(1);
+  expect(await db.forGym(f.gymId, tx => tx.select({ after: auditEvents.after }).from(auditEvents)
+    .where(and(eq(auditEvents.targetId, f.a.id), eq(auditEvents.action, 'booking.cancel_notice_sent')))))
+    .toEqual([{ after: { channel: 'email' } }]);
 });

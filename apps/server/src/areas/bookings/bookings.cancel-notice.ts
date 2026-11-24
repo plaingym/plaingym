@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, gt, isNull, ne, or } from 'drizzle-orm';
-import { classBookings, classSessions, databaseCode, forGym, households, members, writeAudit, type Transaction } from '@plaingym/db';
+import { auditEvents, classBookings, classSessions, databaseCode, forGym, households, members, writeAudit, type Transaction } from '@plaingym/db';
 import { createTranslator, type Clock } from '@plaingym/shared';
 import { cancellationNoticeChannelsSchema, idSchema } from '@plaingym/shared/contracts';
 import { z } from 'zod';
@@ -48,8 +48,19 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
   const t = createTranslator({ 'bookings/bookings': messages });
 
   const skipped = (gymId: string, bookingId: string, channel: 'email' | 'sms',
-    reason: 'class_started' | 'not_current' | 'recipient_changed') =>
+    reason: 'class_started' | 'not_current' | 'recipient_changed' | 'no_mailer' | 'no_recipient') =>
     logInfo('bookings.cancel_notice_skipped', { gymId, bookingId, channel, reason });
+
+  async function recordSent(gymId: string, bookingId: string, channel: 'email' | 'sms') {
+    await scope(gymId, async tx => {
+      const existing = await tx.select({ after: auditEvents.after }).from(auditEvents)
+        .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.action, 'booking.cancel_notice_sent'),
+          eq(auditEvents.targetType, 'class_booking'), eq(auditEvents.targetId, bookingId)));
+      if (existing.some(row => (row.after as { channel?: unknown } | null)?.channel === channel)) return;
+      await writeAudit(tx, { gymId, actorKind: 'system', action: 'booking.cancel_notice_sent',
+        targetType: 'class_booking', targetId: bookingId, after: { channel }, occurredAt: clock.now() });
+    });
+  }
 
   /** The cancelled booking and its class, unless the class has started, the member has been erased, or they booked that class again since. */
   async function loadIn(tx: Transaction, gymId: string, bookingId: string) {
@@ -82,9 +93,9 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
     const row = await load(gymId, notice.bookingId);
     if (typeof row === 'string') { skipped(gymId, notice.bookingId, 'email', row); return; }
     const [recipient] = await scope(gymId, tx => readMemberNoticeEmails(tx, gymId, [row.memberId]));
-    if (!recipient) return;
+    if (!recipient) { skipped(gymId, notice.bookingId, 'email', 'no_recipient'); return; }
     const email = await options.mailer(gymId);
-    if (!email) { logInfo('bookings.cancel_notice_skipped', { gymId, bookingId: notice.bookingId, reason: 'no_mailer' }); return; }
+    if (!email) { skipped(gymId, notice.bookingId, 'email', 'no_mailer'); return; }
     const gymName = (await createSettingsService({ scope }).get(gymId)).name;
     const suppress = (reason: SuppressionReason) => {
       logEmailSuppression({ event: 'email.suppressed', gymId, memberId: row.memberId, reason });
@@ -112,9 +123,8 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
     } };
     // The guard builds the final content once, after its last recipient read.
     const result = await emails.send(gymId, cancelNoticeEmailKey(notice.bookingId), guarded, { to: recipient.address, subject: row.name, text: '', html: '' });
-    if (result.status === 'sent') {
-      await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'booking.cancel_notice_sent',
-        targetType: 'class_booking', targetId: notice.bookingId, after: { channel: 'email' }, occurredAt: clock.now() }));
+    if (result.status === 'sent' || (result.status === 'skipped' && result.state === 'accepted')) {
+      await recordSent(gymId, notice.bookingId, 'email');
     }
   }
 
@@ -124,11 +134,16 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
     const row = await load(gymId, notice.bookingId);
     if (typeof row === 'string') { skipped(gymId, notice.bookingId, 'sms', row); return; }
     const [group] = await scope(gymId, tx => readNoticePhones(tx, gymId, [row.memberId]));
-    if (!group) return;
+    if (!group) { skipped(gymId, notice.bookingId, 'sms', 'no_recipient'); return; }
     const delivery = { scope, clock, settings, sms };
     // Reserve before resolving credentials or calling the provider; an accepted or unknown key returns nothing.
     const reserved = await scope(gymId, tx => texts.reserve(tx, gymId, cancelNoticeSmsKey(notice.bookingId)));
-    if (!reserved) return;
+    if (!reserved) {
+      if (await texts.state(gymId, cancelNoticeSmsKey(notice.bookingId)) === 'accepted') {
+        await recordSent(gymId, notice.bookingId, 'sms');
+      }
+      return;
+    }
     const guarded: Sms = {
       verifyAccount: () => noticeSender(delivery, gymId, group).verifyAccount(),
       async sendSms() {
@@ -154,7 +169,7 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
             const gym = await readGymSettings(tx, gymId);
             const [booking] = await tx.select({ sessionId: classBookings.sessionId }).from(classBookings)
               .where(and(eq(classBookings.gymId, gymId), eq(classBookings.id, notice.bookingId)));
-            if (!booking) return 'no_consent';
+            if (!booking) { skipped(gymId, notice.bookingId, 'sms', 'not_current'); return 'no_consent'; }
             await tx.select({ id: classSessions.id }).from(classSessions)
               .where(and(eq(classSessions.gymId, gymId), eq(classSessions.id, booking.sessionId))).for('share');
             const again = await loadIn(tx, gymId, notice.bookingId);
@@ -187,10 +202,7 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
       },
     };
     const result = await texts.attempt(reserved, guarded, { to: group.phoneE164, body: '' });
-    if (result.status === 'sent') {
-      await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'booking.cancel_notice_sent',
-        targetType: 'class_booking', targetId: notice.bookingId, after: { channel: 'sms' }, occurredAt: clock.now() }));
-    }
+    if (result.status === 'sent') await recordSent(gymId, notice.bookingId, 'sms');
   }
 
   return {
