@@ -36,10 +36,10 @@ describe('Stripe health', () => {
     await factory('stripeEvents', other, { receivedAt: daysAgo(1), error: 'handler_failed' });
     const provider = createStripeHealthProvider({ webhooks: createWebhookHealthQuery(db.forGym, clock), configured: async () => true });
     const read = (gymId: string) => provider.read({ gymId, roles: ['owner'], clock });
-    expect(await read(fresh)).toMatchObject({ status: 'error', details: { failed: 1 }, message: expect.stringContaining('1 Stripe webhook events from the last 7 days') });
+    expect(await read(fresh)).toMatchObject({ status: 'error', details: { failed: 1 }, message: expect.stringContaining('1 Stripe webhook events failed to process in the last 7 days') });
     const warning = await read(old);
     expect(warning).toMatchObject({ status: 'warning', details: { failed: 1 } });
-    expect(warning.message).toContain('1 Stripe webhook events older than 7 days');
+    expect(warning.message).toContain('1 Stripe webhook events last failed to process more than 7 days ago');
     expect(warning.message).toContain('replay');
     expect(await read(replayed)).toMatchObject({ status: 'healthy', details: { failed: 0, pending: 0 } });
     // The same failure turns into the older kind once 7 days have passed since it was received.
@@ -55,10 +55,10 @@ describe('Stripe health', () => {
     await factory('stripeEvents', stale, { receivedAt: daysAgo(30), error: 'handler_failed', failedAt: daysAgo(9) });
     const provider = createStripeHealthProvider({ webhooks: createWebhookHealthQuery(db.forGym, clock), configured: async () => true });
     const read = (gymId: string) => provider.read({ gymId, roles: ['owner'], clock });
-    expect(await read(refailed)).toMatchObject({ status: 'error', details: { failed: 1 }, message: expect.stringContaining('1 Stripe webhook events from the last 7 days') });
+    expect(await read(refailed)).toMatchObject({ status: 'error', details: { failed: 1 }, message: expect.stringContaining('1 Stripe webhook events failed to process in the last 7 days') });
     const warning = await read(stale);
     expect(warning).toMatchObject({ status: 'warning', details: { failed: 1 } });
-    expect(warning.message).toContain('1 Stripe webhook events older than 7 days');
+    expect(warning.message).toContain('1 Stripe webhook events last failed to process more than 7 days ago');
   });
   it('distinguishes unconfigured Stripe, no traffic, and provider failure', async () => {
     const gymId = uuidv7(); await factory('gyms', gymId);

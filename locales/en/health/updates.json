@@ -10,6 +10,7 @@
   "unreachable": "The latest release is being read for the first time. This takes a moment.",
   "unreadable": "The latest release could not be read from GitHub. The check tries again each hour; turn it off with UPDATE_CHECK=off on an install without internet access.",
   "noRelease": "No stable release has been published yet, so there is nothing to compare this install with. The check tries again each hour.",
+  "noReleaseCustom": "No stable release was found for the release repository this install follows (RELEASE_REPOSITORY). Check that it names a public repository with a published release. The check tries again each hour.",
   "badRepository": "RELEASE_REPOSITORY is not in the form owner/name, so releases cannot be read.",
   "banner.title": "Update available",
   "banner.titlePatchHeld": "Patch release not installed",

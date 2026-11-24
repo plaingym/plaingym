@@ -227,11 +227,12 @@ the network: with nothing cached it starts the request in the background and the
 `checkedAt` until it arrives (the banner asks again each minute meanwhile). After a failed request with nothing cached
 it is `unavailable` with `checkedAt` set to the failure and its own message (the banner then keeps its usual pace; the
 check retries hourly). GitHub answers 404 for a repository with no stable release: the tile then says no stable release
-has been published yet (`ReleaseCheck.failure()` is `not_found`) instead of "could not be read". Every failed request
-writes one `health.release_check_failed` log line with only `status` (the HTTP status, null when there was none) and
-`reason` (`http`, `unusable` for a body that fails parsing or the release checks, or `network` for a failed or timed-out
-fetch); it never logs the URL, body or error message. A failed, oversized (refused by `Content-Length`, or once the stream passes 256 KiB), draft, pre-release or
-off-host answer keeps the last good one and retries after an hour. A newer minor or major is `warning` with
+has been published yet (or asks to check `RELEASE_REPOSITORY` when following another repository; `ReleaseCheck.failure()`
+is `not_found`) instead of "could not be read". A 404 writes `health.release_check_failed` at info level once per run of
+404s; every other failed request writes one at warn level on each failure, with only `status` (the HTTP status, null when
+there was none) and `reason` (`http`, `unusable` for a body that fails parsing or the release checks, or `network` for a
+failed or timed-out fetch); it never logs the URL, body or error message. A failed, oversized (refused by
+`Content-Length`, or once the stream passes 256 KiB), draft, pre-release or off-host answer keeps the last good one and retries after an hour. A newer minor or major is `warning` with
 `available: true` (the banner). A newer patch is `healthy` with `available: false` while the nightly update is
 expected to install it, and `warning` with `available: true` when it is not: the gym's automatic-updates switch is off,
 no check has run for `staleAfterHours` (`auto-update.ts`), or the last attempt skipped, rolled back or failed

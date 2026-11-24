@@ -221,7 +221,47 @@ describe('update_available tile', () => {
       expect(result).toMatchObject({ status: 'unavailable', checkedAt: clock.now().toISOString(), details: null,
         message: expect.stringContaining('No stable release has been published yet') });
       expect(lines).toHaveLength(1);
-      expect(lines[0]).toMatchObject({ event: 'health.release_check_failed', status: 404, reason: 'http' });
+      expect(lines[0]).toMatchObject({ level: 'info', event: 'health.release_check_failed', status: 404, reason: 'http' });
+    });
+    it('tells an install following another RELEASE_REPOSITORY to check it on a 404', async () => {
+      const previous = setLogSink(() => undefined);
+      try {
+        const check = createReleaseCheck({ fetch: answer({ message: 'Not Found' }, 404), repository: 'someone/fork' });
+        await settled(check, clock.now());
+        expect(await tile({ RELEASE_REPOSITORY: 'someone/fork' }, check)).toMatchObject({
+          status: 'unavailable', checkedAt: clock.now().toISOString(), details: null,
+          message: expect.stringContaining('RELEASE_REPOSITORY'),
+        });
+      } finally { setLogSink(previous); }
+    });
+    it('keeps the default text when RELEASE_REPOSITORY names the default repository in other letter case', async () => {
+      const previous = setLogSink(() => undefined);
+      try {
+        const check = createReleaseCheck({ fetch: answer({ message: 'Not Found' }, 404) });
+        await settled(check, clock.now());
+        expect((await tile({ RELEASE_REPOSITORY: 'PlainGym/PlainGym' }, check)).message).not.toContain('RELEASE_REPOSITORY');
+      } finally { setLogSink(previous); }
+    });
+    it('logs a 404 at info level once per run of 404s, and warns on other failures', async () => {
+      const lines: string[] = [], previous = setLogSink(line => lines.push(line));
+      try {
+        let status = 404;
+        const check = createReleaseCheck({ fetch: async () => new Response('', { status }) });
+        await settled(check, clock.now());
+        await settled(check, new Date(clock.now().getTime() + hour));
+        expect(lines.map(line => JSON.parse(line) as Record<string, unknown>)).toMatchObject([
+          { level: 'info', event: 'health.release_check_failed', status: 404, reason: 'http' },
+        ]);
+        status = 500;
+        await settled(check, new Date(clock.now().getTime() + 2 * hour));
+        status = 404;
+        await settled(check, new Date(clock.now().getTime() + 3 * hour));
+        expect(lines.map(line => JSON.parse(line) as Record<string, unknown>)).toMatchObject([
+          { level: 'info', event: 'health.release_check_failed', status: 404, reason: 'http' },
+          { level: 'warn', event: 'health.release_check_failed', status: 500, reason: 'http' },
+          { level: 'info', event: 'health.release_check_failed', status: 404, reason: 'http' },
+        ]);
+      } finally { setLogSink(previous); }
     });
     it.each([
       ['a 500', answer('', 500), 500, 'http'],

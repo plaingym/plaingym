@@ -5,7 +5,7 @@ import messages from '../../../../../locales/en/health/updates.json' with { type
 import type { UpdateAvailableHealthDetails } from '@plaingym/shared/contracts';
 import { requestAutoUpdateState, autoUpdateMessage, patchHoldReason, type AutoUpdateState } from './auto-update.js';
 import { healthProvider } from './status.js';
-import { logWarn } from '../../core/log.js';
+import { logInfo, logWarn } from '../../core/log.js';
 import type { StaffProviderContext } from '../../core/interfaces/extensions.js';
 
 const translate = createTranslator({ 'health/updates': messages });
@@ -128,12 +128,18 @@ export function createReleaseCheck(options: ReleaseCheckOptions = {}): ReleaseCh
       nextAt = now.getTime() + ttl;
     } catch (error) {
       const status = error instanceof Rejected ? error.status : null;
+      const wasNotFound = failure === 'not_found';
       failedAt = now;
       // GitHub answers 404 for a repository with no stable release (or none at all); that is not a read failure.
       failure = status === 404 ? 'not_found' : 'failed';
       nextAt = now.getTime() + retry;
       // Status and class only: no URL, body or error message.
-      logWarn('health.release_check_failed', { status, reason: error instanceof Rejected ? error.reason : 'network' });
+      const fields = { status, reason: error instanceof Rejected ? error.reason : 'network' };
+      if (failure === 'not_found') {
+        if (!wasNotFound) logInfo('health.release_check_failed', fields);
+      } else {
+        logWarn('health.release_check_failed', fields);
+      }
     }
   }
   return {
@@ -186,7 +192,8 @@ export function createUpdateAvailableProvider(options: UpdateProviderOptions = {
       // after a failure the check retries by itself each hour, and nothing needs asking sooner.
       const failedAt = check.failedAt?.() ?? null;
       if (!failedAt) return empty('unavailable', 'unreachable');
-      return empty('unavailable', check.failure?.() === 'not_found' ? 'noRelease' : 'unreadable', failedAt.toISOString());
+      const notFoundKey = repository.toLowerCase() !== defaultRepository ? 'noReleaseCustom' : 'noRelease';
+      return empty('unavailable', check.failure?.() === 'not_found' ? notFoundKey : 'unreadable', failedAt.toISOString());
     }
     const state = await (options.state ? options.state(context) : options.automatic ? options.automatic(context.gymId, context.clock) : requestAutoUpdateState(context)).catch(() => null);
     const target = state?.attempt?.toVersion ? parseVersion(state.attempt.toVersion) : null;
