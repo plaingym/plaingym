@@ -285,6 +285,28 @@ it('never sends a cancellation notice from before a restore, and gives a later c
   const decisions = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'schedule.cancellation_notice_decided')));
   expect(decisions.map(row => row.after)).toEqual([{ memberId: member.id, status: 'sent', round: 1 }]);
 });
+it('records a retried notice decision for its own round, and writes nothing more once that round is decided', async () => {
+  const f = await fixture(), member = await f.booked();
+  await f.cancel();
+  const first = f.payload();
+  await f.notice.run(first, f.gymId);
+  await f.service.restoreSession(f.actor, f.session.id, { revision: f.session.revision + 1 });
+  await f.service.changeSession(f.actor, f.session.id, 'cancel', { revision: f.session.revision + 2, notify: true, note: 'Closed again' });
+  const second = f.jobs.jobs.filter(job => job.name === cancellationNoticeJob)[1]!.payload;
+  const decisions = () => db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'schedule.cancellation_notice_decided')));
+  expect((await decisions()).map(row => row.after)).toEqual([{ memberId: member.id, status: 'sent' }]);
+  // The round-1 email was accepted, but the worker crashed before its decision.
+  await factory('emailDeliveries', f.gymId, { key: `schedule-cancel-notice:${f.session.id}.1:${member.id}`,
+    commandDigest: commandDigest([`${f.session.id}.1`, member.email]), state: 'accepted' });
+  const sent = f.email.messages.length;
+  await f.notice.run(second, f.gymId);
+  expect((await decisions()).map(row => row.after)).toEqual(expect.arrayContaining([
+    { memberId: member.id, status: 'sent' }, { memberId: member.id, status: 'sent', round: 1 }]));
+  expect(await decisions()).toHaveLength(2);
+  await f.notice.run(second, f.gymId); await f.notice.run(first, f.gymId);
+  expect(await decisions()).toHaveLength(2);
+  expect(f.email.messages).toHaveLength(sent);
+});
 it('keeps every stored payload shape of a never-restored session byte for byte, and carries a round in both', () => {
   const sessionId = uuidv7(), memberIds = [uuidv7()];
   expect(JSON.stringify(cancellationNoticeJobPayload({ sessionId, memberIds, note: '', channels: ['email'] })))

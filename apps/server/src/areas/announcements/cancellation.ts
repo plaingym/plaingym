@@ -96,11 +96,13 @@ export function createCancellationNotice(options: CancellationNoticeOptions) {
           return memberId.success ? [{ memberId: memberId.data, state: row.state }] : [];
         });
         if (recoverable.length) {
-          const decisions = await tx.select({ memberId: cancellationDecisionMemberId }).from(auditEvents).where(and(
+          const decisions = await tx.select({ memberId: cancellationDecisionMemberId, after: auditEvents.after }).from(auditEvents).where(and(
             eq(auditEvents.gymId, gymId), eq(auditEvents.targetId, notice.sessionId),
             eq(auditEvents.action, 'schedule.cancellation_notice_decided'),
             inArray(cancellationDecisionMemberId, recoverable.map(row => row.memberId))));
-          const decided = new Set(decisions.map(row => row.memberId));
+          // A decision from an earlier cancellation round doesn't cover this round; a missing round is round 0.
+          const decided = new Set(decisions
+            .filter(row => ((row.after as { round?: number } | null)?.round ?? 0) === roundOf(notice)).map(row => row.memberId));
           for (const row of recoverable) {
             if (decided.has(row.memberId)) continue;
             await decide(tx, gymId, notice, row.memberId, row.state === 'accepted' ? { status: 'sent' }
