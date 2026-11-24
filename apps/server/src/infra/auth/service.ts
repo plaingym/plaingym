@@ -58,7 +58,10 @@ export interface AuthServiceOptions {
 }
 /** The only post-login destination besides the admin: completing a portal claim the user proved by email. */
 export const portalClaimCallbackPath = '/portal/claim';
-/** A sign-in link request answers 503 with this code when the gym's sending service failed (`emailServiceFailure`). */
+/**
+ * A sign-in link request answers 503 with this code when the gym's sending service failed (`emailServiceFailure`).
+ * The web sign-in page (`apps/web/src/routes/login.tsx`) compares this exact literal, so change both together.
+ */
 export const emailUnavailableCode = 'EMAIL_UNAVAILABLE';
 const validClaimCode = (code: string) => portalClaimCodeSchema.safeParse(code).success;
 function portalClaimCallback(value: string | null, origin: URL): string | null {

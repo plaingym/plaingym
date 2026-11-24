@@ -143,13 +143,32 @@ describe('API transport', () => {
       await expect(createJsonTransport(limited)('/api/x')).rejects.toMatchObject({ status: 429, code: 'rate_limited' });
     } finally { stop(); }
   });
-  it('carries only a short upper-case code from an error body into the transport error', async () => {
-    const answer = (body: unknown) => createJsonTransport(vi.fn<typeof fetch>().mockResolvedValue(Response.json(body, { status: 503 })))('/api/x').catch((value: unknown) => value as ApiError);
-    expect(await answer({ code: 'EMAIL_UNAVAILABLE', message: 'secret detail' })).toMatchObject({ status: 503, code: 'EMAIL_UNAVAILABLE' });
+  it('carries a short upper-case code only when serverCode is enabled', async () => {
+    const withServerCode = (body: unknown, status = 503) => createJsonTransport(
+      vi.fn<typeof fetch>().mockResolvedValue(Response.json(body, { status })), { serverCode: true },
+    )('/api/x').catch((value: unknown) => value as ApiError);
+    expect(await withServerCode({ code: 'EMAIL_UNAVAILABLE', message: 'secret detail' })).toMatchObject({ status: 503, code: 'EMAIL_UNAVAILABLE' });
     for (const code of ['x'.repeat(65).toUpperCase(), 'lower_case', 'HAS SPACE', 42]) {
-      expect(await answer({ code, message: 'secret detail' })).toMatchObject({ status: 503, code: 'request_failed' });
+      expect(await withServerCode({ code, message: 'secret detail' })).toMatchObject({ status: 503, code: 'request_failed' });
     }
-    expect(JSON.stringify(await answer({ code: 'A', message: 'secret detail' }))).not.toContain('secret detail');
+    expect(await withServerCode({ error: { code: 'EMAIL_UNAVAILABLE' } })).toMatchObject({ status: 503, code: 'request_failed' });
+    expect(JSON.stringify(await withServerCode({ code: 'A', message: 'secret detail' }))).not.toContain('secret detail');
+
+    const defaultTransport = (body: unknown, status: number) => createJsonTransport(
+      vi.fn<typeof fetch>().mockResolvedValue(Response.json(body, { status })),
+    )('/api/x').catch((value: unknown) => value as ApiError);
+    expect(await defaultTransport({ code: 'EMAIL_UNAVAILABLE', message: 'secret detail' }, 503)).toMatchObject({ status: 503, code: 'request_failed' });
+    expect(await defaultTransport({ code: 'TOO_MANY' }, 429)).toMatchObject({ status: 429, code: 'rate_limited' });
+  });
+  it('forwards the server error code on sign-in link refusals without leaking server messages', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({ code: 'EMAIL_UNAVAILABLE', message: 'secret detail' }, { status: 503 }),
+    );
+    const error = await createShellServices(vi.fn(), fetcher).requestMagicLink('a@example.test').catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ status: 503, code: 'EMAIL_UNAVAILABLE' });
+    expect(JSON.stringify(error)).not.toContain('secret detail');
+    expect((error as ApiError).message).not.toContain('secret detail');
   });
   it('overrides error reasons and returns allowed messages only for a matching status and code', async () => {
     const body = { error: { code: 'forbidden', message: 'Allowed', details: { reason: ['r'] } } };

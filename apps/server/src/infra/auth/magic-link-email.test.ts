@@ -10,7 +10,7 @@ import { SmtpDeliveryError } from '../email/smtp.js';
 import { createEmailDeliveries } from '../email/deliveries.js';
 import { authConfig } from './config.js';
 import { createAuthEmailSender } from './delivery.js';
-import { createAuthService } from './service.js';
+import { createAuthService, emailUnavailableCode } from './service.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
 const secret = 'magic-link-email-test-secret-at-least-32-characters';
@@ -52,6 +52,8 @@ describe('an email sign-in link the gym\'s sending service could not send', () =
       unknown = await f.ask(f.stranger);
     } finally { setLogSink(previous); }
     expect(staff.status).toBe(503);
+    // The web sign-in page reads this exact literal.
+    expect(emailUnavailableCode).toBe('EMAIL_UNAVAILABLE');
     expect(JSON.parse(staff.body)).toMatchObject({ code: 'EMAIL_UNAVAILABLE' });
     expect(unknown).toEqual(staff);
     expect(staff.body).not.toMatch(/535|5\.7\.8|desk@gym|Authentication failed/);

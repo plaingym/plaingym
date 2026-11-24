@@ -9,7 +9,7 @@ import { importTargetFieldSchema, importUploadSchema, importPreviewStateSchema, 
   type ImportPlanRequest, type ImportPreviewResponse } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../app/context.js';
 import { useDemoSandbox } from '../demo/notice.js';
-import { ApiError, createJsonTransport, readApiError, reportApiRefusal } from '../../lib/api.js';
+import { ApiError, createJsonTransport, readRefusal } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 import { Button } from '../../components/ui/button.js';
 import { Pager } from '../../components/ui/pager.js';
@@ -26,8 +26,7 @@ class PreviewError extends Error {}
 class RetryablePreviewError extends PreviewError {}
 async function readPreviewResponse(response: Response) {
   if (!response.ok) {
-    await reportApiRefusal(response);
-    const { message } = await readApiError(response, [{ status: 400, code: 'invalid_request' }, { status: 404, code: 'not_found' },
+    const { message } = await readRefusal(response, [{ status: 400, code: 'invalid_request' }, { status: 404, code: 'not_found' },
       { status: 503, code: 'unavailable' }]);
     if (response.status >= 500) throw new RetryablePreviewError(message ?? label('requestFailed'));
     if (message) throw new PreviewError(message);
@@ -72,13 +71,13 @@ function ImportPanel({ gymId }: { gymId: string }) {
   const errors = useQuery({ queryKey: ['imports', gymId, runId, 'errors', errorOffset], enabled: !!runId && !!progress.data?.errorCount,
     queryFn: async () => {
       const response = await fetch(`/api/imports/${runId}/errors?offset=${errorOffset}&limit=50`, { credentials: 'same-origin', redirect: 'error' });
-      if (!response.ok) { await reportApiRefusal(response); throw new Error('Import report unavailable'); }
+      if (!response.ok) { await readRefusal(response); throw new Error('Import report unavailable'); }
       return parseResponse(listResponseSchema(importIssueSchema), await response.json());
     }, refetchInterval: progress.data?.status === 'running' ? 1500 : false });
   const uploadFile = useMutation({ mutationFn: async (file: File) => {
     const form = new FormData(); form.set('file', file);
     const response = await fetch('/api/imports/uploads', { method: 'POST', body: form, credentials: 'same-origin', redirect: 'error' });
-    if (!response.ok) { await reportApiRefusal(response); throw new Error('Upload failed'); }
+    if (!response.ok) { await readRefusal(response); throw new Error('Upload failed'); }
     return parseResponse(importUploadSchema, (await response.json() as { data: unknown }).data);
   }, onSuccess(data) { setUpload(data); setMapping(data.suggestedMapping ?? []); setPreview(undefined); setPreviewTicket(undefined); setRunId(undefined); setOffset(0); previewRows.reset(); } });
   const previewRows = useMutation({ mutationFn: async ({ page, fingerprint }: { page: number; fingerprint: string }) => {

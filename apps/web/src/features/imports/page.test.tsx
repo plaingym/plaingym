@@ -7,7 +7,7 @@ import type { StaffRole } from '@plaingym/shared';
 import { exportDatasets } from '@plaingym/shared/contracts';
 import type { ShellBootstrap } from '../../app/services.js';
 import { useBootstrap } from '../../app/context.js';
-import { ApiError } from '../../lib/api.js';
+import { ApiError, onApiError } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 import { ImportsPage } from './page.js';
 const { request } = vi.hoisted(() => ({ request: vi.fn() }));
@@ -219,6 +219,19 @@ describe('CSV admin workflow', () => {
     fireEvent.change(screen.getByLabelText(/CSV file/), { target: { files: [new File(['Name\nTest'], 'people.csv')] } });
     fireEvent.click(await screen.findByRole('button', { name: 'Preview' }));
     expect((await screen.findByRole('alert')).textContent).toBe(message);
+  });
+  it('notifies once when a preview or upload request is refused with 403', async () => {
+    const observe = vi.fn(), stop = onApiError(observe);
+    try {
+      vi.stubGlobal('fetch', vi.fn(async (path: string) => path === '/api/imports/uploads'
+        ? Response.json({ data: uploaded })
+        : Response.json({ error: { code: 'forbidden', details: { reason: ['demo_showcase_read_only'] } } }, { status: 403 })));
+      start();
+      fireEvent.change(screen.getByLabelText(/CSV file/), { target: { files: [new File(['Name\nTest'], 'people.csv')] } });
+      fireEvent.click(await screen.findByRole('button', { name: 'Preview' }));
+      expect((await screen.findByRole('alert')).textContent).toBe(t('imports/pipeline:requestFailed'));
+      expect(observe).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 403, reason: ['demo_showcase_read_only'] }));
+    } finally { stop(); }
   });
   it.each([true, false])('shows a preview 503 message with a safe fallback (JSON: %s)', async (json) => {
     const message = t('imports/pipeline:previewTimedOut');

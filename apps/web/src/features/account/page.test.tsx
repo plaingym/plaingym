@@ -6,7 +6,8 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { AccountSummary } from '@plaingym/shared/contracts';
 import type { ShellBootstrap } from '../../app/services.js';
-import { AccountRequestError, type AccountClient } from './client.js';
+import { onApiError } from '../../lib/api.js';
+import { AccountRequestError, createAccountClient, type AccountClient } from './client.js';
 import { instantLabel } from '../../lib/instant.js';
 import { AccountPage } from './page.js';
 
@@ -121,5 +122,24 @@ describe('your account page', () => {
     expect(await screen.findByText(/can't send email yet/)).toBeTruthy();
     expect(screen.getByText('Not set')).toBeTruthy();
     expect(screen.getByText('Off: this gym can\'t send email')).toBeTruthy();
+  });
+
+  it('reads account refusal bodies once, preserving validation details and notifying once on 403', async () => {
+    const observe = vi.fn(), stop = onApiError(observe);
+    try {
+      const fetcher = vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(Response.json({ error: { code: 'invalid_request', details: { email: ['taken'] } } }, { status: 400 }))
+        .mockResolvedValueOnce(Response.json({ error: { code: 'forbidden', details: { reason: ['demo_showcase_read_only'] } } }, { status: 403 }));
+      const client = createAccountClient(fetcher);
+      const invalid = await client.requestEmailChange('taken@example.test').catch((value: unknown) => value);
+      expect(invalid).toBeInstanceOf(AccountRequestError);
+      expect(invalid).toMatchObject({ status: 400, code: 'invalid_request', details: { email: ['taken'] } });
+      expect(observe).not.toHaveBeenCalled();
+
+      const forbidden = await client.summary().catch((value: unknown) => value);
+      expect(forbidden).toBeInstanceOf(AccountRequestError);
+      expect(forbidden).toMatchObject({ status: 403, code: 'forbidden', details: { reason: ['demo_showcase_read_only'] } });
+      expect(observe).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 403, reason: ['demo_showcase_read_only'] }));
+    } finally { stop(); }
   });
 });

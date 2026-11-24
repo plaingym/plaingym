@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { afterEach, expect, it, vi } from 'vitest';
+import { ApiError, onApiError } from '../../lib/api.js';
 import { bookingClient, type BookingCancelNotice } from './client.js';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -19,6 +20,21 @@ it('preserves structured booking conflicts for callers without exposing server m
   vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: { code: 'conflict', message: 'Private server detail', details: { reason: ['full'] } } }, { status: 409 })));
   await expect(bookingClient.book({ memberId: '0194a000-0000-7000-8000-000000000001',
     sessionId: '0194a000-0000-7000-8000-000000000002', allowWaitlist: false })).rejects.toMatchObject({ status: 409, reason: ['full'], message: 'Request failed' });
+});
+it('notifies once for a 403 refusal and stays silent for a 409 conflict', async () => {
+  const observe = vi.fn(), stop = onApiError(observe);
+  try {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ error: { details: { reason: ['demo_showcase_read_only'] } } }, { status: 403 }))
+      .mockResolvedValueOnce(Response.json({ error: { details: { reason: ['full'] } } }, { status: 409 }));
+    vi.stubGlobal('fetch', fetcher);
+    const forbidden = await bookingClient.members('').catch((value: unknown) => value);
+    expect(forbidden).toBeInstanceOf(ApiError);
+    expect(forbidden).toMatchObject({ status: 403, code: 'booking_request_failed', reason: ['demo_showcase_read_only'] });
+    expect(observe).toHaveBeenCalledOnce();
+    await expect(bookingClient.members('')).rejects.toMatchObject({ status: 409, code: 'booking_request_failed', reason: ['full'] });
+    expect(observe).toHaveBeenCalledOnce();
+  } finally { stop(); }
 });
 it('sends notice fields only for a chosen channel, and the note only with email', async () => {
   const id = '0194a000-0000-7000-8000-000000000003';

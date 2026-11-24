@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { onApiError } from '../../lib/api.js';
 import { forgetToken, kioskApi, KioskAuthError, readToken, saveToken } from './api.js';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); window.localStorage.clear(); window.history.replaceState(null, '', '/kiosk'); });
@@ -60,6 +61,16 @@ describe('kiosk device transport', () => {
   it.each([401, 403, 404])('recognizes an invalid device (%s)', async (status) => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status })));
     await expect(kioskApi.lookup('device', 'Rivera', '0042')).rejects.toBeInstanceOf(KioskAuthError);
+  });
+  it('notifies once on a 403 refusal while still throwing KioskAuthError', async () => {
+    const observe = vi.fn(), stop = onApiError(observe);
+    try {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+        Response.json({ error: { details: { reason: ['demo_showcase_read_only'] } } }, { status: 403 }),
+      ));
+      await expect(kioskApi.lookup('device', 'Rivera', '0042')).rejects.toBeInstanceOf(KioskAuthError);
+      expect(observe).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 403, reason: ['demo_showcase_read_only'] }));
+    } finally { stop(); }
   });
   it('rejects lookup responses carrying extra private data', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: { status: 'see_front_desk', amount: 12345 } }))));

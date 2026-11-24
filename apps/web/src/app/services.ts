@@ -20,7 +20,7 @@ export function sessionDestination(session: ShellSession): '/admin' | '/portal' 
 export function createShellServices(
   loadBootstrap: ShellServices['loadBootstrap'], fetcher: typeof fetch = fetch,
 ): ShellServices {
-  const request = createJsonTransport(fetcher);
+  const request = createJsonTransport(fetcher, { serverCode: true });
   return {
     loadBootstrap,
     async signInWithPassword(email, password) {

@@ -2,7 +2,7 @@
 import { parseResponse } from '../../lib/response.js';
 import { bookingsContracts, membersContracts, scheduleContracts, type CreateBookingRequest } from '@plaingym/shared/contracts';
 import { addDays, localMidnight } from '@plaingym/shared/time';
-import { ApiError, apiErrorReasons, reportApiRefusal } from '../../lib/api.js';
+import { refusalError } from '../../lib/api.js';
 
 export interface BookingCancelNotice { channels: ('email' | 'sms')[]; note?: string }
 async function request(path: string, query: Record<string, string | number> = {}, body?: unknown) {
@@ -10,10 +10,7 @@ async function request(path: string, query: Record<string, string | number> = {}
   const response = await fetch(path + (params.size ? '?' + params : ''), { method: body === undefined ? 'GET' : 'POST',
     credentials: 'same-origin', redirect: 'error', headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-  if (!response.ok) {
-    await reportApiRefusal(response);
-    throw new ApiError(response.status, 'booking_request_failed', await apiErrorReasons(response));
-  }
+  if (!response.ok) throw await refusalError(response, 'booking_request_failed');
   return response.json() as Promise<unknown>;
 }
 export const bookingClient = {

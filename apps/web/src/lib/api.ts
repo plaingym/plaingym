@@ -94,13 +94,19 @@ export async function readApiError(response: Response, allowedMessages: readonly
 export async function apiErrorReasons(response: Response): Promise<readonly string[]> {
   return (await readApiError(response)).reasons;
 }
-/** The body's `code` only when it is a short upper-case token (such as `EMAIL_UNAVAILABLE`); never the body's message. */
+/**
+ * Better Auth's flat `{ code, message }` top-level `code`, only when it is a short upper-case token (such as `EMAIL_UNAVAILABLE`).
+ * Never reads the app's `{ error: { code } }` envelope and never reads the message; only the sign-in transport asks for it.
+ */
 function serverCodeIn(body: unknown): string | undefined {
   const code = body && typeof body === 'object' && 'code' in body ? body.code : undefined;
   return typeof code === 'string' && code.length <= 64 && /^[A-Z0-9_]+$/.test(code) ? code : undefined;
 }
-/** Restrict all API calls to this gym's origin, including injected auth transports. */
-export function createJsonTransport(fetcher?: typeof fetch) {
+/**
+ * Restrict all API calls to this gym's origin, including injected auth transports.
+ * Pass `{ serverCode: true }` only for transports (such as sign-in) that forward a flat server `code`.
+ */
+export function createJsonTransport(fetcher?: typeof fetch, options: { serverCode?: boolean } = {}) {
   return async function request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     if (!path.startsWith('/api/') || /[\\?#]/.test(path)) throw new Error('Expected a local API path');
     const response = await (fetcher ?? fetch)(path, {
@@ -111,7 +117,8 @@ export function createJsonTransport(fetcher?: typeof fetch) {
     // Never display arbitrary server/SQL messages to the user.
     if (!response.ok) {
       const refusal = await readRefusal(response);
-      throw refusal.error(serverCodeIn(refusal.body) ?? (response.status === 429 ? 'rate_limited' : 'request_failed'));
+      const code = options.serverCode ? serverCodeIn(refusal.body) : undefined;
+      throw refusal.error(code ?? (response.status === 429 ? 'rate_limited' : 'request_failed'));
     }
     return await response.json() as T;
   };
