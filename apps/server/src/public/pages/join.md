@@ -4,8 +4,10 @@
 The join form has two initially unticked SMS choices: class, booking and billing
 notices and links, and gym news. Either choice requires a valid contact phone.
 The phone field has a country code choice, preselected with the gym's country
-code; the form sends `+<code> <number>` unless the number starts with +, and the
-server parses the result as before. Admission stores the contact phone on each member
+code; the form sends `+<code> <number>` unless the number starts with +, or with
+the chosen country's international prefix (`00`, or `011` for +1), which is sent
+as typed. The server parses the result as before. The number autofills as a full
+phone number (`autocomplete="tel"`); the country choice has no autocomplete. Admission stores the contact phone on each member
 joining and records each selected consent with source `join`; notices also apply
 to the household's billing phone. Consent changes are audited without phones.
 Browser JSON and native form submissions carry the same choices, and final

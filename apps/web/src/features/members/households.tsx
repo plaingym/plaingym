@@ -39,6 +39,8 @@ export function HouseholdForm({ household, onSaved }: { household?: c.Household;
   const state = useMemberSave(), { values, set } = draft, address = values.address;
   // Two of these forms can be on one screen (the households panel and the add-member dialog), so the phone ids are per form.
   const country = useBootstrap().data?.gym.country, phoneId = useId();
+  // Counts resets, so the phone field drops a country chosen with no number even when the reset leaves its value unchanged.
+  const [resets, setResets] = useState(0);
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formElement = event.currentTarget;
@@ -52,11 +54,11 @@ export function HouseholdForm({ household, onSaved }: { household?: c.Household;
       const saved = household ? await memberRequest(c.householdResponseSchema, `/api/households/${household.id}`, 'PATCH', c.updateHouseholdRequestSchema.parse({ ...input, revision: household.revision }))
         : await memberRequest(c.householdResponseSchema, '/api/households', 'POST', c.createHouseholdRequestSchema.parse(input));
       onSaved?.(saved.data);
-    }, () => { draft.reset(); markSaved(formElement); });
+    }, () => { draft.reset(); setResets((count) => count + 1); markSaved(formElement); });
   }
   return <form onSubmit={submit} className="space-y-3"><ErrorMessage error={state.error}/>
     <Field name="householdName" value={values.name} onChange={(value) => set('name', value)} required/><Field name="email" type="email" value={values.email} onChange={(value) => set('email', value)}/><PhoneInput id={phoneId} label={text('phone')} value={values.phone} onChange={(value) => set('phone', value)} defaultCountry={country}
-      {...(country ? {} : { hint: t('shell/phone:noGymCountry') })}/>
+      resetKey={resets} {...(country ? {} : { hint: t('shell/phone:noGymCountry') })}/>
     <div className="grid gap-3 sm:grid-cols-2">{(['line1', 'line2', 'city', 'region', 'postalCode', 'countryCode'] as const).map((key) => <Field key={key} name={key} value={address[key] ?? ''} onChange={(value) => set('address', { ...address, [key]: key === 'countryCode' ? value.toUpperCase() : value })}/>)}</div>
     <Button type="submit" className="w-full sm:w-auto" disabled={state.busy}>{text(household ? 'save' : 'createHousehold')}</Button>
   </form>;

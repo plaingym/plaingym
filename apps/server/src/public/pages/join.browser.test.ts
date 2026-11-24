@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { joinBrowserScript, joinPollIntervalMs, joinPollLimit } from './join.browser.js';
+import { createTranslator } from '@plaingym/shared';
+import { locales } from '@plaingym/shared/locales';
+import { joinPhone } from '@plaingym/shared/phone-countries';
 import { phoneScript, publicBrowserScript, refusalScript } from './browser.js';
+import { phoneField } from './page.js';
 
 const confirming = '<section data-join-confirming>Confirming</section>', welcome = '<section>Welcome</section>';
 class Fake {
@@ -93,6 +97,21 @@ describe('phone country choice in the browser scripts', () => {
     expect(formPhone(formWith(null), new Map([['phone', '604 555 0123']]))).toBe('604 555 0123');
     expect(formPhone(formWith(code('1')), new Map([['phone', '   ']]))).toBe('');
     expect(formPhone(formWith(code('1')), new Map())).toBe('');
+  });
+  it('sends a number typed with the chosen country\'s international prefix as typed, as joinPhone does', () => {
+    const cases: [string, string, string][] = [
+      ['44', '0044 7700 900123', '0044 7700 900123'], ['1', '011 44 20 7946 0018', '011 44 20 7946 0018'],
+      ['1', '(011) 44-20.7946 0018', '(011) 44-20.7946 0018'], ['44', '07700 900123', '+44 07700 900123'], ['1', '0044 20 7946 0018', '+1 0044 20 7946 0018'],
+    ];
+    for (const [calling, typed, sent] of cases) {
+      expect(formPhone(formWith(code(calling)), new Map([['phone', typed]]))).toBe(sent);
+      expect(joinPhone(calling === '1' ? 'US' : 'GB', typed)).toBe(sent);
+    }
+  });
+  it('autofills the number as a full phone number and leaves the country select without autocomplete', () => {
+    const html = String(phoneField(createTranslator(locales.en ?? {}), { label: 'Phone', country: 'GB' }));
+    expect(/<select[^>]*name="phoneCountry"[^>]*>/.exec(html)?.[0]).not.toContain('autocomplete');
+    expect(/<input[^>]*name="phone"[^>]*>/.exec(html)?.[0]).toContain('autocomplete="tel"');
   });
   it('is in both scripts, which send the joined phone only when there is one', () => {
     for (const script of [joinBrowserScript, publicBrowserScript]) {

@@ -41,6 +41,7 @@ export function WebsiteSettings() {
   const savedRevision = useRef<{ revision: number; epoch: number | undefined; reload: boolean } | null>(null);
   const [state, setState] = useState<{ data: WebsiteSettingsData; draft: Draft; dirty: boolean } | null>(null);
   const [failed, setFailed] = useState(false), [busy, setBusy] = useState(false), [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
+  const [phoneTooLong, setPhoneTooLong] = useState(false);
   const shown = useMemo(() => message && { kind: message.error ? 'alert' as const : 'status' as const, text: message.text }, [message]);
   /**
    * Shows settings from the server. With `keepEdits`, unsaved edits survive a reload, an upload or a logo change: the draft keeps
@@ -49,6 +50,7 @@ export function WebsiteSettings() {
    * overwrite a change nobody here has seen.
    */
   function show(loaded: WebsiteSettingsData, keepEdits: boolean) {
+    setPhoneTooLong(false);
     setState((current) => {
       if (!current?.dirty || !keepEdits) return { data: loaded, draft: draftOf(loaded), dirty: false };
       const base = current.data, draft = { ...current.draft };
@@ -122,6 +124,9 @@ export function WebsiteSettings() {
     event.preventDefault();
     if (!state) return;
     const { draft } = state;
+    // The joined country code can take a stored number past the contract's 40 characters, which the field's limit can't stop.
+    if ((draft.phone?.trim().length ?? 0) > 40) { setPhoneTooLong(true); return; }
+    setPhoneTooLong(false);
     await run((revision, signal) => api.PUT('/api/website', { body: { revision, ...draft,
       tagline: draft.tagline?.trim() || null, about: draft.about?.trim() || null, phone: draft.phone?.trim() || null, email: draft.email?.trim() || null }, signal }), 'saved', 'content');
   }
@@ -162,8 +167,8 @@ export function WebsiteSettings() {
           <Input value={draft.tagline ?? ''} maxLength={160} aria-describedby={describedBy} onChange={(event) => set({ tagline: event.target.value })}/>}</Field></div>
         <div className="sm:col-span-2"><Field label={text('about')} help={text('aboutHelp')}>{(describedBy) =>
           <Textarea value={draft.about ?? ''} maxLength={5000} rows={6} aria-describedby={describedBy} onChange={(event) => set({ about: event.target.value })}/>}</Field></div>
-        <PhoneInput id="website-phone" label={text('phone')} autoComplete="tel" maxLength={34} value={draft.phone ?? ''} onChange={(value) => set({ phone: value })} defaultCountry={country}
-          {...(country ? {} : { hint: t('shell/phone:noGymCountry') })}/>
+        <PhoneInput id="website-phone" label={text('phone')} autoComplete="tel" maxLength={34} value={draft.phone ?? ''} onChange={(value) => { set({ phone: value }); setPhoneTooLong(false); }} defaultCountry={country}
+          error={phoneTooLong ? text('phoneTooLong') : undefined} {...(country ? {} : { hint: t('shell/phone:noGymCountry') })}/>
         <Field label={text('email')}>{() => <Input type="email" autoComplete="email" value={draft.email ?? ''} maxLength={254} onChange={(event) => set({ email: event.target.value })}/>}</Field>
         <p className="text-sm sm:col-span-2"><a className="inline-flex min-h-11 items-center underline" href="#settingsSections.settings.general">{text('brandInGymDetails')}</a></p>
       </fieldset>

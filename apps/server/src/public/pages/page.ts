@@ -72,11 +72,11 @@ export function phoneField(t: Translator, options: { label: string; country?: st
   const selected = typeof options.selected === 'string' ? options.selected : callingCode(options.country) !== null ? options.country!.toUpperCase() : '';
   return h('div', { class: 'space-y-1' },
     h('label', { for: 'phoneCountry', class: 'block' }, t('shell/phone:country')),
-    h('select', { id: 'phoneCountry', name: 'phoneCountry', autocomplete: 'country', class: inputClass },
+    h('select', { id: 'phoneCountry', name: 'phoneCountry', class: inputClass },
       h('option', { value: '', selected: selected === '' }, t('shell/phone:choose')),
       ...choices.map(choice => h('option', { value: choice.value, 'data-calling-code': choice.callingCode, selected: choice.value === selected }, choice.label))),
     h('label', { for: 'phone', class: 'block' }, options.label),
-    h('input', { id: 'phone', name: 'phone', type: 'tel', autocomplete: 'tel-national', maxlength: 95, ...(options.value !== undefined ? { value: options.value } : {}), class: inputClass }));
+    h('input', { id: 'phone', name: 'phone', type: 'tel', autocomplete: 'tel', maxlength: 95, ...(options.value !== undefined ? { value: options.value } : {}), class: inputClass }));
 }
 export interface IntakePageInput {
   kind: 'trial' | 'drop-in'; gym: PublicBranding; t: Translator; templates?: WaiverTemplate[];

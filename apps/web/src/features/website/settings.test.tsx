@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { GymSettings, WebsiteSettings as WebsiteSettingsData } from '@plaingym/shared/contracts';
@@ -84,6 +84,29 @@ describe('website settings', () => {
       phone: '+1 604 555 0100', email: null, primaryColor: '#123456', photos: [{ id: id(11), alt: 'Class' }, { id: id(10), alt: 'Mats' }] } }));
     await waitFor(() => expect(cache.getQueryData<{ settings: GymSettings }>(gymSettingsKey)?.settings.revision).toBe(5));
     expect(client.GET.mock.calls.filter(([path]) => path === '/api/website')).toHaveLength(reads);
+  });
+
+  it('shows an error instead of saving a stored number the country code takes past 40 characters', async () => {
+    const long = '604 555 0100 ' + '1'.repeat(25);
+    expect(long).toHaveLength(38);
+    stored = { ...website, phone: long };
+    gymCountry('US');
+    const user = userEvent.setup();
+    client.PUT.mockImplementation(async () => reply(200, { data: { ...stored, revision: 5 } }));
+    start();
+    const phone = await screen.findByRole('textbox', { name: 'Public phone number' }) as HTMLInputElement;
+    expect(phone.value).toBe(long);
+    // The field's own limit stops typing past 34 characters, so the extra digit arrives as one change.
+    fireEvent.change(phone, { target: { value: long + '2' } });
+    await user.click(screen.getByRole('button', { name: 'Save website' }));
+    expect(await screen.findByText('This number is too long with its country code. Use at most 40 characters, or start it with + and type it whole.')).toBeDefined();
+    expect(phone.getAttribute('aria-invalid')).toBe('true');
+    expect(client.PUT).not.toHaveBeenCalled();
+    await user.clear(phone);
+    expect(screen.queryByText(/too long with its country code/)).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Save website' }));
+    await screen.findByText('Website saved.');
+    expect(client.PUT).toHaveBeenCalledWith('/api/website', expect.objectContaining({ body: expect.objectContaining({ phone: null }) }));
   });
 
   it('removes a photo on save and explains a conflict', async () => {

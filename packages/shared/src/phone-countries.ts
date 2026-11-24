@@ -31,6 +31,14 @@ export const phoneCountries: readonly (readonly [country: string, callingCode: s
   ['YE', '967'], ['YT', '262'], ['ZA', '27'], ['ZM', '260'], ['ZW', '263'],
 ];
 
+/** International dialling prefixes that differ from the usual `00`, by calling code. */
+const internationalPrefixes: ReadonlyMap<string, string> = new Map([['1', '011']]);
+
+/** The prefix a caller in a country with this calling code dials before a foreign number: `011` for +1, `00` otherwise. */
+export function internationalPrefix(callingCode: string): string {
+  return internationalPrefixes.get(callingCode) ?? '00';
+}
+
 const codes = new Map<string, string>(phoneCountries);
 
 /** The calling code of a region (case-insensitive), or null when the region is empty or unknown. */
@@ -38,12 +46,16 @@ export function callingCode(country: string | null | undefined): string | null {
   return (country ? codes.get(country.toUpperCase()) : undefined) ?? null;
 }
 
-/** What a form sends: `+<calling code> <number>`, unless the number already starts with + or no region is chosen. */
+/**
+ * What a form sends: `+<calling code> <number>`, unless the number already starts with +, no region is chosen, or the number
+ * starts with the chosen region's international prefix (`00`, or `011` for +1), which the server reads with that region.
+ */
 export function joinPhone(country: string | null | undefined, number: string | null | undefined): string {
   const typed = (number ?? '').trim();
   if (!typed) return '';
   const code = callingCode(country);
-  return typed.startsWith('+') || code === null ? typed : `+${code} ${typed}`;
+  if (typed.startsWith('+') || code === null) return typed;
+  return typed.replace(/[\s\-.()]/g, '').startsWith(internationalPrefix(code)) ? typed : `+${code} ${typed}`;
 }
 
 /** The inverse of `joinPhone` for a stored value, favouring the preferred region (the gym's) when the calling code matches. */

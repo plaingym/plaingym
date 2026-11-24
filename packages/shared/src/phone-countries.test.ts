@@ -2,7 +2,7 @@
 import { getCountries, getCountryCallingCode } from 'libphonenumber-js/max';
 import { describe, expect, it } from 'vitest';
 import { normalizePhone } from './phone.js';
-import { callingCode, joinPhone, phoneCountries, phoneCountryOptions, splitPhone } from './phone-countries.js';
+import { callingCode, internationalPrefix, joinPhone, phoneCountries, phoneCountryOptions, splitPhone } from './phone-countries.js';
 
 describe('phone countries', () => {
   it('lists every region the phone library knows, in its order, with its calling code', () => {
@@ -29,6 +29,20 @@ describe('phone countries', () => {
     expect(joinPhone('ZZ', '604 555 0123')).toBe('604 555 0123');
     expect(joinPhone('CA', '   ')).toBe('');
     expect(joinPhone('CA', null)).toBe('');
+  });
+
+  it('sends a number typed with the chosen country\'s international prefix as typed', () => {
+    expect(internationalPrefix('1')).toBe('011');
+    expect(internationalPrefix('44')).toBe('00');
+    expect(joinPhone('GB', '0044 7700 900123')).toBe('0044 7700 900123');
+    // The phone library reads the prefix; 07700 900xxx is a fictional range it holds invalid, so the London number checks the parse.
+    expect(joinPhone('GB', '0044 20 7946 0018')).toBe('0044 20 7946 0018');
+    expect(normalizePhone('0044 20 7946 0018', 'GB')).toBe('+442079460018');
+    expect(normalizePhone('011 44 20 7946 0018', 'US')).toBe('+442079460018');
+    expect(joinPhone('US', '011 44 20 7946 0018')).toBe('011 44 20 7946 0018');
+    expect(joinPhone('US', '(011) 44-20.7946 0018')).toBe('(011) 44-20.7946 0018');
+    expect(joinPhone('GB', '07700 900123')).toBe('+44 07700 900123');
+    expect(joinPhone('US', '0044 20 7946 0018')).toBe('+1 0044 20 7946 0018');
   });
 
   it('splits a stored number back into a choice and a number', () => {

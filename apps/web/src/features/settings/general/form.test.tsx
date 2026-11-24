@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import type { GymSettings, ShellBootstrap } from '@plaingym/shared/contracts';
-import { ShellServicesContext } from '../../../app/context.js';
+import { ShellServicesContext, useBootstrap } from '../../../app/context.js';
 import { createShellServices } from '../../../app/services.js';
 import { createInvoiceClient } from '../../billing/invoices/api.js';
 import { OneOffEditor } from '../../billing/invoices/editor.js';
@@ -200,5 +200,32 @@ describe('general settings and the cached shell summary', () => {
     fireEvent.click(within(general).getByRole('button', { name: 'Save changes' }));
     await vi.waitFor(() => expect(loadBootstrap).toHaveBeenCalledTimes(3));
     expect(client.PATCH).toHaveBeenLastCalledWith('/api/settings', { signal: expect.any(AbortSignal), body: expect.objectContaining({ revision: 4, timezone: 'America/Toronto' }) });
+  });
+
+  it('refreshes the country staff phone fields preselect right after a new country is saved, within the summary\'s stale time', async () => {
+    let saved = settings;
+    const loadBootstrap = vi.fn(async (): Promise<ShellBootstrap> => ({
+      gym: { id: settings.id, name: saved.name, timezone: saved.timezone, currency: saved.currency, enabledModules: [], ...(saved.address.country ? { country: saved.address.country } : {}) },
+      session: { userId: id(2), displayName: 'Test User', roles: ['owner'], member: false }, login: { password: true, magicLink: false } }));
+    client.GET.mockResolvedValue(reply(200, { data: settings }));
+    client.PATCH.mockReset();
+    client.PATCH.mockImplementation(async (_path: string, { body }: { body: Partial<GymSettings> }) => {
+      saved = { ...saved, ...body, revision: saved.revision + 1 };
+      return reply(200, { data: saved });
+    });
+    /** Reads the country as the staff phone fields do. */
+    function Preselected() { return <p data-testid="preselected">{useBootstrap().data?.gym.country ?? 'none'}</p>; }
+    const cache = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } });
+    render(<QueryClientProvider client={cache}><ShellServicesContext.Provider value={createShellServices(loadBootstrap)}>
+      <GeneralSettingsForm/><Preselected/>
+    </ShellServicesContext.Provider></QueryClientProvider>);
+    const general = await screen.findByRole('form', { name: 'Gym details' });
+    expect(screen.getByTestId('preselected').textContent).toBe('none');
+    expect(loadBootstrap).toHaveBeenCalledTimes(1);
+    fireEvent.change(within(general).getByLabelText('Country code'), { target: { value: 'gb' } });
+    fireEvent.click(within(general).getByRole('button', { name: 'Save changes' }));
+    await vi.waitFor(() => expect(client.PATCH).toHaveBeenCalledWith('/api/settings', expect.objectContaining({ body: expect.objectContaining({ address: expect.objectContaining({ country: 'GB' }) }) })));
+    await vi.waitFor(() => expect(screen.getByTestId('preselected').textContent).toBe('GB'));
+    expect(loadBootstrap).toHaveBeenCalledTimes(2);
   });
 });

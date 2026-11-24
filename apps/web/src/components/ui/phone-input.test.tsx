@@ -30,12 +30,53 @@ describe('PhoneInput', () => {
     expect(number().value).toBe('604 555 0123');
   });
 
-  it('sends a number that starts with + as typed, whatever the choice', async () => {
+  it('sends a number that starts with + as typed, and shows no country while it does', async () => {
     const user = userEvent.setup(), onChange = vi.fn();
     render(<Harness onChange={onChange}/>);
     await user.type(number(), '+44 20 7946 0018');
     expect(onChange).toHaveBeenLastCalledWith('+44 20 7946 0018');
+    expect(country().value).toBe('');
+  });
+
+  it('keeps showing no country for a + number when another country is chosen, and sends the number as typed', async () => {
+    const user = userEvent.setup(), onChange = vi.fn();
+    render(<Harness initial="+44 20 7946 0018" onChange={onChange}/>);
+    expect(country().value).toBe('');
+    await user.selectOptions(country(), 'CA');
+    expect(country().value).toBe('');
+    expect(country().selectedOptions[0]!.textContent).toBe('Choose a country');
+    expect(onChange).toHaveBeenLastCalledWith('+44 20 7946 0018');
+  });
+
+  it('drops a country chosen with an empty number when the parent resets with a new reset key', async () => {
+    const user = userEvent.setup();
+    function Reset() {
+      const [value, setValue] = useState(''), [resets, setResets] = useState(0);
+      return <div>
+        <PhoneInput id="phone" label="Phone" value={value} onChange={setValue} defaultCountry="CA" resetKey={resets}/>
+        <button type="button" onClick={() => { setValue(''); setResets((count) => count + 1); }}>Reset</button>
+      </div>;
+    }
+    render(<Reset/>);
+    await user.selectOptions(country(), 'GB');
+    expect(country().value).toBe('GB');
+    await user.click(screen.getByRole('button', { name: 'Reset' }));
     expect(country().value).toBe('CA');
+  });
+
+  it('autofills the number as a full phone number', () => {
+    render(<Harness onChange={vi.fn()}/>);
+    expect(number().getAttribute('autocomplete')).toBe('tel');
+  });
+
+  it('shows an error under the field and marks the number invalid', () => {
+    const { rerender } = render(<PhoneInput id="phone" label="Phone" value="" onChange={vi.fn()} hint="Set the country."/>);
+    expect(number().getAttribute('aria-invalid')).toBeNull();
+    expect(number().getAttribute('aria-describedby')).toBe('phone-hint');
+    rerender(<PhoneInput id="phone" label="Phone" value="" onChange={vi.fn()} hint="Set the country." error="Too long."/>);
+    expect(screen.getByRole('alert').textContent).toBe('Too long.');
+    expect(number().getAttribute('aria-invalid')).toBe('true');
+    expect(number().getAttribute('aria-describedby')).toBe('phone-hint phone-error');
   });
 
   it('shows a stored number split into its choice and number without calling onChange', () => {

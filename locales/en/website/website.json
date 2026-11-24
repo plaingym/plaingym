@@ -27,6 +27,7 @@
   "about": "About the gym",
   "aboutHelp": "Shown on the home page. Line breaks are kept.",
   "phone": "Public phone number",
+  "phoneTooLong": "This number is too long with its country code. Use at most 40 characters, or start it with + and type it whole.",
   "email": "Public email address",
   "photos": "Photos",
   "photosHelp": "Up to {max} photos. The first one is the large photo on the home page; the others form a gallery.",

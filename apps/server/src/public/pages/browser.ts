@@ -13,14 +13,18 @@ export const refusalScript = publicCopyScript + String.raw`
     if (Array.isArray(reason) && reason.includes('intake_ceiling')) return 'intakeLimited';
     return Array.isArray(reason) && reason.includes('busy') ? 'retry' : 'limited';
   }`;
-/** The browser twin of `joinPhone` (`@plaingym/shared/phone-countries`): `+<calling code> <number>` unless the number starts with +. */
+/**
+ * The browser twin of `joinPhone` (`@plaingym/shared/phone-countries`): `+<calling code> <number>` unless the number starts
+ * with +, no country is chosen, or the number starts with the country's international prefix (`011` for +1, `00` otherwise).
+ */
 export const phoneScript = String.raw`
   function formPhone(form, fields) {
     const number = String(fields.get('phone') || '').trim();
     const option = form.querySelector('select[name=phoneCountry]')?.selectedOptions[0];
     const code = option ? option.getAttribute('data-calling-code') : null;
     if (!number) return '';
-    return number.startsWith('+') || !code ? number : '+' + code + ' ' + number;
+    if (number.startsWith('+') || !code) return number;
+    return number.replace(/[\s\-.()]/g, '').startsWith(code === '1' ? '011' : '00') ? number : '+' + code + ' ' + number;
   }`;
 /** Plain browser JavaScript stays independent of server bundler helpers. No hydration. */
 export const publicBrowserScript = String.raw`// SPDX-License-Identifier: AGPL-3.0-only
