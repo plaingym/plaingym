@@ -222,9 +222,9 @@ describe('schedule calendar and session detail', () => {
       expect(api.POST).not.toHaveBeenCalled();
     } finally { timeout.mockRestore(); }
   });
-  it.each(['started', 'cancelled'] as const)('does not schedule a start timer for a %s session', kind => {
-    vi.useFakeTimers(); vi.setSystemTime(new Date(kind === 'started' ? session.startsAt : '2026-03-02T15:00:00Z'));
-    render(<SessionDetail session={{ ...session, status: kind === 'cancelled' ? 'cancelled' : 'scheduled' }} options={options} roles={['owner']} enabledModules={[]} onSaved={vi.fn()} registries={createWebRegistries<ExtensionView>([])}/>);
+  it('does not schedule a start timer for a started session', () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date(session.startsAt));
+    render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={vi.fn()} registries={createWebRegistries<ExtensionView>([])}/>);
     expect(vi.getTimerCount()).toBe(0);
   });
   it.each(['other_coach', 'unlinked_coach', 'front_desk'] as const)('hides the notice option from %s', kind => {
@@ -288,6 +288,17 @@ describe('schedule calendar and session detail', () => {
       render(detail(['front_desk']));
       expect(screen.queryByRole('button', { name: 'Restore class' })).toBeNull();
       expect(screen.queryByText(/^Brings this class back/)).toBeNull();
+    });
+    it('takes the restore form away when a cancelled session reaches its start, without a start note', () => {
+      const start = Date.parse(cancelled.startsAt);
+      vi.useFakeTimers(); vi.setSystemTime(new Date(start - 60_000));
+      render(detail());
+      expect(screen.getByRole('button', { name: 'Restore class' })).toBeTruthy();
+      act(() => vi.advanceTimersByTime(61_000));
+      expect(screen.queryByRole('button', { name: 'Restore class' })).toBeNull();
+      expect(screen.queryByRole('checkbox', { name: /places come back/ })).toBeNull();
+      expect(screen.queryByText(/This session has started and cannot be cancelled/)).toBeNull();
+      expect(screen.queryByText(/Your cancellation note was not sent/)).toBeNull();
     });
     it.each(['2026-03-02T23:00:00Z', '2026-03-03T01:00:00Z'])('shows no restore form for a cancelled session started at %s', now => {
       vi.setSystemTime(new Date(now));
@@ -549,6 +560,7 @@ describe('weekly class capacity and the coach hint', () => {
     notes: null, kind: 'class', revision: 3, createdAt: '2026-03-01T00:00:00Z', programIds: [programId], tagIds: [] };
   const capacityHelp = 'Changing it also updates upcoming sessions of this class that still have its old capacity. Sessions with their own capacity keep it.';
   const coachesHelp = 'Coaches come from staff profiles. Add one in Staff → Staff profiles, and link it to a login to coach from your own account.';
+  const coachesHelpAsk = 'Coaches come from staff profiles. Ask an owner or admin to add one.';
   it('explains on an existing weekly class only that a capacity change reaches its upcoming sessions', () => {
     render(<ClassEditor template={template} options={options} tags={[]} onSaved={vi.fn()} onClose={vi.fn()}/>);
     const help = screen.getByText(capacityHelp);
@@ -598,10 +610,12 @@ describe('weekly class capacity and the coach hint', () => {
       cleanup();
     }
     bootstrap(['coach']); render(view([], ['coach']));
-    expect(screen.getByText(coachesHelp)).toBeDefined();
+    expect(screen.getByText(coachesHelpAsk)).toBeDefined();
+    expect(screen.queryByText(coachesHelp)).toBeNull();
     expect(screen.queryByRole('link', { name: 'Open Staff' })).toBeNull();
     cleanup(); bootstrap(['owner']); render(view([{ id: programId, name: 'A coach' }], ['owner']));
     expect(screen.queryByText(coachesHelp)).toBeNull();
+    expect(screen.queryByText(coachesHelpAsk)).toBeNull();
     expect(screen.queryByRole('link', { name: 'Open Staff' })).toBeNull();
     expect(screen.getAllByLabelText('Coach').find(element => element.tagName === 'SELECT')!.hasAttribute('aria-describedby')).toBe(false);
   });

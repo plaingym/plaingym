@@ -61,9 +61,10 @@ export function Field({ label, children }: { label: string; children: ReactNode 
 export function CoachHint({ id, coaches }: { id: string; coaches: readonly unknown[] }) {
   const roles = useBootstrap().data?.session?.roles ?? [];
   if (coaches.length) return null;
+  const canManageStaff = canStaff(roles, 'staff.manage');
   return <div id={id} className="text-sm text-muted-foreground">
-    <p>{text('coachesHelp')}</p>
-    {canStaff(roles, 'staff.manage') && <a href="/admin/staff" target="_blank" rel="noopener noreferrer"
+    <p>{text(canManageStaff ? 'coachesHelp' : 'coachesHelpAsk')}</p>
+    {canManageStaff && <a href="/admin/staff" target="_blank" rel="noopener noreferrer"
       className="inline-flex min-h-11 items-center font-medium text-foreground underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-ring">{text('coachesLink')}</a>}
   </div>;
 }
@@ -102,12 +103,13 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
   const startNotice = useRef('');
   useEffect(() => { startNotice.current = manage ? text(notifying ? 'sessionStartedNoteLost' : 'sessionStarted') : ''; }, [manage, notifying]);
   useEffect(() => {
-    if (started || session.status === 'cancelled') return;
+    if (started) return;
     // The timer catches the start while the page is awake; focus and visibility do it after a sleep,
     // when the timer's own deadline may already be in the past.
     const showStarted = (instant: number) => {
       setNow(instant);
-      if (startNotice.current) setNotice(startNotice.current);
+      // A cancelled session has no cancel form, so its start must not report a lost notice.
+      if (session.status !== 'cancelled' && startNotice.current) setNotice(startNotice.current);
     };
     const refresh = () => {
       const instant = Date.now();

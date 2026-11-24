@@ -115,5 +115,6 @@
   "templateCapacityHelp": "Changing it also updates upcoming sessions of this class that still have its old capacity. Sessions with their own capacity keep it.",
   "templateCapacityBelowBooked": "An upcoming session of this class has more booked members than that capacity. Choose a higher capacity, or change that session on its own.",
   "coachesHelp": "Coaches come from staff profiles. Add one in Staff → Staff profiles, and link it to a login to coach from your own account.",
+  "coachesHelpAsk": "Coaches come from staff profiles. Ask an owner or admin to add one.",
   "coachesLink": "Open Staff"
 }
