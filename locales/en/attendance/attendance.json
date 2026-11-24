@@ -4,6 +4,7 @@
   "needsCredits": "Checked in without spending a credit. This member needs more credits.",
   "roster": "Coach check-in roster",
   "walkIn": "Check in someone else",
+  "walkInBusy": "Another check-in is still saving. Choose the member again once it finishes.",
   "walkInError": "Members could not be searched. Please try again.",
   "walkInRecorded": "{name} is checked in.",
   "checkInRecordedAt": "Checked in {name} at {time}.",

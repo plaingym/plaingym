@@ -122,10 +122,14 @@ and place stay as they are. **Check in someone else** is one member autocomplete
 the eligible member list (`checkInEligible=true` on `GET /api/members`), reading
 up to 4 pages of matches and omitting members already shown on the current roster
 page; choosing a member records their check-in, and they then appear as a walk-in
-until the check-in is undone. The roster reloads once after every check-in and undo
-and skips the follow-up read that its own session-change notification to the bookings
-panel would otherwise cause (for up to 10 seconds, or until that bookings read fails,
-so the next real bookings read is still followed). It also follows each other
+until the check-in is undone. Choosing a walk-in while another save is still running
+shows a notice under the picker and leaves the chosen member's name in it, so nothing
+is recorded until the coach chooses again. The roster reloads once
+after every check-in and undo and skips the follow-up read that its own session-change
+notification to the bookings panel would otherwise cause (for up to 10 seconds, or
+until that bookings read fails, so the next real bookings read is still followed). Any
+roster read started before an undo finishes is ignored so stale rows cannot restore
+the undone visit or re-enable its check-in. It also follows each other
 successful read by the session dialog's bookings panel (after a booking or
 cancellation in that panel, a promotion after a capacity change, and that panel's
 periodic, focus and visibility reloads) with one quiet read of its own page, and
@@ -142,10 +146,12 @@ A walk-in's confirmation, and the credit warning a check-in may carry, belong to
 the attendance that check-in recorded, not to the member. While the roster page
 lists that attendance, a walk-in confirmation says the member is checked in and a
 row check-in warns on its row. Off-page feedback takes its baseline from the first
-read after the check-in and stays as `"Checked in <name> at <time>."` (with any
-credit warning) until a read shows the visit gone: on a roster that fits one page,
-a read that lacks the visit; otherwise a lower checked-in count followed by a check
-of that visit. A new visit for the same member shows only its own feedback. Member/program/tag APIs are consumed through their shared contracts; the
+read after the check-in—checking the visit once if that read lacks it—and stays as
+`"Checked in <name> at <time>."` (with any credit warning) until a read shows the
+visit gone: on a roster that fits one page, a read that lacks the visit; otherwise a
+lower checked-in count followed by a check of that visit (a further count drop while
+a check is running starts a new check and only the newest answer counts). A new
+visit for the same member shows only its own feedback. Member/program/tag APIs are consumed through their shared contracts; the
 corresponding implementations must be present for the panels to load. Tests use fixture
 sessions, independent of the schedule materializer.
 

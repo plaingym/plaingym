@@ -676,7 +676,7 @@ describe('registered attendance panels', () => {
     const acknowledged = /^Checked in Sam Ng at 6:05\sPM\.$/;
     await screen.findByText(acknowledged);
     expect(banner(acknowledged)).toContain('This member needs more credits.');
-    expect(client.visitExists).not.toHaveBeenCalled();
+    await waitFor(() => expect(client.visitExists).toHaveBeenCalledTimes(1));
 
     // Another member checks in on page two (count 2), then is undone elsewhere (count 1) while Sam Ng still exists.
     rows[50]!.attendance = { id: 'visit-other-1', source: 'kiosk' };
@@ -684,7 +684,8 @@ describe('registered attendance panels', () => {
     rows[50]!.attendance = null;
     client.visitExists.mockResolvedValueOnce(true);
     await reread();
-    await waitFor(() => expect(client.visitExists).toHaveBeenCalledWith('visit-sam', walkInId, sessionId));
+    await waitFor(() => expect(client.visitExists).toHaveBeenCalledTimes(2));
+    expect(client.visitExists).toHaveBeenCalledWith('visit-sam', walkInId, sessionId);
     expect(banner(acknowledged)).toContain('This member needs more credits.');
 
     // A rejected verification check keeps the feedback.
@@ -693,7 +694,7 @@ describe('registered attendance panels', () => {
     rows[50]!.attendance = null;
     client.visitExists.mockRejectedValueOnce(new Error('offline'));
     await reread();
-    await waitFor(() => expect(client.visitExists).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(client.visitExists).toHaveBeenCalledTimes(3));
     expect(banner(acknowledged)).toContain('This member needs more credits.');
 
     // Once Sam Ng is actually undone elsewhere, visitExists returns false and clears the feedback and warning.
@@ -903,4 +904,225 @@ it('also warns for an open-mat credit override in the member tab', async () => {
   await screen.findByRole('option', { name: 'Fundamentals' });
   await user.click(screen.getByRole('button', { name: 'Record open-mat visit' }));
   expect(await screen.findByText('Checked in without spending a credit. This member needs more credits.')).toBeDefined();
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+describe('coach roster recheck, undo read ordering, and busy walk-in notice', () => {
+  it('rechecks off-page feedback on each count drop and ignores answers to older checks', async () => {
+    const setupRoster = async () => {
+      rows = [
+        { ...booked('booked-0', 'Booked 0'), attendance: { id: 'visit-0', source: 'kiosk' } },
+        { ...booked('booked-1', 'Booked 1'), attendance: { id: 'visit-1', source: 'kiosk' } },
+        ...Array.from({ length: 48 }, (_, index) => booked('booked-' + (index + 2), 'Booked ' + (index + 2))),
+      ];
+      client.roster.mockImplementation(async (_sessionId: string, offset: number) => ({ ...page(), data: page().data.slice(offset, offset + 50) }));
+      client.record.mockImplementation(async (input: { memberId: string }) => ({ ...await recordVisit(input), needsCredits: true }));
+      client.visitExists.mockResolvedValueOnce(true);
+      let reads = 0;
+      const dialog = () => <SessionCountsProvider publish={vi.fn()} counts={{ booked: ++reads, waitlisted: 0, checkedIn: 0 }}>
+        <AttendanceRosterPanel sessionId={sessionId}/>
+      </SessionCountsProvider>;
+      const view = render(dialog());
+      const reread = async () => {
+        const before = client.roster.mock.calls.length;
+        view.rerender(dialog());
+        await waitFor(() => expect(client.roster.mock.calls.length).toBe(before + 1));
+        await act(() => new Promise(resolve => setTimeout(resolve, 50)));
+      };
+      const user = userEvent.setup();
+      await screen.findByText('Booked 0');
+      await user.type(screen.getByRole('combobox', { name: 'Check in someone else' }), 'Sam');
+      await user.click(await screen.findByRole('option', { name: 'Sam Ng' }));
+      const acknowledged = /^Checked in Sam Ng at 6:05\sPM\.$/;
+      await screen.findByText(acknowledged);
+      await waitFor(() => expect(client.visitExists).toHaveBeenCalledTimes(1));
+      await act(() => new Promise(resolve => setTimeout(resolve, 20)));
+      expect(screen.getByText('3 checked in')).toBeDefined();
+      return { view, reread, acknowledged };
+    };
+
+    // Run 1: count 2 starts call 1, count 1 starts call 2; call 1 true keeps it, call 2 false clears it.
+    {
+      const { view, reread, acknowledged } = await setupRoster();
+      const call1 = deferred<boolean>(), call2 = deferred<boolean>();
+      client.visitExists.mockReturnValueOnce(call1.promise).mockReturnValueOnce(call2.promise);
+      rows[0]!.attendance = null;
+      await reread();
+      await waitFor(() => expect(client.visitExists).toHaveBeenCalledTimes(2));
+      rows[1]!.attendance = null;
+      await reread();
+      await waitFor(() => expect(client.visitExists).toHaveBeenCalledTimes(3));
+      await act(async () => { call1.resolve(true); });
+      expect(screen.getByText(acknowledged)).toBeDefined();
+      expect(screen.getByText(/needs more credits/)).toBeDefined();
+      await act(async () => { call2.resolve(false); });
+      await waitFor(() => expect(screen.queryByText(acknowledged)).toBeNull());
+      expect(screen.queryByText(/needs more credits/)).toBeNull();
+      view.unmount();
+    }
+
+    // Run 2: call 2 resolves true, then older call 1 resolves false: the feedback stays.
+    {
+      client.visitExists.mockReset();
+      const { reread, acknowledged } = await setupRoster();
+      const call1 = deferred<boolean>(), call2 = deferred<boolean>();
+      client.visitExists.mockReturnValueOnce(call1.promise).mockReturnValueOnce(call2.promise);
+      rows[0]!.attendance = null;
+      await reread();
+      await waitFor(() => expect(client.visitExists).toHaveBeenCalledTimes(2));
+      rows[1]!.attendance = null;
+      await reread();
+      await waitFor(() => expect(client.visitExists).toHaveBeenCalledTimes(3));
+      await act(async () => { call2.resolve(true); });
+      expect(screen.getByText(acknowledged)).toBeDefined();
+      await act(async () => { call1.resolve(false); });
+      await act(() => new Promise(resolve => setTimeout(resolve, 20)));
+      expect(screen.getByText(acknowledged)).toBeDefined();
+      expect(screen.getByText(/needs more credits/)).toBeDefined();
+    }
+  });
+
+  it('checks an off-page visit once on the first read when it lacks the visit even if the count did not drop', async () => {
+    // Part A: 51-row roster, walk-in recorded and undone elsewhere before the first read, count unchanged.
+    rows = Array.from({ length: 51 }, (_, index) => booked('booked-' + index, 'Booked ' + index));
+    client.roster.mockImplementation(async (_sessionId: string, offset: number) => ({ ...page(), data: page().data.slice(offset, offset + 50) }));
+    client.record.mockResolvedValueOnce({ id: 'visit-sam', memberId: walkInId, source: 'coach', occurredAt: '2026-11-20T23:05:00.000Z', needsCredits: true });
+    client.visitExists.mockResolvedValueOnce(false);
+    const user = userEvent.setup();
+    const view = render(<AttendanceRosterPanel sessionId={sessionId}/>);
+    await screen.findByText('Booked 0');
+    await user.type(screen.getByRole('combobox', { name: 'Check in someone else' }), 'Sam');
+    await user.click(await screen.findByRole('option', { name: 'Sam Ng' }));
+    const acknowledged = /^Checked in Sam Ng at 6:05\sPM\.$/;
+    await waitFor(() => expect(client.visitExists).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByText(acknowledged)).toBeNull());
+    expect(screen.queryByText(/needs more credits/)).toBeNull();
+    view.unmount();
+
+    // Part B: replayed check-in already on page two; visitExists returns true, feedback stays, same-count reads make no further call.
+    client.visitExists.mockReset();
+    rows = [
+      ...Array.from({ length: 50 }, (_, index) => booked('booked-' + index, 'Booked ' + index)),
+      { ...booked(walkInId, 'Sam Ng'), attendance: { id: 'visit-sam', source: 'kiosk' } },
+    ];
+    client.record.mockResolvedValueOnce({ id: 'visit-sam', memberId: walkInId, source: 'kiosk', occurredAt: '2026-11-20T23:05:00.000Z', needsCredits: true });
+    client.visitExists.mockResolvedValueOnce(true);
+    let reads = 0;
+    const dialog = () => <SessionCountsProvider publish={vi.fn()} counts={{ booked: ++reads, waitlisted: 0, checkedIn: 1 }}>
+      <AttendanceRosterPanel sessionId={sessionId}/>
+    </SessionCountsProvider>;
+    const secondView = render(dialog());
+    const reread = async () => {
+      const before = client.roster.mock.calls.length;
+      secondView.rerender(dialog());
+      await waitFor(() => expect(client.roster.mock.calls.length).toBe(before + 1));
+      await act(() => new Promise(resolve => setTimeout(resolve, 50)));
+    };
+    await screen.findByText('Booked 0');
+    await user.type(screen.getByRole('combobox', { name: 'Check in someone else' }), 'Sam');
+    await user.click(await screen.findByRole('option', { name: 'Sam Ng' }));
+    await screen.findByText(acknowledged);
+    await waitFor(() => expect(client.visitExists).toHaveBeenCalledTimes(1));
+    expect(screen.getByText(/needs more credits/)).toBeDefined();
+    await reread();
+    await reread();
+    expect(client.visitExists).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(acknowledged)).toBeDefined();
+    expect(screen.getByText(/needs more credits/)).toBeDefined();
+  });
+
+  it('ignores a quiet follow-up read started before an undo resolved when the undo refresh fails', async () => {
+    rows = [{ ...booked(memberId, 'River Lee'), attendance: { id: 'visit', source: 'coach' } }];
+    const staleRoster = page();
+    const pendingFollowUp = deferred<ReturnType<typeof page>>();
+    const pendingUndo = deferred<{ id: string; memberId: string; source: string }>();
+    const Session = ({ counts }: { counts: SessionCounts | null }) => (
+      <SessionCountsProvider publish={vi.fn()} counts={counts} changed={0} notify={vi.fn()}>
+        <AttendanceRosterPanel sessionId={sessionId}/>
+      </SessionCountsProvider>
+    );
+    const view = render(<Session counts={{ booked: 1, waitlisted: 0, checkedIn: 1 }}/>);
+    await screen.findByRole('button', { name: 'Undo check-in for River Lee' });
+    await waitFor(() => expect(client.roster).toHaveBeenCalledTimes(1));
+
+    // Trigger a quiet Bookings follow-up read that stays in flight while the coach confirms undo.
+    client.roster.mockReturnValueOnce(pendingFollowUp.promise);
+    view.rerender(<Session counts={{ booked: 1, waitlisted: 0, checkedIn: 1 }}/>);
+    await waitFor(() => expect(client.roster).toHaveBeenCalledTimes(2));
+
+    client.undo.mockReturnValueOnce(pendingUndo.promise);
+    client.roster.mockRejectedValueOnce(new Error('offline'));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Undo check-in for River Lee' }));
+    await user.click(screen.getByRole('button', { name: 'Undo check-in' }));
+
+    await act(async () => {
+      pendingUndo.resolve({ id: 'visit', memberId, source: 'coach' });
+      await Promise.resolve();
+      pendingFollowUp.resolve(staleRoster);
+    });
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Refresh attendance to try again.');
+    expect(screen.getByText('River Lee')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Undo check-in for River Lee' })).toBeNull();
+    expect((screen.getByRole('button', { name: 'Check in River Lee' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('0 checked in')).toBeDefined();
+  });
+
+  it('shows a busy notice when a walk-in is chosen during another save, keeps the query, and clears on typing or saving', async () => {
+    rows = [booked(memberId, 'River Lee'), booked('b2', 'Bo Two')];
+    const user = userEvent.setup(); render(<AttendanceRosterPanel sessionId={sessionId}/>);
+    await screen.findByText('River Lee');
+    const picker = screen.getByRole<HTMLInputElement>('combobox', { name: 'Check in someone else' });
+    await user.type(picker, 'Sam Ng');
+    const option = await screen.findByRole('option', { name: 'Sam Ng' });
+
+    const firstSave = deferred<Awaited<ReturnType<typeof recordVisit>>>();
+    client.record.mockReturnValueOnce(firstSave.promise);
+    act(() => {
+      screen.getByRole('button', { name: 'Check in River Lee' }).click();
+      option.click();
+    });
+    const busyNotice = 'Another check-in is still saving. Choose the member again once it finishes.';
+    expect((await screen.findByText(busyNotice)).getAttribute('role')).toBe('status');
+    expect(picker.value).toBe('Sam Ng');
+    expect(client.members).toHaveBeenCalledTimes(1);
+
+    rows[0]!.attendance = { id: 'visit-' + memberId, source: 'coach' };
+    await act(async () => {
+      firstSave.resolve({ id: 'visit-' + memberId, source: 'coach', occurredAt: '2026-11-20T23:05:00.000Z', memberId });
+    });
+    await screen.findByRole('button', { name: 'River Lee is checked in' });
+
+    // Typing a new query hides the notice.
+    await user.type(picker, '{Backspace}');
+    expect(screen.queryByText(busyNotice)).toBeNull();
+    await user.type(picker, 'g');
+    const optionAgain = await screen.findByRole('option', { name: 'Sam Ng' });
+
+    // Choosing while another save runs shows it again; a later successful choice clears the query and shows no notice.
+    const secondSave = deferred<Awaited<ReturnType<typeof recordVisit>>>();
+    client.record.mockReturnValueOnce(secondSave.promise);
+    act(() => {
+      screen.getByRole('button', { name: 'Check in Bo Two' }).click();
+      optionAgain.click();
+    });
+    expect(await screen.findByText(busyNotice)).toBeDefined();
+    rows[1]!.attendance = { id: 'visit-b2', source: 'coach' };
+    await act(async () => {
+      secondSave.resolve({ id: 'visit-b2', source: 'coach', occurredAt: '2026-11-20T23:05:00.000Z', memberId: 'b2' });
+    });
+    await screen.findByRole('button', { name: 'Bo Two is checked in' });
+    await user.click(picker);
+    await user.keyboard('{ArrowDown}');
+    await user.click(screen.getByRole('option', { name: 'Sam Ng' }));
+    await screen.findByRole('button', { name: 'Sam Ng is checked in' });
+    expect(picker.value).toBe('');
+    expect(screen.queryByText(busyNotice)).toBeNull();
+  });
 });

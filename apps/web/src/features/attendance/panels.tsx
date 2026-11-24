@@ -25,7 +25,7 @@ export function AttendanceRosterPanel({ sessionId }: ExtensionViewProps) {
 /** Suggestions for a walk-in check-in: eligible members not already listed on the current page, looked up after a short pause in typing. */
 function WalkIn({ disabled, listedIds, onChoose }: { disabled: boolean; listedIds: ReadonlySet<string>; onChoose(member: { id: string; name: string }): Promise<'saved' | 'skipped' | 'failed'> }) {
   const [query, setQuery] = useState(''), [lookup, setLookup] = useState<{ query: string; members: Member[]; failed?: boolean } | null>(null);
-  const [searching, setSearching] = useState(false), lookupSeq = useRef(0), listedIdsRef = useRef(listedIds);
+  const [searching, setSearching] = useState(false), [busyNotice, setBusyNotice] = useState(false), lookupSeq = useRef(0), listedIdsRef = useRef(listedIds);
   listedIdsRef.current = listedIds;
   // A failed walk-in searches again, so a member the server refused leaves the picker instead of staying listed.
   const [searchAgain, setSearchAgain] = useState(0);
@@ -74,14 +74,16 @@ function WalkIn({ disabled, listedIds, onChoose }: { disabled: boolean; listedId
     : [];
   return <div className="space-y-2">
     <Autocomplete label={text('walkIn')} query={query} value="" options={options} disabled={disabled}
-      loading={searching || (trimmed.length >= 2 && !current)} onQueryChange={setQuery} onChange={id => {
+      loading={searching || (trimmed.length >= 2 && !current)} onQueryChange={next => { setQuery(next); setBusyNotice(false); }} onChange={id => {
         const option = options.find(row => row.id === id);
         if (!option) return;
         void onChoose({ id: option.id, name: option.label }).then(outcome => {
-          if (outcome === 'saved') setQuery('');
-          else if (outcome === 'failed') { setLookup(null); setSearchAgain(value => value + 1); }
+          if (outcome === 'saved') { setQuery(''); setBusyNotice(false); }
+          else if (outcome === 'skipped') setBusyNotice(true);
+          else if (outcome === 'failed') { setLookup(null); setSearchAgain(value => value + 1); setBusyNotice(false); }
         });
       }}/>
+    {busyNotice && <p role="status" className="text-sm text-muted-foreground">{text('walkInBusy')}</p>}
     {current?.failed && <Alert variant="error">{text('walkInError')}</Alert>}
   </div>;
 }
@@ -94,10 +96,11 @@ const sameParticipants = (a: RosterPage, b: RosterPage) => participants(a) === p
  * Feedback for the check-in this roster last recorded, tied to that attendance rather than to the member. `since` is the
  * number of roster reads started before it was recorded: only later reads say anything about it. `checkedIn` takes its
  * baseline from the first later read (`null` until then); `seen` is `pending` until that read arrives, `listed` while the
- * page shows the attendance, and `offPage` otherwise (triggering `verify` once the session checked-in count drops).
+ * page shows the attendance, and `offPage` otherwise (triggering `verify` on the first off-page read and on each count drop;
+ * `drops` increments for each verification so older `visitExists` answers are ignored).
  */
 type Recorded = { attendanceId: string; memberId: string; name: string; at: string; walkIn: boolean; needsCredits: boolean;
-  since: number; checkedIn: number | null; seen: 'pending' | 'listed' | 'offPage'; verify: boolean };
+  since: number; checkedIn: number | null; seen: 'pending' | 'listed' | 'offPage'; verify: boolean; drops: number };
 /** What a successful read says about the recorded check-in; `null` once a read shows it was undone. */
 function observe(recorded: Recorded | null, page: RosterPage, read: number, offset: number): Recorded | null {
   if (!recorded || read <= recorded.since) return recorded;
@@ -111,9 +114,9 @@ function observe(recorded: Recorded | null, page: RosterPage, read: number, offs
   }
   if (offset === 0 && page.pagination.total <= 50) return null;
   if (recorded.checkedIn === null)
-    return { ...recorded, seen: 'offPage', checkedIn: page.counts.checkedIn };
+    return { ...recorded, seen: 'offPage', checkedIn: page.counts.checkedIn, verify: true, drops: recorded.drops + 1 };
   if (page.counts.checkedIn < recorded.checkedIn)
-    return { ...recorded, seen: 'offPage', checkedIn: page.counts.checkedIn, verify: true };
+    return { ...recorded, seen: 'offPage', checkedIn: page.counts.checkedIn, verify: true, drops: recorded.drops + 1 };
   return recorded.seen === 'offPage' && recorded.checkedIn === page.counts.checkedIn
     ? recorded
     : { ...recorded, seen: 'offPage', checkedIn: page.counts.checkedIn };
@@ -129,7 +132,7 @@ function Roster({ sessionId }: { sessionId: string }) {
   // The attendance IDs whose check-in was recorded here without spending a credit.
   const [needsCredits, setNeedsCredits] = useState<Set<string>>(new Set());
   const [undoing, setUndoing] = useState<{ attendance: Attendance; name: string } | null>(null);
-  const [recorded, setRecorded] = useState<Recorded | null>(null), readsStarted = useRef(0);
+  const [recorded, setRecorded] = useState<Recorded | null>(null), readsStarted = useRef(0), undoneAt = useRef(0);
   const [loading, setLoading] = useState(true), [saving, setSaving] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false), [stale, setStale] = useState(false), [saveFailed, setSaveFailed] = useState(false);
   const savingRef = useRef(false);
@@ -151,7 +154,7 @@ function Roster({ sessionId }: { sessionId: string }) {
     if (!quiet) setLoading(true);
     const read = ++readsStarted.current;
     void attendanceClient.roster(sessionId, offset).then(page => {
-      if (!active) return;
+      if (!active || read <= undoneAt.current) return;
       loudPending.current = false;
       // A page emptied by an undo falls back to the last page that still has rows.
       if (page.data.length === 0 && offset > 0) setOffset(Math.max(0, Math.floor((page.pagination.total - 1) / 50) * 50));
@@ -179,21 +182,25 @@ function Roster({ sessionId }: { sessionId: string }) {
   }, [sessionId, offset, reload, follow]);
   const verifyId = recorded?.verify ? recorded.attendanceId : null;
   const verifyMemberId = recorded?.verify ? recorded.memberId : null;
+  const verifyDrops = recorded?.verify ? recorded.drops : null;
   useEffect(() => {
-    if (!verifyId || !verifyMemberId) return;
+    if (!verifyId || !verifyMemberId || verifyDrops === null) return;
     let active = true;
+    const drops = verifyDrops;
     void attendanceClient.visitExists(verifyId, verifyMemberId, sessionId).then(
       exists => {
         if (!active) return;
-        setRecorded(current => current?.attendanceId !== verifyId ? current : exists ? { ...current, verify: false } : null);
+        setRecorded(current => current?.attendanceId !== verifyId || current.drops !== drops ? current
+          : exists ? { ...current, verify: false } : null);
       },
       () => {
         if (!active) return;
-        setRecorded(current => current?.attendanceId !== verifyId ? current : { ...current, verify: false });
+        setRecorded(current => current?.attendanceId !== verifyId || current.drops !== drops ? current
+          : { ...current, verify: false });
       },
     );
     return () => { active = false; };
-  }, [verifyId, verifyMemberId, sessionId]);
+  }, [verifyId, verifyMemberId, verifyDrops, sessionId]);
   const refresh = () => setReload(value => value + 1);
   // Each successful read by the dialog's bookings panel publishes a new counts object: after a booking, a cancellation or a
   // promotion, on its 45-second, focus and visibility reloads, and after a check-in reported to the dialog. The roster
@@ -234,7 +241,7 @@ function Roster({ sessionId }: { sessionId: string }) {
       const credits = attendance.needsCredits === true;
       if (credits) setNeedsCredits(previous => new Set(previous).add(attendance.id));
       if (walkIn || credits) setRecorded({ attendanceId: attendance.id, memberId: member.id, name: member.name, at: attendance.occurredAt, walkIn,
-        needsCredits: credits, since: readsStarted.current, checkedIn: null, seen: 'pending', verify: false });
+        needsCredits: credits, since: readsStarted.current, checkedIn: null, seen: 'pending', verify: false, drops: 0 });
       if (walkIn && walkInForm.current) markSaved(walkInForm.current);
       ownNotify.current = true;
       notifyChanged(); refresh();
@@ -251,6 +258,7 @@ function Roster({ sessionId }: { sessionId: string }) {
     setSaving(true); setSaveFailed(false); setRecorded(null);
     try {
       await attendanceClient.undo(attendance.id);
+      undoneAt.current = readsStarted.current;
       // Show the undone visit at once: a failed reload below keeps these rows, so the stale check-in and its action must go.
       if (shown?.page.data.some(entry => entry.attendance?.id === attendance.id && entry.booking !== null))
         setUnconfirmed(previous => new Set(previous).add(attendance.memberId));
