@@ -20,6 +20,8 @@ export async function s3Server() {
     pageSize: 2,
     /** While set, each request is logged as `METHOD key` (`LIST prefix` for listings). */
     log: undefined as string[] | undefined,
+    /** Buckets that don't exist: every request to one answers 404 `NoSuchBucket` (a HEAD without a body). */
+    missingBuckets: new Set<string>(),
     /** Answers 500 to each request it matches, before handling it. */
     fail: undefined as ((method: string, key: string) => boolean) | undefined };
   const xml = (response: ServerResponse, body: string, status = 200) => {
@@ -42,6 +44,7 @@ export async function s3Server() {
     const upload = id ? uploads.get(id) : undefined;
     const listing = url.searchParams.has('list-type');
     state.log?.push(listing ? 'LIST ' + bucket + '/' + (url.searchParams.get('prefix') ?? '') : request.method + ' ' + key);
+    if (state.missingBuckets.has(bucket)) { failure(response, 'NoSuchBucket', 404); return; }
     if (!listing && state.fail?.(request.method!, key)) { failure(response, 'InternalError', 500); return; }
     if (url.searchParams.has('uploads') && request.method === 'POST') {
       const uploadId = randomUUID(); uploads.set(uploadId, { key, contentType: type, parts: new Map() });

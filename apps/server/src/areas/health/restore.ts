@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash } from 'node:crypto';
-import { RestoreFailure, s3Reason } from './restore.failure.js';
+import { markDownload, RestoreFailure, s3Reason } from './restore.failure.js';
 import { mkdtemp, readdir, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { z } from 'zod';
@@ -125,9 +125,12 @@ export class RestoreService {
       throw new RestoreFailure('Restore staging must be outside uploads');
   }
   async #download(key: string, path: string): Promise<void> {
-    const body = await this.options.store.getObject(key);
-    if (!body) throw new RestoreFailure('A snapshot object is missing from the bucket');
-    await saveStream(path, body);
+    // Marked so a network code from the bucket or its body stream names the endpoint; the same error is rethrown.
+    try {
+      const body = await this.options.store.getObject(key);
+      if (!body) throw new RestoreFailure('A snapshot object is missing from the bucket');
+      await saveStream(path, body);
+    } catch (error) { markDownload(error); throw error; }
   }
   /** Under the backup lock, after the journal proves no unfinished restore needs these plaintext folders. */
   async #sweepStaging(): Promise<void> {

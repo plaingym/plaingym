@@ -85,9 +85,9 @@ and logged again if they recur after a successful check.
 | `The backup bucket rejected the access key or secret (CODE)` | The access key ID and secret: the bucket refused them (such as `SignatureDoesNotMatch` for a wrong secret, `InvalidAccessKeyId`, `AccessDenied`, or `HTTP 401` or `HTTP 403`). |
 | `The backup bucket doesn't exist (NoSuchBucket)` | The bucket name, endpoint and region. |
 | `The snapshot isn't in the backup bucket (CODE); check the snapshot ID` | The snapshot ID (`NoSuchKey` or `NotFound`). |
-| `The backup bucket answered with error CODE` | Any other error code from the bucket (such as `InternalError`, or `HTTP` and a status): the region, endpoint and the storage service's status. |
+| `The backup bucket answered with error CODE` | Any other error code from the bucket (such as `InternalError`, `RequestTimeTooSkewed`, or `HTTP` and a status): the region, endpoint and the storage service's status; for `RequestTimeTooSkewed`, the server clock. |
 | `Cannot reach the backup bucket (CODE)` | The `endpoint` and the server's network connection; `ECONNREFUSED` and `ENOTFOUND` mean nothing answered at that address. |
-| `Snapshot not found in the bucket` | The snapshot ID, and the `bucket` name: a bucket that doesn't exist reads the same as a snapshot that doesn't. |
+| `Snapshot not found in the bucket` | The snapshot ID: the bucket exists but holds no such snapshot (a missing bucket reads as `The backup bucket doesn't exist (NoSuchBucket)`). |
 | `The key doesn't open this snapshot` | That the key file is the private key for the backup key the snapshot was made with. |
 | `The key file doesn't hold an age private key`, `The key file must hold exactly one age private key` | The key file's content, including a mistyped character that breaks its checksum. |
 | `A snapshot object is missing from the bucket` | The snapshot was damaged or deleted in the bucket; try an earlier one. |

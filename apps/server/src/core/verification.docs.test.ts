@@ -20,6 +20,7 @@ const fixtureReaders = new Set([
   'apps/server/src/areas/billing/webhooks/handlers/handlers.test.ts',
   'apps/server/src/areas/health/backups.files.test.ts',
   'apps/server/src/areas/health/restore.failure.test.ts',
+  'apps/server/src/areas/health/restore.failure-class.test.ts',
   'apps/server/src/areas/health/restore.gate.test.ts',
   'apps/server/src/areas/health/restore.gate-process.test.ts',
   'apps/server/src/areas/health/restore.gate-monitor.test.ts',

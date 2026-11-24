@@ -28,8 +28,10 @@ export interface S3StoreOptions {
   readonly bucket: string;
   readonly clock?: Clock;
 }
+/** A missing object. A missing bucket is a 404 too, but a GET names it and the caller must hear it; a HEAD can't tell them apart. */
 function notFound(error: unknown): boolean {
-  const value = error as { name?: string; $metadata?: { httpStatusCode?: number } };
+  const value = error as { name?: string; Code?: string; $metadata?: { httpStatusCode?: number } };
+  if (value.name === 'NoSuchBucket' || value.Code === 'NoSuchBucket') return false;
   return value.$metadata?.httpStatusCode === 404 || value.name === 'NoSuchKey' || value.name === 'NotFound';
 }
 function precondition(error: unknown): boolean {

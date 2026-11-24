@@ -28,8 +28,16 @@ describe('backup failure causes', () => {
     ['a local error', new Error('disk full'), 'other'],
     ['a non-object', 'Unauthorized', 'other'],
     ['an upload whose abort failed too', new AggregateError([unauthorized, reset], 'S3 multipart upload and abort failed', { cause: reset }), 'credentials_rejected'],
+    ['a TLS certificate error the retry step added metadata to', { name: 'Error', $metadata: { attempts: 1 }, code: 'CERT_HAS_EXPIRED' }, 'other'],
+    ['a timeout after retries', { name: 'TimeoutError', $metadata: { attempts: 3 } }, 'endpoint_unreachable'],
+    ['a refused connection under the retry metadata', { name: 'Error', $metadata: { attempts: 3 }, cause: { code: 'ECONNREFUSED' } }, 'endpoint_unreachable'],
+    ['an unroutable host under the retry metadata', { name: 'Error', $metadata: { attempts: 3 }, code: 'EHOSTUNREACH' }, 'endpoint_unreachable'],
+    ['an unreachable network under the retry metadata', { name: 'Error', $metadata: { attempts: 3 }, code: 'ENETUNREACH' }, 'endpoint_unreachable'],
   ] as const)('classifies %s', (_, error, cause) => {
     expect(backupFailureCause(error)).toBe(cause);
+  });
+  it.each(['RequestTimeTooSkewed', 'AccountProblem', 'AllAccessDisabled', 'InvalidObjectState'])('calls a 403 %s other, not rejected credentials', (code) => {
+    expect(backupFailureCause({ name: code, Code: code, $metadata: { httpStatusCode: 403 } })).toBe('other');
   });
   it('stops walking at the fifth level', () => {
     let error: unknown = unauthorized;

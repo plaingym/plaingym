@@ -137,6 +137,23 @@ describe('setup restore coordinator', () => {
     expect(status).toMatchObject({ status: 'failed', message: 'Restore failed.', reason: 'credentials_rejected', staged: false });
     expect(JSON.stringify(status)).not.toMatch(/SECRETACCESS|SECRETVALUEOFTHESOURCE/);
   });
+  it('names a missing backup bucket, not a missing snapshot', async () => {
+    server.state.missingBuckets.add('absent');
+    const client = createS3Client({ endpoint: server.endpoint, maxAttempts: 1, credentials: { accessKeyId: 'fixture', secretAccessKey: 'fixture' } });
+    try {
+      const directory = join(root, 'missing-bucket'), gate = new RestoreGate(directory);
+      // The bucket answers first: the restore takes the lock, then reads the snapshot's manifest.
+      const database = { locked: <T>(action: () => Promise<T>) => action() } as unknown as PostgresMaintenance;
+      const coordinator = createSetupRestore({ gate, journal: join(directory, 'setup-restore.json'), assertEmpty: async () => {},
+        restore: (input) => new RestoreService({ database, store: new S3BackupObjectStore({ client, bucket: input.source.bucket, clock }), clock,
+          appEncryptionKey: newKey, stagingDirectory: join(directory, 'staging'), uploadsDirectory: join(directory, 'uploads'), gate,
+        }).restore(snapshotId(input.snapshotPrefix), input.privateKey) });
+      const job = await coordinator.start({ choice: 'restore', source: { endpoint: server.endpoint, region: 'auto', bucket: 'absent', accessKeyId: 'fixture', secretAccessKey: 'fixture' },
+        snapshotPrefix: 'snapshots/' + uuidv7() + '/', privateKey: await generateIdentity() });
+      await expect.poll(async () => (await coordinator.status(job.jobId)).status).toBe('failed');
+      expect(await coordinator.status(job.jobId)).toMatchObject({ status: 'failed', message: 'Restore failed.', reason: 'bucket_missing', staged: false });
+    } finally { server.state.missingBuckets.clear(); client.destroy(); }
+  });
   it('says a verified restore is staged only while the restore gate is closed', async () => {
     for (const verified of [true, false]) {
       const directory = join(root, verified ? 'staged' : 'unstaged'), gate = new RestoreGate(directory);

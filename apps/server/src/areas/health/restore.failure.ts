@@ -54,6 +54,23 @@ export function s3Reason(error: unknown, bucket: 'backup' | 'uploads'): string |
 export type RestoreFailureClass = 'credentials_rejected' | 'bucket_missing' | 'snapshot_missing' | 'endpoint_unreachable'
   | 'wrong_key' | 'invalid_key' | 'damaged' | 'unsupported' | 'other';
 
+/** Errors thrown while a snapshot object was read from the backup bucket, including its body stream. */
+const downloads = new WeakSet<object>();
+/** Marks an error as raised by a snapshot download, so a bare network code in it names the storage endpoint. */
+export function markDownload(error: unknown): void {
+  if (typeof error === 'object' && error !== null) downloads.add(error);
+}
+/** Whether this error or one of its causes is an S3 client's: the SDK puts `$metadata` on every error it raises. */
+function fromStorage(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 5 && typeof current === 'object' && current !== null; depth++) {
+    const value = current as { $metadata?: unknown; cause?: unknown; errors?: unknown };
+    if (typeof value.$metadata === 'object' && value.$metadata !== null) return true;
+    current = current instanceof AggregateError ? (current.errors as unknown[])[0] : value.cause;
+  }
+  return false;
+}
+
 export function restoreFailureClass(error: unknown): RestoreFailureClass {
   // Its cause isn't read: a staged restore's uploads-bucket failure is no problem with the backup source.
   if (error instanceof RestoreFailure) {
@@ -71,5 +88,8 @@ export function restoreFailureClass(error: unknown): RestoreFailureClass {
       if (code === 'NoSuchKey' || code === 'NotFound') return 'snapshot_missing';
     }
   }
-  return backupFailureCause(error);
+  const cause = backupFailureCause(error);
+  // A bare network code can come from the maintenance database too, which the restore reaches before any storage call.
+  if (cause === 'endpoint_unreachable' && !(typeof error === 'object' && error !== null && downloads.has(error)) && !fromStorage(error)) return 'other';
+  return cause;
 }

@@ -154,7 +154,12 @@ async function maintenance(args: readonly string[], environment: ReturnType<type
   try {
     const store = new S3BackupObjectStore({ client, bucket: config.bucket, clock });
     // Asked first, so a wrong snapshot ID doesn't look like a damaged snapshot.
-    if (!await store.headObject(snapshotPrefix(id.data) + 'manifest.age')) throw new RestoreFailure('Snapshot not found in the bucket');
+    if (!await store.headObject(snapshotPrefix(id.data) + 'manifest.age')) {
+      // A HEAD answers a missing bucket like a missing object; a listing throws `NoSuchBucket` for it instead.
+      // Keys only: what an incomplete snapshot left behind is not read.
+      await store.listKeys(snapshotPrefix(id.data));
+      throw new RestoreFailure('Snapshot not found in the bucket');
+    }
     await new RestoreService({ ...await restoreOptions(environment), store }).restore(id.data, identity);
   } finally { client.destroy(); }
 }
