@@ -116,7 +116,8 @@ export function createBookingService(options: BookingOptions = {}) {
         assertCancellable(session, gym, clock.now());
         const [cancelled] = await tx.update(classBookings).set({ status: 'cancelled', waitlistPosition: null, cancelledAt: clock.now() })
           .where(eq(classBookings.id, id)).returning();
-        await bookingAudit(tx, context, clock.now(), 'cancelled', cancelled!);
+        await bookingAudit(tx, context, clock.now(), 'cancelled', cancelled!,
+          notice ? { noticeChannels: [...notice.channels] } : undefined);
         // Only this transition queues a notice: an already-cancelled booking returned above, and a rollback drops the job.
         if (notice) await notice.enqueue(transaction, { bookingId: id, sessionId: cancelled!.sessionId, channels: [...notice.channels], note: notice.note }, gym.timezone);
         return bookingView(tx, cancelled!);

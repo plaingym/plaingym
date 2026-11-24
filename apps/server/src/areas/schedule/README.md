@@ -109,7 +109,8 @@ their household's billing phone when it agreed to them, and only while Member
 texts is on in Settings → Go-live. With nobody booked or waitlisted, both are locked.
 Ticking Email reveals the optional note, which appears in email only. The request sends `notify: true` with the
 ticked `channels`; with neither ticked it sends neither field, and without Email it sends no `note`. A failed roster refresh
-keeps the selected options and note, and waits for fresh counts before sending.
+keeps the selected options and note, and waits for fresh counts before sending. Unticking Email hides the note
+box but keeps its text for when Email is ticked again; a saved cancellation empties it.
 Each notice lists the booked or waitlisted members its destination covers, except when
 one member receives it at their own email or consented phone. A household fallback
 lists the members it covers even when only one is booked or waitlisted.
@@ -120,10 +121,11 @@ For a cancelled session that hasn't started, a user with `schedule.manage` sees 
 where the cancel form is: a paragraph on what restoring brings back, then, for a user who may notify,
 two unticked boxes (email and text the members whose places come back, the text box with the same
 hint), and a **Restore class** button. It posts the revision, plus `notify: true` and the ticked
-channels when either box is ticked. On success the dialog says the class is restored—and that no places
-were waiting to come back when `restoredBookings` is 0—and its panels reload. A `session_started` refusal says the session can no longer be restored and hides the form; a
+channels when either box is ticked. On success the dialog says the class is restored—and, when
+`restoredBookings` is 0, that no places came back (adding that no notice was sent when a box was
+ticked)—and its panels reload. A `session_started` refusal says the session can no longer be restored and hides the form; a
 `not_cancelled` one says no notice was queued and refreshes the session. A started cancelled session
-shows no restore form.
+shows no restore form; a user with `schedule.manage` sees that it has started and can't be restored.
 
 The existing area route/job barrels load `schedule.routes.ts` and
 `schedule.jobs.ts`. Notification delivery uses the announcements area's

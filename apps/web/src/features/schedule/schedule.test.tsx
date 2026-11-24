@@ -85,7 +85,7 @@ describe('schedule calendar and session detail', () => {
       params: { path: { id } }, body: { revision: 4, notify: true, channels, ...(hasEmail ? { note: 'Closed' } : {}) },
     });
   });
-  it('shows and sends the cancellation note only while Email is ticked', async () => {
+  it('keeps the cancellation note while Email is unticked and sends it only while Email is ticked', async () => {
     vi.mocked(api.POST).mockResolvedValue({ response: new Response(), data: { data: { ...session, revision: 5, status: 'cancelled' } } } as Awaited<ReturnType<typeof api.POST>>);
     const onSaved = vi.fn();
     render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={onSaved} registries={noticeRegistries()}/>);
@@ -94,11 +94,41 @@ describe('schedule calendar and session detail', () => {
     fireEvent.click(email);
     fireEvent.change(screen.getByLabelText(/Optional cancellation note/), { target: { value: 'Draft note' } });
     fireEvent.click(email); expect(screen.queryByLabelText(/Optional cancellation note/)).toBeNull();
+    fireEvent.click(email);
+    expect((screen.getByLabelText(/Optional cancellation note/) as HTMLTextAreaElement).value).toBe('Draft note');
+    fireEvent.click(email); expect(screen.queryByLabelText(/Optional cancellation note/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel session' }));
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(api.POST).toHaveBeenCalledWith('/api/schedule/sessions/{id}/cancel', {
       params: { path: { id } }, body: { revision: 4, notify: true, channels: ['sms'] },
     });
+  });
+  it('sends the retained note after unticking and ticking Email again', async () => {
+    vi.mocked(api.POST).mockResolvedValue({ response: new Response(), data: { data: { ...session, revision: 5, status: 'cancelled' } } } as Awaited<ReturnType<typeof api.POST>>);
+    const onSaved = vi.fn();
+    render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={onSaved} registries={noticeRegistries()}/>);
+    const email = screen.getByRole('checkbox', { name: /Email the 3/ });
+    fireEvent.click(email);
+    fireEvent.change(screen.getByLabelText(/Optional cancellation note/), { target: { value: 'Draft note' } });
+    fireEvent.click(email); expect(screen.queryByLabelText(/Optional cancellation note/)).toBeNull();
+    fireEvent.click(email);
+    expect((screen.getByLabelText(/Optional cancellation note/) as HTMLTextAreaElement).value).toBe('Draft note');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel session' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(api.POST).toHaveBeenCalledWith('/api/schedule/sessions/{id}/cancel', {
+      params: { path: { id } }, body: { revision: 4, notify: true, channels: ['email'], note: 'Draft note' },
+    });
+  });
+  it('empties the cancellation note once the cancellation is saved, so a later cancel of the same session starts clean', async () => {
+    vi.mocked(api.POST).mockResolvedValue({ response: new Response(), data: { data: { ...session, revision: 5, status: 'cancelled' } } } as Awaited<ReturnType<typeof api.POST>>);
+    const onSaved = vi.fn();
+    const view = render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={onSaved} registries={noticeRegistries()}/>);
+    fireEvent.click(screen.getByRole('checkbox', { name: /Email the 3/ }));
+    fireEvent.change(screen.getByLabelText(/Optional cancellation note/), { target: { value: 'Coach sick' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel session' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    view.rerender(<SessionDetail session={{ ...session, revision: 6 }} options={options} roles={['owner']} enabledModules={[]} onSaved={onSaved} registries={noticeRegistries()}/>);
+    expect((await screen.findByLabelText(/Optional cancellation note/) as HTMLTextAreaElement).value).toBe('');
   });
   it('locks both boxes with their none texts when nobody is booked or waitlisted', async () => {
     const counts = { booked: 0, waitlisted: 0, checkedIn: 0 };
@@ -289,16 +319,19 @@ describe('schedule calendar and session detail', () => {
       expect(screen.getByRole('status').textContent).toBe('Class restored. The places its cancellation cancelled are back.');
     });
     it.each([
-      [0, 'Class restored. No places were waiting to come back; members need to book again.'],
-      [2, 'Class restored. The places its cancellation cancelled are back.'],
-      [undefined, 'Class restored. The places its cancellation cancelled are back.'],
-    ] as const)('reports restoredBookings=%s with the matching restore notice', async (restoredBookings, expected) => {
+      [0, false, 'Class restored. No places came back; members can book it again.'],
+      [0, true, 'Class restored. No places came back, so no notice was sent; members can book it again.'],
+      [2, false, 'Class restored. The places its cancellation cancelled are back.'],
+      [2, true, 'Class restored. The places its cancellation cancelled are back.'],
+      [undefined, false, 'Class restored. The places its cancellation cancelled are back.'],
+    ] as const)('reports restoredBookings=%s (notify=%s) with the matching restore notice', async (restoredBookings, notify, expected) => {
       vi.mocked(api.POST).mockResolvedValue({
         response: new Response(),
         data: { data: restored, ...(restoredBookings === undefined ? {} : { restoredBookings }) },
       } as Awaited<ReturnType<typeof api.POST>>);
       const onSaved = vi.fn();
       render(detail(['owner'], onSaved));
+      if (notify) fireEvent.click(boxes().email);
       fireEvent.click(screen.getByRole('button', { name: 'Restore class' }));
       await waitFor(() => expect(onSaved).toHaveBeenCalledWith(restored));
       expect(screen.getByRole('status').textContent).toBe(expected);
@@ -318,7 +351,7 @@ describe('schedule calendar and session detail', () => {
       expect(screen.queryByRole('button', { name: 'Restore class' })).toBeNull();
       expect(screen.queryByText(/^Brings this class back/)).toBeNull();
     });
-    it('takes the restore form away when a cancelled session reaches its start, without a start note', () => {
+    it('takes the restore form away and explains why when a cancelled session reaches its start, without a cancel note', () => {
       const start = Date.parse(cancelled.startsAt);
       vi.useFakeTimers(); vi.setSystemTime(new Date(start - 60_000));
       render(detail());
@@ -326,8 +359,15 @@ describe('schedule calendar and session detail', () => {
       act(() => vi.advanceTimersByTime(61_000));
       expect(screen.queryByRole('button', { name: 'Restore class' })).toBeNull();
       expect(screen.queryByRole('checkbox', { name: /places come back/ })).toBeNull();
+      expect(screen.getByText("This session has started and can't be restored.").getAttribute('role')).toBe('status');
       expect(screen.queryByText(/This session has started and cannot be cancelled/)).toBeNull();
       expect(screen.queryByText(/Your cancellation note was not sent/)).toBeNull();
+      cleanup();
+      vi.setSystemTime(new Date(start - 60_000));
+      bootstrap(['front_desk']);
+      render(<SessionDetail session={cancelled} options={options} roles={['front_desk']} enabledModules={[]} onSaved={vi.fn()} registries={createWebRegistries<ExtensionView>([])}/>);
+      act(() => vi.advanceTimersByTime(61_000));
+      expect(screen.queryByRole('status')).toBeNull();
     });
     it.each(['2026-03-02T23:00:00Z', '2026-03-03T01:00:00Z'])('shows no restore form for a cancelled session started at %s', now => {
       vi.setSystemTime(new Date(now));
@@ -588,6 +628,7 @@ describe('weekly class capacity and the coach hint', () => {
   const template: ClassTemplate = { id, name: 'Evening class', weekday: 1, localStartTime: '18:00', durationMinutes: 60, coachId: null, capacity: null,
     notes: null, kind: 'class', revision: 3, createdAt: '2026-03-01T00:00:00Z', programIds: [programId], tagIds: [] };
   const capacityHelp = 'Changing it also updates upcoming sessions of this class that still have its old capacity. Sessions with their own capacity keep it.';
+  const coachesHelpPending = 'Coaches come from staff profiles.';
   const coachesHelp = 'Coaches come from staff profiles. Add one in Staff → Staff profiles, and link it to a login to coach from your own account.';
   const coachesHelpAsk = 'Coaches come from staff profiles. Ask an owner or admin to add one.';
   it('explains on an existing weekly class only that a capacity change reaches its upcoming sessions', () => {
@@ -626,6 +667,14 @@ describe('weekly class capacity and the coach hint', () => {
     ['session edit form', coaches => <SessionForm session={session} options={{ ...options, coaches }} tags={[]} siblings={[]} onSaved={vi.fn()} onCancel={vi.fn()}/>],
   ];
   it.each(coachSelects)('explains where coaches come from under the %s, with a Staff link for owners and admins', (_name, view) => {
+    vi.mocked(useBootstrap).mockReturnValue({ data: undefined } as ReturnType<typeof useBootstrap>);
+    render(view([], ['owner']));
+    const pendingHint = screen.getByText(coachesHelpPending);
+    expect(screen.getAllByLabelText('Coach').find(element => element.tagName === 'SELECT')!.getAttribute('aria-describedby')).toBe(pendingHint.parentElement!.id);
+    expect(screen.queryByRole('link', { name: 'Open Staff' })).toBeNull();
+    expect(screen.queryByText(coachesHelp)).toBeNull();
+    expect(screen.queryByText(coachesHelpAsk)).toBeNull();
+    cleanup();
     for (const role of ['owner', 'admin'] as const) {
       bootstrap([role]); render(view([], [role]));
       const hint = screen.getByText(coachesHelp);
@@ -643,6 +692,7 @@ describe('weekly class capacity and the coach hint', () => {
     expect(screen.queryByText(coachesHelp)).toBeNull();
     expect(screen.queryByRole('link', { name: 'Open Staff' })).toBeNull();
     cleanup(); bootstrap(['owner']); render(view([{ id: programId, name: 'A coach' }], ['owner']));
+    expect(screen.queryByText(coachesHelpPending)).toBeNull();
     expect(screen.queryByText(coachesHelp)).toBeNull();
     expect(screen.queryByText(coachesHelpAsk)).toBeNull();
     expect(screen.queryByRole('link', { name: 'Open Staff' })).toBeNull();

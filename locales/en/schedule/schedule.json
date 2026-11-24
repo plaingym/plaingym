@@ -55,7 +55,8 @@
   "restoreEmail": "Email the members whose places come back",
   "restoreText": "Text the members whose places come back",
   "restored": "Class restored. The places its cancellation cancelled are back.",
-  "restoredNone": "Class restored. No places were waiting to come back; members need to book again.",
+  "restoredNone": "Class restored. No places came back; members can book it again.",
+  "restoredNoneNoNotice": "Class restored. No places came back, so no notice was sent; members can book it again.",
   "notCancelled": "This session isn't cancelled any more. No notice was queued.",
   "restoreStarted": "This session has started and can't be restored.",
   "saved": "Saved.",
@@ -115,6 +116,7 @@
   "noTemplatesHelp": "Weekly classes fill the calendar automatically. Use New weekly class to add one.",
   "templateCapacityHelp": "Changing it also updates upcoming sessions of this class that still have its old capacity. Sessions with their own capacity keep it.",
   "templateCapacityBelowBooked": "An upcoming session of this class has more booked members than that capacity. Choose a higher capacity, or change that session on its own.",
+  "coachesHelpPending": "Coaches come from staff profiles.",
   "coachesHelp": "Coaches come from staff profiles. Add one in Staff → Staff profiles, and link it to a login to coach from your own account.",
   "coachesHelpAsk": "Coaches come from staff profiles. Ask an owner or admin to add one.",
   "coachesLink": "Open Staff"

@@ -59,8 +59,9 @@ export function Field({ label, children }: { label: string; children: ReactNode 
  * manage it. Renders nothing once the gym has a coach. The link opens a new tab, so a half-filled form survives.
  */
 export function CoachHint({ id, coaches }: { id: string; coaches: readonly unknown[] }) {
-  const roles = useBootstrap().data?.session?.roles ?? [];
+  const roles = useBootstrap().data?.session?.roles;
   if (coaches.length) return null;
+  if (!roles) return <div id={id} className="text-sm text-muted-foreground"><p>{text('coachesHelpPending')}</p></div>;
   const canManageStaff = canStaff(roles, 'staff.manage');
   return <div id={id} className="text-sm text-muted-foreground">
     <p>{text(canManageStaff ? 'coachesHelp' : 'coachesHelpAsk')}</p>
@@ -74,6 +75,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
     tags?: readonly ClassTag[]; siblings?: readonly ClassSession[]; registries?: ReturnType<typeof createRegistries> }) {
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState(''), [editing, setEditing] = useState(false);
   const [emailMembers, setEmailMembers] = useState(false), [textMembers, setTextMembers] = useState(false);
+  const [note, setNote] = useState('');
   const [restoreEmail, setRestoreEmail] = useState(false), [restoreText, setRestoreText] = useState(false);
   const textHintId = useId(), restoreHintId = useId(), coachHintId = useId();
   const [now, setNow] = useState(Date.now);
@@ -98,18 +100,19 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
   // A cancelled session that hasn't started can be restored; its notice goes only to the members whose places come back.
   const restorable = manage && session.status === 'cancelled' && !started;
   const restoreChannels: ('email' | 'sms')[] = mayNotify ? [...(restoreEmail ? ['email' as const] : []), ...(restoreText ? ['sms' as const] : [])] : [];
-  // Only someone who could see the cancel form is told why it went away. Read through a ref so ticking
+  // Only someone who could see the cancel or restore form is told why it went away. Read through a ref so ticking
   // a notice box doesn't re-arm the start timer.
   const startNotice = useRef('');
-  useEffect(() => { startNotice.current = manage ? text(emailing ? 'sessionStartedNoteLost' : 'sessionStarted') : ''; }, [manage, emailing]);
+  useEffect(() => {
+    startNotice.current = manage ? text(session.status === 'cancelled' ? 'restoreStarted' : emailing ? 'sessionStartedNoteLost' : 'sessionStarted') : '';
+  }, [manage, emailing, session.status]);
   useEffect(() => {
     if (started) return;
     // The timer catches the start while the page is awake; focus and visibility do it after a sleep,
     // when the timer's own deadline may already be in the past.
     const showStarted = (instant: number) => {
       setNow(instant);
-      // A cancelled session has no cancel form, so its start must not report a lost notice.
-      if (session.status !== 'cancelled' && startNotice.current) setNotice(startNotice.current);
+      if (startNotice.current) setNotice(startNotice.current);
     };
     const refresh = () => {
       const instant = Date.now();
@@ -141,7 +144,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
     try {
       const params = { path: { id } };
       const result = kind === 'cancel' ? await api.POST('/api/schedule/sessions/{id}/cancel', { params,
-        body: { revision, ...(notifying ? { notify: true, channels, ...(emailing ? { note: String(form?.get('note') ?? '') } : {}) } : {}) } })
+        body: { revision, ...(notifying ? { notify: true, channels, ...(emailing ? { note } : {}) } : {}) } })
         : kind === 'coach' ? await api.POST('/api/schedule/sessions/{id}/coach', { params, body: { revision, coachId: String(form?.get('coachId') ?? '') || null } })
         : kind === 'capacity' ? await api.PATCH('/api/schedule/sessions/{id}/capacity', { params, body: { revision, capacity: form?.get('capacity') ? Number(form.get('capacity')) : null } })
         : await api.PATCH('/api/schedule/sessions/{id}/notes', { params, body: { revision, notes: String(form?.get('notes') ?? '') || null } });
@@ -158,6 +161,8 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
       }
       check(result.response); if (formElement) markSaved(formElement);
       onSaved(parseResponse(classSessionResponseSchema, result.data).data); setNotice(text('saved'));
+      // The note belongs to this cancellation: a later cancel of the same session (after a restore) starts with an empty box.
+      if (kind === 'cancel') setNote('');
       // A new capacity can promote or move bookings, and cancelling a session cancels its bookings, so the panels that show counts reload.
       if (kind === 'capacity' || kind === 'cancel') setChanged((value) => value + 1);
     } catch (error) { setNotice(message(error)); } finally { setBusy(false); }
@@ -182,7 +187,8 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
       }
       check(result.response); markSaved(formElement);
       const restored = parseResponse(restoreSessionResponseSchema, result.data);
-      onSaved(restored.data); setNotice(text(restored.restoredBookings === 0 ? 'restoredNone' : 'restored'));
+      onSaved(restored.data);
+      setNotice(text(restored.restoredBookings === 0 ? (restoreChannels.length > 0 ? 'restoredNoneNoNotice' : 'restoredNone') : 'restored'));
       setRestoreEmail(false); setRestoreText(false);
       // Restoring brings bookings back and can promote the waitlist, so the panels that show counts reload.
       setChanged(value => value + 1);
@@ -229,7 +235,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
               aria-describedby={textHintId} label={noticeLabel('sms', counts.booked + counts.waitlisted)}/>
             <p id={textHintId} className="text-sm text-muted-foreground">{text('cancelTextHint')}</p>
           </div>
-          {emailing && <Field label={text('cancelNote')}><Textarea name="note" maxLength={1_000} disabled={busy}/></Field>}
+          {emailing && <Field label={text('cancelNote')}><Textarea name="note" maxLength={1_000} disabled={busy} value={note} onChange={event => setNote(event.target.value)}/></Field>}
         </>}
         <Button type="submit" variant="outline" className="w-full border-destructive text-destructive sm:w-auto"
           disabled={busy || ((emailMembers || textMembers) && mayNotify && (!counts || counts.stale))}>{text('cancelSession')}</Button>

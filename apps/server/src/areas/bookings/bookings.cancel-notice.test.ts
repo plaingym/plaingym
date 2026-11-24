@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Isolated fixtures switch the persisted member email and SMS notices.
 import { auditEvents, classBookings, classSessions, emailDeliveries, gyms, households, members, smsDailyUsage, smsDeliveries, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { isInTransaction } from '@plaingym/shared/transaction';
 import { TestClock } from '../../core/clock.js';
+import { setLogSink } from '../../core/log.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { FakeEmail } from '../../infra/email/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
@@ -48,6 +49,13 @@ async function fixture() {
   const drain = async () => { for (let n = 0; n < 20 && await jobs.runNext(); n++); };
   return { gymId, clock, home, child, session, service, actor, booking, email, sms, jobs, resolver, delivery, cancel, notices, settings, drain,
     run: () => delivery.sendCancelNotice(notices()[0]!.payload, gymId) };
+}
+async function captureLogs(fn: () => Promise<void>) {
+  const lines: Record<string, unknown>[] = [];
+  const restore = setLogSink(line => lines.push(JSON.parse(line) as Record<string, unknown>));
+  try { await fn(); }
+  finally { setLogSink(restore); }
+  return lines;
 }
 
 it.each(selections)('queues one job for %j and delivers only to the chosen channels', async (...channels) => {
@@ -117,7 +125,7 @@ it('prefers the member own email and consented phone, and names the member there
   expect(f.sms.messages.map(message => message.to)).toEqual([own]);
   expect(f.email.messages[0]!.text).toContain('Booking for: Mia Rivera');
   expect(f.email.messages[0]!.text).toContain('Sorry about this.');
-  expect(f.sms.messages[0]!.body).toContain('The booking for Mia Rivera in Evening practice on 2026-11-10 at 7:30 PM EST has been cancelled by the gym.');
+  expect(f.sms.messages[0]!.body).toContain('The booking or waitlist place for Mia Rivera in Evening practice on 2026-11-10 at 7:30 PM EST has been cancelled by the gym.');
   expect(f.sms.messages[0]!.body).not.toContain('Your booking');
 });
 
@@ -140,7 +148,7 @@ it('names only the cancelled sibling when siblings share a parent email and phon
   expect(f.email.messages[0]!.text).not.toContain('Noa');
   expect(f.sms.messages).toHaveLength(1);
   expect(f.sms.messages[0]).toMatchObject({ to: sharedPhone });
-  expect(f.sms.messages[0]!.body).toContain('The booking for Mia Rivera in Evening practice');
+  expect(f.sms.messages[0]!.body).toContain('The booking or waitlist place for Mia Rivera in Evening practice');
   expect(f.sms.messages[0]!.body).not.toContain('Noa');
 
   await f.cancel(['email', 'sms'], '', noaBooking.id); await f.drain();
@@ -150,7 +158,7 @@ it('names only the cancelled sibling when siblings share a parent email and phon
   expect(f.email.messages[1]!.text).not.toContain('Mia');
   expect(f.sms.messages).toHaveLength(2);
   expect(f.sms.messages[1]).toMatchObject({ to: sharedPhone });
-  expect(f.sms.messages[1]!.body).toContain('The booking for Noa Rivera in Evening practice');
+  expect(f.sms.messages[1]!.body).toContain('The booking or waitlist place for Noa Rivera in Evening practice');
   expect(f.sms.messages[1]!.body).not.toContain('Mia');
   const emailKeys = (await db.forGym(f.gymId, tx => tx.select({ key: emailDeliveries.key }).from(emailDeliveries))).map(row => row.key);
   const smsKeys = (await db.forGym(f.gymId, tx => tx.select({ key: smsDeliveries.key }).from(smsDeliveries))).map(row => row.key);
@@ -175,7 +183,13 @@ it.each(['erased', 'restored', 'rebooked', 'waitlisted'] as const)('suppresses b
       .toEqual([{ status: 'cancelled' }]);
   }
   expect(f.notices()[0]!.payload).toMatchObject({ bookingId: f.booking.id, channels: ['email', 'sms'] });
-  await f.run(); expect(f.email.messages).toHaveLength(0); expect(f.sms.messages).toHaveLength(0);
+  const logs = await captureLogs(() => f.run());
+  expect(f.email.messages).toHaveLength(0); expect(f.sms.messages).toHaveLength(0);
+  expect(logs.filter(line => line.event === 'bookings.cancel_notice_skipped')).toEqual([
+    expect.objectContaining({ gymId: f.gymId, bookingId: f.booking.id, channel: 'email', reason: 'not_current' }),
+    expect.objectContaining({ gymId: f.gymId, bookingId: f.booking.id, channel: 'sms', reason: 'not_current' }),
+  ]);
+  expect(logs.filter(line => line.event === 'email.suppressed')).toEqual([]);
 });
 
 describe('a booking superseded by a later one, with equal clock timestamps', () => {
@@ -299,8 +313,12 @@ it('rechecks the email address at the last boundary', async () => {
     await db.forGym(f.gymId, tx => tx.update(households).set({ email: 'moved@example.test' }).where(eq(households.id, f.home.id)));
     return f.email;
   } });
-  await moving.sendCancelNotice(f.notices()[0]!.payload, f.gymId);
+  const logs = await captureLogs(() => moving.sendCancelNotice(f.notices()[0]!.payload, f.gymId));
   expect(f.email.messages).toHaveLength(0);
+  expect(logs.filter(line => line.event === 'bookings.cancel_notice_skipped')).toEqual([
+    expect.objectContaining({ gymId: f.gymId, bookingId: f.booking.id, channel: 'email', reason: 'recipient_changed' }),
+  ]);
+  expect(logs.filter(line => line.event === 'email.suppressed')).toEqual([]);
 });
 
 it.each(['email', 'sms'] as const)('retries after the %s channel fails without resending the accepted one', async failing => {
@@ -366,11 +384,16 @@ it('reads only its own gym booking', async () => {
 it.each(['at_start', 'after_start'] as const)('sends nothing and writes no delivery when the class is %s before the job runs', async timing => {
   const f = await fixture(); await f.cancel(['email', 'sms']);
   f.clock.set(timing === 'at_start' ? f.session.startsAt : new Date(f.session.startsAt.getTime() + 60_000));
-  await f.run();
+  const logs = await captureLogs(() => f.run());
   expect(f.email.messages).toHaveLength(0); expect(f.sms.messages).toHaveLength(0);
   expect(f.resolver.resolve).not.toHaveBeenCalled();
   expect(await db.forGym(f.gymId, tx => tx.$count(emailDeliveries))).toBe(0);
   expect(await db.forGym(f.gymId, tx => tx.$count(smsDeliveries))).toBe(0);
+  expect(logs.filter(line => line.event === 'bookings.cancel_notice_skipped')).toEqual([
+    expect.objectContaining({ gymId: f.gymId, bookingId: f.booking.id, channel: 'email', reason: 'class_started' }),
+    expect.objectContaining({ gymId: f.gymId, bookingId: f.booking.id, channel: 'sms', reason: 'class_started' }),
+  ]);
+  expect(logs.filter(line => line.event === 'email.suppressed')).toEqual([]);
 });
 
 it('suppresses email and text at their guards when the class starts between the first read and the provider call', async () => {
@@ -379,19 +402,26 @@ it('suppresses email and text at their guards when the class starts between the 
     emailRun.clock.set(emailRun.session.startsAt);
     return emailRun.email;
   } });
-  await guardedEmail.sendCancelNotice(emailRun.notices()[0]!.payload, emailRun.gymId);
+  const emailLogs = await captureLogs(() => guardedEmail.sendCancelNotice(emailRun.notices()[0]!.payload, emailRun.gymId));
   expect(emailRun.email.messages).toHaveLength(0);
   expect(await db.forGym(emailRun.gymId, tx => tx.select({ state: emailDeliveries.state }).from(emailDeliveries))).toEqual([{ state: 'not_accepted' }]);
+  expect(emailLogs.filter(line => line.event === 'bookings.cancel_notice_skipped')).toEqual([
+    expect.objectContaining({ gymId: emailRun.gymId, bookingId: emailRun.booking.id, channel: 'email', reason: 'class_started' }),
+  ]);
+  expect(emailLogs.filter(line => line.event === 'email.suppressed')).toEqual([]);
 
   const smsGuard = await fixture(); await smsGuard.cancel(['sms']);
   smsGuard.resolver.resolve.mockImplementationOnce(async id => {
     smsGuard.clock.set(smsGuard.session.startsAt);
     return { gymId: id, name: 'Cedar Gym', sms: smsGuard.sms };
   });
-  await smsGuard.run();
+  const smsGuardLogs = await captureLogs(() => smsGuard.run());
   expect(smsGuard.sms.messages).toHaveLength(0);
   expect(await db.forGym(smsGuard.gymId, tx => tx.select({ state: smsDeliveries.state }).from(smsDeliveries))).toEqual([{ state: 'not_accepted' }]);
   expect(await db.forGym(smsGuard.gymId, tx => tx.select().from(smsDailyUsage))).toEqual([]);
+  expect(smsGuardLogs.filter(line => line.event === 'bookings.cancel_notice_skipped')).toEqual([
+    expect.objectContaining({ gymId: smsGuard.gymId, bookingId: smsGuard.booking.id, channel: 'sms', reason: 'class_started' }),
+  ]);
 
   const smsLastCheck = await fixture(); await smsLastCheck.cancel(['sms']);
   const real = createGymSettingsAccessor({ scope: db.forGym }); let pending = true;
@@ -406,11 +436,14 @@ it('suppresses email and text at their guards when the class starts between the 
   const lastCheckDelivery = createBookingDelivery({ scope: db.forGym, clock: smsLastCheck.clock, jobs: new FakeJobs(smsLastCheck.clock),
     settings, mailer: async () => smsLastCheck.email,
     sms: { resolver: smsLastCheck.resolver, phoneDigest: createSmsPhoneDigest('cancel-notice-test') } });
-  await lastCheckDelivery.sendCancelNotice(smsLastCheck.notices()[0]!.payload, smsLastCheck.gymId);
+  const lastCheckLogs = await captureLogs(() => lastCheckDelivery.sendCancelNotice(smsLastCheck.notices()[0]!.payload, smsLastCheck.gymId));
   expect(pending).toBe(false);
   expect(smsLastCheck.sms.messages).toHaveLength(0);
   expect(await db.forGym(smsLastCheck.gymId, tx => tx.select({ state: smsDeliveries.state }).from(smsDeliveries))).toEqual([{ state: 'not_accepted' }]);
   expect(await db.forGym(smsLastCheck.gymId, tx => tx.select().from(smsDailyUsage))).toEqual([]);
+  expect(lastCheckLogs.filter(line => line.event === 'bookings.cancel_notice_skipped')).toEqual([
+    expect.objectContaining({ gymId: smsLastCheck.gymId, bookingId: smsLastCheck.booking.id, channel: 'sms', reason: 'class_started' }),
+  ]);
 });
 
 it('sends both channels as usual while the class is still ahead', async () => {
@@ -418,4 +451,55 @@ it('sends both channels as usual while the class is still ahead', async () => {
   f.clock.set(new Date(f.session.startsAt.getTime() - 1));
   await f.run();
   expect(f.email.messages).toHaveLength(1); expect(f.sms.messages).toHaveLength(1);
+});
+
+it('uses the booking or waitlist place wording for a waitlisted member text', async () => {
+  const f = await fixture();
+  const secondHome = await factory('households', f.gymId, { phone: '+12025550144', phoneE164: '+12025550144',
+    smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' });
+  const waiting = await factory('members', f.gymId, { householdId: secondHome.id, firstName: 'Noa', lastName: 'Kim' });
+  const waitlisted = (await f.service.book(f.actor, { memberId: waiting.id, sessionId: f.session.id, allowWaitlist: true })).booking;
+  expect(waitlisted.status).toBe('waitlisted');
+  await f.cancel(['sms'], '', waitlisted.id); await f.run();
+  expect(f.sms.messages).toHaveLength(1);
+  expect(f.sms.messages[0]!.body).toBe('Cedar Gym: The booking or waitlist place for Noa Kim in Evening practice on 2026-11-10 at 7:30 PM EST has been cancelled by the gym.');
+});
+
+it('records chosen channels on booking.cancelled and writes one booking.cancel_notice_sent per accepted channel', async () => {
+  const plain = await fixture();
+  await plain.cancel();
+  const plainAudit = await db.forGym(plain.gymId, tx => tx.select({ after: auditEvents.after })
+    .from(auditEvents).where(and(eq(auditEvents.targetId, plain.booking.id), eq(auditEvents.action, 'booking.cancelled'))));
+  expect(plainAudit).toHaveLength(1);
+  expect('noticeChannels' in (plainAudit[0]!.after as Record<string, unknown>)).toBe(false);
+
+  const f = await fixture();
+  await f.cancel(['email', 'sms']);
+  const cancelled = await db.forGym(f.gymId, tx => tx.select({ after: auditEvents.after })
+    .from(auditEvents).where(and(eq(auditEvents.targetId, f.booking.id), eq(auditEvents.action, 'booking.cancelled'))));
+  expect(cancelled).toEqual([{ after: expect.objectContaining({ noticeChannels: ['email', 'sms'] }) }]);
+
+  await f.run();
+  const sentAudits = () => db.forGym(f.gymId, tx => tx.select({ actorKind: auditEvents.actorKind, targetType: auditEvents.targetType,
+    targetId: auditEvents.targetId, after: auditEvents.after })
+    .from(auditEvents).where(and(eq(auditEvents.targetId, f.booking.id), eq(auditEvents.action, 'booking.cancel_notice_sent'))));
+  const initial = await sentAudits();
+  expect(initial).toHaveLength(2);
+  expect(initial).toEqual(expect.arrayContaining([
+    { actorKind: 'system', targetType: 'class_booking', targetId: f.booking.id, after: { channel: 'email' } },
+    { actorKind: 'system', targetType: 'class_booking', targetId: f.booking.id, after: { channel: 'sms' } },
+  ]));
+
+  // Rerunning the job skips already-accepted deliveries and writes no second sent audit.
+  await f.run();
+  expect(await sentAudits()).toHaveLength(2);
+
+  // A suppressed text writes no sent audit.
+  const suppressed = await fixture();
+  await suppressed.cancel(['sms']);
+  suppressed.sms.respondNext({ status: 'suppressed', reason: 'no_consent' });
+  await suppressed.run();
+  expect(suppressed.sms.messages).toHaveLength(0);
+  expect(await db.forGym(suppressed.gymId, tx => tx.$count(auditEvents,
+    and(eq(auditEvents.targetId, suppressed.booking.id), eq(auditEvents.action, 'booking.cancel_notice_sent'))))).toBe(0);
 });

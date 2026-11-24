@@ -185,8 +185,9 @@ cancellation routes take no body and never queue this notice.
 `bookings.cancel-notice.ts` owns the `bookings.cancel_notice` job. The service
 queues it, keyed `booking-cancel-notice:<bookingId>` with the chosen channels and
 the note (kept only with email), in the transaction that cancels the booking and
-writes its audit (`withJobTransaction`): a rolled-back cancellation leaves no job,
-and an already-cancelled booking returns its earlier result without one. The
+writes its `booking.cancelled` audit (with `noticeChannels` in `after` when a
+notice is queued) (`withJobTransaction`): a rolled-back cancellation leaves no
+job, and an already-cancelled booking returns its earlier result without one. The
 booking jobs register its handler, and `createBookingDelivery` binds it to the
 same mailer and SMS options as the promotion notice (`enqueueCancelNotice`,
 `sendCancelNotice`).
@@ -223,11 +224,17 @@ the member's latest for the class, then locks the member and their household
 (giving way to a staff erasure or deletion as the promotion text does) and reruns
 `memberNoticePhones`: a member who gained their own consented phone meanwhile
 isn't texted on the household phone (`phone_changed`), and a booking no longer
-eligible or no consented phone suppresses it (`no_consent`), without taking a
+eligible or no consented phone suppresses it (`no_consent`, which `MemberSms`'s
+own log still records after that last check), without taking a
 slot. Both name the class and its local date and time; only the email
 carries the note. A failure on one channel doesn't stop the other; the job retries,
-and an accepted or uncertain channel is never sent again. Without SMTP the email
-is skipped (`bookings.cancel_notice_skipped`). A promotion the cancellation frees
+and an accepted or uncertain channel is never sent again. When a booking or guard
+check skips a channel (`class_started`, `not_current`, or `recipient_changed` on
+email, besides `no_mailer` when SMTP is missing), the handler logs
+`bookings.cancel_notice_skipped` with that reason instead of logging an email
+opt-out. Each accepted (`sent`) channel writes a `booking.cancel_notice_sent`
+audit with `{ channel }` in its own transaction; suppressed, skipped, and failed
+channels write none. A promotion the cancellation frees
 keeps its own notice.
 
 The email follows the same address rules as other individual booking notices:

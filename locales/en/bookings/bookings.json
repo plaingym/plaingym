@@ -53,7 +53,7 @@
   "cancelNoticeBody": "A booking or waitlist place for {name} on {date} at {time} has been cancelled by the gym.",
   "cancelNoticeMembers": "Booking for: {names}",
   "cancelNoticeFooter": "You received this notice because you or someone in your household had a booking for this class.",
-  "cancelNoticeSms": "The booking for {names} in {name} on {date} at {time} has been cancelled by the gym.",
+  "cancelNoticeSms": "The booking or waitlist place for {names} in {name} on {date} at {time} has been cancelled by the gym.",
   "cancelDialogTitle": "Cancel this booking?",
   "cancelDialogBody": "Cancel {name}'s booking. Choose how to tell them, or leave both unticked to send nothing.",
   "cancelNotifyEmail": "Email",

@@ -59,10 +59,12 @@ export function activeBookings(tx: Transaction, sessionId: string) {
   return tx.select().from(classBookings).where(and(eq(classBookings.sessionId, sessionId), ne(classBookings.status, 'cancelled')))
     .orderBy(asc(classBookings.waitlistPosition), asc(classBookings.id));
 }
-export async function bookingAudit(tx: Transaction, context: MutationContext, now: Date, action: string, row: BookingRow) {
+export async function bookingAudit(tx: Transaction, context: MutationContext, now: Date, action: string, row: BookingRow,
+  details?: Record<string, unknown>) {
   await writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
     ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}), action: 'booking.' + action,
-    targetType: 'class_booking', targetId: row.id, after: { sessionId: row.sessionId, memberId: row.memberId, status: row.status }, occurredAt: now });
+    targetType: 'class_booking', targetId: row.id,
+    after: { sessionId: row.sessionId, memberId: row.memberId, status: row.status, ...details }, occurredAt: now });
 }
 
 /** Caller holds this session's FOR UPDATE lock. Capacity edits, jobs and erasure share this rule.

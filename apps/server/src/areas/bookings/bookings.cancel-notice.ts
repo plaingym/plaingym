@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, gt, isNull, ne, or } from 'drizzle-orm';
-import { classBookings, classSessions, databaseCode, forGym, households, members, type Transaction } from '@plaingym/db';
+import { classBookings, classSessions, databaseCode, forGym, households, members, writeAudit, type Transaction } from '@plaingym/db';
 import { createTranslator, type Clock } from '@plaingym/shared';
 import { cancellationNoticeChannelsSchema, idSchema } from '@plaingym/shared/contracts';
 import { z } from 'zod';
@@ -47,6 +47,10 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
   const emails = createEmailDeliveries({ scope, clock }), texts = createSmsDeliveries({ scope, clock });
   const t = createTranslator({ 'bookings/bookings': messages });
 
+  const skipped = (gymId: string, bookingId: string, channel: 'email' | 'sms',
+    reason: 'class_started' | 'not_current' | 'recipient_changed') =>
+    logInfo('bookings.cancel_notice_skipped', { gymId, bookingId, channel, reason });
+
   /** The cancelled booking and its class, unless the class has started, the member has been erased, or they booked that class again since. */
   async function loadIn(tx: Transaction, gymId: string, bookingId: string) {
     const [row] = await tx.select({ memberId: classBookings.memberId, sessionId: classBookings.sessionId, createdAt: classBookings.createdAt,
@@ -54,7 +58,8 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
       .from(classBookings).innerJoin(classSessions, eq(classSessions.id, classBookings.sessionId))
       .innerJoin(members, eq(members.id, classBookings.memberId))
       .where(and(eq(classBookings.gymId, gymId), eq(classBookings.id, bookingId), eq(classBookings.status, 'cancelled'), isNull(members.anonymizedAt)));
-    if (!row || row.startsAt <= clock.now()) return undefined;
+    if (!row) return 'not_current' as const;
+    if (row.startsAt <= clock.now()) return 'class_started' as const;
     // Booking the class again adds a new row and leaves this one cancelled. Only the member's latest booking for the
     // class speaks for it, whatever that booking's status is now: a later booking (even one cancelled since, with or
     // without its own notice) supersedes this one. Creation time orders them; the time-ordered ID breaks a tie. The
@@ -63,7 +68,7 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
       .where(and(eq(classBookings.gymId, gymId), eq(classBookings.sessionId, row.sessionId), eq(classBookings.memberId, row.memberId),
         ne(classBookings.id, bookingId),
         or(gt(classBookings.createdAt, row.createdAt), and(eq(classBookings.createdAt, row.createdAt), gt(classBookings.id, bookingId))))).limit(1);
-    return later ? undefined : row;
+    return later ? 'not_current' as const : row;
   }
   const load = (gymId: string, bookingId: string) => scope(gymId, tx => loadIn(tx, gymId, bookingId));
   /** Whether the text still goes to the same phone, under the same consent, as the group it was prepared for. */
@@ -75,7 +80,7 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
     const gym = await settings.get(gymId);
     if (!gym.memberEmailsEnabled) return;
     const row = await load(gymId, notice.bookingId);
-    if (!row) return;
+    if (typeof row === 'string') { skipped(gymId, notice.bookingId, 'email', row); return; }
     const [recipient] = await scope(gymId, tx => readMemberNoticeEmails(tx, gymId, [row.memberId]));
     if (!recipient) return;
     const email = await options.mailer(gymId);
@@ -90,9 +95,15 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
       try {
         if (!(await settings.get(gymId)).memberEmailsEnabled) return suppress('disabled');
         const latest = await load(gymId, notice.bookingId);
-        if (!latest || latest.memberId !== row.memberId) return suppress('opt_out');
+        if (typeof latest === 'string' || latest.memberId !== row.memberId) {
+          skipped(gymId, notice.bookingId, 'email', typeof latest === 'string' ? latest : 'not_current');
+          return { status: 'suppressed', reason: 'opt_out' } as const;
+        }
         const [current] = await scope(gymId, tx => readMemberNoticeEmails(tx, gymId, [latest.memberId]));
-        if (!current || current.address !== recipient.address) return suppress('opt_out');
+        if (!current || current.address !== recipient.address) {
+          skipped(gymId, notice.bookingId, 'email', 'recipient_changed');
+          return { status: 'suppressed', reason: 'opt_out' } as const;
+        }
         // Always name the member: siblings can have one parent's address on their own records.
         message = await renderBookingCancellation({ gymName, name: latest.name, startsAt: latest.startsAt, timezone: gym.timezone,
           memberNames: [`${current.firstName} ${current.lastName}`], showMembers: true, note: notice.note });
@@ -100,14 +111,18 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
       return email.sendEmail({ to: recipient.address, ...message });
     } };
     // The guard builds the final content once, after its last recipient read.
-    await emails.send(gymId, cancelNoticeEmailKey(notice.bookingId), guarded, { to: recipient.address, subject: row.name, text: '', html: '' });
+    const result = await emails.send(gymId, cancelNoticeEmailKey(notice.bookingId), guarded, { to: recipient.address, subject: row.name, text: '', html: '' });
+    if (result.status === 'sent') {
+      await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'booking.cancel_notice_sent',
+        targetType: 'class_booking', targetId: notice.bookingId, after: { channel: 'email' }, occurredAt: clock.now() }));
+    }
   }
 
   async function sendSms(gymId: string, notice: CancelNotice) {
     const sms = options.sms;
     if (!sms || !(await settings.get(gymId)).memberSmsEnabled) return;
     const row = await load(gymId, notice.bookingId);
-    if (!row) return;
+    if (typeof row === 'string') { skipped(gymId, notice.bookingId, 'sms', row); return; }
     const [group] = await scope(gymId, tx => readNoticePhones(tx, gymId, [row.memberId]));
     if (!group) return;
     const delivery = { scope, clock, settings, sms };
@@ -120,7 +135,10 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
         let sender: Sms, message: SmsMessage;
         try {
           const latest = await load(gymId, notice.bookingId);
-          if (!latest || latest.memberId !== row.memberId) return { status: 'suppressed', reason: 'no_consent' };
+          if (typeof latest === 'string' || latest.memberId !== row.memberId) {
+            skipped(gymId, notice.bookingId, 'sms', typeof latest === 'string' ? latest : 'not_current');
+            return { status: 'suppressed', reason: 'no_consent' };
+          }
           const [current] = await scope(gymId, tx => readNoticePhones(tx, gymId, [latest.memberId]));
           if (!current || current.phoneE164 !== group.phoneE164) return { status: 'suppressed', reason: 'phone_changed' };
           const { timezone } = await settings.get(gymId);
@@ -140,7 +158,10 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
             await tx.select({ id: classSessions.id }).from(classSessions)
               .where(and(eq(classSessions.gymId, gymId), eq(classSessions.id, booking.sessionId))).for('share');
             const again = await loadIn(tx, gymId, notice.bookingId);
-            if (!again || again.memberId !== row.memberId) return 'no_consent';
+            if (typeof again === 'string' || again.memberId !== row.memberId) {
+              skipped(gymId, notice.bookingId, 'sms', typeof again === 'string' ? again : 'not_current');
+              return 'no_consent';
+            }
             const share = async <T>(read: () => Promise<T>) => {
               try { return await read(); }
               catch (error) { throw databaseCode(error) === '55P03' ? new SmsRecheckBusy() : error; }
@@ -165,7 +186,11 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
         return sender.sendSms(message);
       },
     };
-    await texts.attempt(reserved, guarded, { to: group.phoneE164, body: '' });
+    const result = await texts.attempt(reserved, guarded, { to: group.phoneE164, body: '' });
+    if (result.status === 'sent') {
+      await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'booking.cancel_notice_sent',
+        targetType: 'class_booking', targetId: notice.bookingId, after: { channel: 'sms' }, occurredAt: clock.now() }));
+    }
   }
 
   return {
