@@ -124,6 +124,8 @@ describe('Settings → Backups', () => {
     expect([...form.querySelectorAll('input')].map((input) => input.id))
       .toEqual(['integrations-backup-credentials-accessKeyId', 'integrations-backup-credentials-secretAccessKey']);
     expect(within(form).getByText(/backup key and existing snapshots stay the same/)).toBeDefined();
+    expect(within(form).queryByText(/replace the ones for the current bucket/)).toBeNull();
+    expect((within(form).getByLabelText('S3 secret access key (not the Cloudflare API token value)') as HTMLInputElement).type).toBe('password');
     // Opening the other form closes this one, and back.
     await user.click(screen.getByRole('button', { name: 'Change destination or key' }));
     expect(screen.queryByRole('form', { name: 'Change storage credentials' })).toBeNull();
@@ -157,10 +159,67 @@ describe('Settings → Backups', () => {
     expect((await screen.findByRole('alert')).textContent).toBe('The storage destination refused the new credentials. Check the access key ID and secret; nothing was changed.');
     expect(screen.getByRole('form', { name: 'Change storage credentials' })).toBeDefined();
   });
-  it.each([['not set up', integrations], ['waiting for a new key', pending]] as const)('offers no credentials change while backups are %s', async (_, shown) => {
+  it('replaces the current bucket’s storage credentials while a new destination waits for confirmation', async () => {
+    current = pending;
+    client.PUT.mockImplementation(async () => { current = { ...pending, revision: 6 }; return reply(200, { data: current }); });
+    const user = userEvent.setup(); renderSection();
+    expect(await screen.findByRole('form', { name: 'Confirm and start using it' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Change destination or key' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Set up backups' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Change storage credentials' }));
+    expect(screen.getByRole('form', { name: 'Confirm and start using it' })).toBeDefined();
+    const form = screen.getByRole('form', { name: 'Change storage credentials' });
+    expect([...form.querySelectorAll('input')].map((input) => input.id))
+      .toEqual(['integrations-backup-credentials-accessKeyId', 'integrations-backup-credentials-secretAccessKey']);
+    expect((within(form).getByLabelText('S3 secret access key (not the Cloudflare API token value)') as HTMLInputElement).type).toBe('password');
+    expect(within(form).getByText(/backup key and existing snapshots stay the same/)).toBeDefined();
+    expect(within(form).getByText('These keys replace the ones for the current bucket, gym-backups. The new destination waiting for its key keeps the keys it was set up with: if you rotated those too, choose Generate a new key instead and enter the new ones.')).toBeDefined();
+    // Starting over closes the credentials form, and opening credentials again brings back the confirm form.
+    await user.click(screen.getByRole('button', { name: 'Generate a new key instead' }));
+    expect(screen.queryByRole('form', { name: 'Change storage credentials' })).toBeNull();
+    expect(screen.getByRole('form', { name: 'Change destination or key' })).toBeDefined();
+    await user.click(screen.getByRole('button', { name: 'Change storage credentials' }));
+    expect(screen.queryByRole('form', { name: 'Change destination or key' })).toBeNull();
+    expect(screen.getByRole('form', { name: 'Confirm and start using it' })).toBeDefined();
+    const replace = screen.getByRole('form', { name: 'Change storage credentials' });
+    await user.type(within(replace).getByLabelText('S3 access key ID'), 'rotated-id');
+    await user.type(within(replace).getByLabelText('S3 secret access key (not the Cloudflare API token value)'), 'rotated-secret');
+    const healthReads = () => client.GET.mock.calls.filter(([path]) => path === '/api/health').length;
+    await waitFor(() => expect(healthReads()).toBeGreaterThan(0));
+    const readsBefore = healthReads();
+    await user.click(within(replace).getByRole('button', { name: 'Check and save credentials' }));
+    expect(client.PUT).toHaveBeenCalledExactlyOnceWith('/api/settings/integrations/backups/credentials', { signal: expect.any(AbortSignal),
+      body: { revision: 3, accessKeyId: 'rotated-id', secretAccessKey: 'rotated-secret' } });
+    expect((await screen.findByText(/Backups now use the new storage credentials/)).getAttribute('role')).toBe('status');
+    await waitFor(() => expect(healthReads()).toBeGreaterThan(readsBefore));
+    expect(screen.queryByRole('form', { name: 'Change storage credentials' })).toBeNull();
+    expect(screen.getByRole('form', { name: 'Confirm and start using it' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Change storage credentials' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Change destination or key' })).toBeNull();
+    expect(document.body.textContent).not.toContain('rotated-secret');
+  });
+  it('closes an open credentials form when the pending key is confirmed instead', async () => {
+    current = pending;
+    client.POST.mockImplementation(async () => { current = { ...configured, revision: 6, backups: { ...configured.backups!, publicKey } }; return reply(200, { data: current }); });
+    const user = userEvent.setup(); renderSection();
+    await user.click(await screen.findByRole('button', { name: 'Change storage credentials' }));
+    expect(screen.getByRole('form', { name: 'Change storage credentials' })).toBeDefined();
+    const confirm = screen.getByRole('form', { name: 'Confirm and start using it' });
+    await user.type(within(confirm).getByLabelText('Paste your saved private key'), privateKey);
+    await user.click(within(confirm).getByRole('checkbox', { name: /I saved my private key/ }));
+    await user.click(within(confirm).getByRole('button', { name: 'Check the saved key' }));
+    expect(await screen.findByText('Backups now use the new destination and key.')).toBeDefined();
+    expect(screen.queryByRole('form', { name: 'Change storage credentials' })).toBeNull();
+  });
+  it.each([
+    ['not set up', integrations, false],
+    ['waiting for a first key', { ...pending, backups: { ...pending.backups!, configured: false, destination: null, publicKey: null } }, false],
+    ['waiting for a new key', pending, true],
+  ] as const)('offers credentials change only when configured (%s)', async (_, shown, offered) => {
     current = shown; renderSection();
     expect(await screen.findByRole('heading', { name: 'Backups' })).toBeDefined();
-    expect(screen.queryByRole('button', { name: 'Change storage credentials' })).toBeNull();
+    if (offered) expect(screen.getByRole('button', { name: 'Change storage credentials' })).toBeDefined();
+    else expect(screen.queryByRole('button', { name: 'Change storage credentials' })).toBeNull();
   });
   it('shows the retention budget in English digits under another default locale', async () => {
     const Original = Intl.NumberFormat;

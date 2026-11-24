@@ -182,6 +182,7 @@
   "backups.unreachable": "The storage destination refused the request. Check the endpoint, region, bucket and access keys; nothing was changed.",
   "backups.changeCredentials": "Change storage credentials",
   "backups.credentialsHint": "Use this after rotating the storage access key. The endpoint, bucket, backup key and existing snapshots stay the same.",
+  "backups.credentialsPendingHint": "These keys replace the ones for the current bucket, {bucket}. The new destination waiting for its key keeps the keys it was set up with: if you rotated those too, choose Generate a new key instead and enter the new ones.",
   "backups.replaceCredentials": "Check and save credentials",
   "backups.checking": "Checking…",
   "backups.credentialsReplaced": "Backups now use the new storage credentials. The destination, backup key and snapshots are unchanged.",

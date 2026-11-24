@@ -75,7 +75,7 @@ export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { ba
     void run(async () => {
       const reply = await state.change((revision, signal) => api.POST('/api/settings/integrations/backups/confirm', { signal, body: { revision, privateKey } }), integrationsOf);
       if (reply.status < 300) {
-        setCreated(null); setMessage({ kind: 'status', text: label('confirmed') });
+        setCreated(null); setCredentialsOpen(false); setMessage({ kind: 'status', text: label('confirmed') });
         if (state.gymId) await cache.invalidateQueries({ queryKey: ['health', state.gymId, 'backups'] });
       }
       else setMessage({ kind: 'alert', text: reply.reason === 'mismatch' || reply.status === 400 ? confirmKeyLabels.mismatch()
@@ -124,13 +124,14 @@ export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { ba
         </div>
       </fieldset>
     </form></ConfirmKeySection>}
-    {!pending && (!open || backups.configured) && <div className="flex flex-col gap-3 sm:flex-row">
-      {!open && <Button type="button" variant="outline" onClick={() => { setMessage(null); setCredentialsOpen(false); setBucketNote(null); setOpen(true); }}>{label(backups.configured ? 'change' : 'setUp')}</Button>}
+    {((!pending && !open) || (backups.configured && !credentialsOpen)) && <div className="flex flex-col gap-3 sm:flex-row">
+      {!pending && !open && <Button type="button" variant="outline" onClick={() => { setMessage(null); setCredentialsOpen(false); setBucketNote(null); setOpen(true); }}>{label(backups.configured ? 'change' : 'setUp')}</Button>}
       {backups.configured && !credentialsOpen && <Button type="button" variant="outline" onClick={() => { setMessage(null); setOpen(false); setCredentialsOpen(true); }}>{label('changeCredentials')}</Button>}
     </div>}
-    {credentialsOpen && backups.configured && !pending && <form onSubmit={replaceCredentials} aria-label={label('changeCredentials')}>
+    {credentialsOpen && backups.configured && <form onSubmit={replaceCredentials} aria-label={label('changeCredentials')}>
       <fieldset disabled={busy} className="grid min-w-0 gap-4">
         <p className="text-sm text-muted-foreground">{label('credentialsHint')}</p>
+        {pending && backups.destination && <p className="text-sm text-muted-foreground [overflow-wrap:anywhere]">{text('backups.credentialsPendingHint', { bucket: backups.destination.bucket })}</p>}
         <Field name="accessKeyId" idPrefix="integrations-backup-credentials-"/>
         <Field name="secretAccessKey" type="password" idPrefix="integrations-backup-credentials-"/>
         <div className="flex flex-col gap-3 sm:flex-row"><Button type="submit">{label(busy ? 'checking' : 'replaceCredentials')}</Button></div>
