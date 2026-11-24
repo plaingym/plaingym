@@ -128,13 +128,15 @@ describe('portal access tab invitation guidance', () => {
     await user.click(screen.getByRole('button', { name: 'Invite' }));
     expect((screen.getByLabelText('Login email') as HTMLInputElement).value).toBe('');
   });
-  it('shows the join refusal hint and opens Invite from it', async () => {
+  it('shows the join refusal hint and opens Invite from it with an empty email field', async () => {
     refused = true;
+    memberEmail = currentEmail;
     const user = userEvent.setup();
     start();
     const hint = await screen.findByText(refusalHint);
     await user.click(within(hint.parentElement!).getByRole('button', { name: 'Invite' }));
-    expect(screen.getByRole('dialog', { name: 'Invite' })).toBeDefined();
+    const dialog = within(screen.getByRole('dialog', { name: 'Invite' }));
+    expect((dialog.getByLabelText('Login email') as HTMLInputElement).value).toBe('');
   });
   it('marks old addresses only for access specific to this member', async () => {
     memberEmail = currentEmail;

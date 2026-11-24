@@ -21,6 +21,7 @@ import { householdContextContract } from './household-users.contract.js';
 import { createPortalInvitationStore } from '../../infra/auth/portal-invitations.js';
 import { authConfig } from '../../infra/auth/config.js';
 import { createPortalInvitationService } from './household-users.invitations.js';
+import { createMembersService } from './members.js';
 
 const db = useTestDatabase(), factory = createFactories(db), clock = new TestClock('2026-10-28T12:00:00Z');
 const gym = uuidv7(), otherGym = uuidv7(), context = createMemberHouseholdContext(db.forGym), service = createHouseholdUsersService({ scope: db.forGym, clock, loginEmails: createPortalInvitationStore(() => db.system.db).loginEmails });
@@ -108,7 +109,7 @@ describe('household login routes', () => {
     expect(await logins(erased.id)).not.toHaveProperty('awaitingConfirmation');
   });
   it('shows the latest household invitation refusal until a successful invitation or payer login', async () => {
-    const household = await factory('households', gym), householdId = household.id;
+    const household = await factory('households', gym, { email: 'staff@example.invalid' }), householdId = household.id;
     const path = `/api/households/${householdId}/portal-logins`;
     const frontDesk = staff('front_desk'), server = app(frontDesk);
     const hint = { reason: 'staff_identity' };
@@ -146,6 +147,39 @@ describe('household login routes', () => {
     await factory('householdUsers', gym, { householdId, scope: 'payer', memberId: null });
     expect(await service.inviteRefused(gym, householdId)).toBeNull();
     expect(await logins()).not.toHaveProperty('inviteRefused');
+  });
+  it('drops the join refusal hint when the household is erased or its email changes, while keeping it for phone-only or case-only updates', async () => {
+    const localClock = new TestClock(clock.now()), membersService = createMembersService({ scope: db.forGym, clock: localClock });
+    const actor = { gymId: gym, actor: { kind: 'system' as const } };
+    const home = await factory('households', gym, { email: 'Before@Example.invalid' });
+    const erased = await factory('households', gym, { email: null });
+    const refuse = (targetId: string) => db.forGym(gym, tx => writeAudit(tx, {
+      gymId: gym, actorKind: 'system', action: 'household_user.invite_refused', targetType: 'household', targetId, occurredAt: localClock.now(),
+    }));
+    await refuse(erased.id);
+    expect(await service.inviteRefused(gym, erased.id)).toBeNull();
+    expect(await service.inviteRefused(gym, uuidv7())).toBeNull();
+
+    await refuse(home.id);
+    expect(await service.inviteRefused(gym, home.id)).toEqual({ reason: 'staff_identity' });
+
+    localClock.advance(1000);
+    const phoneOnly = await membersService.updateHousehold(actor, home.id, { revision: home.revision, phone: '555-0100' });
+    expect(await service.inviteRefused(gym, home.id)).toEqual({ reason: 'staff_identity' });
+
+    localClock.advance(1000);
+    const sameEmailCase = await membersService.updateHousehold(actor, home.id, { revision: phoneOnly.revision, email: 'BEFORE@example.invalid' });
+    expect(await service.inviteRefused(gym, home.id)).toEqual({ reason: 'staff_identity' });
+
+    localClock.advance(1000);
+    await membersService.updateHousehold(actor, home.id, { revision: sameEmailCase.revision, email: 'after@example.invalid' });
+    expect(await service.inviteRefused(gym, home.id)).toBeNull();
+
+    const emailAudits = await db.forGym(gym, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, home.id)));
+    const emailChanges = emailAudits.filter(row => row.action === 'household.email_changed');
+    expect(emailChanges).toHaveLength(1);
+    expect(emailChanges[0]).toMatchObject({ targetType: 'household', targetId: home.id, before: null, after: null });
+    expect(JSON.stringify(emailChanges[0])).not.toMatch(/before@example\.invalid|after@example\.invalid/i);
   });
   it('returns staff-only invitation refusal details and preserves the claim response', async () => {
     const manager = await factory('staffRoles', gym, { role: 'owner' });

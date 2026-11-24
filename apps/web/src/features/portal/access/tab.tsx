@@ -75,7 +75,7 @@ export function PortalAccessTab({ memberId }: ExtensionViewProps) {
   if (person.isError || users.isError) return <ErrorState onRetry={() => { void person.refetch(); void users.refetch(); }} />;
   return <section className="space-y-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">{text('title')}</h2><p className="text-muted-foreground">{text('description')}</p></div><Button onClick={() => open('invite')}>{text('invite')}</Button></div>
     {awaiting && <div className="min-w-0 space-y-3 rounded-lg border border-border bg-muted p-4"><p className="font-medium">{text('awaitingTitle')}</p><p className="break-all">{awaiting.email ?? text('noAddress')}</p><p>{text('awaitingHelp')}</p><Button variant="outline" onClick={() => confirm(awaiting.email)}>{text('confirm')}</Button></div>}
-    {users.data.inviteRefused && <div className="min-w-0 space-y-3 rounded-lg border border-border bg-muted p-4"><p>{text('inviteRefused')}</p><Button variant="outline" onClick={() => open('invite')}>{text('invite')}</Button></div>}
+    {users.data.inviteRefused && <div className="min-w-0 space-y-3 rounded-lg border border-border bg-muted p-4"><p>{text('inviteRefused')}</p><Button variant="outline" onClick={() => open('invite', '')}>{text('invite')}</Button></div>}
     {operation.isSuccess && !uncertain && <p role="status">{text('saved')}</p>}
     {invitation && <div className="space-y-2 rounded-lg border border-border p-4"><p className="font-medium">{text('privateLink')}</p><p className="break-all select-all">{invitation}</p><Button variant="outline" onClick={() => window.print()}>{text('print')}</Button></div>}
     {!users.data.data.length && <EmptyState title={text('empty')} />}

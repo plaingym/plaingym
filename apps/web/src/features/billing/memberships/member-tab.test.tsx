@@ -2,6 +2,7 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
 import { canStaff, type StaffRole } from '@plaingym/shared';
 import type { Membership, Plan, ShellBootstrap } from '@plaingym/shared/contracts';
@@ -459,14 +460,65 @@ it('closes a refused Freeze form and resumes with the refreshed revision and bil
   save();
   await waitFor(() => expect(client.call).toHaveBeenNthCalledWith(2, 'resumeMembership', { revision: 2, nextDueOn: '2026-12-01' }, { membershipId: membership.id }));
 });
-it('keeps the Freeze form open with the conflict text after a changed membership', async () => {
-  const client = start('admin');
-  fireEvent.click(await screen.findByRole('button', { name: 'Freeze' }));
-  fireEvent.change(screen.getByLabelText('Resume date (optional)'), { target: { value: '2026-12-01' } });
+it.each([
+  { button: 'Freeze', status: 'active', field: 'Resume date (optional)', selector: 'input[name="date"]', value: '2026-12-01', nextValue: '2026-12-10', operation: 'freezeMembership', reloaded: { ...membership, status: 'active' as const, revision: 2, nextDueOn: '2026-11-15' }, retryArgs: { revision: 2, resumesOn: '2026-12-10' } },
+  { button: 'Resume', status: 'frozen', field: 'Next billing date', selector: 'input[name="date"]', value: '2026-12-01', nextValue: '2026-12-15', operation: 'resumeMembership', reloaded: { ...membership, status: 'frozen' as const, revision: 2, nextDueOn: '2026-11-15' }, retryArgs: { revision: 2, nextDueOn: '2026-12-15' } },
+] as const)('closes a refused $button form on a changed membership and retries with the reloaded revision', async ({ button, status, field, selector, value, nextValue, operation, reloaded, retryArgs }) => {
+  const client = start('admin', { row: { ...membership, status } });
+  fireEvent.click(await screen.findByRole('button', { name: button }));
+  fireEvent.change(screen.getByLabelText(field, { selector }), { target: { value } });
+  vi.mocked(client.memberships).mockResolvedValue([reloaded]);
   vi.mocked(client.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['membership_changed']));
   save();
   expect(await screen.findByText('This record or the household billing date changed. Reload and review before saving.')).toBeDefined();
-  expect(screen.getByLabelText('Resume date (optional)')).toHaveProperty('value', '2026-12-01');
+  expect(screen.queryByLabelText(field, { selector })).toBeNull();
+  await waitFor(() => expect(screen.getByRole('button', { name: button }).matches(':disabled')).toBe(false));
+  expect(await screen.findByText('Nov 15, 2026')).toBeDefined();
+  fireEvent.click(screen.getByRole('button', { name: button }));
+  fireEvent.change(screen.getByLabelText(field, { selector }), { target: { value: nextValue } });
+  save();
+  await waitFor(() => expect(client.call).toHaveBeenNthCalledWith(2, operation, retryArgs, { membershipId: membership.id }));
+});
+it('closes the Change price form on a changed membership and compares and retries against the reloaded price and revision', async () => {
+  const client = start('admin');
+  const form = await openEdit();
+  fireEvent.change(form.price, { target: { value: '50' } });
+  vi.mocked(client.memberships).mockResolvedValue([{ ...membership, revision: 2, amountCents: 5000 }]);
+  vi.mocked(client.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['membership_changed']));
+  save();
+  expect(await screen.findByText('This record or the household billing date changed. Reload and review before saving.')).toBeDefined();
+  expect(screen.queryByLabelText(/^Price/)).toBeNull();
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Change price' }).matches(':disabled')).toBe(false));
+  const reopened = await openEdit();
+  expect(reopened.price.placeholder).toBe('50.00');
+  fireEvent.change(reopened.price, { target: { value: '50' } });
+  save();
+  expect(await screen.findByText('Enter a price different from the current one.')).toBeDefined();
+  expect(client.call).toHaveBeenCalledTimes(1);
+  fireEvent.change(reopened.price, { target: { value: '75' } });
+  save();
+  await waitFor(() => expect(client.call).toHaveBeenNthCalledWith(2, 'updateMembership', { revision: 2, price: { amountCents: 7500, currency: 'CAD' } }, { membershipId: membership.id }));
+});
+it('keeps Cancel membership disabled until the reload after a changed membership resolves', async () => {
+  const user = userEvent.setup();
+  const client = start('admin');
+  await user.click(await screen.findByRole('button', { name: 'Cancel membership' }));
+  const refreshed = Promise.withResolvers<Membership[]>();
+  vi.mocked(client.memberships).mockReturnValue(refreshed.promise);
+  vi.mocked(client.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['membership_changed']));
+  await user.click(screen.getByRole('button', { name: 'Confirm cancellation' }));
+  expect(await screen.findByText('This record or the household billing date changed. Reload and review before saving.')).toBeDefined();
+  const cancelButton = screen.getByRole('button', { name: 'Cancel membership' });
+  expect(cancelButton.matches(':disabled')).toBe(true);
+  await user.click(cancelButton);
+  expect(screen.queryByRole('button', { name: 'Confirm cancellation' })).toBeNull();
+  refreshed.resolve([{ ...membership, revision: 2 }]);
+  await waitFor(() => expect(cancelButton.matches(':disabled')).toBe(false));
+  await user.click(cancelButton);
+  const confirmButton = screen.getByRole('button', { name: 'Confirm cancellation' });
+  expect(confirmButton.matches(':disabled')).toBe(false);
+  await user.click(confirmButton);
+  await waitFor(() => expect(client.call).toHaveBeenNthCalledWith(2, 'cancelMembership', { revision: 2 }, { membershipId: membership.id }));
 });
 it.each([
   { button: 'Resume', status: 'frozen', field: 'Next billing date', selector: 'input[name="date"]', value: '2026-12-01', operation: 'resumeMembership' },

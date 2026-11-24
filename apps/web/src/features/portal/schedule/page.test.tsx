@@ -296,11 +296,35 @@ describe('portal schedule page', () => {
       expect(scrolled).not.toHaveBeenCalled();
     } finally { Element.prototype.scrollIntoView = original; }
   });
-  it('keeps focus in the dialog, not on an alert, when a class opens', async () => {
-    client.schedule.mockResolvedValue(answer([session]));
+  it('moves focus to the page-level alert when a refused booking is followed by a refetch that drops the class', async () => {
+    client.schedule.mockResolvedValueOnce(answer([session])).mockResolvedValue(answer([]));
+    client.book.mockRejectedValueOnce(new ApiError(409, 'request_failed'));
     const user = userEvent.setup(); page();
-    await openClass(user);
-    expect(document.activeElement?.getAttribute('role')).not.toBe('alert');
+    const dialog = await openClass(user);
+    await user.click(dialog.getByRole('button', { name: 'Book Fundamentals for Pat Parent' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/This change isn't available any more/);
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+  });
+  it('keeps focus on the opener card and does not reveal the page-level alert when a refused booking dialog is dismissed with Escape', async () => {
+    client.schedule.mockResolvedValue(answer([session]));
+    client.book.mockRejectedValueOnce(new ApiError(409, 'request_failed'));
+    const scrolled = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrolled;
+    try {
+      const user = userEvent.setup(); page();
+      const dialog = await openClass(user);
+      await user.click(dialog.getByRole('button', { name: 'Book Fundamentals for Pat Parent' }));
+      await dialog.findByText(/This change isn't available any more/);
+      scrolled.mockClear();
+      fireEvent(screen.getByRole('dialog'), new Event('cancel', { cancelable: true }));
+      const card = await screen.findByRole('button', cardName(session.name));
+      await waitFor(() => expect(document.activeElement).toBe(card));
+      expect(screen.getByRole('alert').textContent).toMatch(/This change isn't available any more/);
+      expect(scrolled).not.toHaveBeenCalled();
+    } finally { Element.prototype.scrollIntoView = original; }
   });
   it('omits unknown waitlist positions in the booking and confirmation', async () => {
     const waiting = { ...booking, memberId: parent, status: 'waitlisted', queueRank: null };

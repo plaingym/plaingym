@@ -375,9 +375,11 @@ An emailed portal invitation replay with an uncertain delivery returns `data.out
 
 When a passwordless online join or sign-in link resend encounters a staff address,
 it records `household_user.invite_refused` on the household with `after: { reason: "staff_identity" }`.
-The refusal audit has no address or account identity. The gym-scoped `inviteRefused`
-read feeds the staff Portal access tab when the household has no payer login and its
-latest refusal or successful invitation audit, ordered by timestamp then ID, is a refusal.
+The refusal audit has no address or account identity. Updating a household's email
+to a different normalized address records `household.email_changed` without any address.
+The gym-scoped `inviteRefused` read feeds the staff Portal access tab when the household
+has a non-blank email, no payer login, and its latest refusal, successful invitation, or
+`household.email_changed` audit, ordered by timestamp then ID, is a refusal.
 
 The staff invitation endpoint reports the reason under `error.details.reason` for
 `already_linked_household`, `member_has_login`, `staff_account` and

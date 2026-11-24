@@ -85,9 +85,9 @@ export function PortalSchedulePage({ client = portalClient, now = currentTime }:
   const [selection, setSelection] = useState<{ id: string; weekStart: string; memberId: string }>();
   const cardPrefix = useId();
   const restoreFocusTo = useRef<string>(null);
-  const revealedMessage = useRef<typeof message>(undefined);
+  const [revealed, setRevealed] = useState<typeof message>();
   // Runs after the Alert's own effect, so the message counts as revealed once it has been shown.
-  useEffect(() => { revealedMessage.current = message; });
+  useEffect(() => { if (message) setRevealed(message); }, [message]);
   useEffect(() => {
     if (selection || restoreFocusTo.current === null) return;
     document.getElementById(restoreFocusTo.current)?.focus({ preventScroll: true });
@@ -141,7 +141,7 @@ export function PortalSchedulePage({ client = portalClient, now = currentTime }:
   const session = selection?.weekStart === range.start && selection.memberId === memberId && !schedule.isError
     ? days.flatMap(day => day.items).find(item => item.id === selection.id)
     : undefined;
-  if (selection && !session) setSelection(undefined);
+  if (selection && !session) { setSelection(undefined); setRevealed(undefined); }
   if (!context.data || !members.data) return context.isPending || members.isPending || scope.settling ? <LoadingState />
     : <ErrorState message={text('error')} onRetry={() => { void context.refetch(); void members.refetch(); }} />;
   const actionFor = (item: PortalScheduleSession): SessionAction => member ? sessionAction(item, member.id, current) : { kind: 'started' };
@@ -150,7 +150,7 @@ export function PortalSchedulePage({ client = portalClient, now = currentTime }:
   const run = (kind: 'book' | 'cancel', booking?: MemberBooking) => session && context.data && member && !busy
     && change.mutate({ action: kind, session, context: context.data, member, ...(booking ? { booking } : {}) });
   // Only a message that is new takes focus; the same message moving between the page and the dialog doesn't.
-  const isNewMessage = message !== revealedMessage.current;
+  const isNewMessage = !!message && message !== revealed;
   const result = message && <Alert variant={message.tone === 'error' ? 'error' : 'info'} focusOnReveal={isNewMessage}>{message.text}</Alert>;
   function moveWeek(offset: number) {
     setSelection(undefined);

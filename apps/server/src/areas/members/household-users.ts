@@ -71,9 +71,11 @@ export function createHouseholdUsersService(options: { scope?: typeof forGym; cl
     },
     async inviteRefused(gymId: string, householdId: string): Promise<{ reason: 'staff_identity' } | null> {
       return scope(gymId, async tx => {
+        const [home] = await tx.select({ email: households.email }).from(households).where(eq(households.id, householdId));
+        if (!home?.email?.trim()) return null;
         const [latest] = await tx.select({ action: auditEvents.action }).from(auditEvents)
           .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.targetType, 'household'), eq(auditEvents.targetId, householdId),
-            inArray(auditEvents.action, ['household_user.invite_refused', 'household_user.invited']),
+            inArray(auditEvents.action, ['household_user.invite_refused', 'household_user.invited', 'household.email_changed']),
             notExists(tx.select({ id: householdUsers.id }).from(householdUsers)
               .where(and(eq(householdUsers.householdId, householdId), eq(householdUsers.scope, 'payer'))))))
           .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);

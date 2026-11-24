@@ -91,7 +91,7 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
         if (error.status === 409 && error.reason.includes('membership_changed')) {
           setMessage(saveError(error));
           refused?.('membership_changed');
-          void reload();
+          await reload();
           return false;
         }
       }
@@ -204,7 +204,7 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
     ? { plan: plans.find(item => item.id === row.scheduledPlanId), price: money(row.scheduledAmountCents, row.currency), interval: text(row.scheduledInterval), on: calendarDateLabel(row.scheduledOn) } : null;
   const priceOnly = !!scheduled && row.scheduledPlanId === row.planId;
   const differentPlanPrice = !!plan && plan.currency === row.currency && plan.interval === row.interval && plan.amountCents !== row.amountCents;
-  const closeStaleAction = (reason: string) => { if (staleMembershipRefusals.has(reason)) setAction(null); };
+  const closeStaleAction = (reason: string) => { if (staleCancellationRefusals.has(reason)) setAction(null); };
   const closeStaleCancel = (reason: string) => { if (staleCancellationRefusals.has(reason)) setConfirm(false); };
   const closeStaleUndo = (reason: string) => { if (staleCancellationRefusals.has(reason)) setConfirmUndo(false); };
   async function edit(event: FormEvent<HTMLFormElement>) {

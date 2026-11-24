@@ -419,6 +419,9 @@ export function createMembersService(options: MembersOptions = {}) {
           ...(changedPhone ? { phoneE164, ...(changedNumber ? clearedHouseholdSms : {}) } : {}) })
           .where(and(eq(households.id, id), guard.matches)).returning(householdFields));
         if (changedNumber) await auditSmsCleared(tx, context, 'household', id, before, source, clock.now());
+        if (changes.email !== undefined && (changes.email ?? '').trim().toLowerCase() !== (before.email ?? '').trim().toLowerCase()) {
+          await audit(tx, context, 'household.email_changed', 'household', id);
+        }
         await audit(tx, context, 'household.updated', 'household', id); return household(row, country);
       });
     },

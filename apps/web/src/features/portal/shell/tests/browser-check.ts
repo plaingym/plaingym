@@ -134,7 +134,7 @@ try {
     const refusal = page.getByText("The join couldn't set up a portal login for this address because it belongs to a staff login. Invite the member with another address.");
     await expect(refusal).toBeVisible(); await check('invite-refused');
     await refusal.locator('..').getByRole('button', { name: 'Invite', exact: true }).click();
-    await expect(page.getByLabel('Login email')).toHaveValue(person.email); await check('invite-after-refusal');
+    await expect(page.getByLabel('Login email')).toHaveValue(''); await check('invite-after-refusal');
     inviteRefused = false;
   }
   expect(errors).toEqual([]); console.log('Passed: household picker and header switcher, portal shell, claim, access, invite/print/reset/revoke, outstanding invitations, replacement invitations, the dashboard shortlist, join confirmation and refusal at 360 and 1280 px; no overflow; 44 px controls; axe A/AA; Chromium PWA installability; no offline caches.');

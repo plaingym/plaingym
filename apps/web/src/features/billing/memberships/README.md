@@ -34,10 +34,11 @@ assignment form shows the reloaded household date in place of a typed one and
 keeps the rest of the draft. A changed status or cancellation closes the
 refused Freeze, Resume or Change price form, or the refused Cancel membership or
 Cancel scheduled change confirmation, and its message stays shown. When the
-membership changed since the tab loaded, the tab shows the conflict message and
-reloads its membership data after any membership action. Cancel membership and
-Cancel scheduled change also close their confirmation, so a retry sends the
-reloaded revision; the Freeze, Resume and Change price forms stay open.
+membership changed since the tab loaded, the tab shows the conflict message,
+reloads its membership data while keeping actions busy until the reload settles,
+and closes the Freeze, Resume and Change price forms as well as the Cancel
+membership and Cancel scheduled change confirmations, so a retry uses the
+reloaded state and revision.
 
 The assignment form keeps the plan it shows, including the first plan it showed
 by default, when a refresh reorders the plan list, so its discount stays chosen.
