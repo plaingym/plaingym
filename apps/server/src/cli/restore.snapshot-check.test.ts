@@ -90,7 +90,7 @@ describe('a missing backup bucket', () => {
     server.objects.clear();
     server.state.missingBuckets.add('absent');
     expect(await run('absent')).toEqual({ code: 1, text: "Restore failed: The backup bucket doesn't exist (NoSuchBucket)" });
-    expect(await run('backups')).toEqual({ code: 1, text: 'Restore failed: Snapshot not found in the bucket' });
+    expect(await run('backups')).toEqual({ code: 1, text: 'Restore failed: The snapshot was not found in the bucket' });
   }, 30_000);
 });
 

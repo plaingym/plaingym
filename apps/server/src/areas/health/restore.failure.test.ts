@@ -59,6 +59,10 @@ it('rejects a missing snapshot object', async () => {
 it('distinguishes a failed connection from an unreachable endpoint in s3Reason', () => {
   expect(s3Reason({ code: 'CERT_HAS_EXPIRED', $metadata: { attempts: 1 } }, 'backup')).toBe('The connection to the backup bucket failed (CERT_HAS_EXPIRED)');
   expect(s3Reason({ code: 'ECONNREFUSED', $metadata: { attempts: 1 } }, 'backup')).toBe('Cannot reach the backup bucket (ECONNREFUSED)');
+  expect(s3Reason({ code: 'EPIPE', $metadata: { attempts: 1 } }, 'backup')).toBe('Cannot reach the backup bucket (EPIPE)');
+  expect(s3Reason({ code: 'ECONNABORTED', $metadata: { attempts: 1 } }, 'backup')).toBe('Cannot reach the backup bucket (ECONNABORTED)');
+  expect(s3Reason({ code: 'UND_ERR_HEADERS_TIMEOUT', $metadata: { attempts: 1 } }, 'backup')).toBe('Cannot reach the backup bucket (UND_ERR_HEADERS_TIMEOUT)');
+  expect(s3Reason({ code: 'UND_ERR_BODY_TIMEOUT', $metadata: { attempts: 1 } }, 'backup')).toBe('Cannot reach the backup bucket (UND_ERR_BODY_TIMEOUT)');
   expect(s3Reason({ name: 'TimeoutError', $metadata: { attempts: 1 } }, 'backup')).toBe('Cannot reach the backup bucket (TimeoutError)');
   expect(s3Reason({ Code: 'AccessDenied', $metadata: { httpStatusCode: 403 } }, 'backup')).toBe('The backup bucket rejected the access key or secret (AccessDenied)');
 });

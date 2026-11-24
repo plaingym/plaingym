@@ -13,7 +13,7 @@ import { bytesStream } from './backups.files.js';
 import { blobName, publicReferences, signReferences, snapshotPrefix, type Manifest } from './backups.format.js';
 import { RestoreService } from './restore.js';
 import { RestoreGate } from './restore.gate.js';
-import { markDownload, RestoreFailure, restoreFailureClass } from './restore.failure.js';
+import { markDownload, RestoreFailure, restoreFailureClass, restoreTexts } from './restore.failure.js';
 
 const s3Error = (fields: Record<string, unknown>) => Object.assign(new Error('x'), fields);
 
@@ -58,7 +58,7 @@ describe('restoreFailureClass', () => {
   it('names a missing snapshot', () => {
     expect(restoreFailureClass({ name: 'NoSuchKey', Code: 'NoSuchKey', $metadata: { httpStatusCode: 404 } })).toBe('snapshot_missing');
     expect(restoreFailureClass({ name: 'NotFound', $metadata: { httpStatusCode: 404 } })).toBe('snapshot_missing');
-    expect(restoreFailureClass(new RestoreFailure('The snapshot was not found in the bucket'))).toBe('snapshot_missing');
+    expect(restoreFailureClass(new RestoreFailure(restoreTexts.snapshotMissing))).toBe('snapshot_missing');
   });
   it('names an endpoint that never answered', () => {
     expect(restoreFailureClass(Object.assign(new Error('connect'), { code: 'ECONNREFUSED', $metadata: { attempts: 3 } }))).toBe('endpoint_unreachable');
@@ -115,21 +115,21 @@ describe('restoreFailureClass', () => {
       };
       const missingManifest = await run(new FakeBackupObjectStore(), randomUUID(), await generateIdentity());
       expect(missingManifest).toBeInstanceOf(RestoreFailure);
-      expect((missingManifest as Error).message).toBe('The snapshot was not found in the bucket');
+      expect((missingManifest as Error).message).toBe(restoreTexts.snapshotMissing);
       expect(restoreFailureClass(missingManifest)).toBe('snapshot_missing');
 
       const noDatabaseStore = new FakeBackupObjectStore();
       const noDb = await seedSnapshot(noDatabaseStore);
       const missingDatabase = await run(noDatabaseStore, noDb.id, noDb.identity);
       expect(missingDatabase).toBeInstanceOf(RestoreFailure);
-      expect((missingDatabase as Error).message).toBe('A snapshot object is missing from the bucket');
+      expect((missingDatabase as Error).message).toBe(restoreTexts.objectMissing);
       expect(restoreFailureClass(missingDatabase)).toBe('damaged');
 
       const noBlobStore = new FakeBackupObjectStore();
       const noBlob = await seedSnapshot(noBlobStore, { withDatabase: true, withUpload: true });
       const missingBlob = await run(noBlobStore, noBlob.id, noBlob.identity);
       expect(missingBlob).toBeInstanceOf(RestoreFailure);
-      expect((missingBlob as Error).message).toBe('A snapshot object is missing from the bucket');
+      expect((missingBlob as Error).message).toBe(restoreTexts.objectMissing);
       expect(restoreFailureClass(missingBlob)).toBe('damaged');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
@@ -138,8 +138,8 @@ describe('restoreFailureClass', () => {
     expect(restoreFailureClass(new Error('Invalid age private key'))).toBe('invalid_key');
   });
   it('names a damaged snapshot and contents this version cannot read', () => {
-    expect(restoreFailureClass(new RestoreFailure('A snapshot object is missing from the bucket'))).toBe('damaged');
-    expect(restoreFailureClass(new RestoreFailure('The snapshot is damaged; try an earlier one'))).toBe('damaged');
+    expect(restoreFailureClass(new RestoreFailure(restoreTexts.objectMissing))).toBe('damaged');
+    expect(restoreFailureClass(new RestoreFailure(restoreTexts.damaged))).toBe('damaged');
     expect(restoreFailureClass(z.object({ a: z.number() }).safeParse({ a: 'b' }).error)).toBe('unsupported');
   });
   it('calls anything else other', () => {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash } from 'node:crypto';
-import { markDownload, RestoreFailure, s3Reason } from './restore.failure.js';
+import { markDownload, RestoreFailure, restoreTexts, s3Reason } from './restore.failure.js';
 import { mkdtemp, readdir, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { z } from 'zod';
@@ -124,7 +124,7 @@ export class RestoreService {
         resolve(options.stagingDirectory).startsWith(resolve(options.uploadsDirectory) + sep))
       throw new RestoreFailure('Restore staging must be outside uploads');
   }
-  async #download(key: string, path: string, missing = 'A snapshot object is missing from the bucket'): Promise<void> {
+  async #download(key: string, path: string, missing: string = restoreTexts.objectMissing): Promise<void> {
     // Marked so a network code from the bucket or its body stream names the endpoint; the same error is rethrown.
     try {
       const body = await this.options.store.getObject(key);
@@ -158,7 +158,7 @@ export class RestoreService {
       let activated = false;
       try {
         const manifestCipher = join(staging, 'manifest.age');
-        await this.#download(prefix + 'manifest.age', manifestCipher, 'The snapshot was not found in the bucket');
+        await this.#download(prefix + 'manifest.age', manifestCipher, restoreTexts.snapshotMissing);
         await saveStream(join(staging, 'manifest.json'), await decryptSnapshot(identity, fileStream(manifestCipher)));
         const manifest = manifestSchema.parse(await readSnapshotJson(join(staging, 'manifest.json')));
         if (manifest.id !== id) throw new RestoreFailure('Manifest belongs to another snapshot');
@@ -213,7 +213,7 @@ export class RestoreService {
         return { state, manifest };
       } catch (error) {
         if (error instanceof SnapshotContentError)
-          throw new RestoreFailure('The snapshot is damaged; try an earlier one', { cause: error.cause ?? error });
+          throw new RestoreFailure(restoreTexts.damaged, { cause: error.cause ?? error });
         throw error;
       } finally {
         if (!activated) await rm(staging, { recursive: true, force: true });

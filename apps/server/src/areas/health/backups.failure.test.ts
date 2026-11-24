@@ -33,6 +33,12 @@ describe('backup failure causes', () => {
     ['a refused connection under the retry metadata', { name: 'Error', $metadata: { attempts: 3 }, cause: { code: 'ECONNREFUSED' } }, 'endpoint_unreachable'],
     ['an unroutable host under the retry metadata', { name: 'Error', $metadata: { attempts: 3 }, code: 'EHOSTUNREACH' }, 'endpoint_unreachable'],
     ['an unreachable network under the retry metadata', { name: 'Error', $metadata: { attempts: 3 }, code: 'ENETUNREACH' }, 'endpoint_unreachable'],
+    ['a broken pipe under the retry metadata', { code: 'EPIPE', $metadata: { attempts: 1 } }, 'endpoint_unreachable'],
+    ['an aborted connection under the retry metadata', { code: 'ECONNABORTED', $metadata: { attempts: 1 } }, 'endpoint_unreachable'],
+    ['a headers timeout under the retry metadata', { code: 'UND_ERR_HEADERS_TIMEOUT', $metadata: { attempts: 1 } }, 'endpoint_unreachable'],
+    ['a body timeout under the retry metadata', { code: 'UND_ERR_BODY_TIMEOUT', $metadata: { attempts: 1 } }, 'endpoint_unreachable'],
+    ['a bare broken pipe without retry metadata', { code: 'EPIPE' }, 'endpoint_unreachable'],
+    ['an AbortError under the retry metadata', { name: 'AbortError', $metadata: { attempts: 1 } }, 'other'],
   ] as const)('classifies %s', (_, error, cause) => {
     expect(backupFailureCause(error)).toBe(cause);
   });

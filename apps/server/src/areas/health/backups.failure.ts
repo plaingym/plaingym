@@ -5,7 +5,7 @@ export type { BackupFailureCause };
 
 const rejected = new Set(['AccessDenied', 'InvalidAccessKeyId', 'SignatureDoesNotMatch', 'Unauthorized', 'InvalidToken', 'ExpiredToken']);
 const unreachable = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'ECONNRESET', 'EHOSTUNREACH', 'EHOSTDOWN', 'ENETUNREACH',
-  'ENETDOWN', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET']);
+  'ENETDOWN', 'EPIPE', 'ECONNABORTED', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET']);
 /** Refusals for a reason other than the key: the server clock, the account, or the object's storage class. */
 const refusedOtherwise = new Set(['RequestTimeTooSkewed', 'AccountProblem', 'AllAccessDisabled', 'InvalidObjectState']);
 const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;

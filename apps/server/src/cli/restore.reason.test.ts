@@ -9,7 +9,7 @@ import { decrypt, encrypt, generateIdentity, identityToRecipient } from '../infr
 import { createS3Client, S3BackupObjectStore } from '../infra/storage/index.js';
 import { s3Server } from '../infra/storage/s3-server.test-helper.js';
 import { commands, maintenanceCommand, reportRestoreResume } from './restore.js';
-import { RestoreFailure } from '../areas/health/restore.failure.js';
+import { markDownload, RestoreFailure } from '../areas/health/restore.failure.js';
 import { restoreFailureReason } from './restore.reason.js';
 import { RestoreService } from '../areas/health/restore.js';
 import { bytesStream } from '../areas/health/backups.files.js';
@@ -111,7 +111,7 @@ describe('the command-line restore says why it failed', () => {
   it('says the snapshot is not in the bucket', async () => {
     const { code, text } = await run(validConfig());
     expect(code).toBe(1);
-    expect(text).toContain('Restore failed: Snapshot not found in the bucket');
+    expect(text).toContain('Restore failed: The snapshot was not found in the bucket');
   });
   it('gives the S3 error code when the bucket refuses or fails the request', async () => {
     bucket.state.fail = () => true;
@@ -175,6 +175,18 @@ describe('restoreFailureReason', () => {
     const failure = z.strictObject({ a: z.record(z.string(), z.number()) }).safeParse({ a: { SECRETFIELDVALUE: 'SECRETFIELDVALUE' }, c: 'SECRETFIELDVALUE' });
     expect(failure.success).toBe(false);
     expect(restoreFailureReason(failure.error)).toBe("The snapshot's contents are not in a format this version reads");
+  });
+  it('names the backup bucket for a marked download network error, never a bare database network error', () => {
+    const unmarked = Object.assign(new Error('read ECONNRESET 10.0.0.1:443'), { code: 'ECONNRESET' });
+    expect(restoreFailureReason(unmarked)).toBe('Unexpected error (Error)');
+    const marked = Object.assign(new Error('read ECONNRESET 10.0.0.1:443'), { code: 'ECONNRESET' });
+    markDownload(marked);
+    const reason = restoreFailureReason(marked);
+    expect(reason).toBe('Cannot reach the backup bucket (ECONNRESET)');
+    expect(reason).not.toContain('10.0.0.1');
+    const wrapped = new Error('read failed 10.0.0.1:443', { cause: { code: 'ECONNRESET' } });
+    markDownload(wrapped);
+    expect(restoreFailureReason(wrapped)).toBe('Cannot reach the backup bucket');
   });
   it('gives only the error name for any other failure', () => {
     class DiskFullError extends Error { constructor() { super('no space left writing /srv/SECRETFIELDVALUE with DBPASSWORD'); this.name = 'DiskFullError'; } }

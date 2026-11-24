@@ -11,7 +11,7 @@ import { readReferences, snapshotPrefix, verifyReferences } from '../areas/healt
 import { SnapshotContentError } from '../areas/health/backups.content.js';
 import { PostgresMaintenance } from '../areas/health/backups.database.js';
 import { BackupsNotConfiguredError, configuredBackup, loadBackupConfig } from '../areas/health/restore.config.js';
-import { RestoreFailure } from '../areas/health/restore.failure.js';
+import { RestoreFailure, restoreTexts } from '../areas/health/restore.failure.js';
 import { z } from 'zod';
 import { logInfo } from '../core/log.js';
 
@@ -158,7 +158,7 @@ async function maintenance(args: readonly string[], environment: ReturnType<type
       // A HEAD answers a missing bucket like a missing object; a listing throws `NoSuchBucket` for it instead.
       // Keys only: what an incomplete snapshot left behind is not read.
       await store.listKeys(snapshotPrefix(id.data));
-      throw new RestoreFailure('Snapshot not found in the bucket');
+      throw new RestoreFailure(restoreTexts.snapshotMissing);
     }
     await new RestoreService({ ...await restoreOptions(environment), store }).restore(id.data, identity);
   } finally { client.destroy(); }

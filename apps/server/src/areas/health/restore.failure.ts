@@ -10,6 +10,13 @@ export class RestoreFailure extends Error {
   constructor(message: string, options?: ErrorOptions) { super(message, options); this.name = 'RestoreFailure'; }
 }
 
+/** Fixed `RestoreFailure` texts that `restoreFailureClass` recognizes; shared so thrown text and class cannot drift. */
+export const restoreTexts = {
+  snapshotMissing: 'The snapshot was not found in the bucket',
+  objectMissing: 'A snapshot object is missing from the bucket',
+  damaged: 'The snapshot is damaged; try an earlier one',
+} as const;
+
 /** Library text is classified once in infra/age; restore consumes the typed mismatch. */
 export function ageKeyReason(error: unknown): string | null {
   if (error instanceof AgeKeyMismatchError) return "The key doesn't open this snapshot";
@@ -77,9 +84,9 @@ function fromStorage(error: unknown): boolean {
 export function restoreFailureClass(error: unknown): RestoreFailureClass {
   // Its cause isn't read: a staged restore's uploads-bucket failure is no problem with the backup source.
   if (error instanceof RestoreFailure) {
-    if (error.message === 'The snapshot was not found in the bucket') return 'snapshot_missing';
-    if (error.message === 'A snapshot object is missing from the bucket') return 'damaged';
-    if (error.message === 'The snapshot is damaged; try an earlier one') return 'damaged';
+    if (error.message === restoreTexts.snapshotMissing) return 'snapshot_missing';
+    if (error.message === restoreTexts.objectMissing) return 'damaged';
+    if (error.message === restoreTexts.damaged) return 'damaged';
     return 'other';
   }
   if (error instanceof ZodError) return 'unsupported';
