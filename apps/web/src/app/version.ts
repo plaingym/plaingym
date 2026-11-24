@@ -7,7 +7,7 @@ export const clientVersion = typeof __BUILD_INFO__ === 'undefined' ? null : __BU
 // Keep in sync with scripts/release/version.mjs, which imports Node APIs.
 export const releaseVersionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
-function releaseRepository(source: string): string | undefined {
+export function releaseRepository(source: string): string | undefined {
   let url: URL;
   try { url = new URL(source); }
   catch { return undefined; }

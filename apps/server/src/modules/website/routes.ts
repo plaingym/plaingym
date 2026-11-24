@@ -13,6 +13,7 @@ import { pagePath, renderSitePage, sitePages, siteThemeCss, siteThemeVersion, ty
 import { coachParamsSchema, photoParamsSchema, removeLogoRequestSchema, updateWebsiteRequestSchema, uploadLogoRequestSchema,
   uploadPhotoRequestSchema, websiteSettingsResponseSchema } from './content.js';
 import messages from '../../../../../locales/en/website/site.json' with { type: 'json' };
+import shellMessages from '../../../../../locales/en/shell/shell.json' with { type: 'json' };
 
 type Ctx = Context<RequestEnvironment>;
 export interface WebsiteRouteOptions {
@@ -21,7 +22,7 @@ export interface WebsiteRouteOptions {
   readonly origin?: (context: Ctx) => string;
   readonly t?: Translator;
 }
-const translator = createTranslator({ 'website/site': messages });
+const translator = createTranslator({ 'website/site': messages, 'shell/shell': shellMessages });
 let configured: WebsiteRouteOptions | undefined;
 /** The runtime supplies gym uploads and the canonical origin; until then the module's routes fail closed. */
 export function configureWebsite(options: WebsiteOptions & { origin?: WebsiteRouteOptions['origin']; t?: Translator }) {

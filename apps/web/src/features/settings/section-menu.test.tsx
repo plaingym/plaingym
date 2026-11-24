@@ -18,6 +18,7 @@ describe('settings section navigation', () => {
     render(<SettingsSectionMenu sections={[entry('gym', 'settings/settings:general'), entry('off', 'settings/auth:title', () => false)]}/>);
     expect(screen.getByRole('navigation', { name: 'Settings sections' })).toBeDefined();
     expect(screen.getByRole('link', { name: 'Gym details' }).getAttribute('href')).toBe('#gym');
+    expect(screen.getByRole('link', { name: 'Gym details' }).className).toContain('scroll-mt-[calc(var(--spacing-header)+0.5rem)]');
     expect(screen.getAllByRole('link')).toHaveLength(1);
   });
 });

@@ -15,7 +15,7 @@ import { definiteRefusal, Failure, text } from './messages.js';
 
 const statuses = ['active', 'trial', 'frozen'] as const;
 export interface AnnouncementAttempt { draft: AnnouncementDraft; count: number; smsCount?: number; segments?: number;
-  capRemaining?: number; capDay?: 'today' | 'tomorrow'; generation: string; uncertain: boolean }
+  generation: string; uncertain: boolean }
 export function AnnouncementEditor({ gymName, programs, client, close, sent, owner = false, attempt, rememberAttempt }: {
   gymName: string; programs: Program[]; client: AnnouncementClient; close(): void; sent(announcement: Announcement): void;
   owner?: boolean; attempt?: AnnouncementAttempt | undefined; rememberAttempt?(attempt: AnnouncementAttempt | undefined): void;
@@ -143,9 +143,13 @@ export function AnnouncementEditor({ gymName, programs, client, close, sent, own
           <Button variant="outline" disabled={busy} onClick={() => void run(async () => { await client.test(preview.draft); setTestSent(true); }, 'testError')}>{text('test')}</Button>
           {!confirming ? <Button disabled={busy || preview.count + (preview.smsCount ?? 0) === 0} onClick={() => { setConfirming(true); setError(null); setTestSent(false); }}>{text('continue')}</Button>
             : <Button disabled={busy || preview.count + (preview.smsCount ?? 0) === 0} onClick={() => void run(async () => {
+              const retained = (): AnnouncementAttempt => ({ draft: preview.draft, count: preview.count,
+                ...(preview.smsCount !== undefined ? { smsCount: preview.smsCount } : {}),
+                ...(preview.segments !== undefined ? { segments: preview.segments } : {}),
+                generation: generation.current!, uncertain: true });
               setAttempted(true);
               // Retain an in-flight request conservatively in case the dialog is remounted.
-              rememberAttempt?.({ ...preview, generation: generation.current!, uncertain: true });
+              rememberAttempt?.(retained());
               let result: Announcement;
               try { result = await client.send({ ...preview.draft, sendGeneration: generation.current!, confirm: true }); }
               catch (cause) {
@@ -153,7 +157,7 @@ export function AnnouncementEditor({ gymName, programs, client, close, sent, own
                 else {
                   // A refusal of this retry cannot settle an earlier request whose response was lost.
                   uncertain.current = true;
-                  rememberAttempt?.({ ...preview, generation: generation.current!, uncertain: true });
+                  rememberAttempt?.(retained());
                 }
                 throw cause;
               }

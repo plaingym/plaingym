@@ -18,8 +18,9 @@ import { publicBrowserScript } from './browser.js';
 import { configureDropInCleanup } from './pages.jobs.js';
 import messages from '../../../../../locales/en/public/pages.json' with { type: 'json' };
 import waiverMessages from '../../../../../locales/en/waivers/waivers.json' with { type: 'json' };
+import shellMessages from '../../../../../locales/en/shell/shell.json' with { type: 'json' };
 
-const translator = createTranslator({ 'public/pages': messages, 'waivers/waivers': waiverMessages });
+const translator = createTranslator({ 'public/pages': messages, 'waivers/waivers': waiverMessages, 'shell/shell': shellMessages });
 interface PublicRoutesOptions { service: PublicPagesService; t?: Translator; stylesheet?: () => Promise<string> }
 let configured: PublicRoutesOptions | undefined;
 export function readPublicStylesheet(options = configured) {

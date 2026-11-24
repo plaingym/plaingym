@@ -26,3 +26,8 @@ it('escapes address text and wraps long public contacts', () => {
   expect(html).toContain('href="tel:+16045550100"'); expect(html).toContain('href="mailto:public@example.test"');
   expect(html).toContain('break-all'); expect(html).toContain('min-h-11');
 });
+it('passes the page translator to the footer version label and keeps English by default', () => {
+  expect(publicLayout({ gym, title: 'Contact', t, content: jsx('p', null, 'Welcome') })).toContain('<span class="sr-only">Version </span>');
+  const probe = createTranslator({ ...locales.en, 'shell/shell': { ...locales.en?.['shell/shell'], versionPrefix: 'Probe' } });
+  expect(publicLayout({ gym, title: 'Contact', t: probe, content: jsx('p', null, 'Welcome') })).toContain('<span class="sr-only">Probe </span>');
+});

@@ -119,7 +119,11 @@ for (const width of [360, 1280]) test(`website saves after a brand color change 
   await page.locator('input[type="color"]').fill('#123456');
   await page.getByRole('form', { name: 'Gym details', exact: true }).getByRole('button', { name: 'Save changes' }).click();
   await expect(page.getByText('Changes saved.', { exact: true })).toBeVisible();
-  await page.getByRole('navigation', { name: 'Settings sections' }).getByRole('link', { name: 'Website', exact: true }).click();
+  const websiteLink = page.getByRole('navigation', { name: 'Settings sections' }).getByRole('link', { name: 'Website', exact: true });
+  await websiteLink.scrollIntoViewIfNeeded();
+  const headerBottom = await page.getByRole('banner').evaluate(header => header.getBoundingClientRect().bottom);
+  expect((await websiteLink.boundingBox())!.y).toBeGreaterThanOrEqual(headerBottom);
+  await websiteLink.click();
   const save = page.getByRole('button', { name: 'Save website', exact: true });
   await expect(save).toBeEnabled();
   await save.click();

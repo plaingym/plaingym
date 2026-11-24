@@ -14,7 +14,9 @@ The optional text composer shows the gym prefix and mandatory STOP line, the
 complete 480-character limit and the shared GSM-7/UCS-2 segment estimate. Preview
 shows distinct consenting phone recipients and server segment counts.
 When the text recipients exceed the daily cap's remaining texts for the day they'd go
-out, the preview warns how many won't get the text (they get the email only). The
+out, the preview warns that up to that many may not get the text (they get the email
+only) and says texts queued for other announcements aren't counted. A retained
+attempt shows no cap warning; preview again for a current one. The
 warning doesn't block sending. Confirmation
 names both email and text totals; zero email recipients do not block a text send.
 The typed test phone receives only the text test, counted against the daily cap.

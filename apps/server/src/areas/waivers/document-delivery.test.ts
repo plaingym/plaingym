@@ -8,7 +8,8 @@ import type { RequestEnvironment } from '../../core/context.js';
 import { errorHandler } from '../../core/errors.js';
 import { setLogSink } from '../../core/log.js';
 import { digest } from './snapshot.js';
-import { documentReadBudget } from './document-read.js';
+import { documentReadBudget, documentRetryPage } from './document-read.js';
+import { createTranslator } from '@plaingym/shared';
 import { createWaiverDocumentDelivery, createWaiverDocumentDownloadRoute, readWaiverDocument, verifyWaiverDocument } from './document-delivery.js';
 
 const body = async (document: { body: ReadableStream<Uint8Array> }) => digest(new Uint8Array(await new Response(document.body).arrayBuffer()));
@@ -75,6 +76,14 @@ describe('waiver document delivery', () => {
     expect(html).toContain('Return to the signing page'); expect(html).toContain('href="/source"');
     expect(html).toContain('<span class="sr-only">Version </span>');
     expect(html).not.toContain('aria-label="Version');
+  });
+  it('passes a supplied translator to the document retry footer version label', async () => {
+    const server = new OpenAPIHono<RequestEnvironment>();
+    const probe = createTranslator({ 'shell/shell': { version: 'Probe {version}', versionPrefix: 'Probe' } });
+    server.get('/probe', ctx => documentRetryPage(ctx, 404, probe));
+    const response = await server.request('/probe');
+    expect(response.status).toBe(404);
+    expect(await response.text()).toContain('<span class="sr-only">Probe </span>');
   });
   it('uses an application URL with a five-minute expiry and survives service recreation', async () => {
     const f = await fixture();

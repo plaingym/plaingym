@@ -1,11 +1,31 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { releasePattern } from '../../../../scripts/release/version.mjs';
-import { releaseVersionPattern, versionLabel } from './version.js';
+import { releaseRepository as serverReleaseRepository } from '../../../server/src/core/source-repository.js';
+import { releaseRepository, releaseVersionPattern, versionLabel } from './version.js';
 
 describe('the footer version label', () => {
   it('uses the release script pattern', () => {
     expect(releaseVersionPattern.source).toBe(releasePattern.source);
+  });
+
+  it.each([
+    'https://github.com/plaingym/plaingym',
+    'https://github.com/plaingym/plaingym.git',
+    'https://github.com/plaingym/plaingym/tree/0.5.0',
+    'https://git.example.org/acme/gym/tree/v0.5.0?x=1#source',
+    'http://git.example.org:8080/acme/gym/',
+    'https://gitlab.com/group/sub/gym',
+    'https://gitlab.com/group/gym/-/tree/main',
+    'https://github.com/a/b/archive/refs/tags/v0.5.0.tar.gz',
+    'https://github.com/a/b/tree',
+    'https://github.com/a/.git',
+    'https://example.org/',
+    'https://example.org/one',
+    'ftp://example.org/a/b',
+    'not a url',
+  ])('matches the server release-repository rule for %s', source => {
+    expect(releaseRepository(source)).toBe(serverReleaseRepository(source));
   });
 
   it('links the repository when the source URL names a tree', () => {

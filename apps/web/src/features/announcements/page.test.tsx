@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { StaffRole } from '@plaingym/shared';
 import { AnnouncementWorkspace, AnnouncementPage, historyPollInterval } from './page.js';
-import { AnnouncementEditor } from './editor.js';
+import { AnnouncementEditor, type AnnouncementAttempt } from './editor.js';
 import { announcementClient, type Announcement, type AnnouncementClient } from './api.js';
 import { ApiError } from '../../lib/api.js';
 import { createRegistries } from '../../lib/registries.js';
@@ -386,12 +386,13 @@ describe('announcement screens', () => {
 });
 
 describe('daily text cap warning', () => {
-  const warning = 'The daily text cap allows 1 more texts today, so 2 of the 3 text recipients will not get the text. '
-    + 'They still get the email if they have an email address. Other texts sent today also count against the cap. '
+  const warning = "Texts left in today's daily text cap: 1. Text recipients: 3; up to 2 of them may not get the text. "
+    + "They still get the email if they have an email address. Other texts sent today, and texts already queued for other announcements, also count against the cap but aren't counted here. "
     + 'An owner can raise the Daily text cap in Settings → Integrations → SMS.';
-  async function previewWith(result: Awaited<ReturnType<AnnouncementClient['preview']>>) {
+  async function previewWith(result: Awaited<ReturnType<AnnouncementClient['preview']>>, rememberAttempt?: (attempt: AnnouncementAttempt | undefined) => void) {
     const service = client(); vi.mocked(service.preview).mockResolvedValue(result);
-    editor(service);
+    render(<AnnouncementEditor gymName="Our Gym" programs={[program]} client={service} close={vi.fn()} sent={vi.fn()}
+      {...(rememberAttempt ? { rememberAttempt } : {})} />);
     fireEvent.change(screen.getByLabelText('Subject'), { target: { value: 'Classes' } });
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Email' } });
     await userEvent.click(screen.getByLabelText('Include a text message'));
@@ -401,34 +402,58 @@ describe('daily text cap warning', () => {
     return service;
   }
   it('warns without blocking the send', async () => {
-    const service = await previewWith({ recipientCount: 5, smsRecipientCount: 3, smsSegments: 1, smsCapRemaining: 1, smsCapDay: 'today' });
-    expect(screen.getByText(warning)).toBeDefined();
+    const rememberAttempt = vi.fn();
+    const service = await previewWith({ recipientCount: 5, smsRecipientCount: 3, smsSegments: 1, smsCapRemaining: 1, smsCapDay: 'today' }, rememberAttempt);
+    const rendered = screen.getByText(warning).textContent ?? '';
+    expect(rendered.startsWith("Texts left in today's daily text cap: 1. Text recipients: 3; up to 2 of them may not get the text.")).toBe(true);
+    expect(rendered).toContain('texts already queued for other announcements');
     await userEvent.click(screen.getByRole('button', { name: 'Continue to confirmation' }));
     expect(screen.getByText(warning)).toBeDefined();
     const send = screen.getByRole('button', { name: 'Send 5 emails and 3 texts' }) as HTMLButtonElement;
     expect(send.disabled).toBe(false);
     await userEvent.click(send);
     expect(service.send).toHaveBeenCalled();
+    expect(rememberAttempt).toHaveBeenCalled();
+    const retained = rememberAttempt.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+    expect(retained).toBeDefined();
+    expect(retained).not.toHaveProperty('capRemaining');
+    expect(retained).not.toHaveProperty('capDay');
   });
   it('says when no texts fit', async () => {
     await previewWith({ recipientCount: 5, smsRecipientCount: 2, smsSegments: 1, smsCapRemaining: 0, smsCapDay: 'today' });
-    expect(screen.getByText(/allows 0 more texts today, so 2 of the 2 text recipients/)).toBeDefined();
+    expect(screen.getByText(/^Texts left in today's daily text cap: 0\. Text recipients: 2; up to 2 of them may not get the text\./)).toBeDefined();
   });
   it('names tomorrow when texts wait for quiet hours to end', async () => {
     await previewWith({ recipientCount: 5, smsRecipientCount: 2, smsSegments: 1, smsCapRemaining: 1, smsCapDay: 'tomorrow' });
-    expect(screen.getByText(/^Texts go out tomorrow from 08:00\. The daily text cap allows 1 texts tomorrow, so 1 of the 2 text recipients/)).toBeDefined();
+    const notice = screen.getByText(/^Texts go out tomorrow from 08:00\. Texts left in tomorrow's daily text cap: 1\./);
+    expect(notice.textContent).toContain('Text recipients: 2; up to 1 of them may not get the text.');
+    expect(notice.textContent).toContain('Texts already queued for other announcements');
   });
   it.each([
     [{ smsCapRemaining: 3, smsCapDay: 'today' as const }], [{ smsCapRemaining: 4, smsCapDay: 'today' as const }], [{}],
   ])('shows no warning when the texts fit: %j', async extra => {
     await previewWith({ recipientCount: 5, smsRecipientCount: 3, smsSegments: 1, ...extra });
-    expect(screen.queryByText(/daily text cap allows/)).toBeNull();
+    expect(screen.queryByText(/daily text cap/)).toBeNull();
   });
-  it('shows the warning again for a retained attempt', () => {
+  it('shows no warning when the draft has no text', async () => {
+    const service = client(); vi.mocked(service.preview).mockResolvedValue({ recipientCount: 5, smsRecipientCount: 0, smsSegments: 0 });
+    editor(service);
+    fireEvent.change(screen.getByLabelText('Subject'), { target: { value: 'Classes' } });
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Email' } });
+    await userEvent.click(screen.getByRole('button', { name: 'Preview announcement' }));
+    await screen.findByText('5 members will receive this announcement');
+    expect(screen.queryByText(/daily text cap/)).toBeNull();
+  });
+  it('shows no cap warning for a retained attempt while restoring the draft and counts', () => {
     render(<AnnouncementEditor gymName="Our Gym" programs={[program]} client={client()} close={vi.fn()} sent={vi.fn()}
       attempt={{ draft: { subject: 'Classes', body: 'Email', sms: { body: 'See you Monday.' }, audience: { statuses: ['active'], programIds: [] } },
-        count: 1, smsCount: 2, segments: 1, capRemaining: 0, capDay: 'today', generation: crypto.randomUUID(), uncertain: true }} />);
-    expect(screen.getByText(/allows 0 more texts today, so 2 of the 2 text recipients/)).toBeDefined();
+        count: 1, smsCount: 2, segments: 1, generation: crypto.randomUUID(), uncertain: true }} />);
+    expect(screen.queryByText(/daily text cap/)).toBeNull();
+    expect(screen.getByText('1 email recipients')).toBeDefined();
+    expect(screen.getByText('2 text recipients · 1 segments per recipient')).toBeDefined();
+    expect(screen.getByText('Classes')).toBeDefined();
+    expect(screen.getByText('Email')).toBeDefined();
+    expect(screen.getByText(/See you Monday\./)).toBeDefined();
   });
 });
 

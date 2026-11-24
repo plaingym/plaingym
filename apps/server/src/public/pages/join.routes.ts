@@ -22,8 +22,9 @@ import { configureJoinCleanup } from './join.jobs.js';
 import pages from '../../../../../locales/en/public/pages.json' with { type: 'json' };
 import messages from '../../../../../locales/en/public/join.json' with { type: 'json' };
 import waiverMessages from '../../../../../locales/en/waivers/waivers.json' with { type: 'json' };
+import shellMessages from '../../../../../locales/en/shell/shell.json' with { type: 'json' };
 
-const translator = createTranslator({ 'public/pages': pages, 'public/join': messages, 'waivers/waivers': waiverMessages });
+const translator = createTranslator({ 'public/pages': pages, 'public/join': messages, 'waivers/waivers': waiverMessages, 'shell/shell': shellMessages });
 /** In a demo sandbox, `testCardHint` names the test card for a gym's payment steps. */
 type TestCardHint = (gymId: string) => Promise<string | undefined>;
 interface JoinRouteOptions { service: JoinService; continuations: JoinContinuations; t?: Translator; testCardHint?: TestCardHint }

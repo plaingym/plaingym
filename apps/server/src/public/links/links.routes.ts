@@ -20,8 +20,9 @@ import { cachedLinkAsset, readSharedStylesheet } from './assets.js';
 import messages from '../../../../../locales/en/public/links.json' with { type: 'json' };
 import waiverMessages from '../../../../../locales/en/waivers/waivers.json' with { type: 'json' };
 import unsubscribeMessages from '../../../../../locales/en/links/unsubscribe.json' with { type: 'json' };
+import shellMessages from '../../../../../locales/en/shell/shell.json' with { type: 'json' };
 
-const t = createTranslator({ 'public/links': messages, 'waivers/waivers': waiverMessages, 'links/unsubscribe': unsubscribeMessages });
+const t = createTranslator({ 'public/links': messages, 'waivers/waivers': waiverMessages, 'links/unsubscribe': unsubscribeMessages, 'shell/shell': shellMessages });
 const settings = createSettingsService();
 export const receiptCookie = 'plaingym_link_checkout';
 /** One-click POSTs with unknown or malformed tokens, per client and gym each minute. */

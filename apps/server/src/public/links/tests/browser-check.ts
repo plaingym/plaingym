@@ -13,6 +13,7 @@ import { validateSignatureImage } from '../../../areas/waivers/snapshot.js';
 import { renderSignedLink } from '../../../emails/links/service.js';
 import linkMessages from '../../../../../../locales/en/links/service.json' with { type: 'json' };
 import unsubscribeMessages from '../../../../../../locales/en/links/unsubscribe.json' with { type: 'json' };
+import shellMessages from '../../../../../../locales/en/shell/shell.json' with { type: 'json' };
 
 const output = resolve('coverage/signed-links/browser');
 // Optional browser tooling is installed separately in e2e; normal type checks need no browser install.
@@ -23,7 +24,7 @@ await mkdir(output, { recursive: true });
 await buildLinkAssets(output);
 const css = await readFile(resolve(output, 'links.css'), 'utf8');
 const browserSource = await readFile(resolve(output, 'links.js'), 'utf8');
-const t = createTranslator({ 'public/links': messages, 'links/unsubscribe': unsubscribeMessages }), now = new Date('2026-10-25T12:00:00Z');
+const t = createTranslator({ 'public/links': messages, 'links/unsubscribe': unsubscribeMessages, 'shell/shell': shellMessages }), now = new Date('2026-10-25T12:00:00Z');
 const member = { id: 'member', firstName: 'Alex', lastName: 'Example', dateOfBirth: '2015-04-01', revision: 1 };
 const templates = [{ id: 'template', name: 'Participation waiver', body: 'Please read these terms before signing.\n' + 'Training involves physical activity. '.repeat(100), version: 1, kind: 'waiver' as const, retiredAt: null, createdAt: now.toISOString() },
   { id: 'agreement', name: 'Training agreement', body: 'Please review the training agreement.', version: 1, kind: 'agreement' as const, retiredAt: null, createdAt: now.toISOString() }];

@@ -86,12 +86,19 @@ export function createAnnouncementsService(options: AnnouncementsOptions) {
       await available(gymId);
       const text = draft.sms ? await textReady(gymId, draft.sms.body) : undefined;
       const now = clock.now();
-      const day = text ? localDate(nextAnnouncementSmsTime(now, text.gym.timezone) ?? now, text.gym.timezone) : '';
-      const smsCapDay = text && day === localDate(now, text.gym.timezone) ? 'today' as const : 'tomorrow' as const;
-      return scope(gymId, async tx => ({ recipientCount: (await readAudience(tx, draft.audience)).recipients.length,
-        ...(text ? { smsRecipientCount: (await readSmsAudience(tx, draft.audience, text.gym.country)).length,
+      return scope(gymId, async tx => {
+        const recipientCount = (await readAudience(tx, draft.audience)).recipients.length;
+        if (!text) return { recipientCount };
+        const day = localDate(nextAnnouncementSmsTime(now, text.gym.timezone) ?? now, text.gym.timezone);
+        const smsCapDay = day === localDate(now, text.gym.timezone) ? 'today' as const : 'tomorrow' as const;
+        return {
+          recipientCount,
+          smsRecipientCount: (await readSmsAudience(tx, draft.audience, text.gym.country)).length,
           smsSegments: smsSegments(text.text).segments,
-          smsCapRemaining: await remainingSmsSlots(tx, gymId, day, text.gym.smsDailyCap), smsCapDay } : {}) }));
+          smsCapRemaining: await remainingSmsSlots(tx, gymId, day, text.gym.smsDailyCap),
+          smsCapDay,
+        };
+      });
     },
     async testSms(actor: AnnouncementActor, input: z.infer<typeof announcementsContracts.testSms.body>) {
       const draft = announcementsContracts.testSms.body.parse(input);

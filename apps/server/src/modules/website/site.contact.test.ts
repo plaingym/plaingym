@@ -33,3 +33,15 @@ it('keeps the contact card from rendering empty when only an address is publishe
   expect(html).toContain(fallback);
   expect(html).not.toContain('Gym owners:'); expect(html).not.toContain('Settings');
 });
+it('passes the page translator to the footer version label and keeps English by default', () => {
+  const site = {
+    gym: { name: 'Academy', revision: 1, timezone: 'UTC', address: {}, logoVersion: null, primaryColor: null, updatedAt: '2026-11-13T00:00:00Z' },
+    content: { tagline: null, about: null, phone: null, email: null, accentColor: null, photos: [] },
+    programs: [], classes: [], sessions: [], plans: [], coaches: [],
+  };
+  expect(renderSitePage({ page: 'contact', t: createTranslator(locales.en ?? {}), origin: 'https://gym.example.test', nonce: 'test', site }))
+    .toContain('<span class="sr-only">Version </span>');
+  const probe = createTranslator({ ...locales.en, 'shell/shell': { ...locales.en?.['shell/shell'], versionPrefix: 'Probe' } });
+  expect(renderSitePage({ page: 'contact', t: probe, origin: 'https://gym.example.test', nonce: 'test', site }))
+    .toContain('<span class="sr-only">Probe </span>');
+});

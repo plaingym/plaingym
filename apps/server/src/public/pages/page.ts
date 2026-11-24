@@ -3,7 +3,7 @@ import { jsx as h } from 'hono/jsx';
 import type { Translator } from '@plaingym/shared';
 import type { PublicBranding, WaiverTemplate } from '@plaingym/shared/contracts';
 import { formatMoney } from '../../core/money.js';
-import { buildLabelItem } from '../../areas/health/build-label.js';
+import { buildLabel, buildLabelItem } from '../../areas/health/build-label.js';
 import { logoVersion } from '../short-hash.js';
 import { callingCode, phoneCountryOptions } from '@plaingym/shared/phone-countries';
 /** Native browser preview and a separate link also work without JavaScript. */
@@ -61,7 +61,7 @@ export function publicLayout(input: { gym: PublicBranding; title: string; t: Tra
         input.content, contactBlock(input.gym, input.t),
         h('footer', { class: 'flex flex-wrap gap-3' },
           ...[['/join', 'join'], ['/trial', 'trial'], ['/drop-in', 'drop-in'], ['/portal', 'portal'], ['/source', 'source']].map(([href, key]) =>
-            h('a', { href, class: 'inline-flex min-h-11 items-center underline', rel: 'noreferrer' }, text(key!))), buildLabelItem())))).toString();
+            h('a', { href, class: 'inline-flex min-h-11 items-center underline', rel: 'noreferrer' }, text(key!))), buildLabelItem(undefined, buildLabel(undefined, undefined, input.t)))))).toString();
 }
 /**
  * A country code choice beside the phone number. Works without script: the form handler (or the page script) joins

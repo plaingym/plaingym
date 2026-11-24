@@ -4,7 +4,7 @@ import { shortHash } from '../../public/short-hash.js';
 import { addressLines, telephoneHref } from '../../public/pages/page.js';
 import type { Translator } from '@plaingym/shared';
 import { formatMoney } from '../../core/money.js';
-import { buildLabelItem } from '../../areas/health/build-label.js';
+import { buildLabel, buildLabelItem } from '../../areas/health/build-label.js';
 import type { Site, SiteClass, SitePlan, SiteSession } from './service.js';
 
 // The shared public stylesheet is built from the classes in every public page file, including this one
@@ -119,7 +119,7 @@ function layout(input: SitePageInput, content: Node) {
             site.content.email ? h('p', { class: 'break-all' }, h('a', { href: 'mailto:' + site.content.email, class: 'inline-flex min-h-11 items-center underline' }, site.content.email)) : null),
           h('nav', { 'aria-label': text('footer.label') }, h('ul', { class: 'flex flex-wrap gap-x-4' },
             ...[['/trial', 'trial'], ['/drop-in', 'dropIn'], ['/join', 'join'], ['/portal', 'signIn'], ['/source', 'source']].map(([href, key]) =>
-              h('li', null, h('a', { href, class: 'inline-flex min-h-11 items-center underline' }, text(key!)))), h('li', null, buildLabelItem()))))))).toString();
+              h('li', null, h('a', { href, class: 'inline-flex min-h-11 items-center underline' }, text(key!)))), h('li', null, buildLabelItem(undefined, buildLabel(undefined, undefined, input.t))))))))).toString();
 }
 
 function calls(t: Translator, extra = false) {

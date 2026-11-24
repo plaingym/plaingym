@@ -6,7 +6,7 @@ import { zonedInstant } from '@plaingym/shared/time';
 import { cardChargeIssue } from '@plaingym/shared/money';
 import { needsGuardian } from '../../areas/waivers/snapshot.js';
 import { formatMoney } from '../../core/money.js';
-import { buildLabelItem } from '../../areas/health/build-label.js';
+import { buildLabel, buildLabelItem } from '../../areas/health/build-label.js';
 import { button, gymLogo, secondaryButton, waiverDocumentView } from '../pages/page.js';
 
 const input = 'block min-h-11 w-full rounded-md border border-border bg-background px-3 py-2 text-base';
@@ -132,7 +132,7 @@ export function linkPage({ data, state, portalClaim, processing = false, tablet 
         invoice, card, waivers, unsubscribe,
         data && data.purpose !== 'sign_waiver' && data.purpose !== 'unsubscribe' ? h('button', { type: 'button', class: primaryAction === 'complete' ? button : secondaryButton, 'data-complete': true }, text('checkCompletion')) : null,
         data ? h('noscript', null, text('javascript')) : null,
-        h('footer', { class: 'flex flex-wrap gap-x-4' }, h('a', { href: '/source', rel: 'noreferrer', class: 'inline-flex min-h-11 items-center underline' }, text('source')), buildLabelItem())),
+        h('footer', { class: 'flex flex-wrap gap-x-4' }, h('a', { href: '/source', rel: 'noreferrer', class: 'inline-flex min-h-11 items-center underline' }, text('source')), buildLabelItem(undefined, buildLabel(undefined, undefined, t)))),
       data?.purpose !== 'unsubscribe' ? h('template', { id: 'completed-message' }, h('section', { class: panel, tabindex: -1 },
         h('h1', { class: 'text-2xl font-bold' }, text('completedTitle')),
         h('p', null, text(settling ? 'bankProcessing' : 'completed_' + (data?.purpose ?? 'onboarding'))),

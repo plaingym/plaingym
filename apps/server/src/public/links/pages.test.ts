@@ -6,7 +6,8 @@ import { checkoutReceipts } from './receipt.js';
 import { setLogSink } from '../../core/log.js';
 import { cachedLinkAsset } from './assets.js';
 import messages from '../../../../../locales/en/public/links.json' with { type: 'json' };
-const t = createTranslator({ 'public/links': messages });
+import shellMessages from '../../../../../locales/en/shell/shell.json' with { type: 'json' };
+const t = createTranslator({ 'public/links': messages, 'shell/shell': shellMessages });
 const now = new Date('2026-10-25T12:00:00Z');
 describe('signed-link presentation and return receipts', () => {
   it('keeps payment primary and completion secondary', () => {
@@ -85,6 +86,10 @@ describe('signed-link presentation and return receipts', () => {
     expect(page).toContain('parent or guardian must sign'); expect(page).not.toContain('value="self"');
     expect(page).toContain('viewport'); expect(page).toContain('/source'); expect(page).toContain('<span class="sr-only">Version </span>'); expect(page).toContain('min-h-11');
     expect(page).toContain('Finish and clear screen'); expect(page).not.toContain('public/links:');
+  });
+  it('passes the page translator to the footer version label', () => {
+    const probe = createTranslator({ 'public/links': messages, 'shell/shell': { ...shellMessages, versionPrefix: 'Probe' } });
+    expect(linkPage({ now, timezone: 'UTC', t: probe, state: 'alreadyDone' })).toContain('<span class="sr-only">Probe </span>');
   });
   it('used credentials show a friendly message without any resource details or scripts', () => {
     const page = linkPage({ now, timezone: 'UTC', t, state: 'alreadyDone' });
