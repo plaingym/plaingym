@@ -78,7 +78,7 @@ it('refreshes committed removal and promotion after a detach error, including ch
   let removed = false;
   const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
     if (init?.method === 'POST') { removed = true; return Response.json({}, { status: 503 }); }
-    return page([{ ...card, isDefault: !removed, revokedAt: removed ? card.createdAt : null }]);
+    return page([{ ...card, isDefault: !removed, revokedAt: removed ? card.createdAt : null, ...(removed ? { removal: 'pending' as const } : {}) }]);
   });
   const { cache } = start(fetcher, true, true);
   const active = ['billing', gymId, 'activeCards', householdId]; cache.setQueryData(active, true);
@@ -96,7 +96,7 @@ it('refreshes committed removal and promotion after a detach error, including ch
   expect(screen.getByRole('button', { name: 'Retry payment method removal' })).toBeDefined();
 });
 it.each([false, true])('omits promotion help for a non-default or already removed card: removed=%s', async removed => {
-  start(vi.fn<typeof fetch>(async () => page([{ ...card, revokedAt: removed ? card.createdAt : null }])), true, true);
+  start(vi.fn<typeof fetch>(async () => page([{ ...card, revokedAt: removed ? card.createdAt : null, ...(removed ? { removal: 'pending' as const } : {}) }])), true, true);
   fireEvent.click(await screen.findByRole('button', { name: removed ? 'Retry payment method removal' : 'Remove payment method' }));
   expect(screen.queryByText(/newest remaining payment method/)).toBeNull();
   expect(screen.getByText(/^4242 · Remove/)).toBeDefined();

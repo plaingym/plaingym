@@ -73,6 +73,7 @@
   "default": "Default payment method",
   "removedFromStripe": "Removed from Stripe",
   "removalPending": "Removal pending",
+  "removed": "Removed",
   "makeDefault": "Make default",
   "removeCard": "Remove payment method",
   "retryRemoval": "Retry payment method removal",

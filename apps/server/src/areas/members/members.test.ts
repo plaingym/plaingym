@@ -9,7 +9,8 @@ import { canStaff, staffRoles, type StaffRole } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { createMembersService } from './members.js';
 import { createErasureJobs, createMembersRoutes, redactCustomerJob, releaseErasedFilesJob } from './members.routes.js';
-import { detachJob } from '../billing/payments.mutations.js';
+import { createPaymentService } from '../billing/payments.js';
+import { cardDetachedAction, detachJob } from '../billing/payments.mutations.js';
 import { createMemberPhotoJobs } from './members.jobs.js';
 import { createMemberPhotoService } from './photos.js';
 import { hashHouseholdPin, verifyHouseholdPin } from './pin.js';
@@ -566,7 +567,7 @@ describe('members and households', () => {
     app.use('*', async (ctx, next) => { ctx.set('context', { principal: { kind: 'staff', gymId: gymA, userId, roles: ['owner'] }, gym: { gymId: gymA, timezone: 'UTC', enabledModules: new Set() }, requestId: 'erase', clock }); await next(); });
     const errors: unknown[] = [];
     app.onError((error, ctx) => { errors.push(error); return errorHandler(error, ctx); });
-    createServerRegistry({ routes: createMembersRoutes(service, uploadsFor, { detachCard, jobs }) }).mount(app, authorize, new Set());
+    createServerRegistry({ routes: createMembersRoutes(service, uploadsFor, { detachCard, jobs, clock, scope: database.forGym }) }).mount(app, authorize, new Set());
     const logs: unknown[] = [], previousLog = setLogSink(entry => { logs.push(JSON.parse(entry)); });
     try {
       // The erasure has committed; a queued retry makes a provider outage a logged warning, not a failed request.
@@ -583,6 +584,32 @@ describe('members and households', () => {
     expect(JSON.stringify(logs)).not.toContain('Provider unavailable');
     const stored = await database.forGym(gymA, tx => tx.select().from(paymentMethods).where(eq(paymentMethods.householdId, home.id)));
     expect(stored.every(card => card.revokedAt && !card.isDefault)).toBe(true);
+    // Before any detach job runs, immediately detached cards list as finished and a failed detach stays pending.
+    const listed = (await createPaymentService({ scope: database.forGym, clock }).listPaymentMethods(gymA, home.id, {})).data;
+    expect(listed.find(card => card.id === cards[1]!.id)).toMatchObject({ removal: 'finished' });
+    expect(listed.find(card => card.id === cards[0]!.id)).toMatchObject({ removal: failure ? 'pending' : 'finished' });
+    const detachedAudits = await database.forGym(gymA, tx => tx.select().from(auditEvents).where(and(
+      eq(auditEvents.action, cardDetachedAction), inArray(auditEvents.targetId, cards.map(card => card.id)))));
+    expect(detachedAudits.map(row => row.targetId).sort()).toEqual((failure ? [cards[1]!.id] : cards.map(card => card.id)).sort());
+  });
+  it('succeeds and logs when recording an immediate erasure detach fails, leaving the card pending for the job', async () => {
+    const { home, person } = await routeFixture(gymA);
+    const card = await factory('paymentMethods', gymA, { householdId: home.id, processorId: 'pm_erase_rec_' + uuidv7().replaceAll('-', '') });
+    const jobs = new FakeJobs(clock), detachCard = vi.fn(async () => undefined);
+    const failingScope: typeof database.forGym = async () => { throw new Error('audit transaction failed'); };
+    const app = erasureServer({ detachCard, jobs, clock, scope: failingScope });
+    const logs: { event?: string; gymId?: string; memberId?: string; paymentMethodId?: string }[] = [];
+    const previousLog = setLogSink(entry => { logs.push(JSON.parse(entry)); });
+    try {
+      expect((await send(app, `/api/members/${person.id}/anonymize`, 'POST', { revision: 1 })).status).toBe(200);
+    } finally { setLogSink(previousLog); }
+    expect(detachCard).toHaveBeenCalledExactlyOnceWith(gymA, card.processorId, { redactBillingDetails: true });
+    expect(logs.filter(entry => entry.event === 'members.erasure.detach_record_failed')).toEqual([expect.objectContaining({
+      event: 'members.erasure.detach_record_failed', gymId: gymA, memberId: person.id, paymentMethodId: card.id,
+    })]);
+    expect(JSON.stringify(logs)).not.toContain('audit transaction failed');
+    const listed = (await createPaymentService({ scope: database.forGym, clock }).listPaymentMethods(gymA, home.id, {})).data;
+    expect(listed.find(row => row.id === card.id)).toMatchObject({ removal: 'pending' });
   });
   it.each([false, true])('redacts the last member\'s provider customer after commit and retries it from a queued job (failure: %s)', async failure => {
     const { home, person } = await routeFixture(gymA), customerId = 'cus_redact_' + uuidv7().replaceAll('-', '');

@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, eq, inArray, isNotNull, isNull, lte } from 'drizzle-orm';
-import { forGym, households, invoices, paymentMethods, payments, refunds, writeAudit } from '@plaingym/db';
+import { auditEvents, forGym, households, invoices, paymentMethods, payments, refunds, writeAudit } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { idSchema } from '@plaingym/shared/contracts';
 import { notFound } from '../../core/interfaces/common.js';
 import type { JobRegistration } from '../../core/registry.js';
 import type { TransitionNotifications } from './transitions/notifications.js';
 import { snapshot } from './transitions/store.js';
-import { isProviderOutage, type DetachOptions, type Payments } from '../../infra/payments/index.js';
+import type { DetachOptions, Payments } from '../../infra/payments/index.js';
 import type { InvoiceTransitions } from '../../core/interfaces/invoice-transitions.js';
-import { detachJob, receiptJob, recordCardDetached } from './payments.mutations.js';
+import { cardDetachedAction, detachJob, receiptJob, recordCardDetached, transientFailure } from './payments.mutations.js';
 import { refundRetryWindowMs, refundSettleSkewMs, settleLapsed } from './transitions/lapsed-refunds.js';
 
 export const lapsedRefundJob = 'billing.payments.settle_lapsed';
@@ -50,15 +50,6 @@ interface DeliveryOptions {
   /** Adopts the household's stored Stripe customer for this gym (tags an untagged one); rejects one tagged for another gym or deleted. */
   adoptCustomer?(gymId: string, customerId: string): Promise<unknown>;
 }
-/** An outage (rate limit, server error, lost connection, rejected key), a permission the key lacks or a programming
- * error is not an ownership refusal: the detach stays retryable, and adopting the customer would not help. */
-function transientFailure(error: unknown): boolean {
-  return [error, (error as { cause?: unknown } | null)?.cause].some(value => {
-    const { statusCode: status, type } = (value ?? {}) as { statusCode?: unknown; type?: unknown };
-    return isProviderOutage(value) || status === 401 || status === 403 || type === 'StripePermissionError'
-      || value instanceof TypeError;
-  });
-}
 let configured: DeliveryOptions | undefined;
 export function configurePaymentDelivery(options: DeliveryOptions) { configured = options; }
 export function createPaymentJobs(options?: DeliveryOptions): readonly JobRegistration[] {
@@ -80,14 +71,18 @@ export function createPaymentJobs(options?: DeliveryOptions): readonly JobRegist
       const { paymentMethodId, redactBillingDetails, customerId } = payload as { paymentMethodId: string; redactBillingDetails?: boolean; customerId?: unknown };
       idSchema.parse(paymentMethodId);
       const options = read(), scope = options.scope ?? forGym;
-      const { row, stripeCustomerId } = await scope(ctx.gymId, async tx => {
+      const { row, stripeCustomerId, detached } = await scope(ctx.gymId, async tx => {
         const found = (await tx.select({ row: paymentMethods, stripeCustomerId: households.stripeCustomerId })
           .from(paymentMethods).innerJoin(households, eq(households.id, paymentMethods.householdId)).where(and(
             eq(paymentMethods.id, paymentMethodId), eq(paymentMethods.isDefault, false))))[0] ?? notFound();
-        return { row: found.row, stripeCustomerId: found.stripeCustomerId };
+        const done = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
+          eq(auditEvents.action, cardDetachedAction), eq(auditEvents.targetType, 'payment_method'),
+          eq(auditEvents.targetId, paymentMethodId))).limit(1);
+        return { row: found.row, stripeCustomerId: found.stripeCustomerId, detached: done.length > 0 };
       });
       // Only an erasure asks for the card's billing details to be cleared; a staff removal queues the job without the flag.
       if (!row.revokedAt) return;
+      if (detached && redactBillingDetails !== true) return;
       const detach = () => redactBillingDetails === true ? options.detachCard(ctx.gymId, row.processorId, { redactBillingDetails: true })
         : options.detachCard(ctx.gymId, row.processorId);
       // An erasure clears the household's customer link in the transaction that queues this job, so its payload carries

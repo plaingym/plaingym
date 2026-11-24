@@ -20,16 +20,24 @@ for (const width of [360, 1280]) {
       await page.route(`**/api/billing/households/${household.id}/payment-methods/import`, route => route.fulfill({ json: { data: { queued: true } } }));
       await page.getByRole('button', { name: 'Import cards from Stripe', exact: true }).click();
       await expect(page.getByText(/Card import queued/)).toBeVisible();
-      const firstId = crypto.randomUUID(), secondId = crypto.randomUUID();
+      const firstId = crypto.randomUUID(), secondId = crypto.randomUUID(), finishedId = crypto.randomUUID(), plainId = crypto.randomUUID();
       let selected = false, removed = false;
+      const revokedAt = new Date().toISOString();
       const cards = () => [
-        { id: firstId, createdAt: new Date().toISOString(), householdId: household.id,
+        { id: firstId, createdAt: revokedAt, householdId: household.id,
           type: 'card', bankName: null, brand: 'visa', last4: '4242', expiryMonth: 12, expiryYear: 2035, isDefault: !selected || removed, revokedAt: null },
-        { id: secondId, createdAt: new Date().toISOString(), householdId: household.id,
-          type: 'acss_debit', bankName: null, brand: null, last4: '4444', expiryMonth: null, expiryYear: null, isDefault: selected && !removed, revokedAt: removed ? new Date().toISOString() : null },
+        { id: secondId, createdAt: revokedAt, householdId: household.id,
+          type: 'acss_debit', bankName: null, brand: null, last4: '4444', expiryMonth: null, expiryYear: null, isDefault: selected && !removed,
+          revokedAt: removed ? revokedAt : null, ...(removed ? { removal: 'pending' as const } : {}) },
+        { id: finishedId, createdAt: revokedAt, householdId: household.id,
+          type: 'card', bankName: null, brand: 'mastercard', last4: '5555', expiryMonth: 10, expiryYear: 2034, isDefault: false,
+          revokedAt, removal: 'finished' as const },
+        { id: plainId, createdAt: revokedAt, householdId: household.id,
+          type: 'us_bank_account', bankName: 'Test Bank', brand: null, last4: '6666', expiryMonth: null, expiryYear: null, isDefault: false,
+          revokedAt },
       ];
       await page.route(url => url.pathname === `/api/billing/households/${household.id}/payment-methods`, route => route.fulfill({ json: {
-        data: cards(), pagination: { total: 2, offset: 0, limit: 25 },
+        data: cards(), pagination: { total: 4, offset: 0, limit: 25 },
       } }));
       await page.route(`**/api/billing/households/${household.id}/payment-methods/${secondId}/default`, route => {
         selected = true; return route.fulfill({ json: { data: cards()[1] } });
@@ -51,7 +59,14 @@ for (const width of [360, 1280]) {
       await expect(page.getByRole('alert')).toBeVisible();
       await page.getByRole('button', { name: 'Back to payment methods', exact: true }).click();
       await expect(second.getByText('Removal pending', { exact: true })).toBeVisible();
+      await expect(second.getByRole('button', { name: 'Retry payment method removal', exact: true })).toBeVisible();
       await expect(second.getByText('Default payment method', { exact: true })).toHaveCount(0);
+      const finished = page.getByRole('listitem').filter({ hasText: '5555' });
+      await expect(finished.getByText('Removed from Stripe', { exact: true })).toBeVisible();
+      await expect(finished.getByRole('button', { name: 'Retry payment method removal', exact: true })).toHaveCount(0);
+      const plain = page.getByRole('listitem').filter({ hasText: '6666' });
+      await expect(plain.getByText('Removed', { exact: true })).toBeVisible();
+      await expect(plain.getByRole('button', { name: 'Retry payment method removal', exact: true })).toHaveCount(0);
       await accessibleLayout(page, info, 'household-card-import-' + width);
       await info.attach('household-payment-methods-' + width, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
       await mkdir('coverage/customer-card-import', { recursive: true });

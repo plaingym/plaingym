@@ -24,11 +24,22 @@ it('shows a finished removal as Removed from Stripe with no retry button', async
   await screen.findByText('Removed from Stripe');
   expect(screen.queryByRole('button', { name: 'Retry payment method removal' })).toBeNull();
   expect(screen.queryByText('Removal pending')).toBeNull();
+  expect(screen.queryByText('Removed')).toBeNull();
 });
 it('shows a pending removal as Removal pending with a retry button', async () => {
   start([{ ...base, revokedAt, removal: 'pending' }]);
   await screen.findByText('Removal pending');
   expect(screen.getByRole('button', { name: 'Retry payment method removal' })).toBeDefined();
+  expect(screen.queryByText('Removed from Stripe')).toBeNull();
+  expect(screen.queryByText('Removed')).toBeNull();
+});
+it('shows a revoked method with no removal state as Removed with no retry button', async () => {
+  start([{ ...base, revokedAt }]);
+  await screen.findByText('Removed');
+  expect(screen.queryByRole('button', { name: 'Retry payment method removal' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Remove payment method' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Make default' })).toBeNull();
+  expect(screen.queryByText('Removal pending')).toBeNull();
   expect(screen.queryByText('Removed from Stripe')).toBeNull();
 });
 it('offers Remove and Make default on an active card that is not the default', async () => {

@@ -17,6 +17,7 @@ import type { DetachOptions } from '../../infra/payments/index.js';
 import { releaseFiles } from '../../infra/storage/release.js';
 import { clearBillingEmailJob, clearErasedBillingEmail, type ClearBillingEmail, queueEarlierRedactions, redactCustomerJob, redactEarlierJob, releaseErasedFiles, releaseErasedFilesJob } from './erasure-redaction.js';
 import { createPortalInvitationStore } from '../../infra/auth/portal-invitations.js';
+import { recordErasureDetach } from '../billing/payments.mutations.js';
 
 function mutation(context: RequestContext) {
   if (context.principal.kind !== 'staff' || context.principal.gymId !== context.gym.gymId) throw new AppError('not_found', 'Resource not found');
@@ -37,7 +38,7 @@ function jsonRoute(contract: c.EndpointContract, handler: (context: RequestConte
   });
 }
 
-type ErasureOptions = { clock?: Clock; detachCard?: (gymId: string, processorId: string, options?: DetachOptions) => Promise<void>;
+type ErasureOptions = { clock?: Clock; scope?: typeof forGym; detachCard?: (gymId: string, processorId: string, options?: DetachOptions) => Promise<void>;
   /** AUTH_SECRET; the payments helper derives a separate HMAC key. Never queued. */
   billingEmailSecret?: string;
   invitations?: Pick<ReturnType<typeof createPortalInvitationStore>, 'revokeFor'>;
@@ -117,7 +118,7 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
       return { data: photos ? await photos.update(mutation(ctx), p.memberId!, input) : await service.updateMember(mutation(ctx), p.memberId!, input) };
     }),
     jsonRoute(contracts.anonymizeMember, async (ctx, p, _q, b) => {
-      const { revision } = c.anonymizeMemberRequestSchema.parse(b), { service, uploadsFor, detachCard, redactCustomer, jobs, clock } = current();
+      const { revision } = c.anonymizeMemberRequestSchema.parse(b), { service, uploadsFor, detachCard, redactCustomer, jobs, clock, scope } = current();
       // The erasure commits its cleanup jobs with it, so it never runs without a queue.
       if (!jobs) throw new AppError('unavailable', 'Erasure is not configured');
       const gymId = ctx.gym.gymId, memberId = p.memberId!;
@@ -129,7 +130,9 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
       await Promise.all([
         ...(detachCard ? revokedCards : []).map(async card => {
           try { await detachCard!(gymId, card.processorId, { redactBillingDetails: true }); }
-          catch (error) { logError('members.erasure.detach_failed', { gymId, memberId, paymentMethodId: card.id }, error); }
+          catch (error) { logError('members.erasure.detach_failed', { gymId, memberId, paymentMethodId: card.id }, error); return; }
+          try { await recordErasureDetach(gymId, { id: card.id, householdId }, clock, scope); }
+          catch (error) { logError('members.erasure.detach_record_failed', { gymId, memberId, paymentMethodId: card.id }, error); }
         }),
         ...(redactCustomer && erasedCustomerId ? [erasedCustomerId] : []).map(async customerId => {
           try { await redactCustomer!(gymId, customerId); }

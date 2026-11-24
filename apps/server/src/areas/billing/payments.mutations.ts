@@ -3,10 +3,12 @@ import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Ordering expressions use only payment-method columns and a bound gym month.
 import { sql } from 'drizzle-orm';
 import { auditEvents, forGym, paymentMethods, payments, refunds, uuidv7, type Transaction } from '@plaingym/db';
-import type { Clock } from '@plaingym/shared';
+import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { onMinorUnitStep } from '@plaingym/shared/money';
 import { localDate } from '@plaingym/shared/time';
+import { clock as systemClock } from '../../core/clock.js';
+import { logError } from '../../core/log.js';
 import { notFound, type MutationContext } from '../../core/interfaces/common.js';
 import type { InvoiceTransitions } from '../../core/interfaces/invoice-transitions.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
@@ -31,12 +33,23 @@ export const detachJob = 'billing.payments.detach';
 const retryable = (gymId: string, row: typeof refunds.$inferSelect) =>
   row.processorId === null || row.id !== processorRefundId(gymId, row.processorId);
 export const cardDetachedAction = 'billing.card.detached';
-/** A revoked row reports `removal` from `detached` (whether its detach audit exists); an active row has none. */
-const masked = (r: typeof paymentMethods.$inferSelect, detached?: boolean) => c.maskedPaymentMethodSchema.parse({
+export const cardRevokedAction = 'billing.card.revoked';
+type RemovalState = 'finished' | 'pending';
+/** An outage (rate limit, server error, lost connection, rejected key), a permission the key lacks or a programming
+ * error is not an ownership refusal: the detach stays retryable, and adopting the customer would not help. */
+export function transientFailure(error: unknown): boolean {
+  return [error, (error as { cause?: unknown } | null)?.cause].some(value => {
+    const { statusCode: status, type } = (value ?? {}) as { statusCode?: unknown; type?: unknown };
+    return isProviderOutage(value) || status === 401 || status === 403 || type === 'StripePermissionError'
+      || value instanceof TypeError;
+  });
+}
+/** A revoked row reports `removal` only when its path queued or finished a detach; an active row has none. */
+const masked = (r: typeof paymentMethods.$inferSelect, state?: RemovalState) => c.maskedPaymentMethodSchema.parse({
   id: r.id, createdAt: r.createdAt.toISOString(), householdId: r.householdId,
   type: r.type, bankName: r.bankName, brand: r.brand, last4: r.last4,
   expiryMonth: r.expiryMonth, expiryYear: r.expiryYear, isDefault: r.isDefault, revokedAt: r.revokedAt?.toISOString() ?? null,
-  ...(r.revokedAt ? { removal: detached ? 'finished' : 'pending' } : {}),
+  ...(r.revokedAt && state ? { removal: state } : {}),
 });
 
 /** Writes the one `billing.card.detached` audit for a card whose detach call returned; a repeat writes nothing. Its own
@@ -50,6 +63,12 @@ export async function recordCardDetached(scope: typeof forGym, context: Mutation
       eq(auditEvents.targetType, 'payment_method'), eq(auditEvents.targetId, card.id))).limit(1);
     if (!done.length) await catalogAudit(tx, context, clock, cardDetachedAction, 'payment_method', card.id, undefined, { householdId: card.householdId });
   });
+}
+
+/** Records a finished immediate detach from the erasure route under the system actor. */
+export function recordErasureDetach(gymId: string, card: { id: string; householdId: string },
+  clock: Clock = systemClock, scope: typeof forGym = forGym) {
+  return recordCardDetached(scope, { gymId, actor: { kind: 'system' } }, clock, card);
 }
 
 /** Caller holds the household lock. Preserve a chosen default; prefer an unexpired replacement the gym's currency can charge. */
@@ -129,9 +148,12 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
         const where = eq(paymentMethods.householdId, householdId), total = await tx.$count(paymentMethods, where);
         const rows = await tx.select().from(paymentMethods).where(where).orderBy(desc(paymentMethods.createdAt), desc(paymentMethods.id)).limit(q.limit).offset(q.offset);
         const revoked = rows.filter(r => r.revokedAt).map(r => r.id);
-        const detached = new Set(revoked.length ? (await tx.select({ targetId: auditEvents.targetId }).from(auditEvents).where(and(
-          eq(auditEvents.action, cardDetachedAction), eq(auditEvents.targetType, 'payment_method'), inArray(auditEvents.targetId, revoked)))).map(a => a.targetId) : []);
-        return { data: rows.map(r => masked(r, detached.has(r.id))), pagination: { limit: q.limit, offset: q.offset, total } };
+        const audits = revoked.length ? await tx.select({ action: auditEvents.action, targetId: auditEvents.targetId }).from(auditEvents).where(and(
+          inArray(auditEvents.action, [cardDetachedAction, cardRevokedAction]), eq(auditEvents.targetType, 'payment_method'), inArray(auditEvents.targetId, revoked))) : [];
+        const detached = new Set(audits.filter(a => a.action === cardDetachedAction).map(a => a.targetId));
+        const queued = new Set(audits.filter(a => a.action === cardRevokedAction).map(a => a.targetId));
+        const removalState = (id: string): RemovalState | undefined => detached.has(id) ? 'finished' : queued.has(id) ? 'pending' : undefined;
+        return { data: rows.map(r => masked(r, r.revokedAt ? removalState(r.id) : undefined)), pagination: { limit: q.limit, offset: q.offset, total } };
       });
     },
     async setDefault(context: MutationContext, householdId: string, id: string) {
@@ -159,7 +181,7 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
         const card = (await tx.select().from(paymentMethods).where(and(eq(paymentMethods.id, id), eq(paymentMethods.householdId, householdId))))[0] ?? notFound();
         const changed = (await tx.update(paymentMethods).set({ isDefault: false, revokedAt: card.revokedAt ?? clock.now() })
           .where(eq(paymentMethods.id, id)).returning())[0] ?? notFound();
-        if (!card.revokedAt) await catalogAudit(tx, context, clock, 'billing.card.revoked', 'payment_method', id, undefined, { householdId });
+        if (!card.revokedAt) await catalogAudit(tx, context, clock, cardRevokedAction, 'payment_method', id, undefined, { householdId });
         if (card.isDefault) await promoteDefaultCard(tx, context, clock, householdId, timezone);
         return changed;
       });
@@ -167,9 +189,19 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
       if (jobs) await jobs.enqueue(detachJob, { paymentMethodId: id }, {
         gymId: context.gymId, timezone, idempotencyKey: `detach:${id}`, maxAttempts: 12,
       });
-      await detachCard(context.gymId, row.processorId);
-      await recordCardDetached(scope, context, clock, row);
-      return masked(row, true);
+      try { await detachCard(context.gymId, row.processorId); }
+      catch (error) {
+        // An outage or an app refusal (Stripe not configured) still fails the request; only a provider refusal waits for the job.
+        if (transientFailure(error) || error instanceof AppError) throw error;
+        logError('billing.card.detach_deferred', { gymId: context.gymId, paymentMethodId: id }, error);
+        return masked(row, 'pending');
+      }
+      try { await recordCardDetached(scope, context, clock, row); }
+      catch (error) {
+        logError('billing.card.detach_record_failed', { gymId: context.gymId, paymentMethodId: id }, error);
+        return masked(row, 'pending');
+      }
+      return masked(row, 'finished');
     },
     async refund(context: MutationContext, paymentId: string, input: c.CreateRefundRequest) {
       const request = c.createRefundRequestSchema.parse(input);

@@ -171,12 +171,24 @@ active method.
 Customer-card imports also use it after the final page or exhausted restarts.
 Retrying removal of a revoked method
 does not change the default or repeat these audits. Removal then queues
-a detach retry and attempts detachment outside the transaction. Revoked rows
+a detach retry and attempts detachment outside the transaction. If the inline
+detach is refused for ownership (for instance, a card saved on an untagged
+customer by a people import) rather than a transient provider failure, or if
+recording the detach audit fails after Stripe removed the card, the request
+logs the error with identifiers only and returns `removal: 'pending'` so the
+queued job finishes it; transient outages and app errors (such as Stripe not
+being configured for the gym) still fail the request. Revoked rows
 remain visible so staff can retry removal after an outage. A detach call that returns
 writes one `billing.card.detached` audit (`recordCardDetached`, in its own transaction after
-the call, from the removal request or the detach job; a repeat writes none), and the staff
-list reports a revoked method's `removal` as `finished` with that audit and `pending`
-without it; an active method has no `removal`. A card Stripe detached on its own stays
+the call, from the removal request, the erasure route, or the detach job; a repeat writes none).
+The staff list reports a revoked method's `removal` as `finished` with a
+`billing.card.detached` audit, `pending` when it has a `billing.card.revoked`
+audit (staff removal, erasure, or debit-account retirement) and no detach audit,
+and omits `removal` otherwise (a bank method revoked after failed debits or a
+test card cleared on a switch to live, which the card list shows as **Removed**
+with no retry button); an active method has no `removal`. Once `billing.card.detached`
+exists, the detach job skips calling Stripe for a staff removal (`redactBillingDetails !== true`),
+while an erasure job still runs so Stripe clears billing details. A card Stripe detached on its own stays
 `pending` until a retry finishes it. No processor IDs leave
 the staff API. `detachCard(gymId, processorId, options?)` delegates to the gym's
 `Payments.detachPaymentMethod`, idempotent for missing and already detached methods.
@@ -212,9 +224,11 @@ or a finishing card import can promote one even when it adds no new methods.
 Retiring a non-default account keeps the existing default.
 The erasure transaction also queues the same detach jobs (flagged to clear the
 card's billing name, email, phone and address first), so they commit with it, and
-after commit the erasure route attempts every card detach; the runtime passes the shared `jobs` and `detachCard` to
-`configureMembers`. A failed attempt is logged and left to the queued job, so the
-erasure response still succeeds. Erasure retains accounting history; the Stripe
+after commit the erasure route attempts every card detach and records each
+successful detach (`recordErasureDetach`) so erased cards read `finished` at
+once; the runtime passes the shared `jobs` and `detachCard` to
+`configureMembers`. A failed detach or audit write is logged and left to the
+queued job, so the erasure response still succeeds. Erasure retains accounting history; the Stripe
 Customer keeps its ID, metadata and payments, with its personal fields redacted
 by a separate job (`areas/members/README.md`).
 

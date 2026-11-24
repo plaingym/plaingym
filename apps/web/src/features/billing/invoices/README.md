@@ -17,7 +17,12 @@ eligibility. Default and removal actions require `payments.record`, and refresh
 these queries on success and error because local removal can precede a Stripe outage.
 Card rows show the network, last four digits and the expiry in MM/YYYY when both
 parts are available. Bank rows show the bank name when available and the
-account's last four digits. Removal help identifies
+account's last four digits. Revoked rows show **Removed from Stripe** once a
+detach is recorded (`removal: 'finished'`), **Removal pending** with **Retry
+payment method removal** while a staff removal or erasure detach is still
+outstanding (`removal: 'pending'`), and **Removed** with no retry button when
+no Stripe detach was queued (a bank method revoked after failed debits or a
+test card cleared on a switch to live). Removal help identifies
 the method, and promotion help appears only for the current active default,
 including after a failed removal refresh.
 

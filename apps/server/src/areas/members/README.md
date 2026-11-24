@@ -228,7 +228,11 @@ job queue (required) through `configureMembers`; without a queue the erasure rou
 refuses with `unavailable` before changing anything. After commit the route
 detaches each card, redacts the customer and marks the files deleted, each attempt
 logged on failure (identifiers and safe error classifications, never message text)
-and left to its job; then it promotes the
+and left to its job. A card whose immediate detach succeeds gets its one
+`billing.card.detached` audit (system actor) at once, so the card list shows it removed
+from Stripe before the job runs; a failure to write that audit is logged as
+`members.erasure.detach_record_failed` and the card stays pending until its job
+records it. Then it promotes the
 waitlist of each session the erasure freed a place in, logging a session whose
 promotion fails (`members.erasure.promotion_failed`) and going on with the rest.
 The existing `bookings.recover` sweep retries failed waitlist promotions every

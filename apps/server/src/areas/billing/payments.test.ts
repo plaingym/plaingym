@@ -1655,7 +1655,7 @@ describe('one-off collection and payment durability', () => {
   it('preserves the promoted default through a detach outage and its retry', async () => {
     const f = await fixture();
     const remaining = await factory('paymentMethods', f.gymId, { householdId: f.home.id });
-    f.detachCard.mockRejectedValueOnce(new Error('Stripe unavailable'));
+    f.detachCard.mockRejectedValueOnce(Object.assign(new Error('Stripe unavailable'), { statusCode: 503 }));
     await expect(f.service.revokeCard(f.context, f.home.id, f.card.id)).rejects.toThrow('Stripe unavailable');
     await f.jobs.runNext();
     await f.service.revokeCard(f.context, f.home.id, f.card.id);
@@ -1663,7 +1663,7 @@ describe('one-off collection and payment durability', () => {
     expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.card.default_changed')))).toHaveLength(1);
   });
   it('revokes the only card locally before detaching outside a transaction, retries an outage, and never charges the removed card', async () => {
-    const f = await fixture(); f.detachCard.mockRejectedValueOnce(new Error('Stripe unavailable'));
+    const f = await fixture(); f.detachCard.mockRejectedValueOnce(Object.assign(new Error('Stripe unavailable'), { statusCode: 503 }));
     await expect(f.service.revokeCard(f.context, f.home.id, f.card.id)).rejects.toThrow('Stripe unavailable');
     const card = (await f.service.listPaymentMethods(f.gymId, f.home.id, {})).data[0]!;
     expect(card).toMatchObject({ isDefault: false, revokedAt: f.clock.now().toISOString() });
@@ -1682,10 +1682,15 @@ describe('one-off collection and payment durability', () => {
     await f.jobs.enqueue(detachJob, { paymentMethodId: f.card.id, redactBillingDetails: true },
       { gymId: f.gymId, timezone: 'UTC', idempotencyKey: 'detach:erased:' + f.card.id });
     await f.jobs.runNext(); expect(f.detachCard).toHaveBeenLastCalledWith(f.gymId, 'pm_4242', { redactBillingDetails: true });
-    // Anything but true is ignored.
+    // Anything but true is ignored (both for skipping an already recorded detach and for passing the option).
+    const calls = f.detachCard.mock.calls.length;
     await f.jobs.enqueue(detachJob, { paymentMethodId: f.card.id, redactBillingDetails: 'yes' },
       { gymId: f.gymId, timezone: 'UTC', idempotencyKey: 'detach:other:' + f.card.id });
-    await f.jobs.runNext(); expect(f.detachCard).toHaveBeenLastCalledWith(f.gymId, 'pm_4242');
+    await f.jobs.runNext(); expect(f.detachCard).toHaveBeenCalledTimes(calls);
+    const other = await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_other', isDefault: false, revokedAt: f.clock.now() });
+    await f.jobs.enqueue(detachJob, { paymentMethodId: other.id, redactBillingDetails: 'yes' },
+      { gymId: f.gymId, timezone: 'UTC', idempotencyKey: 'detach:other:' + other.id });
+    await f.jobs.runNext(); expect(f.detachCard).toHaveBeenLastCalledWith(f.gymId, 'pm_other');
   });
   it('queues a receipt and sends it using the shared notification delivery, respecting the email switch', async () => {
     const f = await fixture();
