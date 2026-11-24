@@ -14,7 +14,7 @@ import { reportMaintenanceFailure } from '../../cli/restore.failure.js';
 import { setLogSink } from '../../core/log.js';
 import { PostgresMaintenance } from './backups.database.js';
 import { RestoreService, enqueueRestoreReconciliation } from './restore.js';
-import { RestoreFailure } from './restore.failure.js';
+import { RestoreFailure, s3Reason } from './restore.failure.js';
 import { useRestoreFixture } from './restore.fixture.test-helper.js';
 import { LocalUploads } from '../../infra/storage/index.js';
 import { SnapshotContentError } from './backups.content.js';
@@ -54,7 +54,13 @@ it('rejects manifest and reference disagreement', async () => {
 });
 it('rejects a missing snapshot object', async () => {
   await f.store.deleteObject(snapshotPrefix(base) + 'manifest.age');
-  await rejects(f.restore().restore(base, f.identity), 'A snapshot object is missing from the bucket');
+  await rejects(f.restore().restore(base, f.identity), 'The snapshot was not found in the bucket');
+});
+it('distinguishes a failed connection from an unreachable endpoint in s3Reason', () => {
+  expect(s3Reason({ code: 'CERT_HAS_EXPIRED', $metadata: { attempts: 1 } }, 'backup')).toBe('The connection to the backup bucket failed (CERT_HAS_EXPIRED)');
+  expect(s3Reason({ code: 'ECONNREFUSED', $metadata: { attempts: 1 } }, 'backup')).toBe('Cannot reach the backup bucket (ECONNREFUSED)');
+  expect(s3Reason({ name: 'TimeoutError', $metadata: { attempts: 1 } }, 'backup')).toBe('Cannot reach the backup bucket (TimeoutError)');
+  expect(s3Reason({ Code: 'AccessDenied', $metadata: { httpStatusCode: 403 } }, 'backup')).toBe('The backup bucket rejected the access key or secret (AccessDenied)');
 });
 it('rejects a second restore while one is staged', async () => {
   await stage();

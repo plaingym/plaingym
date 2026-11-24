@@ -124,11 +124,11 @@ export class RestoreService {
         resolve(options.stagingDirectory).startsWith(resolve(options.uploadsDirectory) + sep))
       throw new RestoreFailure('Restore staging must be outside uploads');
   }
-  async #download(key: string, path: string): Promise<void> {
+  async #download(key: string, path: string, missing = 'A snapshot object is missing from the bucket'): Promise<void> {
     // Marked so a network code from the bucket or its body stream names the endpoint; the same error is rethrown.
     try {
       const body = await this.options.store.getObject(key);
-      if (!body) throw new RestoreFailure('A snapshot object is missing from the bucket');
+      if (!body) throw new RestoreFailure(missing);
       await saveStream(path, body);
     } catch (error) { markDownload(error); throw error; }
   }
@@ -158,13 +158,15 @@ export class RestoreService {
       let activated = false;
       try {
         const manifestCipher = join(staging, 'manifest.age');
-        await this.#download(prefix + 'manifest.age', manifestCipher);
+        await this.#download(prefix + 'manifest.age', manifestCipher, 'The snapshot was not found in the bucket');
         await saveStream(join(staging, 'manifest.json'), await decryptSnapshot(identity, fileStream(manifestCipher)));
         const manifest = manifestSchema.parse(await readSnapshotJson(join(staging, 'manifest.json')));
         if (manifest.id !== id) throw new RestoreFailure('Manifest belongs to another snapshot');
         const blobKey = parseEncryptionKey(manifest.recovery.blobKey);
         validateReferences(manifest.uploads, blobKey);
-        const referenceValue = await readReferences(o.store, prefix + 'references.json');
+        let referenceValue: unknown;
+        try { referenceValue = await readReferences(o.store, prefix + 'references.json'); }
+        catch (error) { markDownload(error); throw error; }
         const references = verifyReferences(referenceValue, blobKey, id);
         await atomicJson(join(staging, 'references.json'), referenceValue);
         if (JSON.stringify(references.uploads) !== JSON.stringify(publicReferences(manifest.uploads, blobKey)) ||

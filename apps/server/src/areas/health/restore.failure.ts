@@ -28,8 +28,8 @@ export const safeName = (value: unknown): string | null => typeof value === 'str
 /**
  * What an S3 client error says about `bucket`: the backup bucket a snapshot is read from, or the uploads bucket a
  * staged restore publishes files to. One with an HTTP status or a server-supplied code is the bucket's answer
- * (`AccessDenied`, or `HTTP 403`); one with neither never got an answer (connection refused, name not found, timeout).
- * The SDK puts `$metadata` on both, so the status decides. Null for an error that isn't an S3 client's.
+ * (`AccessDenied`, or `HTTP 403`); one with neither never got an answer, and only a network code or a timeout is
+ * named as unreachable. The SDK puts `$metadata` on both, so the status decides. Null for an error that isn't an S3 client's.
  */
 export function s3Reason(error: unknown, bucket: 'backup' | 'uploads'): string | null {
   if (typeof error !== 'object' || error === null) return null;
@@ -39,7 +39,10 @@ export function s3Reason(error: unknown, bucket: 'backup' | 'uploads'): string |
   const served = safeName(value.Code);
   if (typeof status !== 'number' && !served) {
     const cause = safeName(value.code) ?? safeName(value.name);
-    return 'Cannot reach the ' + bucket + ' bucket' + (cause && cause !== 'Error' ? ' (' + cause + ')' : '');
+    const suffix = cause && cause !== 'Error' ? ' (' + cause + ')' : '';
+    return backupFailureCause(error) === 'endpoint_unreachable'
+      ? 'Cannot reach the ' + bucket + ' bucket' + suffix
+      : 'The connection to the ' + bucket + ' bucket failed' + suffix;
   }
   const code = served ?? safeName(value.name);
   const cause = backupFailureCause(error);
@@ -74,7 +77,8 @@ function fromStorage(error: unknown): boolean {
 export function restoreFailureClass(error: unknown): RestoreFailureClass {
   // Its cause isn't read: a staged restore's uploads-bucket failure is no problem with the backup source.
   if (error instanceof RestoreFailure) {
-    if (error.message === 'A snapshot object is missing from the bucket') return 'snapshot_missing';
+    if (error.message === 'The snapshot was not found in the bucket') return 'snapshot_missing';
+    if (error.message === 'A snapshot object is missing from the bucket') return 'damaged';
     if (error.message === 'The snapshot is damaged; try an earlier one') return 'damaged';
     return 'other';
   }

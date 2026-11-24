@@ -168,7 +168,7 @@ describe('restoreFailureReason', () => {
       // The SDK adds `$metadata` to errors that never reached a server; those are not an answer.
       expect(restoreFailureReason(Object.assign(new Error('connect ECONNREFUSED 10.0.0.1:443'), { code: 'ECONNREFUSED', $metadata: { attempts: 3 } })))
         .toBe('Cannot reach the backup bucket (ECONNREFUSED)');
-      expect(restoreFailureReason(Object.assign(new Error('x'), { $metadata: { attempts: 3 } }))).toBe('Cannot reach the backup bucket');
+      expect(restoreFailureReason(Object.assign(new Error('x'), { $metadata: { attempts: 3 } }))).toBe('The connection to the backup bucket failed');
     } finally { client.destroy(); }
   });
   it('does not expose snapshot record keys from a Zod error', () => {
