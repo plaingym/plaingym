@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { joinBrowserScript, joinPollIntervalMs, joinPollLimit } from './join.browser.js';
 import { createTranslator } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
-import { callingCode, internationalPrefix, joinPhone, keepsInternationalPrefix } from '@plaingym/shared/phone-countries';
+import { callingCode, internationalPrefixList, joinPhone, keepsInternationalPrefix } from '@plaingym/shared/phone-countries';
 import { phoneScript, publicBrowserScript, refusalScript } from './browser.js';
 import { phoneField } from './page.js';
 
@@ -105,17 +105,31 @@ describe('phone country choice in the browser scripts', () => {
   it('matches joinPhone on every international-prefix case and falls back to 00 without the prefix attribute', () => {
     const cases: [string, string][] = [
       ['GB', '0044 20 7946 0018'], ['US', '011 44 20 7946 0018'], ['US', '(011) 44-20.7946 0018'],
-      ['JP', '010 44 20 7946 0018'], ['RU', '810 44 20 7946 0018'], ['RU', '8 10 44 20 7946 0018'],
-      ['AU', '0011 44 20 7946 0018'], ['JP', '03 1234 5678'], ['US', '0044 20 7946 0018'],
+      ['US', '011 +44 20 7946 0018'], ['GB', '00 (44) 20 7946 0018'], ['GB', '00 (44 20 7946 0018'],
+      ['GB', '00 44) 20 7946 0018'], ['AU', '0014 44 20 7946 0018'], ['AU', '0011 44 20 7946 0018'],
+      ['PW', '012 44 20 7946 0018'], ['SG', '019 44 20 7946 0018'], ['TW', '019 44 20 7946 0018'],
+      ['SG', '6123 4567'], ['JP', '010 44 20 7946 0018'], ['RU', '810 44 20 7946 0018'],
+      ['RU', '8 10 44 20 7946 0018'], ['JP', '03 1234 5678'], ['US', '0044 20 7946 0018'],
       ['GB', '00'], ['BR', '0021 44 20 7946 0018'], ['GB', '07700 900123'],
       ['CV', '00 44 20 7946 0018'], ['CV', '0 44 20 7946 0018'],
+      ['GB', '00 (+44) 20 7946 0018'], ['GB', '00 ( +44) 20 7946 0018'],
     ];
     for (const [region, typed] of cases) {
       const regionCode = callingCode(region)!;
-      const selected = code(regionCode, internationalPrefix(regionCode), keepsInternationalPrefix(regionCode));
+      const selected = code(regionCode, internationalPrefixList(regionCode).join(' '), keepsInternationalPrefix(regionCode));
       expect(formPhone(formWith(selected), new Map([['phone', typed]]))).toBe(joinPhone(region, typed));
     }
     expect(formPhone(formWith(code('44')), new Map([['phone', '0044 20 7946 0018']]))).toBe('+44 20 7946 0018');
+    expect(formPhone(formWith(code('44', '')), new Map([['phone', '0044 20 7946 0018']]))).toBe('+44 20 7946 0018');
+    const html = String(phoneField(createTranslator(locales.en ?? {}), { label: 'Phone', country: 'CA' }));
+    const optionOf = (value: string) => new RegExp(`<option value="${value}"[^>]*>`).exec(html)?.[0] ?? '';
+    for (const [region, typed] of cases) {
+      const option = optionOf(region);
+      const prefix = /data-international-prefix="([^"]*)"/.exec(option)?.[1];
+      const keep = option.includes('data-keep-prefix="true"');
+      const selected = code(callingCode(region)!, prefix, keep);
+      expect(formPhone(formWith(selected), new Map([['phone', typed]])), `${region} ${typed}`).toBe(joinPhone(region, typed));
+    }
   });
   it('autofills the number as a full phone number and leaves the country select without autocomplete', () => {
     const html = String(phoneField(createTranslator(locales.en ?? {}), { label: 'Phone', country: 'GB' }));

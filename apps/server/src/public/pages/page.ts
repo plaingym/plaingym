@@ -5,7 +5,7 @@ import type { PublicBranding, WaiverTemplate } from '@plaingym/shared/contracts'
 import { formatMoney } from '../../core/money.js';
 import { buildLabel, buildLabelItem } from '../../areas/health/build-label.js';
 import { logoVersion } from '../short-hash.js';
-import { callingCode, internationalPrefix, keepsInternationalPrefix, phoneCountryOptions } from '@plaingym/shared/phone-countries';
+import { callingCode, internationalPrefixList, keepsInternationalPrefix, phoneCountryOptions } from '@plaingym/shared/phone-countries';
 /** Native browser preview and a separate link also work without JavaScript. */
 export function waiverDocumentView(template: WaiverTemplate, t: Translator, href = `/api/public/waivers/${template.id}/document?view=1`, preview = true) {
   if (!template.document) return h('div', { class: 'max-h-96 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-4', tabindex: 0, 'aria-label': template.name }, template.body);
@@ -79,7 +79,7 @@ export function phoneField(t: Translator, options: { label: string; country?: st
       ...choices.map(choice => h('option', {
         value: choice.value,
         'data-calling-code': choice.callingCode,
-        'data-international-prefix': internationalPrefix(choice.callingCode),
+        'data-international-prefix': internationalPrefixList(choice.callingCode).join(' '),
         ...(keepsInternationalPrefix(choice.callingCode) ? { 'data-keep-prefix': 'true' } : {}),
         selected: choice.value === selected,
       }, choice.label))),

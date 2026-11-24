@@ -7,12 +7,12 @@ import { Label } from './label.js';
 import { Select } from './select.js';
 
 /**
- * A country code choice and a phone number. The value is `+<calling code> <number>` unless the number starts with + (which
- * also forgets any earlier country choice) or with the chosen country's international prefix, which is replaced with + (or
- * kept as typed when its prefix carries a carrier code) so the server reads it in any gym. `onChange` runs only on user
- * input, never on render or when the parent resets `value`. A new `resetKey` drops what the person chose, even when the
- * value is unchanged (a reset to `''` after choosing a country with no number). `error` shows under the field and marks the
- * number invalid.
+ * A country code choice and a phone number. The value is `+<calling code> <number>` unless the number starts with + (typing
+ * the + forgets an earlier country choice) or with one of the chosen country's international prefixes, which is replaced
+ * with + (or kept as typed when its prefix carries a carrier code; a number kept as typed is read with the gym's country,
+ * so it saves only in a gym whose country fits it). `onChange` runs only on user input, never on render or when the parent
+ * resets `value`. A new `resetKey` drops what the person chose, even when the value is unchanged (a reset to `''` after
+ * choosing a country with no number). `error` shows under the field and marks the number invalid.
  */
 export function PhoneInput({ id, label, value, onChange, defaultCountry, hint, error, resetKey, maxLength = 95, autoComplete = 'tel' }: {
   id: string; label: string; value: string; onChange: (value: string) => void; defaultCountry?: string | null | undefined; hint?: string;
@@ -47,7 +47,7 @@ export function PhoneInput({ id, label, value, onChange, defaultCountry, hint, e
         aria-invalid={error ? true : undefined} aria-describedby={describedBy}
         onChange={(event) => {
           const next = event.target.value;
-          update({ country: next.trim().startsWith('+') ? splitPhone('', defaultCountry).country : country, number: next });
+          update({ country: next.trim().startsWith('+') && !number.trim().startsWith('+') ? splitPhone('', defaultCountry).country : country, number: next });
         }}
         // The value sent is already trimmed; leaving the field shows it that way too.
         onBlur={() => { if (edit && number !== number.trim()) setEdit({ country, number: number.trim() }); }}/>

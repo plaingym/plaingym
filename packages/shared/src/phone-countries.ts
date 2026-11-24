@@ -32,14 +32,18 @@ export const phoneCountries: readonly (readonly [country: string, callingCode: s
 ];
 
 /** International dialling prefixes that differ from the usual `00`, by calling code. */
-const internationalPrefixes: ReadonlyMap<string, string> = new Map([
-  ['1', '011'], ['7', '810'], ['53', '119'], ['61', '0011'], ['81', '010'], ['234', '009'], ['238', '0'], ['254', '000'],
-  ['375', '810'], ['592', '001'], ['680', '011'], ['685', '0'], ['692', '011'], ['976', '001'], ['992', '810'], ['993', '810'],
+const internationalPrefixes: ReadonlyMap<string, readonly string[]> = new Map([
+  ['1', ['011']], ['7', ['810']], ['53', ['119']], ['61', ['0011', '0014', '0015', '0016', '0018', '0019']],
+  ['65', Array.from({ length: 40 }, (_, i) => '0' + String(i).padStart(2, '0'))],
+  ['81', ['010']], ['234', ['009']], ['238', ['0']], ['254', ['000']], ['375', ['810']], ['592', ['001']],
+  ['680', ['011', '012']], ['685', ['0']], ['692', ['011']], ['886', ['002', '005', '006', '007', '009', '019']],
+  ['976', ['001']], ['992', ['810']], ['993', ['810']],
 ]);
+const defaultInternationalPrefixes: readonly string[] = ['00'];
 
-/** The prefix a caller in a country with this calling code dials before a foreign number, falling back to `00`. */
-export function internationalPrefix(callingCode: string): string {
-  return internationalPrefixes.get(callingCode) ?? '00';
+/** The prefixes a caller in a country with this calling code dials before a foreign number, falling back to `['00']`. */
+export function internationalPrefixList(callingCode: string): readonly string[] {
+  return internationalPrefixes.get(callingCode) ?? defaultInternationalPrefixes;
 }
 
 // A number typed with these regions' prefix is sent as typed, for the server's own parse, because the form can't tell where the carrier code ends.
@@ -59,25 +63,43 @@ export function callingCode(country: string | null | undefined): string | null {
 
 /**
  * What a form sends: `+<calling code> <number>`, unless the number starts with +, no region is chosen, or the number
- * starts with the chosen region's international prefix, which is replaced with + (or kept as typed when its prefix carries
- * a carrier code).
+ * starts with one of the chosen region's international prefixes, which is replaced with + (or kept as typed when its prefix
+ * carries a carrier code; a number kept as typed is read with the gym's country, so it saves only in a gym whose country
+ * fits it).
  */
 export function joinPhone(country: string | null | undefined, number: string | null | undefined): string {
   const typed = (number ?? '').trim();
   if (!typed) return '';
   const code = callingCode(country);
   if (typed.startsWith('+') || code === null) return typed;
-  const prefix = internationalPrefix(code);
   const digits = typed.replace(/[\s\-.()]/g, '');
-  if (!digits.startsWith(prefix)) return `+${code} ${typed}`;
-  if (keepsInternationalPrefix(code)) return typed;
-  let index = 0, matched = 0;
-  while (index < typed.length && matched < prefix.length) {
-    if (/[\s\-.()]/.test(typed[index]!)) index += 1;
-    else { matched += 1; index += 1; }
+  let prefix = '';
+  for (const candidate of internationalPrefixList(code)) {
+    if (digits.startsWith(candidate) && candidate.length > prefix.length) prefix = candidate;
   }
-  while (index < typed.length && /[\s\-.()]/.test(typed[index]!)) index += 1;
-  const rest = typed.slice(index);
+  if (!prefix) return `+${code} ${typed}`;
+  if (keepsInternationalPrefix(code)) return typed;
+  let index = 0, matched = 0, openedBeforePrefix = false;
+  while (index < typed.length && matched < prefix.length) {
+    const ch = typed[index]!;
+    if (/[\s\-.()]/.test(ch)) {
+      if (matched === 0 && ch === '(') openedBeforePrefix = true;
+      index += 1;
+    } else {
+      matched += 1;
+      index += 1;
+    }
+  }
+  if (openedBeforePrefix && typed[index] === ')') index += 1;
+  while (index < typed.length && /[\s\-.]/.test(typed[index]!)) index += 1;
+  let rest = typed.slice(index).replace(/^\+\s*/, '');
+  if (rest.startsWith('(')) {
+    const close = rest.indexOf(')');
+    // A + inside that pair, as in `(+44)`, is dropped like one before it, so the result never starts with ++.
+    if (close !== -1) rest = (rest.slice(1, close) + rest.slice(close + 1)).replace(/^\s*\+\s*/, '');
+  }
+  const open = rest.indexOf('('), close = rest.indexOf(')');
+  if ((close !== -1 && (open === -1 || close < open)) || rest.split('(').length !== rest.split(')').length) return typed;
   // A calling code never starts with 0, so a rest that does (`00 …` with a one-digit prefix) isn't a number to send with +.
   return rest && !rest.startsWith('0') ? `+${rest}` : typed;
 }

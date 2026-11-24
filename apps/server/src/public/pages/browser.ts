@@ -15,8 +15,8 @@ export const refusalScript = publicCopyScript + String.raw`
   }`;
 /**
  * The browser twin of `joinPhone` (`@plaingym/shared/phone-countries`): `+<calling code> <number>` unless the number starts
- * with +, no country is chosen, or the number starts with the chosen country's international prefix, which is replaced with +
- * (or kept as typed when `data-keep-prefix` is `true`).
+ * with +, no country is chosen, or the number starts with one of the chosen country's international prefixes, which is
+ * replaced with + (or kept as typed when `data-keep-prefix` is `true`).
  */
 export const phoneScript = String.raw`
   function formPhone(form, fields) {
@@ -25,16 +25,35 @@ export const phoneScript = String.raw`
     const code = option ? option.getAttribute('data-calling-code') : null;
     if (!number) return '';
     if (number.startsWith('+') || !code) return number;
-    const prefix = option.getAttribute('data-international-prefix') || '00';
-    if (!number.replace(/[\s\-.()]/g, '').startsWith(prefix)) return '+' + code + ' ' + number;
-    if (option.getAttribute('data-keep-prefix') === 'true') return number;
-    let index = 0, matched = 0;
-    while (index < number.length && matched < prefix.length) {
-      if (/[\s\-.()]/.test(number[index])) index += 1;
-      else { matched += 1; index += 1; }
+    const prefixes = (option.getAttribute('data-international-prefix') || '').split(' ').filter(Boolean);
+    if (!prefixes.length) prefixes.push('00');
+    const digits = number.replace(/[\s\-.()]/g, '');
+    let prefix = '';
+    for (const candidate of prefixes) {
+      if (digits.startsWith(candidate) && candidate.length > prefix.length) prefix = candidate;
     }
-    while (index < number.length && /[\s\-.()]/.test(number[index])) index += 1;
-    const rest = number.slice(index);
+    if (!prefix) return '+' + code + ' ' + number;
+    if (option.getAttribute('data-keep-prefix') === 'true') return number;
+    let index = 0, matched = 0, openedBeforePrefix = false;
+    while (index < number.length && matched < prefix.length) {
+      const ch = number[index];
+      if (/[\s\-.()]/.test(ch)) {
+        if (matched === 0 && ch === '(') openedBeforePrefix = true;
+        index += 1;
+      } else {
+        matched += 1;
+        index += 1;
+      }
+    }
+    if (openedBeforePrefix && number[index] === ')') index += 1;
+    while (index < number.length && /[\s\-.]/.test(number[index])) index += 1;
+    let rest = number.slice(index).replace(/^\+\s*/, '');
+    if (rest.startsWith('(')) {
+      const close = rest.indexOf(')');
+      if (close !== -1) rest = (rest.slice(1, close) + rest.slice(close + 1)).replace(/^\s*\+\s*/, '');
+    }
+    const open = rest.indexOf('('), close = rest.indexOf(')');
+    if ((close !== -1 && (open === -1 || close < open)) || rest.split('(').length !== rest.split(')').length) return number;
     return rest && !rest.startsWith('0') ? '+' + rest : number;
   }`;
 /** Plain browser JavaScript stays independent of server bundler helpers. No hydration. */

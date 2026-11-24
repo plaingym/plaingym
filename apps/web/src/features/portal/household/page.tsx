@@ -141,6 +141,7 @@ function HouseholdForm({ household, scope, gymName, timezone, samePhone, saved, 
   const cache = useQueryClient();
   const draft = useDraft(householdContact(household), normalizeHousehold);
   const country = useBootstrap().data?.gym.country;
+  const [resets, setResets] = useState(0);
   const phoneChanged = normalizedPhone(draft.values.phone) !== normalizedPhone(household.phone);
   const refreshHousehold = () => cache.invalidateQueries({ queryKey: [...scope.key, 'household'] });
   // The ref guards handlers before React Query publishes the new pending state.
@@ -158,11 +159,12 @@ function HouseholdForm({ household, scope, gymName, timezone, samePhone, saved, 
       // A failed refetch falls back to the saved household, so retained edits rebase on the new revision once it loads.
       draft.reconcileSaved(result.changes, householdContact(refetched?.status === 'success' && refetched.data ? refetched.data : result.data));
     } else draft.reset();
+    setResets(count => count + 1);
     setSaved(result ? 'saved' : 'unchanged');
   }, onSettled: finishAction });
   const discard = useMutation({
     mutationFn: refetch,
-    onSuccess: () => { draft.reset(); save.reset(); },
+    onSuccess: () => { draft.reset(); setResets(count => count + 1); save.reset(); },
     onSettled: finishAction,
   });
   const changeConsent = useMutation({
@@ -199,7 +201,7 @@ function HouseholdForm({ household, scope, gymName, timezone, samePhone, saved, 
     <div className="grid gap-4 sm:grid-cols-2">
       <Field name="name" label={text('householdName')} value={draft.values.name} onChange={event => draft.set('name', event.target.value)} required />
       <Field name="email" label={text('email')} value={draft.values.email ?? ''} onChange={event => draft.set('email', event.target.value)} type="email" autoComplete="email" />
-      <PhoneInput id="household-phone" label={text('phone')} value={draft.values.phone ?? ''} onChange={value => draft.set('phone', value)} defaultCountry={country} />
+      <PhoneInput id="household-phone" label={text('phone')} value={draft.values.phone ?? ''} onChange={value => draft.set('phone', value)} defaultCountry={country} resetKey={resets} />
       {addressFields.map(field => <Field key={field} name={field} label={text('address_' + field)} value={draft.values.address[field] ?? ''}
         onChange={event => draft.set('address', { ...draft.values.address, [field]: event.target.value })}
         {...(field === 'countryCode' ? { maxLength: 2, pattern: '[A-Za-z]{2}' } : {})} />)}

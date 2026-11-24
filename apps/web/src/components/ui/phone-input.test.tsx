@@ -2,7 +2,7 @@
 // @vitest-environment jsdom
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { PhoneInput } from './phone-input.js';
 
@@ -47,6 +47,28 @@ describe('PhoneInput', () => {
     expect(country().value).toBe('CA');
     await user.type(number(), '604 555 0123');
     expect(onChange).toHaveBeenLastCalledWith('+1 604 555 0123');
+    expect(country().value).toBe('CA');
+  });
+
+  it('keeps a picked country while editing a + number, and still resets when typing + into a non-+ number', async () => {
+    const user = userEvent.setup(), onChange = vi.fn();
+    render(<Harness onChange={onChange}/>);
+    await user.type(number(), '+44 20 7946 0018');
+    await user.selectOptions(country(), 'GB');
+    expect(country().value).toBe('');
+    fireEvent.change(number(), { target: { value: '+4 20 7946 0018' } });
+    fireEvent.change(number(), { target: { value: '+ 20 7946 0018' } });
+    fireEvent.change(number(), { target: { value: '20 7946 0018' } });
+    expect(onChange).toHaveBeenLastCalledWith('+44 20 7946 0018');
+    expect(country().value).toBe('GB');
+
+    fireEvent.change(number(), { target: { value: '20 7946' } });
+    expect(country().value).toBe('GB');
+    fireEvent.change(number(), { target: { value: '+1 604 555 0100' } });
+    expect(country().value).toBe('');
+    expect(country().selectedOptions[0]!.textContent).toBe('Choose a country');
+    expect(onChange).toHaveBeenLastCalledWith('+1 604 555 0100');
+    await user.clear(number());
     expect(country().value).toBe('CA');
   });
 
