@@ -475,3 +475,26 @@ it('expires a cached sandbox, hides impersonation and rechecks discovery once', 
   await act(async () => { window.dispatchEvent(new Event('focus')); window.dispatchEvent(new Event('online')); await vi.advanceTimersByTimeAsync(60_000); });
   expect(fetcher).toHaveBeenCalledTimes(2);
 });
+it('keeps focus on the Demo menu button when closing the menu reveals the bar alert', async () => {
+  serve({ login: () => Promise.reject(new TypeError('Offline')) });
+  start(undefined, <PageSignIn />);
+  const menu = await openMenu();
+  fireEvent.click(within(menu).getByRole('button', { name: 'Sign in as owner' }));
+  await within(menu).findByRole('alert');
+  fireEvent.click(within(menu).getByRole('button', { name: 'Close demo menu' }));
+  const bar = screen.getByRole('complementary', { name: 'Demo controls' });
+  expect(within(bar).getByRole('alert')).toBeDefined();
+  expect(document.activeElement).toBe(within(bar).getByRole('button', { name: 'Demo menu' }));
+});
+it('focuses the bar alert once when a sign-in fails with the menu closed and no card mounted', async () => {
+  serve({ login: () => Promise.reject(new TypeError('Offline')) });
+  start(undefined, <PageSignIn />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Page sign-in' }));
+  const bar = screen.getByRole('complementary', { name: 'Demo controls' });
+  const alert = await within(bar).findByRole('alert');
+  expect(document.activeElement).toBe(alert);
+  const menu = await openMenu();
+  fireEvent.click(within(menu).getByRole('button', { name: 'Close demo menu' }));
+  expect(within(bar).getByRole('alert')).toBeDefined();
+  expect(document.activeElement).toBe(within(bar).getByRole('button', { name: 'Demo menu' }));
+});

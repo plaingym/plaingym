@@ -27,6 +27,7 @@ const sourceScanningTests = [
   'apps/server/src/areas/waivers/pdf.test.ts',
   'apps/server/src/core/cloudflare.test.ts',
   'apps/server/src/core/registry.test.ts',
+  'apps/server/src/demo/landing-menu.test.ts',
   'apps/server/src/demo/landing.test.ts',
   'apps/web/src/app/styles.test.ts',
   'apps/web/src/lib/api.sources.test.ts',

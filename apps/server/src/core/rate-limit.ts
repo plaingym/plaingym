@@ -147,6 +147,8 @@ export interface RateLimitOptions extends ClientIpOptions {
   readonly limit?: number;
   readonly windowMs?: number;
   readonly maxBuckets?: number;
+  /** Optional `error.details.reason` entry included when this limiter refuses a request. */
+  readonly reason?: string;
   /**
    * Requests this budget neither counts nor refuses, chosen where the limiter is mounted (the app's flood limit
    * passes the routes that carry their own budget). Never set on a route's own limiter.
@@ -249,6 +251,7 @@ export function rateLimit(options: RateLimitOptions = {}): MiddlewareHandler<Req
     if (!Number.isSafeInteger(value) || value <= 0) throw new Error('Rate limit settings must be positive integers');
   }
   const buckets = new RateBuckets(maxBuckets, (bucket) => bucket.count >= limit);
+  const details = options.reason ? { reason: [options.reason] } : undefined;
   return async (context, next) => {
     if (options.skip?.(context)) {
       await next();
@@ -262,7 +265,7 @@ export function rateLimit(options: RateLimitOptions = {}): MiddlewareHandler<Req
         now: clock.now().getTime(), windowMs, limit });
       if (!result.allowed) {
         context.header('Retry-After', String(Math.max(1, Math.ceil((result.resetAt - clock.now().getTime()) / 1000))));
-        throw new AppError('rate_limited', 'Too many requests.');
+        throw new AppError('rate_limited', 'Too many requests.', details);
       }
       await next();
       return;
@@ -273,7 +276,7 @@ export function rateLimit(options: RateLimitOptions = {}): MiddlewareHandler<Req
     const bucket = buckets.get(key, now) ?? buckets.add(key, { count: 0, resetAt: now + windowMs }, now);
     if (bucket.count >= limit) {
       context.header('Retry-After', String(Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))));
-      throw new AppError('rate_limited', 'Too many requests.');
+      throw new AppError('rate_limited', 'Too many requests.', details);
     }
     bucket.count++;
     await next();

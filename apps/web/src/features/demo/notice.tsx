@@ -220,9 +220,11 @@ export function DemoNotice() {
   // cleanup cannot reset the flag; a separate effect handles the notice unmounting.
   useEffect(() => { if (expires === undefined) setMenuOpen(false); }, [expires, setMenuOpen]);
   useEffect(() => () => { setMenuOpen(false); }, [setMenuOpen]);
-  // The fallback alert takes focus only when the error first appears, not when closing the menu reveals it.
-  const previousError = useRef(error), revealError = error && !previousError.current;
-  useEffect(() => { previousError.current = error; }, [error]);
+  // Reveal the fallback alert once per error occurrence, without moving focus out of the Demo menu button on close.
+  const showFallback = !menuOpen && cards === 0;
+  const revealed = useRef(false);
+  const revealError = error && showFallback && !revealed.current;
+  useEffect(() => { revealed.current = Boolean(error); }, [error, showFallback]);
   if (!expires) return null;
   return <aside className="border-b border-border bg-secondary px-4" aria-label={t('demo/demo:controls')}>
     <div className="mx-auto flex min-h-11 max-w-6xl items-center justify-between gap-3">
@@ -230,7 +232,7 @@ export function DemoNotice() {
         {mode?.mode === 'sandbox' && <>{' · '}<span className="text-muted-foreground">{t('demo/demo:barExpires', { time: shortTime(expires) })}</span></>}</p>
       <Button type="button" variant="outline" size="sm" className="shrink-0 whitespace-nowrap" aria-haspopup="dialog" onClick={() => setMenuOpen(true)}>{t('demo/demo:menu')}</Button>
     </div>
-    {error && !menuOpen && cards === 0 && <div className="mx-auto max-w-6xl pb-2"><Alert variant="error" focusOnReveal={revealError}>{t('demo/demo:error')}</Alert></div>}
+    {error && showFallback && <div className="mx-auto max-w-6xl pb-2"><Alert variant="error" focusOnReveal={revealError}>{t('demo/demo:error')}</Alert></div>}
     {mode?.mode === 'showcase' && <div className="mx-auto flex max-w-6xl flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between"><p className="text-sm">{t('demo/demo:copyHelp')}</p><CreateCopyButton /></div>}
     {menuOpen && <DemoMenu expires={mode?.mode === 'showcase' ? undefined : expires} onClose={() => setMenuOpen(false)} />}
   </aside>;

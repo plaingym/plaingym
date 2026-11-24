@@ -17,7 +17,7 @@ import { clock as defaultClock, type Clock } from '../core/clock.js';
 import { defaultSourceUrl } from '../core/source-link.js';
 import { readPublicStylesheet } from '../public/pages/pages.routes.js';
 import { createLandingAssets, type readLandingAsset } from './landing.assets.js';
-import { demoLandingDirectives, demoLandingPage } from './landing.page.js';
+import { demoLandingDirectives, demoLandingPage, menuScriptSource } from './landing.page.js';
 import screenshots from './screenshots.json' with { type: 'json' };
 
 const screenshotFiles = new Set(Object.values(screenshots).flatMap(shot => [...shot.light, ...shot.dark]));
@@ -32,7 +32,7 @@ export function createDemoRoutes(service: DemoService, options: {
   outbox?: ReturnType<typeof createOutboxQuery>; scope?: typeof forGym; readAsset?: typeof readLandingAsset;
 }) {
   const assets = options.readAsset ? createLandingAssets(options.readAsset) : landingAssets;
-  const limiter = rateLimit({ ...options.clientIp, sharedKey: 'demo.create', limit: 3, windowMs: 60 * 60 * 1000 });
+  const limiter = rateLimit({ ...options.clientIp, sharedKey: 'demo.create', limit: 3, windowMs: 60 * 60 * 1000, reason: 'demo_copy_limit' });
   const loginLimiter = rateLimit({ ...options.clientIp, sharedKey: 'demo.login', limit: demoLoginRateLimit.max, windowMs: demoLoginRateLimit.window * 1000 });
   const guard = csrf(c => options.pool && (c.req.header('host') ?? new URL(c.req.url).host) === options.pool.showcaseHostname
     ? `https://${options.pool.showcaseHostname}` : options.installOrigin), outbox = options.outbox ?? createOutboxQuery();
@@ -171,7 +171,7 @@ export function createDemoRoutes(service: DemoService, options: {
             const [showcase, stylesheet, menuScript] = await Promise.all([options.pool?.showcase(), assets.stylesheet(), assets.menuScript()]);
             const menuScriptFile = menuScript?.file;
             c.header('cache-control', 'no-store');
-            setPolicy(c, demoLandingDirectives(menuScriptFile ? `${host}/demo-assets/${menuScriptFile}` : undefined));
+            setPolicy(c, demoLandingDirectives(menuScriptFile ? menuScriptSource(host, menuScriptFile) : undefined));
             c.res = c.html(demoLandingPage(showcase, options.sourceUrl ?? defaultSourceUrl, {
               stylesheetFile: stylesheet?.file, menuScriptFile,
             }));

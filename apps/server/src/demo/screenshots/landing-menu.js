@@ -12,7 +12,13 @@ document.addEventListener('click', event => {
   if (!href?.startsWith('#')) return;
   const target = document.getElementById(href.slice(1));
   if (!target) return;
-  if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
   // Let the menu close and native fragment navigation scroll before moving focus.
-  requestAnimationFrame(() => target.focus({ preventScroll: true }));
+  requestAnimationFrame(() => {
+    if (event.defaultPrevented) return;
+    if (!target.hasAttribute('tabindex')) {
+      target.setAttribute('tabindex', '-1');
+      target.addEventListener('blur', () => target.removeAttribute('tabindex'), { once: true });
+    }
+    target.focus({ preventScroll: true });
+  });
 });

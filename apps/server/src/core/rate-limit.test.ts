@@ -2,7 +2,7 @@
 import { expect, it, vi } from 'vitest';
 import { createApp } from './app.js';
 import { TestClock } from './clock.js';
-import { clientKey, contractRequest, failureBudget, RateBuckets, rateLimit, type RateLimitOptions } from './rate-limit.js';
+import { clientKey, contractRequest, failureBudget, RateBuckets, rateLimit, type RateLimitOptions, type SharedRateLimitStore } from './rate-limit.js';
 
 // Multi-gym mode by default: the flood limit runs after gym resolution, so these tests see per-gym budgets.
 function fixture(options: RateLimitOptions = {}, tenancy: 'single' | 'multi' = 'multi') {
@@ -277,4 +277,33 @@ it('limits requests before the session middleware answers them', async () => {
   expect((await app.request('/api/auth/sign-in/email', { method: 'POST' })).status).toBe(200);
   expect((await app.request('/api/auth/sign-in/email', { method: 'POST' })).status).toBe(429);
   expect(answered).toBe(1);
+});
+
+it.each(['memory', 'shared'] as const)('includes details.reason only when a limiter sets a reason (%s)', async (path) => {
+  const counts = new Map<string, number>();
+  const sharedStore: SharedRateLimitStore = {
+    async consume({ routeKey, clientKey, now, windowMs, limit }) {
+      const key = `${routeKey}:${clientKey}`;
+      const next = (counts.get(key) ?? 0) + 1;
+      counts.set(key, next);
+      return { allowed: next <= limit, resetAt: now + windowMs };
+    },
+    async reserve() { return { allowed: true, resetAt: 0 }; },
+  };
+  const { app } = fixture({ limit: 100 });
+  const store = path === 'shared' ? { sharedStore } : {};
+  app.post('/with-reason', rateLimit({ sharedKey: 'test.withReason', limit: 3, reason: 'x', ...store }), c => c.json({ ok: true }));
+  app.post('/no-reason', rateLimit({ sharedKey: 'test.noReason', limit: 3, ...store }), c => c.json({ ok: true }));
+  for (let i = 0; i < 3; i++) {
+    expect((await app.request('/with-reason', { method: 'POST' })).status).toBe(200);
+    expect((await app.request('/no-reason', { method: 'POST' })).status).toBe(200);
+  }
+  const withReason = await app.request('/with-reason', { method: 'POST' });
+  expect(withReason.status).toBe(429);
+  expect(await withReason.json()).toMatchObject({ error: { code: 'rate_limited', details: { reason: ['x'] } } });
+  const withoutReason = await app.request('/no-reason', { method: 'POST' });
+  expect(withoutReason.status).toBe(429);
+  const body = await withoutReason.json() as { error: Record<string, unknown> };
+  expect(body.error).toMatchObject({ code: 'rate_limited' });
+  expect(body.error).not.toHaveProperty('details');
 });

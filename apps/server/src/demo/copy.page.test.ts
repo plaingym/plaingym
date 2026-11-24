@@ -39,12 +39,18 @@ async function openCopyDialog(copy: Response, pathname = '/join', bootstrap = Re
   return { button: button!, status: dialog.querySelector('[role="status"]')!, assign, expectRequests };
 }
 
+const copyLimitResponse = (retryAfter?: string) => Response.json(
+  { error: { details: { reason: ['demo_copy_limit'] } } },
+  { status: 429, ...(retryAfter === undefined ? {} : { headers: { 'Retry-After': retryAfter } }) },
+);
+
 it.each([
   ['/join', '2400', 40],
+  ['/join', '1800', 30],
   ['/trial', '59', 1],
   ['/drop-in', '61', 2],
 ] as const)('shows the hourly-limit wait on %s after Retry-After: %s', async (page, retryAfter, minutes) => {
-  const dialog = await openCopyDialog(new Response(null, { status: 429, headers: { 'Retry-After': retryAfter } }), page);
+  const dialog = await openCopyDialog(copyLimitResponse(retryAfter), page);
   await vi.waitFor(() => expect(dialog.status.textContent).toBe(messages.copyLimitError.replace('{minutes}', String(minutes))));
   expect(dialog.button.disabled).toBe(false);
   expect(dialog.assign).not.toHaveBeenCalled();
@@ -52,9 +58,15 @@ it.each([
 });
 
 it.each(['0', 'abc', '1.5', '9007199254740992', undefined])('shows capacity for Retry-After: %s', async retryAfter => {
-  const headers = new Headers();
-  if (retryAfter !== undefined) headers.set('Retry-After', retryAfter);
-  const dialog = await openCopyDialog(new Response(null, { status: 429, headers }));
+  const dialog = await openCopyDialog(copyLimitResponse(retryAfter));
+  await vi.waitFor(() => expect(dialog.status.textContent).toBe(messages.capacityError));
+  expect(dialog.button.disabled).toBe(false);
+  expect(dialog.assign).not.toHaveBeenCalled();
+  dialog.expectRequests();
+});
+
+it('shows capacity for a 429 with Retry-After: 1 and no demo_copy_limit reason', async () => {
+  const dialog = await openCopyDialog(new Response(null, { status: 429, headers: { 'Retry-After': '1' } }));
   await vi.waitFor(() => expect(dialog.status.textContent).toBe(messages.capacityError));
   expect(dialog.button.disabled).toBe(false);
   expect(dialog.assign).not.toHaveBeenCalled();

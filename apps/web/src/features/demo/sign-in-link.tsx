@@ -13,10 +13,11 @@ const request = createJsonTransport();
 export function DemoShowcaseSignIn() {
   const { error } = useDemoLogin();
   const showHere = useDemoErrorCard();
-  // Reveal the card's error only when it first appears. While the menu holds the error the
-  // alert is unmounted, so closing the menu must not move focus out of the Demo menu button.
-  const previousError = useRef(error), revealError = error && !previousError.current && showHere;
-  useEffect(() => { previousError.current = error; }, [error]);
+  // Reveal the card's alert once per error occurrence (including an error that existed before mount),
+  // without stealing focus from the Demo menu button when closing the menu shows the card again.
+  const revealed = useRef(false);
+  const revealError = error && showHere && !revealed.current;
+  useEffect(() => { revealed.current = Boolean(error); }, [error, showHere]);
   return <div className="space-y-4">
     <p className="text-sm">{t('demo/demo:showcaseSignIn')}</p>
     <DemoSignInButtons />

@@ -44,14 +44,17 @@ it('shows the bounded queue position and polls without creating a second request
   expect(fetcher).toHaveBeenCalledTimes(3);
   expect(fetcher.mock.calls[2]![0]).toBe('/api/demo/creations/' + 'b'.repeat(43));
 });
+const copyLimitBody = { error: { details: { reason: ['demo_copy_limit'] } } };
 it.each([
-  [429, '2400', "You've reached the hourly limit on new demo copies from this network. Please try again in 40 min."],
-  [429, '30', "You've reached the hourly limit on new demo copies from this network. Please try again in 1 min."],
-  [429, undefined, 'Demo capacity is temporarily full. Please try again later.'],
-  [429, '30.5', 'Demo capacity is temporarily full. Please try again later.'],
-  [500, undefined, 'We could not create your demo gym. Retry below. If this continues, the demo operator needs to check payment and storage access.'],
-] as const)('explains HTTP %s with Retry-After %s and re-enables the copy button', async (status, retryAfter, message) => {
-  const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(bootstrap()).mockResolvedValueOnce(Response.json({}, {
+  [429, '2400', copyLimitBody, "You've reached the hourly limit on new demo copies from this network. Please try again in 40 min."],
+  [429, '1800', copyLimitBody, "You've reached the hourly limit on new demo copies from this network. Please try again in 30 min."],
+  [429, '30', copyLimitBody, "You've reached the hourly limit on new demo copies from this network. Please try again in 1 min."],
+  [429, '1', {}, 'Demo capacity is temporarily full. Please try again later.'],
+  [429, undefined, copyLimitBody, 'Demo capacity is temporarily full. Please try again later.'],
+  [429, '30.5', copyLimitBody, 'Demo capacity is temporarily full. Please try again later.'],
+  [500, undefined, {}, 'We could not create your demo gym. Retry below. If this continues, the demo operator needs to check payment and storage access.'],
+] as const)('explains HTTP %s with Retry-After %s and re-enables the copy button', async (status, retryAfter, body, message) => {
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(bootstrap()).mockResolvedValueOnce(Response.json(body, {
     status, ...(retryAfter === undefined ? {} : { headers: { 'Retry-After': retryAfter } }),
   }));
   vi.stubGlobal('fetch', fetcher);
@@ -62,4 +65,12 @@ it.each([
   expect(button.disabled).toBe(false);
   const creations = fetcher.mock.calls.filter(([path]) => path === '/api/demo/sandboxes');
   expect(creations.map(([, init]) => init?.method)).toEqual(['POST']);
+});
+it('shows the capacity message for a non-JSON 429 response even with Retry-After', async () => {
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(bootstrap())
+    .mockResolvedValueOnce(new Response('busy', { status: 429, headers: { 'Retry-After': '1800' } }));
+  vi.stubGlobal('fetch', fetcher);
+  render(<CreateCopyButton />);
+  fireEvent.click(screen.getByRole('button'));
+  expect((await screen.findByRole('alert')).textContent).toBe('Demo capacity is temporarily full. Please try again later.');
 });

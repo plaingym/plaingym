@@ -48,10 +48,19 @@ export function CreateCopyButton({ navigate = (url: string) => window.location.a
     if (controller.current) return;
     const abort = new AbortController(); controller.current = abort;
     setPending(true); setError(undefined);
-    let retryAfter = '';
+    let retryAfter = '', copyLimited = false;
     const createCopy = createJsonTransport(async (input, init) => {
       const response = await fetch(input, init);
-      if (response.status === 429) retryAfter = response.headers.get('Retry-After') ?? '';
+      if (response.status === 429) {
+        retryAfter = response.headers.get('Retry-After') ?? '';
+        try {
+          const body = await response.clone().json() as { error?: { details?: { reason?: unknown } } };
+          const reason = body?.error?.details?.reason;
+          copyLimited = Array.isArray(reason) && reason.includes('demo_copy_limit');
+        } catch {
+          copyLimited = false;
+        }
+      }
       return response;
     });
     try {
@@ -77,7 +86,7 @@ export function CreateCopyButton({ navigate = (url: string) => window.location.a
       if (abort.signal.aborted) return;
       if (failure instanceof ApiError && failure.status === 429) {
         const seconds = /^\d+$/.test(retryAfter) ? Number(retryAfter) : 0;
-        setError(Number.isSafeInteger(seconds) && seconds >= 1
+        setError(copyLimited && Number.isSafeInteger(seconds) && seconds >= 1
           ? { key: 'demo/demo:copyLimitError', minutes: Math.max(1, Math.ceil(seconds / 60)) }
           : { key: 'demo/demo:capacityError' });
       } else {

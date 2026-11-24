@@ -145,7 +145,11 @@ describe('demo boundaries and sandbox lifecycle', () => {
     const routes = createDemoRoutes(f.service, { installOrigin: 'https://demo.example.test', clientIp: { peerAddress: () => '192.0.2.10' } });
     const { app } = appFor(routes, infraContractGyms.a, 'anonymous');
     for (let i = 0; i < 3; i++) expect((await post(app, '/api/demo/sandboxes', {}, { 'x-forwarded-for': '192.0.2.' + i })).status).toBe(201);
-    expect((await post(app, '/api/demo/sandboxes')).status).toBe(429); expect(create).toHaveBeenCalledTimes(3);
+    const limited = await post(app, '/api/demo/sandboxes');
+    expect(limited.status).toBe(429);
+    expect(Number(limited.headers.get('retry-after'))).toBeGreaterThan(60);
+    expect(await limited.json()).toMatchObject({ error: { code: 'rate_limited', details: { reason: ['demo_copy_limit'] } } });
+    expect(create).toHaveBeenCalledTimes(3);
   });
   it('does not expire a fresh sandbox or an ordinary gym; expires a sandbox at exactly 24 hours', async () => {
     const f = fixture(), sandbox = await f.service.create();

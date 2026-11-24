@@ -8,7 +8,7 @@ import type { RequestEnvironment } from '../core/context.js';
 import type { PermissionMiddleware } from '../core/registry.js';
 import { mountSourceLink } from '../core/source-link.js';
 import { setLogSink } from '../core/log.js';
-import { costKeys, demoLandingPage, featureKeys, securityKeys } from './landing.page.js';
+import { costKeys, demoLandingPage, featureKeys, menuScriptSource, securityKeys } from './landing.page.js';
 import { createLandingAssets, readLandingAsset } from './landing.assets.js';
 import { readFile, readdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -425,4 +425,27 @@ it('uses a GitHub fork repository root without losing its release source link', 
   expect(html).toContain('href="https://github.com/example/gym"');
   expect(html).toContain('&lt;pitch&gt;');
   expect(html).not.toContain('<pitch>');
+});
+it('uses host-qualified script-src for DNS and IPv4 hosts and falls back to self for IPv6 hosts', async () => {
+  const file = 'landing-menu-0123456789abcdef.js';
+  expect(menuScriptSource('gym.example.com', file)).toBe(`gym.example.com/demo-assets/${file}`);
+  expect(menuScriptSource('192.0.2.1:3000', file)).toBe(`192.0.2.1:3000/demo-assets/${file}`);
+  expect(menuScriptSource('[::1]:3000', file)).toBe("'self'");
+
+  const scriptSrcFor = async (installOrigin: string) => {
+    const app = new OpenAPIHono<RequestEnvironment>();
+    const authorize: PermissionMiddleware = () => async (_c, next) => { await next(); };
+    const service = new Proxy({} as DemoService, { get: () => { throw new Error('Unexpected demo service access'); } });
+    const pool = { showcase: async () => showcase } as NonNullable<Parameters<typeof createDemoRoutes>[1]['pool']>;
+    for (const route of createDemoRoutes(service, { installOrigin, enabled: true, sourceUrl: source, pool }))
+      route.mount(app, authorize);
+    const response = await app.request(installOrigin + '/');
+    expect(response.status).toBe(200);
+    return response.headers.get('content-security-policy')?.split('; ').find(part => part.startsWith('script-src '));
+  };
+  const body = await readLandingAsset('landing-menu.js');
+  const scriptFile = `landing-menu-${createHash('sha256').update(body).digest('hex').slice(0, 16)}.js`;
+  expect(await scriptSrcFor('https://gym.example.com')).toBe(`script-src gym.example.com/demo-assets/${scriptFile}`);
+  expect(await scriptSrcFor('http://192.0.2.1:3000')).toBe(`script-src 192.0.2.1:3000/demo-assets/${scriptFile}`);
+  expect(await scriptSrcFor('http://[::1]:3000')).toBe("script-src 'self'");
 });
