@@ -161,6 +161,13 @@ describe('signed links by text', () => {
     await expect(f.links.send(f.context, f.request())).rejects.toMatchObject({ code: 'invalid_request' });
     expect(await f.rows()).toHaveLength(0);
   });
+  it('refuses a text send with delivery_unavailable when no text delivery is configured', async () => {
+    const f = await fixture();
+    const unconfigured = createSignedLinksService({ scope: db.forGym, clock: f.clock });
+    await expect(unconfigured.send(f.context, f.request()))
+      .rejects.toMatchObject({ code: 'unavailable', details: { reason: ['delivery_unavailable'] } });
+    expect(await f.rows()).toHaveLength(0);
+  });
   it('returns not found for a foreign household even without an SMS transport', async () => {
     const f = await fixture(), foreign = await fixture();
     const unconfigured = createSignedLinksService({ scope: db.forGym, clock: f.clock });
@@ -191,13 +198,23 @@ describe('signed links by text', () => {
   });
   it.each(['not_accepted', 'suppressed'] as const)('releases a %s attempt and revokes its undisclosed credential', async reason => {
     const f = await fixture(), request = f.request();
-    f.sms.respondNext(reason === 'not_accepted' ? new DeliveryError('not_accepted', 'Refused') : { status: 'suppressed', reason: 'disabled' });
-    await expect(f.links.send(f.context, request)).rejects.toMatchObject({ code: 'unavailable' });
+    f.sms.respondNext(reason === 'not_accepted' ? new DeliveryError('not_accepted', 'Refused') : { status: 'suppressed', reason: 'no_consent' });
+    await expect(f.links.send(f.context, request))
+      .rejects.toMatchObject({ code: 'unavailable', details: { reason: [reason === 'not_accepted' ? 'delivery_failed' : 'recipient_suppressed_sms'] } });
     expect((await f.rows())[0]!.revokedAt).not.toBeNull();
     const retried = await f.links.send(f.context, request);
     expect(retried.revokedAt).toBeNull();
     expect(await f.links.send(f.context, request)).toEqual(retried);
     expect(f.sms.messages).toHaveLength(1);
+  });
+  it.each([
+    ['disabled', 'delivery_unavailable'], ['no_provider', 'delivery_unavailable'],
+    ['cap_reached', 'delivery_failed'], ['phone_changed', 'delivery_failed'],
+  ] as const)('reports a %s suppression as %s, not an opt-out', async (suppression, reason) => {
+    const f = await fixture();
+    f.sms.respondNext({ status: 'suppressed', reason: suppression });
+    await expect(f.links.send(f.context, f.request())).rejects.toMatchObject({ code: 'unavailable', details: { reason: [reason] } });
+    expect((await f.rows())[0]!.revokedAt).not.toBeNull();
   });
   it('refuses a generation reused for another recipient and serializes concurrent sends', async () => {
     const f = await fixture(), request = f.request();
@@ -215,7 +232,7 @@ describe('signed links by text', () => {
       await db.forGym(f.gymId, tx => tx.update(households).set({ smsNoticesConsentAt: null, smsNoticesConsentSource: null }).where(eq(households.id, f.home.id)));
       return { gymId: f.gymId, name: 'Gym', sms: f.sms };
     };
-    await expect(f.links.send(f.context, f.request())).rejects.toMatchObject({ code: 'unavailable' });
+    await expect(f.links.send(f.context, f.request())).rejects.toMatchObject({ code: 'unavailable', details: { reason: ['recipient_suppressed_sms'] } });
     expect((await f.rows())[0]!.revokedAt).not.toBeNull();
     expect((await db.forGym(f.gymId, tx => tx.select().from(smsDeliveries)))[0]!.state).toBe('not_accepted');
     expect(f.sms.messages).toHaveLength(0);

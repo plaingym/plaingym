@@ -451,39 +451,71 @@ describe('email failure and suppression', () => {
   });
   it('requires explicit delivery configuration and does not mint a token when absent', async () => {
     const before = (await service.list(gymA)).pagination.total;
-    await expect(service.send(mutation, sendRequest())).rejects.toMatchObject({ code: 'unavailable' });
+    await expect(service.send(mutation, sendRequest())).rejects.toMatchObject({ code: 'unavailable', details: { reason: ['delivery_unavailable'] } });
     expect((await service.list(gymA)).pagination.total).toBe(before);
   });
   it('does not prepare or deliver email inside a transaction', async () => {
     await expect(runInTransaction(() => sending.send(mutation, sendRequest()))).rejects.toThrow();
   });
   it.each(['transport', 'suppressed'] as const)('revokes the fresh token on %s failure and hides transport errors', async (failure) => {
-    email.respondNext(failure === 'transport' ? new DeliveryError('not_accepted', 'SMTP private credentials') : { status: 'suppressed', reason: 'disabled' });
-    await expect(sending.send(mutation, sendRequest())).rejects.toMatchObject({ code: 'unavailable', message: 'Signed link email was not delivered' });
+    email.respondNext(failure === 'transport' ? new DeliveryError('not_accepted', 'SMTP private credentials') : { status: 'suppressed', reason: 'opt_out' });
+    await expect(sending.send(mutation, sendRequest())).rejects.toMatchObject({ code: 'unavailable', message: 'Signed link email was not delivered',
+      details: { reason: [failure === 'transport' ? 'delivery_failed' : 'recipient_suppressed'] } });
     const newest = (await service.list(gymA, { limit: 1 })).data[0]!;
     expect(newest.revokedAt).toBe(clock.now().toISOString());
     expect(newest.usedAt).toBeNull();
   });
+  it('reports email_disabled when the transport suppresses for a disabled switch', async () => {
+    email.respondNext({ status: 'suppressed', reason: 'disabled' });
+    await expect(sending.send(mutation, sendRequest())).rejects.toMatchObject({ code: 'unavailable', details: { reason: ['email_disabled'] } });
+    expect((await service.list(gymA, { limit: 1 })).data[0]!.revokedAt).not.toBeNull();
+  });
+  it('reports delivery_unavailable when preparation finds no SMTP, before creating a credential', async () => {
+    const unconfigured = createSignedLinksService({ scope: database.forGym, clock, delivery: {
+      async prepare() { throw new AppError('unavailable', 'Email is not configured for this gym'); },
+    } });
+    const before = (await service.list(gymA)).pagination.total;
+    await expect(unconfigured.send(mutation, sendRequest()))
+      .rejects.toMatchObject({ code: 'unavailable', message: 'Email is not configured for this gym', details: { reason: ['delivery_unavailable'] } });
+    expect((await service.list(gymA)).pagination.total).toBe(before);
+  });
   it.each([
-    { origin: 'https://evil.test/path' }, { origin: 'https://user:pass@evil.test' }, { origin: 'javascript:alert(1)' },
-    { gymId: gymB }, { memberEmailsEnabled: false },
-  ])('rejects invalid configuration before creating a credential: %j', async (changes) => {
+    [{ origin: 'https://evil.test/path' }, 'delivery_unavailable'],
+    [{ origin: 'https://user:pass@evil.test' }, 'delivery_unavailable'],
+    [{ origin: 'javascript:alert(1)' }, 'delivery_unavailable'],
+    [{ gymId: gymB }, 'delivery_unavailable'],
+    [{ memberEmailsEnabled: false }, 'email_disabled'],
+  ] as const)('rejects invalid configuration before creating a credential: %j', async (changes, reason) => {
     const configured = createSignedLinksService({ scope: database.forGym, clock, delivery: { async prepare() { return { ...delivery, ...changes }; } } });
     const before = (await service.list(gymA)).pagination.total;
-    await expect(configured.send(mutation, sendRequest())).rejects.toThrow();
+    await expect(configured.send(mutation, sendRequest())).rejects.toMatchObject({ code: 'unavailable', details: { reason: [reason] } });
     expect((await service.list(gymA)).pagination.total).toBe(before);
+  });
+  it('reports email_disabled and revokes when member email is turned off during send', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId, { memberEmailsEnabled: false });
+    const home = await factory('households', gymId, { email: 'payer@example.test' });
+    const toggled = createSignedLinksService({ scope: database.forGym, clock, delivery: {
+      async prepare() { return { ...delivery, gymId, memberEmailsEnabled: true }; },
+    } });
+    const before = email.messages.length;
+    await expect(toggled.send({ ...mutation, gymId }, { ...sendRequest(), householdId: home.id }))
+      .rejects.toMatchObject({ code: 'unavailable', details: { reason: ['email_disabled'] } });
+    expect(email.messages).toHaveLength(before);
+    expect((await service.list(gymId, { householdId: home.id })).data[0]!.revokedAt).not.toBeNull();
   });
   it.each([{ emailOptOut: true }, { emailDeliverable: false }])('respects member suppression %j and revokes the undisclosed credential', async (flags) => {
     const household = await factory('households', gymA, { email: 'suppressed@example.test' });
     await factory('members', gymA, { householdId: household.id, email: household.email, ...flags });
     const before = email.messages.length;
-    await expect(sending.send(mutation, { ...sendRequest(), householdId: household.id })).rejects.toMatchObject({ code: 'unavailable' });
+    await expect(sending.send(mutation, { ...sendRequest(), householdId: household.id }))
+      .rejects.toMatchObject({ code: 'unavailable', details: { reason: ['recipient_suppressed'] } });
     expect(email.messages).toHaveLength(before);
     expect((await service.list(gymA, { householdId: household.id })).data[0]!.revokedAt).not.toBeNull();
   });
   it('refuses missing household email without sending to a fallback member', async () => {
     const before = email.messages.length;
-    await expect(sending.send(mutation, { ...sendRequest(), householdId: householdOther })).rejects.toMatchObject({ code: 'unavailable' });
+    await expect(sending.send(mutation, { ...sendRequest(), householdId: householdOther }))
+      .rejects.toMatchObject({ code: 'unavailable', details: { reason: ['household_email_missing'] } });
     expect(email.messages).toHaveLength(before);
   });
 });

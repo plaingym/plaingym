@@ -61,6 +61,15 @@ and return a generic unavailable error; a possibly accepted send keeps its link 
 switch immediately before sending, after asynchronous preparation and rendering;
 the prepared value cannot authorize a send after the switch is turned off.
 
+Send refusals for email or text delivery keep their 503 (`unavailable`) status code and
+carry one `details.reason` code: `household_email_missing` (the household has no valid
+email), `email_disabled` (member email is turned off), `recipient_suppressed` (email
+suppressed), `recipient_suppressed_sms` (the text recipient has no consent),
+`delivery_unavailable` (delivery is not configured, the gym has no SMTP, texting is turned
+off or has no provider, or the origin config is invalid), or `delivery_failed` (any other
+delivery or transport failure, including the daily text cap or a changed phone). No reason, message, or log includes an
+email address, phone number, token, or provider error text.
+
 `POST /api/links/send` requires `sendGeneration`, a UUID naming one send command: the client keeps it
 while retrying and picks a new one for a deliberate resend. The delivery key is
 `links.send.<purpose>:<household>:<generation>`, and its `email_deliveries` row is reserved and names

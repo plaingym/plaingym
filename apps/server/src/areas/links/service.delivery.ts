@@ -59,7 +59,7 @@ export function validateSignedLinkOrigin(delivery: { gymId: string; origin: stri
   const url = new URL(delivery.origin);
   if (delivery.gymId !== gymId || !['https:', 'http:'].includes(url.protocol) || url.username || url.password
       || url.pathname !== '/' || url.search || url.hash)
-    throw new AppError('unavailable', 'Invalid signed link delivery configuration');
+    throw new AppError('unavailable', 'Invalid signed link delivery configuration', { reason: ['delivery_unavailable'] });
 }
 /** Checked in the transaction that creates the credential, before it can be minted. */
 export async function signedLinkSmsRecipient(tx: Transaction, gymId: string, householdId: string,
@@ -96,7 +96,7 @@ export interface SignedLinkDelivery {
 }
 export function validateSignedLinkDelivery(delivery: PreparedSignedLinkDelivery, gymId: string): void {
   validateSignedLinkOrigin(delivery, gymId);
-  if (!delivery.memberEmailsEnabled) throw new AppError('unavailable', 'Member email is disabled');
+  if (!delivery.memberEmailsEnabled) throw new AppError('unavailable', 'Member email is disabled', { reason: ['email_disabled'] });
 }
 export async function deliverSignedLink(input: {
   scope: typeof forGym;
@@ -131,16 +131,17 @@ export async function deliverSignedLink(input: {
     // A waiver link also goes nowhere if its signer can't receive email.
     const found = await householdRecipient(tx, context.gymId, link.householdId,
       link.purpose === 'sign_waiver' ? link.memberId ?? undefined : undefined);
-    if (!found || /[\r\n\0]/.test(found.email)) throw new AppError('invalid_request', 'Household email is missing or invalid');
-    if (found.suppressed) throw new AppError('unavailable', 'Signed link recipient email is suppressed');
+    if (!found || /[\r\n\0]/.test(found.email)) throw new AppError('invalid_request', 'Household email is missing or invalid', { reason: ['household_email_missing'] });
+    if (found.suppressed) throw new AppError('unavailable', 'Signed link recipient email is suppressed', { reason: ['recipient_suppressed'] });
     return found.email;
   });
   const url = manualPayment ? '' : new URL(`/l/${token}`, delivery.origin).href;
   const content = await renderSignedLink({ gymName: delivery.gymName, url, purpose: link.purpose, manualPayment,
     ...(input.noticeKey ? { noticeKey: input.noticeKey } : {}) }, delivery.t);
   if (!(await createGymSettingsAccessor({ scope }).get(context.gymId)).memberEmailsEnabled)
-    throw new AppError('unavailable', 'Member email is disabled');
+    throw new AppError('unavailable', 'Member email is disabled', { reason: ['email_disabled'] });
   const result = await delivery.email.sendEmail({ to: recipient, ...content });
-  if (result.status !== 'sent') throw new AppError('unavailable', 'Signed link email was suppressed');
+  if (result.status !== 'sent') throw new AppError('unavailable', 'Signed link email was suppressed',
+    { reason: [result.reason === 'disabled' ? 'email_disabled' : 'recipient_suppressed'] });
   return !manualPayment;
 }

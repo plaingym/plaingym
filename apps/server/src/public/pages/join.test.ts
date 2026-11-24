@@ -1307,7 +1307,7 @@ describe('public join pages through the production registrations', () => {
     expect(returned.status).toBe(200);
     const html = await returned.text();
     expect(html).toContain('This membership has ended');
-    expect(html).toContain('The gym has ended the membership from this sign-up');
+    expect(html).toContain('The membership from this sign-up has ended');
     expect(html).toContain('Please contact the gym if you have questions');
     expect(html).not.toContain('The gym has closed this payment');
     expect(html).not.toContain('a sign-in link is on its way');
@@ -1964,7 +1964,7 @@ describe('join return page after a membership ends', () => {
     expect(ended.status).toBe(200);
     const endedHtml = await ended.text();
     expect(endedHtml).toContain('This membership has ended');
-    expect(endedHtml).toContain('The gym has ended the membership from this sign-up');
+    expect(endedHtml).toContain('The membership from this sign-up has ended');
     expect(endedHtml).not.toContain('The gym has closed this payment');
     expect(endedHtml).not.toContain('Confirming');
   });
@@ -2035,7 +2035,7 @@ describe('join return page after a membership ends', () => {
       expect(response.headers.get('location')).toBeNull();
       const html = await response.text();
       expect(html).toContain('This membership has ended');
-      expect(html).toContain('The gym has ended the membership from this sign-up');
+      expect(html).toContain('The membership from this sign-up has ended');
       expect(html).not.toContain('The gym has closed this payment');
       expect(html).not.toContain('Confirming');
     }

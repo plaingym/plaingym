@@ -128,10 +128,13 @@ function memberSmsRefusal(person: Member, household: Household, purpose: Purpose
 function refusalMessage(failure: unknown, delivery: string, household: Household) {
   const reason = failure instanceof InvoiceRequestError ? failure.reason : '';
   const sms = delivery.startsWith('sms:');
+  if (['household_email_missing', 'email_disabled', 'recipient_suppressed', 'recipient_suppressed_sms', 'delivery_unavailable', 'delivery_failed'].includes(reason)) {
+    return text('errors.' + reason);
+  }
   if (['sms_no_consent', 'sms_invalid_phone', 'sms_payer_only', 'forbidden'].includes(reason)) return text('errors.' + reason);
-  // The server reports a missing household email as an undelivered email (a 503 without a reason), so check the address first.
+  // Fallback for a reasonless 503: check the household email before assuming delivery is unavailable.
   if (delivery === 'email' && failure instanceof InvoiceRequestError && !validEmail(household.email)) return text('errors.household_email');
-  // The client reads a 503 without a reason as `payments_unavailable`: delivery is off, not set up or suppressed.
+  // The client reads a 503 without a reason as `payments_unavailable`; the server names each send refusal, so this is a fallback.
   if (reason === 'payments_unavailable') return text(sms ? 'errors.text_unavailable' : 'errors.email_unavailable');
   return text('errors.failed');
 }

@@ -144,8 +144,15 @@ it('reuses the generation after a network error and takes a new one for a delibe
   expect(api.link.mock.calls[2]![1]).not.toBe(api.link.mock.calls[1]![1]);
 });
 it.each([
+  ['email', new InvoiceRequestError('household_email_missing'), 'The household has no valid email address.'],
+  ['email', new InvoiceRequestError('email_disabled'), 'Member email is turned off for this gym'],
+  ['email', new InvoiceRequestError('recipient_suppressed'), 'This email address is suppressed'],
+  ['sms:household', new InvoiceRequestError('recipient_suppressed_sms'), 'This number has opted out of texts'],
+  ['email', new InvoiceRequestError('delivery_unavailable'), "Delivery isn't set up for this channel"],
+  ['email', new InvoiceRequestError('delivery_failed'), "The link couldn't be delivered."],
   ['sms:household', new InvoiceRequestError('sms_payer_only'), 'Card update links can only be texted to the payer'],
   ['email', new InvoiceRequestError('payments_unavailable'), "The link wasn't emailed. Member email may be turned off"],
+  ['sms:household', new InvoiceRequestError('payments_unavailable'), "Texts can't be sent right now"],
   ['email', new InvoiceRequestError('save_failed'), "The link couldn't be sent. Try again."],
 ])('shows a %s refusal in a focused alert', async (delivery, failure, message) => {
   api.link.mockRejectedValue(failure);
@@ -155,13 +162,19 @@ it.each([
   expect(alert.textContent).toContain(message);
   await waitFor(() => expect(document.activeElement).toBe(alert));
 });
-// The server answers a send to a household without an email with a 503 and no reason.
 it('explains a missing household email', async () => {
   api.household.mockResolvedValue({ ...household, email: null });
-  api.link.mockRejectedValue(new InvoiceRequestError('payments_unavailable'));
+  api.link.mockRejectedValue(new InvoiceRequestError('household_email_missing'));
   await open();
   submit();
   expect((await screen.findByRole('alert')).textContent).toContain('The household has no valid email address.');
+});
+it('shows the server refusal reason even when the loaded household has no email', async () => {
+  api.household.mockResolvedValue({ ...household, email: null });
+  api.link.mockRejectedValue(new InvoiceRequestError('email_disabled'));
+  await open();
+  submit();
+  expect((await screen.findByRole('alert')).textContent).toContain('Member email is turned off for this gym');
 });
 it('loads only while the tab is open, and afresh each time it opens', async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } });

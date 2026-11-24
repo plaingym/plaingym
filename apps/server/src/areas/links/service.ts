@@ -34,6 +34,13 @@ export type SignedLinkResolution =
 export interface LinkScope { readonly gymId: string; readonly linkId: string }
 /** What a send command remembers for its replay. */
 const sentLinkSchema = z.strictObject({ linkId: idSchema });
+const sendRefusalReasons = new Set([
+  'household_email_missing',
+  'email_disabled',
+  'recipient_suppressed',
+  'recipient_suppressed_sms',
+  'delivery_unavailable',
+]);
 
 /** Explicit metadata projection: neither plaintext nor its hash can leave a read or audit. */
 function metadata(row: LinkRow): SignedLinkRecord {
@@ -293,10 +300,19 @@ export function createSignedLinksService(options: {
       if (channel === 'sms') await scope(context.gymId, tx => signedLinkSmsRecipient(tx, context.gymId, request.householdId, recipientId, gym!.country, request.purpose));
       const delivery = options.delivery ?? configuredDelivery, smsDelivery = options.smsDelivery ?? configuredSmsDelivery;
       if (channel === 'email' && !delivery || channel === 'sms' && !smsDelivery)
-        throw new AppError('unavailable', `Signed link ${channel === 'email' ? 'email' : 'text'} delivery is not configured`);
+        throw new AppError('unavailable', `Signed link ${channel === 'email' ? 'email' : 'text'} delivery is not configured`, { reason: ['delivery_unavailable'] });
+      // A gym without SMTP refuses while preparing: name a reasonless unavailable there as unconfigured delivery.
+      const prepare = async <T>(run: () => Promise<T>) => {
+        try { return await run(); }
+        catch (error) {
+          if (error instanceof AppError && error.code === 'unavailable' && !error.details?.reason?.length)
+            throw Object.assign(new AppError('unavailable', error.message, { reason: ['delivery_unavailable'] }), { cause: error });
+          throw error;
+        }
+      };
       // SMS preparation never requires SMTP or the member-email switch.
-      const prepared = channel === 'email' ? await delivery!.prepare(context.gymId) : undefined;
-      const preparedSms = channel === 'sms' ? await smsDelivery!.prepare(context.gymId) : undefined;
+      const prepared = channel === 'email' ? await prepare(() => delivery!.prepare(context.gymId)) : undefined;
+      const preparedSms = channel === 'sms' ? await prepare(() => smsDelivery!.prepare(context.gymId)) : undefined;
       if (prepared) validateSignedLinkDelivery(prepared, context.gymId);
       if (preparedSms) validateSignedLinkOrigin(preparedSms, context.gymId);
       const { created, reservation, recipient } = await scope(context.gymId, async tx => {
@@ -350,7 +366,10 @@ export function createSignedLinksService(options: {
           entered = true;
           const result = await smsDeliveries.attempt(reservation, sms, { to: recipient.to, body });
           suppressed = result.status !== 'sent';
-          if (suppressed) throw new AppError('unavailable', 'Signed link text was suppressed');
+          // Only a missing consent is the recipient's; texting turned off or no provider is unconfigured delivery.
+          if (result.status !== 'sent') throw new AppError('unavailable', 'Signed link text was suppressed', { reason: [
+            result.reason === 'no_consent' ? 'recipient_suppressed_sms'
+              : result.reason === 'disabled' || result.reason === 'no_provider' ? 'delivery_unavailable' : 'delivery_failed'] });
           disclosed = !manual;
         } else {
           disclosed = await deliverSignedLink({ scope, context, link: created.link, token: created.token, delivery: { ...prepared!, email },
@@ -364,7 +383,9 @@ export function createSignedLinksService(options: {
           try { await cleanup(); }
           catch (cleanupError) { cause = new AggregateError([error, cleanupError], 'Signed link delivery and cleanup failed'); }
         }
-        throw Object.assign(new AppError('unavailable', `Signed link ${channel === 'email' ? 'email' : 'text'} was not delivered`), { cause });
+        const firstReason = error instanceof AppError ? error.details?.reason?.[0] : undefined;
+        const reason = firstReason && sendRefusalReasons.has(firstReason) ? firstReason : 'delivery_failed';
+        throw Object.assign(new AppError('unavailable', `Signed link ${channel === 'email' ? 'email' : 'text'} was not delivered`, { reason: [reason] }), { cause });
       }
       // The message was delivered, so a failure here must not report otherwise.
       if (!disclosed) await revoke(context, created.link.id);

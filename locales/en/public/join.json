@@ -95,7 +95,7 @@
   "closedTitle": "This sign-up can't be paid online",
   "closedBody": "The gym has closed this payment, so nothing more can be done from this page. Please contact the gym to finish joining.",
   "endedTitle": "This membership has ended",
-  "endedBody": "The gym has ended the membership from this sign-up, so nothing more can be done from this page. Please contact the gym if you have questions.",
+  "endedBody": "The membership from this sign-up has ended, so nothing more can be done from this page. Please contact the gym if you have questions.",
   "missingTitle": "We can't find your sign-up here",
   "missingBody": "This browser no longer has your sign-up, so nothing more can be done from this page. If you completed payment, your membership starts once the payment is confirmed: look for a sign-in link in your email, or contact the gym to set up your portal login. Otherwise, start again.",
   "startOver": "Start again",
