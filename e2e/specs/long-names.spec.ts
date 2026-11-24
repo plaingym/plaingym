@@ -13,18 +13,26 @@ const unbreakable = (prefix: string) => (prefix + randomBytes(2).toString('hex')
 
 async function noSideways(page: Page, surface: string) {
   expect(await horizontalOverflow(page), surface + ': horizontal scroll at 360 px').toBeUndefined();
-  for (const control of await page.locator('[data-name-wrap]:visible').all()) {
-    await expect(control).toHaveCSS('overflow-wrap', 'anywhere');
-    expect(await control.evaluate(element => element.scrollWidth <= element.clientWidth + 1), surface + ': name control overflows').toBe(true);
+  const controls = await page.evaluate(() => [...document.querySelectorAll('[data-name-wrap]')]
+    .filter((element) => element.getClientRects().length > 0 && getComputedStyle(element).visibility !== 'hidden')
+    .map((element) => ({
+      text: (element.textContent ?? '').slice(0, 40),
+      wrap: getComputedStyle(element).overflowWrap,
+      fits: element.scrollWidth <= element.clientWidth + 1,
+    })));
+  for (const control of controls) {
+    expect(control.wrap, `${surface}: ${control.text} overflow-wrap`).toBe('anywhere');
+    expect(control.fits, `${surface}: ${control.text} overflows`).toBe(true);
   }
 }
 async function phoneAndDesktop(page: Page, info: import('@playwright/test').TestInfo, surface: string) {
+  const original = page.viewportSize();
   for (const width of [360, 1280]) {
     await page.setViewportSize({ width, height: 800 });
     await noSideways(page, surface);
     await accessibleLayout(page, info, surface + ' at ' + width + ' px');
   }
-  await page.setViewportSize({ width: 360, height: 740 });
+  if (original) await page.setViewportSize(original);
 }
 for (const flow of ['PIN', 'QR'] as const) {
   test('kiosk ' + flow + ' wraps member names and named class buttons', async ({ page, sandboxes }, info) => {

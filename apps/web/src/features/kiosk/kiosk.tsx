@@ -6,7 +6,7 @@ import { useBootstrap } from '../../app/context.js';
 import { isStaleVersion, subscribeToStaleVersion } from '../../app/version.js';
 import { t } from '../../lib/i18n.js';
 import { Alert } from '../../components/ui/alert.js';
-import { Button } from '../../components/ui/button.js';
+import { Button, nameWrapClass, nameWrapMarker } from '../../components/ui/button.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { forgetToken, kioskApi, KioskAuthError, readToken, saveToken, tokenKey } from './api.js';
@@ -199,8 +199,8 @@ function Select({ screen, busy, onChange, onSubmit, onCancel }: { screen: Extrac
   };
   return <section className="space-y-4" aria-labelledby="kiosk-select"><h2 id="kiosk-select" tabIndex={-1} data-kiosk-focus className="text-2xl">{text('whoIsHere')}</h2>
     <ul className="space-y-3">{screen.members.map((member) => <li key={member.id}>
-      <button type="button" role="checkbox" data-name-wrap="" aria-checked={screen.chosen.has(member.id)} disabled={busy} onClick={() => toggle(member.id)}
-        className={'flex w-full items-center justify-between rounded-xl border-2 p-4 text-left wrap-anywhere ' + (screen.chosen.has(member.id) ? 'border-primary bg-primary/10' : 'border-border')}>
+      <button type="button" role="checkbox" {...nameWrapMarker} aria-checked={screen.chosen.has(member.id)} disabled={busy} onClick={() => toggle(member.id)}
+        className={'flex w-full items-center justify-between rounded-xl border-2 p-4 text-left ' + nameWrapClass + ' ' + (screen.chosen.has(member.id) ? 'border-primary bg-primary/10' : 'border-border')}>
         <Person member={member}/><span className="text-xl">{screen.chosen.has(member.id) ? '✓' : ''}</span></button></li>)}</ul>
     <div className="grid grid-cols-2 gap-3"><Button variant="outline" className={big} onClick={onCancel}>{text('cancel')}</Button>
       <Button className={big} disabled={busy || !screen.chosen.size} onClick={onSubmit}>{text('checkIn')}</Button></div>

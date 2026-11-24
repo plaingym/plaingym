@@ -51,7 +51,7 @@ export function PersonPicker({ name, kind, initialId = '', services, onChange }:
         {page.data.map(person => <li key={person.id}><Button wrap type="button" variant="outline" aria-pressed={selected?.id === person.id}
           aria-label={person.displayName + (person.email && person.email !== person.displayName ? ' ' + person.email : '')}
           className="h-auto min-h-11 w-full justify-start whitespace-normal py-3 text-left" onClick={() => choose(person)}>
-          <span className="min-w-0 wrap-anywhere">{person.displayName}{person.email && person.email !== person.displayName && <span className="block break-all text-xs font-normal text-muted-foreground">{' '}{person.email}</span>}</span>
+          <span className="min-w-0">{person.displayName}{person.email && person.email !== person.displayName && <span className="block break-all text-xs font-normal text-muted-foreground">{' '}{person.email}</span>}</span>
         </Button></li>)}
       </ul> : <p className="text-sm text-muted-foreground">{text('noPeople')}</p>}
       <Pager offset={offset} total={page.total} limit={25} onChange={setOffset} previousLabel={text('previous')} nextLabel={text('next')}/>

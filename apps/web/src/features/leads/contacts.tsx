@@ -64,7 +64,7 @@ export function ContactForm({ lead, client, onSaved, onDone, onCancel, onBusy }:
 /** The list's log-a-contact action. */
 export function ContactDialog({ lead, client, onClose, onDone }: { lead: Lead; client: LeadClient; onClose(): void; onDone(outcome: Outcome): void }) {
   const [saving, setSaving] = useState(false);
-  return <Dialog title={<span className={userNames}>{contactText('title', { name: leadName(lead) })}</span>} closeLabel={text('close')} onClose={onClose} dismissible={!saving}>
+  return <Dialog title={contactText('title', { name: leadName(lead) })} closeLabel={text('close')} onClose={onClose} dismissible={!saving}>
     <ContactForm lead={lead} client={client} onBusy={setSaving} onCancel={onClose} onDone={onDone}
       onSaved={result => onDone({ message: contactText('saved'), reload: true, lead: result.lead })} />
   </Dialog>;

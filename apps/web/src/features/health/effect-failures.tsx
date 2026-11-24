@@ -57,7 +57,7 @@ export function EffectFailures({ gymId, reporting, timezone }: { gymId: string; 
       </div>
     </li>)}</ul>
     {confirming && <Dialog title={label(confirming.action + 'Title')} closeLabel={label('close')} onClose={close} dismissible={!mutation.isPending}>
-      <div className="space-y-4 break-words">
+      <div className="space-y-4 wrap-anywhere">
         <p className="font-medium">{label('kind.' + confirming.effect.kind)}</p>
         <p>{time(confirming.effect)}</p>
         <p>{confirming.action === 'dismiss' ? label('dismissHelp') : label('consequence.' + confirming.effect.kind,

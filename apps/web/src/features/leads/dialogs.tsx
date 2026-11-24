@@ -10,7 +10,6 @@ import { Dialog, DialogCancel } from '../../components/ui/dialog.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { Select, Textarea } from '../../components/ui/select.js';
-import { userNames } from '../../components/ui/page.js';
 import type { Lead, LeadClient } from './api.js';
 import { text } from './text.js';
 
@@ -53,7 +52,7 @@ export function BookDialog({ lead, client, timezone, onClose, onDone }: DialogPr
       onDone({ message: text(conflict(stageError) ? 'bookedStageChanged' : 'bookedStageFailed'), error: true, reload: true });
     }
   }
-  return <Dialog title={<span className={userNames}>{text('bookTitle', { name: leadName(lead) })}</span>} closeLabel={text('close')} onClose={onClose} dismissible={!saving}>
+  return <Dialog title={text('bookTitle', { name: leadName(lead) })} closeLabel={text('close')} onClose={onClose} dismissible={!saving}>
     <form className="min-w-0 space-y-4" onSubmit={event => { event.preventDefault(); void submit(); }}>
       {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
       <p className="text-sm text-muted-foreground">{text('bookHelp', { timezone })}</p>
@@ -85,7 +84,7 @@ export function LostDialog({ lead, client, onClose, onDone }: DialogProps) {
       setError(text('error')); setSaving(false);
     }
   }
-  return <Dialog title={<span className={userNames}>{text('lostTitle', { name: leadName(lead) })}</span>} closeLabel={text('close')} onClose={onClose} dismissible={!saving} unsavedChanges={reason !== ''}>
+  return <Dialog title={text('lostTitle', { name: leadName(lead) })} closeLabel={text('close')} onClose={onClose} dismissible={!saving} unsavedChanges={reason !== ''}>
     <form className="min-w-0 space-y-4" onSubmit={event => { event.preventDefault(); void submit(); }}>
       {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
       <div className="space-y-2"><Label htmlFor={id + '-reason'}>{text('reason')}</Label>

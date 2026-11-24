@@ -56,7 +56,7 @@ function breakable(text: string): ReactNode[] {
 export function GoogleRedirect() {
   return <div className="min-w-0 space-y-1">
     <p className="text-sm font-medium" id="google-redirect-label">{label('redirect')}</p>
-    <code aria-labelledby="google-redirect-label" className="block break-words rounded-md bg-muted px-3 py-2 text-sm">{breakable(window.location.origin + googleCallbackPath)}</code>
+    <code aria-labelledby="google-redirect-label" className="block wrap-anywhere rounded-md bg-muted px-3 py-2 text-sm">{breakable(window.location.origin + googleCallbackPath)}</code>
     <p className="text-sm text-muted-foreground">{label('redirectHelp')}</p>
   </div>;
 }
@@ -143,7 +143,7 @@ export function GoogleLoginSettings() {
     {google.source === 'install' && <p className="text-sm text-muted-foreground">{label('source')}</p>}
     {google.source === 'gym' && <div className="min-w-0 space-y-1 text-sm">
       <p>{label('sourceGym')}</p>
-      <p className="break-words">{breakable(label('clientIdShown', { clientId: google.clientId ?? '' }))}</p>
+      <p className="wrap-anywhere">{breakable(label('clientIdShown', { clientId: google.clientId ?? '' }))}</p>
       <p>{label('secretSet')}</p>
     </div>}
     {google.installProblem && <Alert variant={google.source === 'gym' ? 'info' : 'error'} role="note">{label('installProblem.' + google.installProblem.reason, { variable: google.installProblem.variable })}</Alert>}

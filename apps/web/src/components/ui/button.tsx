@@ -22,6 +22,9 @@ export const buttonVariants = cva(
     },
   }, defaultVariants: { variant: 'default', size: 'default' } },
 );
+export const nameWrapClass = 'min-w-0 max-w-full wrap-anywhere';
+export const nameWrapMarker = { 'data-name-wrap': '' } as const;
+
 export function Button({ className, variant, size, asChild = false, wrap = false, type, ...props }:
   ComponentProps<'button'> & VariantProps<typeof buttonVariants> & {
     asChild?: boolean;
@@ -29,6 +32,6 @@ export function Button({ className, variant, size, asChild = false, wrap = false
     wrap?: boolean;
   }) {
   const Component = asChild ? Slot : 'button';
-  return <Component {...(!asChild ? { type: type ?? 'button' } : {})} data-name-wrap={wrap ? '' : undefined}
-    className={cn(buttonVariants({ variant, size }), wrap && 'min-w-0 max-w-full wrap-anywhere', className)} {...props} />;
+  return <Component {...(!asChild ? { type: type ?? 'button' } : {})} {...(wrap ? nameWrapMarker : {})}
+    className={cn(buttonVariants({ variant, size }), wrap && nameWrapClass, className)} {...props} />;
 }
