@@ -117,26 +117,36 @@ if that reload fails, the rows already on screen stay and the alert asks for a
 manual refresh. A failed walk-in searches again, so a refused member drops out of
 the picker. Checking in a waitlisted member records attendance only; their booking
 and place stay as they are. **Check in someone else** is one member autocomplete over
-the eligible member list (`checkInEligible=true` on `GET /api/members`); choosing
+the eligible member list (`checkInEligible=true` on `GET /api/members`), omitting
+members already shown on the current roster page; choosing
 a member records their check-in, and they then appear as a walk-in until the
-check-in is undone. The roster reloads after every check-in and undo. It also
-follows each successful read by the session dialog's bookings panel (after a
-booking or cancellation in that panel, a promotion after a capacity change, a
-check-in reported to the dialog, and that panel's periodic, focus and visibility
-reloads) with one quiet read of its own page, and shows the new page when
-its participants changed: who is on it, their booking's ID, status and place, and
-their check-in. A replacement booking or a kiosk walk-in therefore appears even when
-every count stays the same. A failed bookings read is not followed, and the roster's
-own reads trigger nothing further.
+check-in is undone. The roster reloads once after every check-in and undo and skips
+the follow-up read that its own session-change notification to the bookings panel
+would otherwise cause (unless that bookings read fails, so the next real bookings
+read is still followed). It also follows each other successful read by the session
+dialog's bookings panel (after a booking or cancellation in that panel, a promotion
+after a capacity change, and that panel's periodic, focus and visibility reloads)
+with one quiet read of its own page, and shows the new page when its participants
+changed: who is on it, their booking's ID, status and place, and their check-in. A
+replacement booking or a kiosk walk-in therefore appears even when every count stays
+the same. If a quiet follow-up read fails, the rows on screen stay and a quiet status
+line notes that the roster may be out of date until a later read succeeds or the
+coach refreshes; a page change hides the previous page's rows while loading and
+clears the rows with a load error if it fails. A failed bookings read is not
+followed, and the roster's own reads trigger nothing further.
 
 A walk-in's confirmation, and the credit warning a check-in may carry, belong to
 the attendance that check-in recorded, not to the member. While the roster page
-lists that attendance the confirmation says the member is checked in; once a later
-read of that page no longer lists it (undone on another device, for example), the
-confirmation and its warning disappear, and a new visit for the same member shows
-only its own feedback. A walk-in that isn't on the page being shown gets a
-past-tense acknowledgment instead, "Recorded a walk-in for <name> at <time>.", with
-its credit warning, which later reads leave in place. Member/program/tag APIs are consumed through their shared contracts; the
+lists that attendance, a walk-in confirmation says the member is checked in and a
+row check-in warns on its row. Once a later read of that page shows the member
+without that attendance, or lacks that attendance with a lower session checked-in
+count (undone on another device, for example), the confirmation and its warning
+disappear, and a new visit for the same member shows only its own feedback. When a
+later read lacks that attendance without a lower checked-in count (such as a
+concurrent booking pushing the member to another page, or a walk-in on another
+page), the feedback stays as a past-tense acknowledgment with any credit warning:
+"Recorded a walk-in for <name> at <time>." for a walk-in when the roster fits on
+one page, and "Checked in <name> at <time>." otherwise and for a row check-in. Member/program/tag APIs are consumed through their shared contracts; the
 corresponding implementations must be present for the panels to load. Tests use fixture
 sessions, independent of the schedule materializer.
 

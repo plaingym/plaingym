@@ -42,8 +42,8 @@ Object.assign(bookingClient, {
 // The coach check-in roster reads its own eligible roster, unaffected by the simulated bookings failure.
 Object.assign(attendanceClient, { members:async()=>[member],
   roster:async()=>{const gone=booking.status==='cancelled',waiting=booking.status==='waitlisted';
-    return {data:gone?[]:[{displayName:member.firstName+' '+member.lastName,booking,attendance:null}],pagination:{limit:50,offset:0,total:gone?0:1},counts:{booked:gone||waiting?0:1,waitlisted:waiting?1:0,checkedIn:0}};},
-  record:async()=>({id:'visit',memberId,sessionId,programId:null,source:'coach',kind:'class',occurredAt:'2026-11-02T18:00:00Z',createdAt:'2026-11-02T18:00:00Z',needsCredits:true}) });
+    return {data:gone?[]:[{displayName:member.firstName+' '+member.lastName,booking,attendance:null}],pagination:{limit:50,offset:0,total:gone?0:1},counts:{booked:gone||waiting?0:1,waitlisted:waiting?1:0,checkedIn:window.visitRecorded?1:0}};},
+  record:async()=>(window.visitRecorded=true,{id:'visit',memberId,sessionId,programId:null,source:'coach',kind:'class',occurredAt:'2026-11-02T18:00:00Z',createdAt:'2026-11-02T18:00:00Z',needsCredits:true}) });
 const dialogSession={id:sessionId,name:'Fundamentals',startsAt:'2026-11-02T18:00:00Z',endsAt:'2026-11-02T19:00:00Z',coachId:null,status:'scheduled',capacity:5,notes:null,kind:'class',programIds:[],tagIds:[],revision:1};
 const options={timezone:'America/New_York',programs:[],coaches:[]};
 const services={loadBootstrap:async()=>({gym:{timezone:'America/New_York'},session:{roles:['owner']}})};
