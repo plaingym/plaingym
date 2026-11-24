@@ -173,8 +173,13 @@ describe('disk sizes', () => {
 describe('durations', () => {
   it('shows the largest whole units, rounded down, with the singular for one', () => {
     for (const [seconds, text] of [[2926, '48 minutes'], [30, 'less than a minute'], [60, '1 minute'], [3600, '1 hour'],
-      [11_100, '3 hours 5 minutes'], [86_400, '1 day'], [190_000, '2 days']] as const) expect(durationLabel(seconds)).toBe(text);
+      [11_100, '3 hours 5 minutes'], [86_400, '1 day'], [190_000, '2 days'], [1234 * 86_400, '1,234 days']] as const) expect(durationLabel(seconds)).toBe(text);
   });
+});
+it('formats numeric detail values in English grouping', () => {
+  render(<HealthTiles tiles={[{ id: 'invoice_effects', status: 'error', checkedAt,
+    message: 'Invoice work needs attention', details: { exhausted: 12345.5 } }]} />);
+  expect(screen.getByText('Exhausted effects').parentElement!.querySelector('dd')!.textContent).toBe('12,345.5');
 });
 
 it('shows an old failed-job timestamp in the gym timezone while keeping the problem status', () => {

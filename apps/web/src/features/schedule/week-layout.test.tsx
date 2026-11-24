@@ -2,7 +2,7 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
-import { WeekLayout } from './week-layout.js';
+import { dayLabel, WeekLayout } from './week-layout.js';
 
 afterEach(cleanup);
 
@@ -45,4 +45,9 @@ it('renders the agenda, with the option to hide empty days', () => {
   expect(agenda.children).toHaveLength(2);
   expect(within(agenda).queryByRole('heading', { name: 'Tuesday, Nov 17' })).toBeNull();
   expect(within(agenda).queryByText('No classes')).toBeNull();
+});
+
+it('formats day labels in the fixed English locale', () => {
+  expect(dayLabel('2026-11-16')).toBe('Monday, Nov 16');
+  expect(dayLabel('2026-11-16', 'short')).toBe('Mon, Nov 16');
 });

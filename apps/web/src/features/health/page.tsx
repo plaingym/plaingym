@@ -6,6 +6,7 @@ import { healthContracts, healthTileIds, sharedDiskVolume, type HealthTile } fro
 import { useBootstrap } from '../../app/context.js';
 import { api } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
+import { formatCount } from '../../lib/count.js';
 import { instantLabel } from '../../lib/instant.js';
 import { Alert } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
@@ -28,7 +29,7 @@ export function bytesLabel(bytes: number) {
 /** A duration in its largest whole units, rounded down: "48 minutes", "3 hours 5 minutes", "2 days". */
 export function durationLabel(seconds: number) {
   const unit = (count: number, singular: string, plural: string) => count === 1 ? label('duration.' + singular)
-    : t('health/status:duration.' + plural, { count: count.toLocaleString() });
+    : t('health/status:duration.' + plural, { count: formatCount(count) });
   if (seconds < 60) return label('duration.lessThanMinute');
   const minutes = Math.floor(seconds / 60);
   if (seconds < 3600) return unit(minutes, 'minute', 'minutes');
@@ -41,7 +42,7 @@ export function durationLabel(seconds: number) {
 function detailValue(key: string, value: unknown, timezone?: string) {
   if (value === null) return label('unknown');
   if (typeof value === 'boolean') return label(value ? 'yes' : 'no');
-  if (typeof value === 'number') return key.endsWith('Bytes') ? bytesLabel(value) : key.endsWith('Seconds') ? durationLabel(value) : value.toLocaleString();
+  if (typeof value === 'number') return key.endsWith('Bytes') ? bytesLabel(value) : key.endsWith('Seconds') ? durationLabel(value) : formatCount(value);
   if (key === 'result') return label('result.' + String(value));
   if (key === 'lastTestResult') return label('sms.test.' + String(value));
   if (key.endsWith('At') && typeof value === 'string') return <time dateTime={value}>{instantLabel(value, timezone)}</time>;

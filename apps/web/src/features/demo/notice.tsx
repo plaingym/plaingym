@@ -209,7 +209,7 @@ export function DemoSignInButtons({ members = [], className }: { members?: reado
       <span className="min-w-0 truncate">{member.name}</span></Button>)}
   </div>;
 }
-const shortTime = (iso: string) => new Date(iso).toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+const shortTime = (iso: string) => new Date(iso).toLocaleString('en', { weekday: 'short', hour: 'numeric', minute: '2-digit' });
 /** One slim row above every page of a sandbox with its expiry, menu and fallback for a sign-in error. */
 export function DemoNotice() {
   const mode = useContext(DemoContext), expires = mode?.mode === 'sandbox' || mode?.mode === 'showcase' ? mode.expiresAt : undefined;

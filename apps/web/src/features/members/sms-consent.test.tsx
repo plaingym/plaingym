@@ -29,6 +29,10 @@ it('withdraws either consent with one tap, permits staff withdrawal, and shows s
   fireEvent.click(screen.getByRole('button', { name: 'Withdraw notices consent' }));
   await waitFor(() => expect(onChange).toHaveBeenCalledWith('notices', false));
 });
+it('formats the recorded consent time in the gym timezone and fixed English locale', () => {
+  render(<SmsConsentControls sms={{ ...sms, notices: { at: '2026-11-15T18:30:00Z', source: 'join' } }} gymName="River Gym" timezone="America/Los_Angeles" onChange={vi.fn()} />);
+  expect(screen.getByText('Consented Nov 15, 2026, 10:30 AM via the join form.')).toBeDefined();
+});
 
 describe('a number that replied STOP', () => {
   // 03:00 UTC on the 21st is still the 20th in the gym's timezone.

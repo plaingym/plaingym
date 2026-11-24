@@ -39,7 +39,7 @@ const noticeKeys = {
 } as const;
 /** "Email the 3 booked and waitlisted members", or its one or none variant. */
 function noticeLabel(channel: keyof typeof noticeKeys, count: number) {
-  return t('schedule/schedule:' + noticeKeys[channel][Math.min(count, 2)], { count: count.toLocaleString() });
+  return t('schedule/schedule:' + noticeKeys[channel][Math.min(count, 2)], { count: formatCount(count) });
 }
 export function SessionPanels({ sessionId, roles, enabledModules = [], registries = createRegistries() }:
   { sessionId: string; roles: readonly StaffRole[]; enabledModules?: readonly string[]; registries?: ReturnType<typeof createRegistries> }) {

@@ -63,9 +63,20 @@ describe('your account page', () => {
   });
 
   it('shows the pending link expiry through the shared instant label', async () => {
-    start({ pendingEmail: { email: 'pending@example.test', expiresAt: '2026-11-15T18:30:00Z' } });
-    const label = instantLabel('2026-11-15T18:30:00Z');
-    expect(await screen.findByText(content => content.includes('pending@example.test') && content.includes(label))).toBeTruthy();
+    const installed = Intl.DateTimeFormat;
+    function GermanDefaultDateTimeFormat(locale?: Intl.LocalesArgument, options?: Intl.DateTimeFormatOptions) {
+      return new installed(locale ?? 'de-DE', options);
+    }
+    Object.setPrototypeOf(GermanDefaultDateTimeFormat, installed);
+    GermanDefaultDateTimeFormat.prototype = installed.prototype;
+    Object.defineProperty(Intl, 'DateTimeFormat', { value: GermanDefaultDateTimeFormat, configurable: true, writable: true });
+    try {
+      start({ pendingEmail: { email: 'pending@example.test', expiresAt: '2026-11-15T18:30:00Z' } });
+      const label = instantLabel('2026-11-15T18:30:00Z');
+      expect(await screen.findByText(content => content.includes('pending@example.test') && content.includes(label))).toBeTruthy();
+    } finally {
+      Object.defineProperty(Intl, 'DateTimeFormat', { value: installed, configurable: true, writable: true });
+    }
   });
 
   it.each([400, 429])('keeps a pending notice beside a failed second request (%s)', async (status) => {

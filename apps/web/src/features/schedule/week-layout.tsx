@@ -15,7 +15,7 @@ export function useWideScreen() {
 
 export function dayLabel(date: string, style: 'long' | 'short' = 'long') {
   // Calendar dates carry no zone: format them at noon UTC so the label is the same everywhere.
-  return new Intl.DateTimeFormat(undefined, { timeZone: 'UTC', weekday: style, month: 'short', day: 'numeric' }).format(new Date(date + 'T12:00:00Z'));
+  return new Intl.DateTimeFormat('en', { timeZone: 'UTC', weekday: style, month: 'short', day: 'numeric' }).format(new Date(date + 'T12:00:00Z'));
 }
 
 interface WeekLayoutProps<T> {

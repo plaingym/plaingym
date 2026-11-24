@@ -20,6 +20,15 @@ describe('display locale lint rule', () => {
     'new Intl.NumberFormat();',
     'new Intl.DateTimeFormat(undefined, {});',
     'Intl.NumberFormat();',
+    '(5).toLocaleString([]);',
+    'new Date().toLocaleDateString(null);',
+    'new Date().toLocaleTimeString(void 0, {});',
+    'new Intl.DateTimeFormat([], {});',
+    'new Intl.NumberFormat(null);',
+    'new Intl.RelativeTimeFormat();',
+    'new Intl.PluralRules(undefined);',
+    'new Intl.ListFormat([]);',
+    "new Intl.DisplayNames(undefined, { type: 'region' });",
   ])('refuses %s', async code => {
     expect(await restricted(code)).toHaveLength(1);
   });
@@ -30,12 +39,16 @@ describe('display locale lint rule', () => {
     "new Intl.DateTimeFormat('en-GB', {});",
     'Intl.DateTimeFormat().resolvedOptions().timeZone;',
     "'A'.toLocaleLowerCase();",
+    "(5).toLocaleString(['en']);",
+    "new Intl.RelativeTimeFormat('en', { numeric: 'always' });",
+    "new Intl.DisplayNames('en', { type: 'region' });",
+    "new Intl.PluralRules('en');",
   ])('allows %s', async code => {
     expect(await restricted(code)).toHaveLength(0);
   });
 
-  it('leaves the files still to be moved alone', async () => {
-    const ignored = resolve(root, 'apps/web/src/features/health/page.tsx');
+  it('leaves test files alone', async () => {
+    const ignored = resolve(root, 'apps/web/src/features/probe/probe.test.tsx');
     expect(await restricted('(5).toLocaleString();', ignored)).toHaveLength(0);
   });
 });

@@ -148,14 +148,25 @@ it('shows a full PDF queue\'s 429 as its retry message rather than a generic fai
   expect((await screen.findByRole('alert')).textContent).toBe('PDF processing is busy; please retry shortly');
 });
 it('shows the uploaded document pages and bytes with English grouping', async () => {
-  const user = userEvent.setup();
-  const client = { call: vi.fn(async () => ({ data: [], pagination: { limit: 20, offset: 0, total: 0 } })),
-    uploadDocument: vi.fn(async () => ({ data: { key: 'gym/waiver.pdf', hash: 'a'.repeat(64), pages: 1234, bytes: 123456 } })) } as unknown as WaiversClient;
-  mount(<Templates gymId="gym" manage client={client} />);
-  await user.click(await screen.findByRole('button', { name: 'New template' }));
-  await user.selectOptions(screen.getByLabelText('Document format'), 'pdf');
-  await user.upload(screen.getByLabelText('Upload a PDF'), new File(['%PDF-1.7'], 'waiver.pdf', { type: 'application/pdf' }));
-  expect((await screen.findByRole('status')).textContent).toContain('Pages: 1,234. Bytes: 123,456.');
+  const installed = Intl.NumberFormat;
+  function GermanDefaultNumberFormat(locale?: Intl.LocalesArgument, options?: Intl.NumberFormatOptions) {
+    return new installed(locale ?? 'de-DE', options);
+  }
+  Object.setPrototypeOf(GermanDefaultNumberFormat, installed);
+  GermanDefaultNumberFormat.prototype = installed.prototype;
+  Object.defineProperty(Intl, 'NumberFormat', { value: GermanDefaultNumberFormat, configurable: true, writable: true });
+  try {
+    const user = userEvent.setup();
+    const client = { call: vi.fn(async () => ({ data: [], pagination: { limit: 20, offset: 0, total: 0 } })),
+      uploadDocument: vi.fn(async () => ({ data: { key: 'gym/waiver.pdf', hash: 'a'.repeat(64), pages: 1234, bytes: 123456 } })) } as unknown as WaiversClient;
+    mount(<Templates gymId="gym" manage client={client} />);
+    await user.click(await screen.findByRole('button', { name: 'New template' }));
+    await user.selectOptions(screen.getByLabelText('Document format'), 'pdf');
+    await user.upload(screen.getByLabelText('Upload a PDF'), new File(['%PDF-1.7'], 'waiver.pdf', { type: 'application/pdf' }));
+    expect((await screen.findByRole('status')).textContent).toContain('Pages: 1,234. Bytes: 123,456.');
+  } finally {
+    Object.defineProperty(Intl, 'NumberFormat', { value: installed, configurable: true, writable: true });
+  }
 });
 it('shows a full PDF queue\'s 429 on a document upload', async () => {
   const client = createWaiversClient(async () => Response.json({ error: { code: 'rate_limited', message: 'PDF processing is busy; please retry shortly',

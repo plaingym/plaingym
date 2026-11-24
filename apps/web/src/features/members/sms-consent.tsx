@@ -7,7 +7,7 @@ import { useBootstrap } from '../../app/context.js';
 import { t } from '../../lib/i18n.js';
 import { Button } from '../../components/ui/button.js';
 import { Alert } from '../../components/ui/alert.js';
-import { dateLabel } from '../../lib/instant.js';
+import { dateLabel, instantLabel } from '../../lib/instant.js';
 import { memberRequest } from './api.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('members/sms:' + key, values);
@@ -47,7 +47,7 @@ export function SmsConsentControls({ sms, gymName, staff = false, disabled = fal
       const consent = consentFor(kind);
       return <div key={kind} className="space-y-2">
         <p className="text-sm">{text(kind, { gym: gymName })}</p>
-        <p className="text-sm text-muted-foreground">{consent ? text('recorded', { at: new Date(consent.at).toLocaleString(), source: text('source_' + consent.source) }) : text('off')}</p>
+        <p className="text-sm text-muted-foreground">{consent ? text('recorded', { at: instantLabel(consent.at, timezone), source: text('source_' + consent.source) }) : text('off')}</p>
         {staff && kind === 'announcements' && !consent ? <p className="text-sm text-muted-foreground">{text('memberOnly')}</p>
           : <Button type="button" variant="outline" className="w-full whitespace-normal sm:w-auto" disabled={disabled || saving || (!consent && (!sms.phoneValid || !!grantBlockedHint))}
             onClick={() => void change(kind, !consent)}>{text(consent ? 'withdraw_' + kind : staff ? 'verbal' : 'give_' + kind)}</Button>}

@@ -213,6 +213,14 @@ it('keeps the bar to one slim row: the sandbox, its expiry and the demo menu, wi
   // The bar fetches nothing beyond discovery; the menu loads its members when opened.
   expect(fetcher.mock.calls.map(([path]) => path)).toEqual(['/api/demo']);
 });
+it('formats the sandbox bar expiry in the fixed English locale', async () => {
+  const expires = '2099-01-01T18:30:00Z';
+  serve({ expiresAt: expires });
+  start();
+  const bar = await screen.findByRole('complementary', { name: 'Demo controls' });
+  const expected = new Date(expires).toLocaleString('en', { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+  expect(bar.textContent).toContain(`expires ${expected}`);
+});
 it('opens the demo menu with its labelled groups and returns focus to the bar on close', async () => {
   route.pathname = '/portal/schedule';
   const expiresAt = new Date(Date.now() + 3600_000).toISOString();
