@@ -11,8 +11,7 @@ import { Label } from '../../../components/ui/label.js';
 import { CheckboxField } from '../../../components/ui/select.js';
 import { FormMessage } from '../../../components/ui/alert.js';
 import { BackupKeyPanel, ConfirmKeySection, confirmKeyLabels } from '../../setup/backup-key.js';
-import { splitBucketAddress } from '../../setup/checks.js';
-import { setValue } from '../../setup/field.js';
+import { takeBucketAddress } from '../../setup/checks.js';
 import { failedText, integrationsOf, refusedText, text, type useIntegrations } from './state.js';
 import { BackupActions } from '../../health/backups.js';
 
@@ -30,7 +29,7 @@ function Field({ name, type = 'text', value, text: shown, idPrefix = 'integratio
   name: string; type?: string; value?: string | undefined; text?: string; idPrefix?: string;
   onBlur?: ((input: HTMLInputElement) => void) | undefined; onChange?: (() => void) | undefined; note?: string | null | undefined;
 }) {
-  const id = idPrefix + name, noteId = 'integrations-backup-' + name + '-note';
+  const id = idPrefix + name, noteId = id + '-note';
   return <div className="grid min-w-0 gap-2">
     <Label htmlFor={id}>{shown ?? label(name)}</Label>
     <Input id={id} name={name} type={type} required defaultValue={value} autoComplete={type === 'password' ? 'new-password' : 'off'}
@@ -51,10 +50,8 @@ export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { ba
   const [bucketNote, setBucketNote] = useState<string | null>(null);
   /** R2's per-bucket address fills both fields, unless the owner has already typed another bucket. */
   const takeBucket = (input: HTMLInputElement) => {
-    const split = splitBucketAddress(input.value), bucket = input.form?.elements.namedItem('bucket');
-    if (!split || !(bucket instanceof HTMLInputElement) || !['', split.bucket].includes(bucket.value.trim())) return;
-    setValue(input, split.endpoint); setValue(bucket, split.bucket);
-    setBucketNote(text('backups.bucketFromEndpoint', { bucket: split.bucket }));
+    const bucket = takeBucketAddress(input);
+    if (bucket !== null) setBucketNote(text('backups.bucketFromEndpoint', { bucket }));
   };
   const run = async (action: () => Promise<void>) => {
     setMessage(null); setBusy(true);
@@ -144,7 +141,7 @@ export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { ba
         <p className="text-sm text-muted-foreground">{label('hint')}</p>
         <Field name="endpoint" type="url" value={backups.destination?.endpoint} onBlur={takeBucket} onChange={() => setBucketNote(null)} note={bucketNote}/>
         <Field name="region" value={backups.destination?.region ?? 'auto'}/>
-        <Field name="bucket" value={backups.destination?.bucket}/>
+        <Field name="bucket" value={backups.destination?.bucket} onChange={() => setBucketNote(null)}/>
         <Field name="accessKeyId"/>
         <Field name="secretAccessKey" type="password"/>
         <div className="flex flex-col gap-3 sm:flex-row"><Button type="submit">{label(busy ? 'generating' : 'generate')}</Button></div>

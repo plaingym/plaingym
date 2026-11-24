@@ -17,6 +17,12 @@ import { goLiveKey, parseChecklist, useGoLiveChecklist, type Checklist } from '.
 import { hasRestoreModeNote } from './restore-mode-note.js';
 
 const label = (key: string, values?: Record<string, string>) => t('settings/go-live:' + key, values);
+function restoreStripeNote(items: Checklist['items']): 'reconcileStripeConnected' | 'reconcileStripeUnchecked' | 'reconcileWithoutStripe' {
+  const stripe = items.find(item => item.id === 'stripe_ready');
+  if (stripe?.status === 'ready') return 'reconcileStripeConnected';
+  if (stripe?.status === 'needs_attention' && stripe.message === label('check.stripe_ready.read_failed')) return 'reconcileStripeUnchecked';
+  return 'reconcileWithoutStripe';
+}
 const statusTone = { ready: 'success', needs_attention: 'warning', not_applicable: 'muted' } as const;
 /**
  * The restore check answers only once it has read every payment change since the snapshot from Stripe, which can take
@@ -156,7 +162,7 @@ export function GoLiveSettings() {
             unresolved: checklist.restoreReconciliation.unresolved === null ? label('unknown') : formatCount(checklist.restoreReconciliation.unresolved) })
           : label('reconcilePending')}</p>
         {checklist.restoreReconciliation.stripeConfigured === false && <p className="wrap-anywhere text-sm">
-          {label(checklist.items.find(item => item.id === 'stripe_ready')?.status === 'ready' ? 'reconcileStripeConnected' : 'reconcileWithoutStripe')}</p>}
+          {label(restoreStripeNote(checklist.items))}</p>}
         {checkError && <Alert variant="error" focusOnReveal>{label(checkError)}</Alert>}
         {checklist.billingEnabled && <p className="text-sm text-muted-foreground">{label('reconcilePause')}</p>}
         <Button variant="outline" disabled={locked || checklist.billingEnabled || !checklist.restoreReconciliation.snapshotAt}

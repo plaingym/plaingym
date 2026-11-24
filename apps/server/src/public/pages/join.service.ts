@@ -187,7 +187,14 @@ export function createJoinService(options: JoinOptions) {
   }
   /** Billing on, a payment provider, and one to eight current documents, all before anything is written. */
   async function ready(gymId: string) {
-    if (!(await settings(gymId)).billingEnabled || !await options.paymentsConfigured(gymId)) unavailable();
+    if (!(await settings(gymId)).billingEnabled) unavailable();
+    let payments: boolean;
+    try { payments = await options.paymentsConfigured(gymId); }
+    catch (error) {
+      logWarn('join.payments_read_failed', { gymId, error: error instanceof Error ? error.name : typeof error });
+      throw new AppError('unavailable', 'Online joining is not available', { reason: ['payments_read_failed'] });
+    }
+    if (!payments) unavailable();
     const page = await options.waivers.listTemplates(gymId, { limit: 100, offset: 0 });
     if (!page.data.length || page.pagination.total > c.maxJoinDocuments) unavailable();
     return page.data;

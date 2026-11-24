@@ -45,10 +45,10 @@ configured; without it, the gym's stored Stripe settings decide. Turning billing
 on reads the resolver before the write transaction. A failed read returns
 `unavailable` with `details.billingEnabled: ["read_failed"]` after the revision
 guard and before reconciliation or any writes. When the payments resolver fails,
-the checklist shows Payments as needing attention with a read-failure text and
-treats Stripe as missing for Online joining; the other items keep the stored Stripe
-setting. Without a resolver, the stored setting decides everything. A failed Stripe
-read (in the checklist or a billing save) and a failed SMS read in a texts save are logged as
+the checklist shows Payments and Online joining as needing attention with their
+read-failure texts; the other items keep the stored Stripe setting. Without a
+resolver, the stored setting decides everything. A failed Stripe read (in the
+checklist or a billing save) and a failed SMS read in a texts save are logged as
 `settings.go_live.read_failed` with the gym ID, the read and the error name.
 
 Webhook readiness uses `WebhookHealthQuery`, implemented by the real inbox by

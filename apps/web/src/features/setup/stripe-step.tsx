@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { restrictedKeyPattern } from '@plaingym/shared/contracts';
-import { useId, useState } from 'react';
+import { useContext, useId, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '../../components/ui/button.js';
 import { Input } from '../../components/ui/input.js';
@@ -10,6 +10,7 @@ import { t } from '../../lib/i18n.js';
 import { ApiError } from '../../lib/api.js';
 import { createSetupClient } from './api.js';
 import { SetupActions } from './actions.js';
+import { SetupHoldContext } from './hold.js';
 
 const label = (key: string, values?: Readonly<Record<string, string | number>>) => t('setup/stripe-step:' + key, values);
 const permissions = ['customers', 'intents', 'checkout', 'setupIntents', 'mandates', 'methods', 'refunds', 'webhooks', 'events', 'disputes'];
@@ -21,6 +22,7 @@ export function StripeStep({ fetcher = fetch, onComplete }: { fetcher?: typeof f
   const [connected, setConnected] = useState<{ mode: 'test' | 'live' | null; webhookRegistered: boolean } | null>(null);
   const [failure, setFailure] = useState<'failed' | 'changed' | 'invalid' | null>(null);
   const queries = useQueryClient();
+  const hold = useContext(SetupHoldContext);
   async function save(choice: 'configure' | 'skip') {
     if (busy) return;
     if (choice === 'configure' && !restrictedKeyPattern.test(restrictedKey)) { setFailure('invalid'); return; }
@@ -29,8 +31,10 @@ export function StripeStep({ fetcher = fetch, onComplete }: { fetcher?: typeof f
       const { revision } = await client.call('status');
       const result = await client.call('stripe', choice === 'skip' ? { choice, revision } : { choice, revision, restrictedKey });
       setKey('');
-      if (choice === 'configure') setConnected({ mode: result.mode, webhookRegistered: result.webhookRegistered });
-      else {
+      if (choice === 'configure') {
+        setConnected({ mode: result.mode, webhookRegistered: result.webhookRegistered });
+        hold?.hold();
+      } else {
         setDone(true);
         await queries.invalidateQueries({ queryKey: ['setup', 'status'] });
         onComplete?.();
@@ -44,6 +48,7 @@ export function StripeStep({ fetcher = fetch, onComplete }: { fetcher?: typeof f
     setBusy(true);
     try {
       await queries.invalidateQueries({ queryKey: ['setup', 'status'] });
+      hold?.release();
       onComplete?.();
     } finally { setBusy(false); }
   }

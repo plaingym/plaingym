@@ -62,14 +62,15 @@ describe('go-live read failures', () => {
     } finally { logs.restore(); }
   });
 
-  it('treats Stripe as missing for online joining when the payments read fails', async () => {
+  it('reports a failed Stripe read for online joining when the payments read fails', async () => {
     const failing = await fixture('encrypted-stripe-config', { joinable: true });
     const logs = captureLogs();
     try {
       const checklist = await createGoLiveService({ scope, clock, smtpConfigured: async () => false, paymentsConfigured: failingPayments })
         .checklist(failing.gymId);
       expect(item(checklist, 'online_joining').status).toBe('needs_attention');
-      expect(item(checklist, 'online_joining').message).toContain('Connect Stripe in Settings → Integrations → Payments.');
+      expect(item(checklist, 'online_joining').message).toContain('Stripe could not be checked: check the saved keys in Settings → Integrations → Payments.');
+      expect(item(checklist, 'online_joining').message).not.toContain('Connect Stripe in Settings → Integrations → Payments.');
     } finally { logs.restore(); }
     const working = await fixture('encrypted-stripe-config', { joinable: true });
     const checklist = await createGoLiveService({ scope, clock, smtpConfigured: async () => false, paymentsConfigured: async () => true })

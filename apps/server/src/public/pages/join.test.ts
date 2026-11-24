@@ -1012,7 +1012,31 @@ describe('public join pages through the production registrations', () => {
     }
     expect((await f.get('/join/client.js')).headers.get('content-type')).toContain('text/javascript');
     f.paymentsConfigured.mockResolvedValue(false);
-    expect(await (await f.get('/join')).text()).toContain('Online joining is not available right now');
+    const unavailable = await f.get('/join');
+    expect(unavailable.status).toBe(200);
+    expect(await unavailable.text()).toContain('Online joining is not available right now');
+    await db.forGym(f.gymId, tx => tx.update(gyms).set({ billingEnabled: false }).where(eq(gyms.id, f.gymId)));
+    const billingOff = await f.get('/join');
+    expect(billingOff.status).toBe(200);
+    expect(await billingOff.text()).toContain('Online joining is not available right now');
+  });
+
+  it('answers 503 with the not-available page and logs the error name once when checking Stripe fails on /join', async () => {
+    const { setLogSink } = await import('../../core/log.js');
+    const f = await fixture();
+    const lines: string[] = [];
+    const restore = setLogSink(line => lines.push(line));
+    try {
+      f.paymentsConfigured.mockRejectedValueOnce(new Error('secret key material'));
+      const response = await f.get('/join');
+      expect(response.status).toBe(503);
+      const html = await response.text();
+      expect(html).toContain('Online joining is not available right now');
+      expect(html).not.toContain('secret key material');
+      const entries = lines.map(line => JSON.parse(line) as Record<string, unknown>).filter(entry => entry.event === 'join.payments_read_failed');
+      expect(entries).toEqual([{ time: expect.any(String), level: 'warn', event: 'join.payments_read_failed', gymId: f.gymId, error: 'Error' }]);
+      expect(lines.join('\n')).not.toContain('secret key material');
+    } finally { setLogSink(restore); }
   });
 
   it('says "+ tax" beside a plan price and sign-up fee only when invoicing adds tax on top, with this gym\'s rates alone', async () => {

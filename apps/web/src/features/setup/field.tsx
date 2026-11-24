@@ -55,15 +55,19 @@ export function Field({ name, type = 'text', value, required = true, maxLength, 
   // The form's input listener outlives one render, so it reads the latest check and result through refs.
   const validateRef = useRef(validate), resultRef = useRef(result);
   validateRef.current = validate; resultRef.current = result;
+  const recheckNames = recheckWith?.join(',');
   useEffect(() => {
-    const input = inputRef.current, form = input?.form, names = recheckWith;
+    const input = inputRef.current, form = input?.form, names = recheckNames ? recheckNames.split(',') : undefined;
     if (!input || !form || !names?.length) return;
     const recheck = (event: Event) => {
-      if (event.target instanceof HTMLInputElement && names.includes(event.target.name) && resultRef.current !== null) validateRef.current(input);
+      if (event.target instanceof HTMLInputElement && names.includes(event.target.name)) {
+        setNote(null);
+        if (resultRef.current !== null) validateRef.current(input);
+      }
     };
     form.addEventListener('input', recheck);
     return () => form.removeEventListener('input', recheck);
-  }, [recheckWith]);
+  }, [recheckNames]);
   const visible = !invalid && Boolean(check) && result !== null && result !== 'empty' && (confirmOk || result !== 'ok');
   const problem = visible && result !== 'ok' ? result : null, bad = invalid || problem !== null;
   const describe = [hint ? hintId : null, note ? noteId : null, visible ? checkId : null, describedBy ?? null].filter(Boolean).join(' ') || undefined;
@@ -71,7 +75,7 @@ export function Field({ name, type = 'text', value, required = true, maxLength, 
     <Input ref={inputRef} id={fieldId} name={name} type={type} defaultValue={draft[name] ?? value} required={required} maxLength={maxLength} minLength={minLength}
       aria-invalid={bad || undefined} aria-describedby={describe} spellCheck={type === 'password' || name.toLowerCase().includes('id') ? false : undefined}
       autoComplete={type === 'password' ? 'new-password' : 'off'}
-      onBlur={(event) => { const shown = onLeave?.(event.currentTarget) ?? null; setNote(shown); if (check) validate(event.currentTarget); }}
+      onBlur={(event) => { const shown = onLeave?.(event.currentTarget) ?? null; if (shown !== null) setNote(shown); if (check) validate(event.currentTarget); }}
       onChange={(event: ChangeEvent<HTMLInputElement>) => { onEdit?.(); setNote(null); if (check && result !== null) validate(event.currentTarget); }} />
     {note && <p id={noteId} role="status" className="text-sm">{note}</p>}
     {hint && <p id={hintId} className="text-sm text-muted-foreground">{hint}</p>}

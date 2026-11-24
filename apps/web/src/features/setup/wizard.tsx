@@ -16,8 +16,9 @@ import { createRegistries } from '../../lib/registries.js';
 import { setupClient, type createSetupClient } from './api.js';
 import { SetupActions, SetupSecondaryActions } from './actions.js';
 import { hostTimezone } from './host-timezone.js';
-import { DraftContext, Field, setValue } from './field.js';
-import { splitBucketAddress } from './checks.js';
+import { DraftContext, Field } from './field.js';
+import { takeBucketAddress } from './checks.js';
+import { SetupHoldContext } from './hold.js';
 import { SmtpPortHint } from './smtp-port-hint.js';
 import { BackupKeyPanel, ConfirmKeySection, confirmKeyLabels } from './backup-key.js';
 import { GoogleClientFields, GoogleRedirect } from '../settings/auth.js';
@@ -31,15 +32,14 @@ function destination(data: FormData): SetupS3Credentials {
   return { endpoint: text(data, 'endpoint'), region: text(data, 'region'), bucket: text(data, 'bucket'),
     accessKeyId: text(data, 'accessKeyId'), secretAccessKey: text(data, 'secretAccessKey') };
 }
+const bucketRecheck = ['bucket'] as const;
 function Destination() {
   /** R2's per-bucket address fills both fields, unless the owner has already typed another bucket. */
   const takeBucket = (input: HTMLInputElement) => {
-    const split = splitBucketAddress(input.value), bucket = input.form?.elements.namedItem('bucket');
-    if (!split || !(bucket instanceof HTMLInputElement) || !['', split.bucket].includes(bucket.value.trim())) return null;
-    setValue(input, split.endpoint); setValue(bucket, split.bucket);
-    return t('setup/setup:check.bucketFromEndpoint', { bucket: split.bucket });
+    const bucket = takeBucketAddress(input);
+    return bucket !== null ? t('setup/setup:check.bucketFromEndpoint', { bucket }) : null;
   };
-  return <><Field name="endpoint" type="url" hint={t('setup/setup:endpointHint')} onLeave={takeBucket} recheckWith={['bucket']} />
+  return <><Field name="endpoint" type="url" hint={t('setup/setup:endpointHint')} onLeave={takeBucket} recheckWith={bucketRecheck} />
     <Field name="region" value="auto" /><Field name="bucket" />
     <Field name="accessKeyId" confirmOk={false} /><Field name="secretAccessKey" type="password" confirmOk={false} /></>;
 }
@@ -94,8 +94,8 @@ function Form({ children, action, submit = 'continue', submitText, secondary, dr
  * A step that worked waits here, with what it did, until the owner continues (the server has already moved on). Only
  * the email test's address and Google's answer are held, never a secret.
  */
-type Held = { kind: 'email'; to: string } | { kind: 'google'; check: GoogleClientCheck } | { kind: 'backups' };
-const heldStep = { email: 5, google: 6, backups: 7 } as const;
+type Held = { kind: 'email'; to: string } | { kind: 'google'; check: GoogleClientCheck } | { kind: 'stripe' } | { kind: 'backups' };
+const heldStep = { email: 5, google: 6, stripe: 6, backups: 7 } as const;
 /** Step 6 is the registered Stripe step; step 8 is the registered import step, which finishes setup itself. */
 const stripeStep = 'setupSteps.setup.stripe', finalStep = 'setupSteps.setup.import';
 /** Routes an existing website links to: paths, not translatable text. */
@@ -279,7 +279,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
             setGoogleSaved(true); setHeld({ kind: 'google', check: result.check }); await queries.invalidateQueries({ queryKey: bootstrapKey }); await refresh();
           }}><p>{t('setup/google-step:intro')}</p><GoogleRedirect /><p className="text-sm text-muted-foreground">{t('auth/google:setupHelp')}</p>
             <GoogleClientFields idPrefix="setup-google" rejected={error === 'googleRejected'} onEdit={() => { if (error === 'googleRejected') setError(null); }} /></Form>)}
-        {step === 6 && !googlePage && (Stripe ? <Stripe />
+        {step === 6 && !googlePage && (Stripe ? <SetupHoldContext.Provider value={{ hold: () => setHeld({ kind: 'stripe' }), release: proceed }}><Stripe /></SetupHoldContext.Provider>
           : <><p>{t('setup/setup:stripeHint')}</p><SetupActions><Button disabled={busy} onClick={() => void run(async () => { await client.call('stripe', { choice: 'skip', revision }); await refresh(); })}>{t('setup/setup:continue')}</Button></SetupActions></>)}
         {step === 7 && <><p>{t('setup/setup:backupHint')}</p><p>{t('setup/setup:retention')}</p>
           {held?.kind === 'backups' ? <><p role="status">{t('setup/setup:backupsOn')}</p>{continueHeld}</>

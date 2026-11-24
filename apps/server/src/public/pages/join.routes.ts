@@ -106,7 +106,13 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
       const common = { gym: await config.service.branding(gymId), t: config.t ?? translator };
       let templates: Awaited<ReturnType<JoinService['ready']>>;
       try { templates = await config.service.ready(gymId); }
-      catch (error) { if (error instanceof AppError && error.code === 'unavailable') return ctx.html(joinPlansPage({ ...common, plans: [] }), 200); throw error; }
+      catch (error) {
+        if (error instanceof AppError && error.code === 'unavailable') {
+          const status = error.details?.reason?.includes('payments_read_failed') ? 503 : 200;
+          return ctx.html(joinPlansPage({ ...common, plans: [] }), status);
+        }
+        throw error;
+      }
       if (query.plan && idSchema.safeParse(query.plan).success) {
         try {
           const plan = await config.service.joinablePlan(gymId, query.plan);

@@ -5,6 +5,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { StripeStep } from './stripe-step.js';
+import { SetupHoldContext } from './hold.js';
 afterEach(cleanup);
 const webhookUrl = new URL('/webhooks/stripe', location.origin).href;
 type StripeResponse = { configured: boolean; mode: 'test' | 'live' | null; webhookRegistered: boolean; revision: number };
@@ -83,4 +84,30 @@ it('clears the credential after a conflict and allows skipping', async () => {
   expect(screen.getByRole('button', { name: 'Set up later' })).toBeDefined();
   expect(invalidate).not.toHaveBeenCalled();
   expect(onComplete).not.toHaveBeenCalled();
+});
+it('holds the wizard step on configure until Continue to backups runs, and never holds on skip', async () => {
+  const hold = vi.fn(), release = vi.fn(), onComplete = vi.fn();
+  const order: string[] = [];
+  release.mockImplementation(() => order.push('release'));
+  onComplete.mockImplementation(() => order.push('onComplete'));
+  const fetcher = vi.fn(async (path: RequestInfo | URL) => String(path) === '/api/setup'
+    ? Response.json({ data: { currentStep: 6, completedSteps: [0, 1, 2, 3, 4, 5], completed: false, revision: 7 } })
+    : Response.json({ data: connected() }));
+  const queries = new QueryClient();
+  const user = userEvent.setup();
+  render(<QueryClientProvider client={queries}><SetupHoldContext.Provider value={{ hold, release }}><StripeStep fetcher={fetcher} onComplete={onComplete} /></SetupHoldContext.Provider></QueryClientProvider>);
+  await user.type(screen.getByLabelText('Restricted Stripe key'), 'rk_test_SYNTHETIC');
+  await user.click(screen.getByRole('button', { name: 'Validate and connect' }));
+  await screen.findByText(`Connected in test mode. Webhook registered at ${webhookUrl}.`);
+  expect(hold).toHaveBeenCalledTimes(1);
+  expect(release).not.toHaveBeenCalled();
+  await user.click(screen.getByRole('button', { name: 'Continue to backups' }));
+  await waitFor(() => expect(onComplete).toHaveBeenCalledTimes(1));
+  expect(order).toEqual(['release', 'onComplete']);
+  cleanup();
+  const holdSkip = vi.fn();
+  render(<QueryClientProvider client={new QueryClient()}><SetupHoldContext.Provider value={{ hold: holdSkip, release: vi.fn() }}><StripeStep fetcher={fetcher} /></SetupHoldContext.Provider></QueryClientProvider>);
+  await user.click(screen.getByRole('button', { name: 'Set up later' }));
+  await screen.findByText('Stripe step saved. Continue to backups.');
+  expect(holdSkip).not.toHaveBeenCalled();
 });

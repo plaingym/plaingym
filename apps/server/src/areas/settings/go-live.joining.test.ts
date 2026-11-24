@@ -7,6 +7,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { maxJoinDocuments } from '@plaingym/shared/contracts';
 import { TestClock } from '../../core/clock.js';
+import { setLogSink } from '../../core/log.js';
 import { createGoLiveService } from './go-live.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
@@ -41,6 +42,21 @@ describe('go-live online joining item', () => {
     const item = await (await fixture({ stripe: false })).joining();
     expect(item.status).toBe('needs_attention');
     expect(item.message).toBe(`${intro} ${stripe}`);
+  });
+  it('names a failed Stripe read instead of missing Stripe when the resolver throws', async () => {
+    const gymId = uuidv7();
+    await factory('gyms', gymId, { billingEnabled: true, stripeConfig: 'opaque-encrypted-configuration' });
+    await factory('waiverTemplates', gymId, { name: 'Waiver 0' });
+    await factory('plans', gymId);
+    const service = createGoLiveService({ scope: db.forGym, clock, smtpConfigured: async () => true,
+      paymentsConfigured: async () => { throw new Error('secret key'); } });
+    const restore = setLogSink(() => {});
+    try {
+      const item = (await service.checklist(gymId)).items.find(entry => entry.id === 'online_joining')!;
+      expect(item.status).toBe('needs_attention');
+      expect(item.message).toBe(`${intro} Stripe could not be checked: check the saved keys in Settings → Integrations → Payments.`);
+      expect(item.message).not.toContain(stripe);
+    } finally { setLogSink(restore); }
   });
   it('asks for a document when there is none, or when every family is retired', async () => {
     expect((await (await fixture({ waivers: 0 })).joining()).message).toBe(`${intro} ${documents}`);

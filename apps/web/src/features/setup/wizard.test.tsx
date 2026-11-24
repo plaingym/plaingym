@@ -9,7 +9,7 @@ import { ShellServicesContext } from '../../app/context.js';
 import type { ShellServices } from '../../app/services.js';
 import { ApiError, onApiError } from '../../lib/api.js';
 import { SetupWizard } from './wizard.js';
-import { splitBucketAddress } from './checks.js';
+import { fieldChecks, splitBucketAddress } from './checks.js';
 import { createSetupClient } from './api.js';
 import { createRegistries, type ExtensionView } from '../../lib/registries.js';
 
@@ -182,6 +182,26 @@ describe('setup wizard', () => {
     expect(await screen.findByLabelText('Restricted Stripe key')).toBeDefined();
     expect(screen.getByText('Step 7 / 9')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Validate and connect' })).toBeDefined();
+  });
+  it('holds the Stripe confirmation across a status refetch until Continue to backups, while skip moves on at once', async () => {
+    const { fetcher, query } = start(6, undefined, undefined, { googleSkipped: true });
+    const answer = fetcher.getMockImplementation()!;
+    fetcher.mockImplementation((path, options) => String(path).endsWith('/stripe') && JSON.parse(String(options?.body)).choice === 'configure'
+      ? answer(path, options).then(async () => Response.json({ data: { configured: true, mode: 'test', webhookRegistered: true, revision: 2 } }))
+      : answer(path, options));
+    await userEvent.type(await screen.findByLabelText('Restricted Stripe key'), 'rk_test_SYNTHETIC');
+    await userEvent.click(screen.getByRole('button', { name: 'Validate and connect' }));
+    const webhookUrl = new URL('/webhooks/stripe', window.location.origin).href;
+    expect((await screen.findByRole('status')).textContent).toBe(`Connected in test mode. Webhook registered at ${webhookUrl}.`);
+    await act(async () => { await query.refetchQueries({ queryKey: ['setup', 'status'] }); });
+    expect(screen.getByRole('status').textContent).toBe(`Connected in test mode. Webhook registered at ${webhookUrl}.`);
+    expect(screen.queryByRole('button', { name: 'Generate backup key' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Continue to backups' }));
+    expect(await screen.findByRole('button', { name: 'Generate backup key' })).toBeDefined();
+    cleanup();
+    start(6, undefined, undefined, { googleSkipped: true });
+    await userEvent.click(await screen.findByRole('button', { name: 'Set up later' }));
+    expect(await screen.findByRole('button', { name: 'Generate backup key' })).toBeDefined();
   });
   it('offers an optional Google page after email that stores the client and changes no step', async () => {
     const { fetcher, query } = start(6);
@@ -627,21 +647,73 @@ describe('splitBucketAddress', () => {
   it('splits R2 per-bucket S3 API addresses and decodes the bucket', () => {
     expect(splitBucketAddress(' https://account.r2.cloudflarestorage.com/o1test '))
       .toEqual({ endpoint: 'https://account.r2.cloudflarestorage.com', bucket: 'o1test' });
+    expect(splitBucketAddress('https://acct.r2.cloudflarestorage.com/backups'))
+      .toEqual({ endpoint: 'https://acct.r2.cloudflarestorage.com', bucket: 'backups' });
     expect(splitBucketAddress('https://account.r2.cloudflarestorage.com/o1%20test'))
       .toEqual({ endpoint: 'https://account.r2.cloudflarestorage.com', bucket: 'o1 test' });
   });
   it.each(['not an address', 'http://account.r2.cloudflarestorage.com/o1test', 'https://account.r2.cloudflarestorage.com/o1test?x=1',
     'https://account.r2.cloudflarestorage.com/o1test#part', 'https://user:secret@account.r2.cloudflarestorage.com/o1test',
-    'https://account.r2.cloudflarestorage.com/a/b', 'https://account.r2.cloudflarestorage.com/', 'https://account.r2.cloudflarestorage.com/%E0%A4%A'])('returns null for %s',
+    'https://account.r2.cloudflarestorage.com/a/b', 'https://account.r2.cloudflarestorage.com/', 'https://account.r2.cloudflarestorage.com/%E0%A4%A',
+    'https://storage.example.com/minio'])('returns null for %s',
   (address) => expect(splitBucketAddress(address)).toBeNull());
-  it('clears the split note when the endpoint changes', async () => {
+  it('limits endpointCheck bucket-path refusals to R2 hosts', () => {
+    const formWithBucket = (bucket: string) => {
+      const form = document.createElement('form'), input = document.createElement('input');
+      input.name = 'bucket'; input.value = bucket; form.append(input);
+      return form;
+    };
+    expect(fieldChecks.endpoint!('https://storage.example.com/minio', formWithBucket('backups'))).toBeNull();
+    expect(fieldChecks.endpoint!('https://storage.example.com/minio', formWithBucket('minio'))).toBeNull();
+    expect(fieldChecks.endpoint!('https://acct.r2.cloudflarestorage.com/backups', formWithBucket('other'))).toBe('check.bucketPath');
+  });
+  it('keeps the split note on a second blur and clears it when the bucket or endpoint changes', async () => {
     start(7);
     const url = await screen.findByLabelText('S3-compatible endpoint URL') as HTMLInputElement;
+    const bucket = screen.getByLabelText('Storage bucket') as HTMLInputElement;
     await userEvent.type(url, r2);
     await userEvent.tab();
     expect(described(url)).toContain('Using bucket o1test from this address.');
-    await userEvent.type(url, 'x');
+    url.focus();
+    await userEvent.tab();
+    expect(described(url)).toContain('Using bucket o1test from this address.');
+    await userEvent.type(bucket, 'x');
     expect(described(url)).not.toContain('Using bucket o1test from this address.');
+    cleanup();
+    localStorage.clear();
+    start(7);
+    const secondUrl = await screen.findByLabelText('S3-compatible endpoint URL') as HTMLInputElement;
+    await userEvent.type(secondUrl, r2);
+    await userEvent.tab();
+    expect(described(secondUrl)).toContain('Using bucket o1test from this address.');
+    await userEvent.type(secondUrl, 'x');
+    expect(described(secondUrl)).not.toContain('Using bucket o1test from this address.');
+  });
+  it('leaves a path-prefixed endpoint as typed and the bucket empty on blur', async () => {
+    start(7);
+    const url = await screen.findByLabelText('S3-compatible endpoint URL') as HTMLInputElement;
+    const bucket = screen.getByLabelText('Storage bucket') as HTMLInputElement;
+    await userEvent.type(url, 'https://storage.example.com/minio');
+    await userEvent.tab();
+    expect(url.value).toBe('https://storage.example.com/minio');
+    expect(bucket.value).toBe('');
+    expect(described(url)).not.toContain('Using bucket');
+    expect(described(url)).toContain('Looks right');
+  });
+  it('adds the recheck form input listener once across five rerenders of the storage step', async () => {
+    const add = vi.spyOn(HTMLFormElement.prototype, 'addEventListener');
+    try {
+      const fetcher = vi.fn(async () => Response.json({ data: { currentStep: 7, completedSteps: [0, 1, 2, 3, 4, 5, 6], completed: false, revision: 1, googleSkipped: true, backupsLater: false } }));
+      const client = createSetupClient(fetcher as typeof fetch);
+      const query = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+      const view = (registries = createRegistries()) => (
+        <QueryClientProvider client={query}><ShellServicesContext.Provider value={services}><SetupWizard client={client} registries={registries} /></ShellServicesContext.Provider></QueryClientProvider>
+      );
+      const { rerender } = render(view());
+      await screen.findByLabelText('S3-compatible endpoint URL');
+      for (let i = 0; i < 5; i++) rerender(view());
+      expect(add.mock.calls.filter(([type]) => type === 'input')).toHaveLength(1);
+    } finally { add.mockRestore(); }
   });
 });
 

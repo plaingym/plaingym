@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { currencySchema, googleClientValueSchema, setupGymDetailsSchema, setupOwnerRequestSchema, setupS3CredentialsSchema,
   setupSmtpRequestSchema, setupTimezoneSchema, setupWebsiteRequestSchema } from '@plaingym/shared/contracts';
-import type { FieldCheck } from './field.js';
+import { setValue, type FieldCheck } from './field.js';
 
 /** Any shared Zod schema: checked as the server checks the request. */
 interface Schema { safeParse(value: unknown): { success: boolean } }
@@ -14,18 +14,27 @@ const owner = setupOwnerRequestSchema.shape, gym = setupGymDetailsSchema.shape, 
 const smtp = setupSmtpRequestSchema.options[1].shape, website = setupWebsiteRequestSchema.options[1].shape;
 /**
  * Splits Cloudflare R2's per-bucket "S3 API" address (`https://<account>.r2.cloudflarestorage.com/<bucket>`) into the
- * service endpoint and the bucket it points at. Only an `https:` URL with exactly one path segment and no query,
- * fragment or user info is an S3 API address; anything else, including a segment that can't be decoded, returns null.
+ * service endpoint and the bucket it points at. Only an `https:` URL on a `.r2.cloudflarestorage.com` host with
+ * exactly one path segment and no query, fragment or user info is split; anything else, including a segment that
+ * can't be decoded, returns null.
  */
+const isR2Host = (url: URL) => url.hostname.toLowerCase().endsWith('.r2.cloudflarestorage.com');
 export function splitBucketAddress(address: string): { endpoint: string; bucket: string } | null {
   const trimmed = address.trim();
   if (!URL.canParse(trimmed)) return null;
   const url = new URL(trimmed);
-  if (url.protocol !== 'https:' || url.search || url.hash || url.username || url.password) return null;
+  if (url.protocol !== 'https:' || !isR2Host(url) || url.search || url.hash || url.username || url.password) return null;
   const segments = url.pathname.split('/').filter(Boolean);
   const segment = segments[0];
   if (segments.length !== 1 || segment === undefined) return null;
   try { return { endpoint: url.origin, bucket: decodeURIComponent(segment) }; } catch { return null; }
+}
+/** R2's per-bucket address fills both fields, unless the owner has already typed another bucket. */
+export function takeBucketAddress(input: HTMLInputElement): string | null {
+  const split = splitBucketAddress(input.value), bucket = input.form?.elements.namedItem('bucket');
+  if (!split || !(bucket instanceof HTMLInputElement) || !['', split.bucket].includes(bucket.value.trim())) return null;
+  setValue(input, split.endpoint); setValue(bucket, split.bucket);
+  return split.bucket;
 }
 const lastPathSegment = (address: string) => URL.canParse(address) ? new URL(address).pathname.split('/').filter(Boolean).at(-1) : undefined;
 const fieldValue = (form: HTMLFormElement | null, name: string) => {
@@ -35,6 +44,7 @@ const fieldValue = (form: HTMLFormElement | null, name: string) => {
 const endpointCheck: FieldCheck = (value, form) => {
   const trimmed = value.trim();
   if (!storage.endpoint.safeParse(trimmed).success) return 'check.url';
+  if (!URL.canParse(trimmed) || !isR2Host(new URL(trimmed))) return null;
   const named = fieldValue(form, 'bucket');
   if (named && lastPathSegment(trimmed) === named) return 'check.bucketPath';
   return splitBucketAddress(trimmed) !== null && named !== '' ? 'check.bucketPath' : null;

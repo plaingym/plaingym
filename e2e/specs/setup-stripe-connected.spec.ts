@@ -31,21 +31,24 @@ for (const width of [360, 1280]) {
       unexpected.push(request.method() + ' ' + path);
       return route.fulfill({ status: 404, json: { error: { code: 'not_found' } } });
     });
-    await page.goto(gymOrigin + '/setup#token=fixture');
-    await page.getByLabel('Restricted Stripe key', { exact: true }).fill(restrictedKey);
-    await page.getByRole('button', { name: 'Validate and connect', exact: true }).click();
+    try {
+      await page.goto(gymOrigin + '/setup#token=fixture');
+      await page.getByLabel('Restricted Stripe key', { exact: true }).fill(restrictedKey);
+      await page.getByRole('button', { name: 'Validate and connect', exact: true }).click();
 
-    const status = page.getByRole('status').filter({ hasText: 'Connected in test mode.' });
-    await expect(status).toHaveText('Connected in test mode. Webhook registered at https://gym.localhost/webhooks/stripe.');
-    expect(stripeRequests).toEqual([{ choice: 'configure', revision: 3, restrictedKey }]);
-    const next = page.getByRole('button', { name: 'Continue to backups', exact: true });
-    await expect(next).toBeVisible();
-    await reachable(next, page);
-    await accessibleLayout(page, info, 'setup-stripe-connected-' + width);
-    await page.screenshot({ path: info.outputPath('setup-stripe-connected-' + width + '.png'), fullPage: true });
+      const status = page.getByRole('status').filter({ hasText: 'Connected in test mode.' });
+      await expect(status).toHaveText(`Connected in test mode. Webhook registered at ${new URL('/webhooks/stripe', gymOrigin).href}.`);
+      expect(stripeRequests).toEqual([{ choice: 'configure', revision: 3, restrictedKey }]);
+      const next = page.getByRole('button', { name: 'Continue to backups', exact: true });
+      await expect(next).toBeVisible();
+      await reachable(next, page);
+      await accessibleLayout(page, info, 'setup-stripe-connected-' + width);
+      await page.screenshot({ path: info.outputPath('setup-stripe-connected-' + width + '.png'), fullPage: true });
 
-    await next.click();
-    await expect(page.getByRole('heading', { name: 'Protect your gym with backups', exact: true })).toBeVisible();
-    expect(unexpected).toEqual([]);
+      await next.click();
+      await expect(page.getByRole('heading', { name: 'Protect your gym with backups', exact: true })).toBeVisible();
+    } finally {
+      expect(unexpected).toEqual([]);
+    }
   });
 }

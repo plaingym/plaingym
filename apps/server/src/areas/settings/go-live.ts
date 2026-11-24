@@ -30,8 +30,8 @@ const errorName = (error: unknown) => error instanceof Error ? error.name : type
  * Mirrors when the public join page is available: billing on, a payment provider, one to eight current documents,
  * and at least one plan it can list.
  */
-function onlineJoining(billingEnabled: boolean, stripe: boolean, documents: number, plans: number) {
-  const missing = [!billingEnabled && 'billing', !stripe && 'stripe', documents === 0 && 'no_documents',
+function onlineJoining(billingEnabled: boolean, stripe: boolean, paymentsReadFailed: boolean, documents: number, plans: number) {
+  const missing = [!billingEnabled && 'billing', paymentsReadFailed ? 'payments_read_failed' : !stripe && 'stripe', documents === 0 && 'no_documents',
     documents > maxJoinDocuments && 'too_many_documents', plans === 0 && 'no_plans'].filter((key): key is string => Boolean(key));
   return missing.length === 0 ? item('online_joining', 'ready')
     : item('online_joining', 'needs_attention', [t('settings/go-live:check.online_joining.needs_attention'),
@@ -144,7 +144,7 @@ export function createGoLiveService(options: {
       // A failed resolver read blocks billing and /join, so Payments and Online joining don't trust the stored setting.
       const paymentsReadFailed = payments === null;
       const recovery = await reconciliation(tx, stripe);
-      const joining = onlineJoining(gym.billingEnabled, paymentsReadFailed ? false : stripe,
+      const joining = onlineJoining(gym.billingEnabled, stripe, paymentsReadFailed,
         currentWaivers.filter(w => !w.retiredAt).length, joinablePlans);
       const today = localDate(clock.now(), gym.timezone), thisMonth = today.slice(0, 7);
       const pastDueMemberships = await pastDue(tx, today);

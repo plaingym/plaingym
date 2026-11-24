@@ -213,6 +213,19 @@ describe('go-live settings', () => {
     expect(screen.getByText(connected ? /last restore check ran without Stripe/ : /last check ran without Stripe and only read restored records/).textContent)
       .toContain('Check restored payments again');
   });
+  it('explains an unchecked Stripe read on the no-Stripe restore panel instead of claiming Stripe is disconnected', async () => {
+    const response = restored(0);
+    live.mockResolvedValue(reply(200, { data: { ...response.data,
+      items: response.data.items.map(item => item.id === 'stripe_ready' ? { ...item, status: 'needs_attention',
+        message: 'Stripe could not be checked. Check the saved keys in Settings → Integrations → Payments.' } : item),
+      restoreReconciliation: { ...response.data.restoreReconciliation, stripeConfigured: false },
+    } }));
+    start();
+    const text = (await screen.findByText(/Stripe could not be checked, so this check can't tell whether Stripe is connected\./)).textContent;
+    expect(text).toContain('Check the saved keys in Settings → Integrations → Payments, then choose Check restored payments again.');
+    expect(screen.queryByText(/To use Stripe, connect it in Payments/)).toBeNull();
+    expect(screen.queryByText(/last restore check ran without Stripe\. Billing is paused/)).toBeNull();
+  });
   it('allows a rerun when the first check has no result yet', async () => {
     live.mockResolvedValue(reply(200, restored(null))); client.POST.mockResolvedValue(reply(200, restored(0)));
     const user = userEvent.setup(); start();
