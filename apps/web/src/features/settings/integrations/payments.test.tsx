@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, screen, waitFor, within } from '@testing-library/react';
+import { focusManager } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import type { Integrations } from '@plaingym/shared/contracts';
 import { health, integrations, refusal, renderSection, reply, serve, settings } from './fixtures.test-helper.js';
@@ -60,6 +61,27 @@ describe('Settings → Payments', () => {
     await screen.findByText('All clear');
     expect(screen.queryByRole('note')).toBeNull();
     expect(client.GET.mock.calls.filter(([path]) => path === '/api/settings/go-live')).toHaveLength(1);
+  });
+  it('refreshes the Payments restore note on window focus', async () => {
+    current = live;
+    const get = client.GET.getMockImplementation()!;
+    const modeMessage = 'Resolve pending payment attempts or refunds. The last check read Stripe test mode. Check restored payments again in live mode before turning billing on.';
+    const base = { revision: 3, billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false,
+      restoreReconciliation: { restoreId: '00000000-0000-7000-8000-000000000003', snapshotAt: '2026-11-01T12:00:00Z',
+        checkedAt: '2026-11-02T12:00:00Z', inspected: 0, unresolved: 0, stripeConfigured: true, stripeMode: 'test' } };
+    let reads = 0;
+    client.GET.mockImplementation((path: string) => {
+      if (path !== '/api/settings/go-live') return get(path);
+      reads += 1;
+      return Promise.resolve(reply(200, { data: { ...base,
+        items: [{ id: 'reconciliation_complete', status: reads === 1 ? 'needs_attention' : 'ready', message: reads === 1 ? modeMessage : 'All clear' }],
+      } }));
+    });
+    renderSection();
+    expect(await screen.findByRole('note')).toBeDefined();
+    act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+    await waitFor(() => expect(screen.queryByRole('note')).toBeNull());
+    expect(client.GET.mock.calls.filter(([path]) => path === '/api/settings/go-live')).toHaveLength(2);
   });
   it('does not infer a mode warning when the server has no saved-mode audit', async () => {
     current = live;

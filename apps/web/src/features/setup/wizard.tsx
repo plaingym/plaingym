@@ -92,9 +92,9 @@ function Form({ children, action, submit = 'continue', submitText, secondary, dr
 }
 /**
  * A step that worked waits here, with what it did, until the owner continues (the server has already moved on). Only
- * the email test's address and Google's answer are held, never a secret.
+ * the email test's address, Google's answer, and the Stripe step's mode and webhook flag are held, never a secret or key.
  */
-type Held = { kind: 'email'; to: string } | { kind: 'google'; check: GoogleClientCheck } | { kind: 'stripe' } | { kind: 'backups' };
+type Held = { kind: 'email'; to: string } | { kind: 'google'; check: GoogleClientCheck } | { kind: 'stripe'; mode: 'test' | 'live' | null; webhookRegistered: boolean } | { kind: 'backups' };
 const heldStep = { email: 5, google: 6, stripe: 6, backups: 7 } as const;
 /** Step 6 is the registered Stripe step; step 8 is the registered import step, which finishes setup itself. */
 const stripeStep = 'setupSteps.setup.stripe', finalStep = 'setupSteps.setup.import';
@@ -279,7 +279,11 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
             setGoogleSaved(true); setHeld({ kind: 'google', check: result.check }); await queries.invalidateQueries({ queryKey: bootstrapKey }); await refresh();
           }}><p>{t('setup/google-step:intro')}</p><GoogleRedirect /><p className="text-sm text-muted-foreground">{t('auth/google:setupHelp')}</p>
             <GoogleClientFields idPrefix="setup-google" rejected={error === 'googleRejected'} onEdit={() => { if (error === 'googleRejected') setError(null); }} /></Form>)}
-        {step === 6 && !googlePage && (Stripe ? <SetupHoldContext.Provider value={{ hold: () => setHeld({ kind: 'stripe' }), release: proceed }}><Stripe /></SetupHoldContext.Provider>
+        {step === 6 && !googlePage && (Stripe ? <SetupHoldContext.Provider value={{
+          connected: held?.kind === 'stripe' ? { mode: held.mode, webhookRegistered: held.webhookRegistered } : null,
+          hold: (connected) => setHeld({ kind: 'stripe', ...connected }),
+          release: async () => { await refresh(); setHeld(null); },
+        }}><Stripe /></SetupHoldContext.Provider>
           : <><p>{t('setup/setup:stripeHint')}</p><SetupActions><Button disabled={busy} onClick={() => void run(async () => { await client.call('stripe', { choice: 'skip', revision }); await refresh(); })}>{t('setup/setup:continue')}</Button></SetupActions></>)}
         {step === 7 && <><p>{t('setup/setup:backupHint')}</p><p>{t('setup/setup:retention')}</p>
           {held?.kind === 'backups' ? <><p role="status">{t('setup/setup:backupsOn')}</p>{continueHeld}</>

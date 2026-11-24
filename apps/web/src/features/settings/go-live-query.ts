@@ -14,7 +14,7 @@ export const goLiveKey = (revision: number | undefined, epoch: number | undefine
 /** Payments and Go live share one read, including checks that don't change the gym revision. */
 export function useGoLiveChecklist(revision: number | undefined, epoch: number | undefined, enabled = true) {
   return useQuery({ queryKey: goLiveKey(revision, epoch), enabled: enabled && revision !== undefined,
-    staleTime: Infinity, retry: false, refetchOnWindowFocus: false,
+    staleTime: Infinity, retry: false, refetchOnWindowFocus: 'always',
     queryFn: async () => {
       const result = await api.GET('/api/settings/go-live');
       if (!result.response.ok) throw new Error('The checklist request failed');

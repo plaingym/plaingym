@@ -94,20 +94,48 @@ it('holds the wizard step on configure until Continue to backups runs, and never
     ? Response.json({ data: { currentStep: 6, completedSteps: [0, 1, 2, 3, 4, 5], completed: false, revision: 7 } })
     : Response.json({ data: connected() }));
   const queries = new QueryClient();
+  const invalidate = vi.spyOn(queries, 'invalidateQueries');
   const user = userEvent.setup();
-  render(<QueryClientProvider client={queries}><SetupHoldContext.Provider value={{ hold, release }}><StripeStep fetcher={fetcher} onComplete={onComplete} /></SetupHoldContext.Provider></QueryClientProvider>);
+  render(<QueryClientProvider client={queries}><SetupHoldContext.Provider value={{ connected: null, hold, release }}><StripeStep fetcher={fetcher} onComplete={onComplete} /></SetupHoldContext.Provider></QueryClientProvider>);
   await user.type(screen.getByLabelText('Restricted Stripe key'), 'rk_test_SYNTHETIC');
   await user.click(screen.getByRole('button', { name: 'Validate and connect' }));
   await screen.findByText(`Connected in test mode. Webhook registered at ${webhookUrl}.`);
-  expect(hold).toHaveBeenCalledTimes(1);
+  expect(hold).toHaveBeenCalledExactlyOnceWith({ mode: 'test', webhookRegistered: true });
   expect(release).not.toHaveBeenCalled();
   await user.click(screen.getByRole('button', { name: 'Continue to backups' }));
   await waitFor(() => expect(onComplete).toHaveBeenCalledTimes(1));
   expect(order).toEqual(['release', 'onComplete']);
+  expect(invalidate).not.toHaveBeenCalled();
   cleanup();
   const holdSkip = vi.fn();
-  render(<QueryClientProvider client={new QueryClient()}><SetupHoldContext.Provider value={{ hold: holdSkip, release: vi.fn() }}><StripeStep fetcher={fetcher} /></SetupHoldContext.Provider></QueryClientProvider>);
+  render(<QueryClientProvider client={new QueryClient()}><SetupHoldContext.Provider value={{ connected: null, hold: holdSkip, release: vi.fn() }}><StripeStep fetcher={fetcher} /></SetupHoldContext.Provider></QueryClientProvider>);
   await user.click(screen.getByRole('button', { name: 'Set up later' }));
   await screen.findByText('Stripe step saved. Continue to backups.');
   expect(holdSkip).not.toHaveBeenCalled();
+});
+it('ignores a second Continue to backups click while the wizard is still releasing the hold', async () => {
+  let finish: () => void = () => undefined;
+  const release = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; })), onComplete = vi.fn();
+  const user = userEvent.setup();
+  render(<QueryClientProvider client={new QueryClient()}>
+    <SetupHoldContext.Provider value={{ connected: { mode: 'test', webhookRegistered: true }, hold: vi.fn(), release }}>
+      <StripeStep fetcher={vi.fn()} onComplete={onComplete} />
+    </SetupHoldContext.Provider>
+  </QueryClientProvider>);
+  const button = screen.getByRole('button', { name: 'Continue to backups' });
+  await user.click(button);
+  await user.click(button);
+  expect(release).toHaveBeenCalledTimes(1);
+  expect(onComplete).not.toHaveBeenCalled();
+  finish();
+  await waitFor(() => expect(onComplete).toHaveBeenCalledTimes(1));
+});
+it('renders the confirmation from the wizard hold context without a local connect', () => {
+  render(<QueryClientProvider client={new QueryClient()}>
+    <SetupHoldContext.Provider value={{ connected: { mode: 'live', webhookRegistered: false }, hold: vi.fn(), release: vi.fn() }}>
+      <StripeStep fetcher={vi.fn()} />
+    </SetupHoldContext.Provider>
+  </QueryClientProvider>);
+  expect(screen.getByRole('status').textContent).toBe('Connected in live mode. The webhook isn\'t registered yet. Check Settings → Integrations → Payments after setup.');
+  expect(screen.queryByLabelText('Restricted Stripe key')).toBeNull();
 });

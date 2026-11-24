@@ -33,7 +33,7 @@ export function StripeStep({ fetcher = fetch, onComplete }: { fetcher?: typeof f
       setKey('');
       if (choice === 'configure') {
         setConnected({ mode: result.mode, webhookRegistered: result.webhookRegistered });
-        hold?.hold();
+        hold?.hold({ mode: result.mode, webhookRegistered: result.webhookRegistered });
       } else {
         setDone(true);
         await queries.invalidateQueries({ queryKey: ['setup', 'status'] });
@@ -47,22 +47,23 @@ export function StripeStep({ fetcher = fetch, onComplete }: { fetcher?: typeof f
     if (busy) return;
     setBusy(true);
     try {
-      await queries.invalidateQueries({ queryKey: ['setup', 'status'] });
-      hold?.release();
+      if (hold) await hold.release();
+      else await queries.invalidateQueries({ queryKey: ['setup', 'status'] });
       onComplete?.();
     } finally { setBusy(false); }
   }
-  const connectedLine = connected && [
-    connected.mode === 'test' || connected.mode === 'live'
-      ? label('connectedMode', { mode: label('mode_' + connected.mode) })
+  const confirmation = connected ?? hold?.connected ?? null;
+  const connectedLine = confirmation && [
+    confirmation.mode === 'test' || confirmation.mode === 'live'
+      ? label('connectedMode', { mode: label('mode_' + confirmation.mode) })
       : label('connected'),
-    connected.webhookRegistered
+    confirmation.webhookRegistered
       ? label('webhookRegistered', { url: new URL('/webhooks/stripe', location.origin).href })
       : label('webhookMissing'),
   ].join(' ');
   return <section className="min-w-0 space-y-5" aria-label={label('title')}>
     {done ? <p role="status">{label('done')}</p>
-    : connected ? <>
+    : confirmation ? <>
       <p role="status" className="wrap-anywhere">{connectedLine}</p>
       <SetupActions><Button disabled={busy} onClick={() => void continueToBackups()}>{label('next')}</Button></SetupActions>
     </>

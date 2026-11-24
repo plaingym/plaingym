@@ -52,6 +52,7 @@ export function GoLiveSettings() {
   useEffect(() => { if (query.data) rememberChecklist(query.data); }, [query.data]);
   const reloadChecklist = () => { void query.refetch(); };
   const setChecklist = (next: ReturnType<typeof parseChecklist>) => {
+    void cache.cancelQueries({ queryKey: goLiveKey(settings?.revision, gym.epoch) });
     cache.setQueryData(goLiveKey(settings?.revision, gym.epoch), next);
     cache.setQueryData(goLiveKey(next.revision, gym.epoch), next);
   };

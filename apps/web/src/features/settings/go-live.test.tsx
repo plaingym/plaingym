@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, within } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
+import { focusManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { goLiveChecklistItemSchema, settingsContracts, type GymSettings, type UpdateGoLiveRequest } from '@plaingym/shared/contracts';
 import { canStaff, staffRoles } from '@plaingym/shared';
@@ -347,5 +347,22 @@ describe('go-live settings', () => {
     const read = settingsContracts.get.permission.capability;
     for (const route of [settingsContracts.goLiveChecklist, settingsContracts.updateGoLive, settingsContracts.rerunGoLiveReconciliation])
       for (const role of staffRoles) expect(canStaff([role], read), role).toBe(canStaff([role], route.permission.capability));
+  });
+  it('keeps items and switches on screen during a focus refetch, and prevents an in-flight focus read from overwriting a rerun answer', async () => {
+    let resolveFocus!: (value: unknown) => void, resolveRerun!: (value: unknown) => void;
+    live.mockResolvedValueOnce(reply(200, restored(2))).mockImplementationOnce(() => new Promise((resolve) => { resolveFocus = resolve; }));
+    client.POST.mockImplementationOnce(() => new Promise((resolve) => { resolveRerun = resolve; }));
+    const user = userEvent.setup(); start();
+    expect(await screen.findByText(/Objects checked: 1,200. Unresolved: 2/)).toBeDefined();
+    await user.click(screen.getByRole('button', { name: 'Check restored payments again' }));
+    await vi.waitFor(() => expect(resolveRerun).toBeDefined());
+    act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+    await vi.waitFor(() => expect(resolveFocus).toBeDefined());
+    expect(screen.getByText('Email delivery')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Turn on: Billing' })).toBeDefined();
+    await act(async () => { resolveRerun(reply(200, restored(0))); });
+    expect(await screen.findByText(/Objects checked: 1,200. Unresolved: 0/)).toBeDefined();
+    await act(async () => { resolveFocus(reply(200, restored(2))); });
+    expect(screen.getByText(/Objects checked: 1,200. Unresolved: 0/)).toBeDefined();
   });
 });

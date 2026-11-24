@@ -203,6 +203,36 @@ describe('setup wizard', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Set up later' }));
     expect(await screen.findByRole('button', { name: 'Generate backup key' })).toBeDefined();
   });
+  it('keeps the Stripe confirmation when a status refetch advances to step 7 mid-request, and Continue sends one status request', async () => {
+    const { fetcher, query } = start(6, undefined, undefined, { googleSkipped: true });
+    const answer = fetcher.getMockImplementation()!;
+    let resolveStripe!: (response: Response) => void;
+    let statusMoved = false;
+    fetcher.mockImplementation((path, options) => {
+      if (String(path).endsWith('/stripe') && JSON.parse(String(options?.body)).choice === 'configure') {
+        statusMoved = true;
+        return new Promise<Response>((resolve) => { resolveStripe = resolve; });
+      }
+      if (String(path) === '/api/setup' && statusMoved) {
+        return Promise.resolve(Response.json({ data: { currentStep: 7, completedSteps: [0, 1, 2, 3, 4, 5, 6], completed: false, revision: 2, googleSkipped: true, backupsLater: false } }));
+      }
+      return answer(path, options);
+    });
+    await userEvent.type(await screen.findByLabelText('Restricted Stripe key'), 'rk_test_SYNTHETIC');
+    await userEvent.click(screen.getByRole('button', { name: 'Validate and connect' }));
+    await waitFor(() => expect(resolveStripe).toBeDefined());
+    await act(async () => { await query.refetchQueries({ queryKey: ['setup', 'status'] }); });
+    await act(async () => { resolveStripe(Response.json({ data: { configured: true, mode: 'test', webhookRegistered: true, revision: 2 } })); });
+    const webhookUrl = new URL('/webhooks/stripe', window.location.origin).href;
+    expect((await screen.findByRole('status')).textContent).toBe(`Connected in test mode. Webhook registered at ${webhookUrl}.`);
+    expect(screen.queryByLabelText('Restricted Stripe key')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Generate backup key' })).toBeNull();
+    const statusCallsBefore = fetcher.mock.calls.filter(([path]) => String(path) === '/api/setup').length;
+    await userEvent.click(screen.getByRole('button', { name: 'Continue to backups' }));
+    expect(await screen.findByRole('button', { name: 'Generate backup key' })).toBeDefined();
+    const statusCallsAfter = fetcher.mock.calls.filter(([path]) => String(path) === '/api/setup').length;
+    expect(statusCallsAfter - statusCallsBefore).toBe(1);
+  });
   it('offers an optional Google page after email that stores the client and changes no step', async () => {
     const { fetcher, query } = start(6);
     await screen.findByLabelText('Client ID');
