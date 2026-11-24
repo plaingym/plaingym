@@ -26,6 +26,8 @@ export function AttendanceRosterPanel({ sessionId }: ExtensionViewProps) {
 function WalkIn({ disabled, onChoose }: { disabled: boolean; onChoose(member: { id: string; name: string }): Promise<boolean> }) {
   const [query, setQuery] = useState(''), [lookup, setLookup] = useState<{ query: string; members: Member[]; failed?: boolean } | null>(null);
   const [searching, setSearching] = useState(false), lookupSeq = useRef(0);
+  // A failed walk-in searches again, so a member the server refused leaves the picker instead of staying listed.
+  const [searchAgain, setSearchAgain] = useState(0);
   useEffect(() => {
     const trimmed = query.trim(), seq = ++lookupSeq.current;
     setLookup(null);
@@ -37,7 +39,7 @@ function WalkIn({ disabled, onChoose }: { disabled: boolean; onChoose(member: { 
         .finally(() => { if (seq === lookupSeq.current) setSearching(false); });
     }, 250);
     return () => { clearTimeout(timer); if (lookupSeq.current === seq) lookupSeq.current++; };
-  }, [query]);
+  }, [query, searchAgain]);
   const trimmed = query.trim(), current = lookup?.query === trimmed ? lookup : null;
   const options = current ? current.members.map(row => ({ id: row.id, label: `${row.firstName} ${row.lastName}` })) : [];
   return <div className="space-y-2">
@@ -45,7 +47,10 @@ function WalkIn({ disabled, onChoose }: { disabled: boolean; onChoose(member: { 
       loading={searching || (trimmed.length >= 2 && !current)} onQueryChange={setQuery} onChange={id => {
         const option = options.find(row => row.id === id);
         if (!option) return;
-        void onChoose({ id: option.id, name: option.label }).then(saved => { if (saved) setQuery(''); });
+        void onChoose({ id: option.id, name: option.label }).then(saved => {
+          if (saved) setQuery('');
+          else { setLookup(null); setSearchAgain(value => value + 1); }
+        });
       }}/>
     {current?.failed && <Alert variant="error">{text('walkInError')}</Alert>}
   </div>;
@@ -86,6 +91,8 @@ function Roster({ sessionId }: { sessionId: string }) {
   useDialogOperation(saving);
   // The page, reload and follow-up a read last started for; a read that only follows the bookings panel is quiet.
   const started = useRef<{ offset: number; reload: number } | null>(null);
+  // The page the rows on screen came from: a failed read of another page must not leave them under the new page's pager.
+  const shownOffset = useRef<number | null>(null);
   useEffect(() => {
     let active = true;
     const quiet = started.current?.offset === offset && started.current.reload === reload;
@@ -98,10 +105,16 @@ function Roster({ sessionId }: { sessionId: string }) {
       // A page emptied by an undo falls back to the last page that still has rows.
       if (page.data.length === 0 && offset > 0) setOffset(Math.max(0, Math.floor((page.pagination.total - 1) / 50) * 50));
       else {
+        shownOffset.current = offset;
         setRoster(current => current && sameParticipants(current, page) ? current : page); setLoadFailed(false);
         setRecorded(current => observe(current, page, offset, read));
       }
-    }).catch(() => { if (active) { setRoster(null); setLoadFailed(true); } })
+    }).catch(() => {
+      if (!active) return;
+      // A failed reload of the page on screen keeps its rows; a failed read of another page has none to keep.
+      if (shownOffset.current !== offset) setRoster(null);
+      setLoadFailed(true);
+    })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [sessionId, offset, reload, follow]);
@@ -137,10 +150,20 @@ function Roster({ sessionId }: { sessionId: string }) {
   function closeUndo() { setUndoing(null); setSaveFailed(false); }
   async function undo() {
     if (saving || !undoing) return;
+    const attendance = undoing.attendance;
     setSaving(true); setSaveFailed(false); setRecorded(null);
     try {
-      await attendanceClient.undo(undoing.attendance.id);
-      setNeedsCredits(previous => { const next = new Set(previous); next.delete(undoing.attendance.id); return next; });
+      await attendanceClient.undo(attendance.id);
+      // Show the undone visit at once: a failed reload below keeps these rows, so the stale check-in and its action must go.
+      setRoster(current => current && {
+        ...current,
+        counts: { ...current.counts, checkedIn: Math.max(0, current.counts.checkedIn - 1) },
+        pagination: { ...current.pagination, total: Math.max(0, current.pagination.total
+          - (current.data.some(entry => entry.attendance?.id === attendance.id && entry.booking === null) ? 1 : 0)) },
+        data: current.data.flatMap(entry => entry.attendance?.id !== attendance.id ? [entry]
+          : entry.booking ? [{ ...entry, attendance: null }] : []),
+      });
+      setNeedsCredits(previous => { const next = new Set(previous); next.delete(attendance.id); return next; });
       setUndoing(null); notifyChanged(); refresh();
     } catch { setSaveFailed(true); }
     finally { setSaving(false); }

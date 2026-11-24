@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { AttendanceRosterPanel, MemberAttendancePanel } from './panels.js';
+import { ApiError } from '../../lib/api.js';
 import { registration } from './registrations.js';
 import { SessionCountsProvider, usePublishSessionCounts, useSessionChanged, type SessionCounts } from '../../lib/session-summary.js';
 import { Dialog } from '../../components/ui/dialog.js';
@@ -167,6 +168,49 @@ describe('registered attendance panels', () => {
     act(() => dialog.change(() => rows.push(booked('b2', 'Cy Three'))));
     await screen.findByRole('button', { name: 'Check in Cy Three' });
     await settledReads(2);
+  });
+  it('keeps the rows on screen when a failed check-in\'s roster reload also fails, and Refresh recovers', async () => {
+    const user = userEvent.setup(); render(<AttendanceRosterPanel sessionId={sessionId}/>);
+    await screen.findByRole('button', { name: 'Check in River Lee' });
+    client.record.mockRejectedValueOnce(new Error('offline'));
+    client.roster.mockRejectedValueOnce(new Error('offline'));
+    await user.click(screen.getByRole('button', { name: 'Check in River Lee' }));
+    await waitFor(() => expect(screen.getAllByRole('alert')).toHaveLength(2));
+    expect(screen.getByText(/Please try again\./)).toBeDefined();
+    expect(screen.getByText('The roster could not be loaded. Refresh attendance to try again.')).toBeDefined();
+    expect(listed()).toEqual([expect.stringContaining('River Lee')]);
+    expect(screen.getByRole('button', { name: 'Check in River Lee' })).toBeDefined();
+    await user.click(screen.getByRole('button', { name: 'Refresh attendance' }));
+    await waitFor(() => expect(screen.queryByText('The roster could not be loaded. Refresh attendance to try again.')).toBeNull());
+    expect(listed()).toEqual([expect.stringContaining('River Lee')]);
+    await user.click(screen.getByRole('button', { name: 'Check in River Lee' }));
+    await screen.findByRole('button', { name: 'River Lee is checked in' });
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+  it('shows no rows and the load alert when the first roster read fails, and Refresh recovers', async () => {
+    client.roster.mockRejectedValueOnce(new Error('offline'));
+    const user = userEvent.setup(); render(<AttendanceRosterPanel sessionId={sessionId}/>);
+    expect((await screen.findByRole('alert')).textContent).toContain('The roster could not be loaded. Refresh attendance to try again.');
+    expect(screen.queryByRole('list')).toBeNull();
+    expect(screen.queryByText('River Lee')).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Refresh attendance' }));
+    await screen.findByRole('button', { name: 'Check in River Lee' });
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+  it('drops a refused walk-in from the picker by searching again', async () => {
+    const user = userEvent.setup(); render(<AttendanceRosterPanel sessionId={sessionId}/>);
+    await screen.findByText('River Lee');
+    const picker = screen.getByRole<HTMLInputElement>('combobox', { name: 'Check in someone else' });
+    await user.type(picker, 'Sam Ng');
+    await screen.findByRole('option', { name: 'Sam Ng' });
+    client.record.mockRejectedValueOnce(new ApiError(409, 'conflict'));
+    client.members.mockResolvedValueOnce([]);
+    await user.click(screen.getByRole('option', { name: 'Sam Ng' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Please try again.');
+    await user.click(picker);
+    await waitFor(() => expect(screen.queryByRole('option', { name: 'Sam Ng' })).toBeNull());
+    await waitFor(() => expect(client.members).toHaveBeenCalledTimes(2));
+    expect(client.members).toHaveBeenLastCalledWith('Sam Ng');
   });
   it('shows a new waitlist place after a refresh', async () => {
     rows = [waitlisted('w1', 'Ada One', 1), waitlisted('w2', 'Bo Two', 2)];
@@ -410,6 +454,15 @@ describe('registered attendance panels', () => {
     await screen.findByText('River Lee');
     await user.click(screen.getByRole('button', { name: 'Next page' }));
     await waitFor(() => expect(client.roster).toHaveBeenLastCalledWith(sessionId, 50));
+  });
+  it('shows no rows when the read of another page fails, instead of the previous page under the new pager', async () => {
+    total = 51;
+    const user = userEvent.setup(); render(<AttendanceRosterPanel sessionId={sessionId}/>);
+    await screen.findByText('River Lee');
+    client.roster.mockRejectedValueOnce(new Error('Roster unavailable'));
+    await user.click(screen.getByRole('button', { name: 'Next page' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Refresh attendance to try again.');
+    expect(screen.queryByText('River Lee')).toBeNull();
   });
   it('removes stale actions when the refresh after undo fails and can reload the roster', async () => {
     rows[0]!.attendance = { id: 'visit', source: 'coach' };

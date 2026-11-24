@@ -112,9 +112,11 @@ the bookings session roster with `checkInEligible=true` (see the bookings README
 so it shows booked members, then waitlisted members with a `Waitlisted · #<rank>`
 badge for their current place in line, then walk-ins already checked in, and
 erased or Cancelled members only when they are already checked in at the session,
-so their visit can still be undone. A failed or refused check-in also reloads the
-roster. Checking in a waitlisted member records attendance only; their booking and
-place stay as they are. **Check in someone else** is one member autocomplete over
+so their visit can still be undone. A failed or refused check-in reloads the roster;
+if that reload fails, the rows already on screen stay and the alert asks for a
+manual refresh. A failed walk-in searches again, so a refused member drops out of
+the picker. Checking in a waitlisted member records attendance only; their booking
+and place stay as they are. **Check in someone else** is one member autocomplete over
 the eligible member list (`checkInEligible=true` on `GET /api/members`); choosing
 a member records their check-in, and they then appear as a walk-in until the
 check-in is undone. The roster reloads after every check-in and undo. It also
