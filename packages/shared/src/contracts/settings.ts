@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { EndpointContract } from './definition.js';
 import { idSchema, currencySchema, instantSchema, revisionSchema } from './common.js';
 import type { RoutePermission } from '../permissions.js';
+import { phoneCountries } from '../phone-countries.js';
 import { timeZoneId } from '../time.js';
 
 const manage = { kind: 'staff', capability: 'settings.manage' } as const satisfies RoutePermission;
@@ -35,6 +36,14 @@ export const gymAddressSchema = z.strictObject({
   line1: z.string().optional(), line2: z.string().optional(), city: z.string().optional(),
   region: z.string().optional(), postalCode: z.string().optional(),
   country: z.string().regex(/^[A-Z]{2}$/).optional(),
+});
+const supportedCountries = phoneCountries.map(([country]) => country) as [string, ...string[]];
+/**
+ * A new or changed country must be a region the phone library supports (`GB`, not `UK`); a stored address is read
+ * with `gymAddressSchema`, which accepts any two capital letters, so a gym already holding `UK` still loads.
+ */
+export const gymAddressInputSchema = gymAddressSchema.extend({
+  country: z.enum(supportedCountries).optional(),
 });
 export const gymBrandingSchema = z.strictObject({
   logoKey: z.string().min(1).nullable().optional(), primaryColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional(),
@@ -71,7 +80,7 @@ export const gymSettingsSchema = z.strictObject({
 /** A change names the new timezone under the shared rule; leave `timezone` out to keep a stored zone as it is. */
 export const updateGymSettingsRequestSchema = gymSettingsSchema.pick({
   name: true, address: true, branding: true, websiteEnabled: true, existingSiteUrl: true,
-}).partial().extend({ timezone: gymTimezoneSchema.optional(), revision: revisionSchema })
+}).partial().extend({ timezone: gymTimezoneSchema.optional(), address: gymAddressInputSchema.optional(), revision: revisionSchema })
   .refine((value) => Object.keys(value).length > 1, 'Supply at least one change');
 export const updateBookingRulesRequestSchema = bookingRulesSchema.partial().extend({ revision: revisionSchema })
   .refine((value) => Object.keys(value).length > 1, 'Supply at least one change');

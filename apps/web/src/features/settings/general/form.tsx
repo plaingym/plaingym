@@ -3,7 +3,8 @@ import { useId, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query';
 import type { GymSettings } from '@plaingym/shared/contracts';
 import { bootstrapKey } from '../../../app/context.js';
-import { api } from '../../../lib/api.js';
+import { api, type paths } from '../../../lib/api.js';
+type PatchCountry = NonNullable<NonNullable<NonNullable<paths['/api/settings']['patch']['requestBody']>['content']['application/json']['address']>['country']>;
 import { gymSettingsKey, SaveTimeoutError, useGymSettings } from '../gym-settings.js';
 import { t } from '../../../lib/i18n.js';
 import { FormMessage } from '../../../components/ui/alert.js';
@@ -75,7 +76,8 @@ export function GeneralSettingsForm() {
         if (kind === 'general') return api.PATCH('/api/settings', { signal, body: { revision, name: value('name'),
           ...(value('timezone') !== settings.timezone ? { timezone: value('timezone') } : {}),
           address: { line1: value('line1'), line2: value('line2'), city: value('city'), region: value('region'), postalCode: value('postalCode'),
-            ...(value('country') ? { country: value('country').toUpperCase() } : {}) },
+            // Send the typed code so the server names any unsupported country as a field error on `address.country`.
+            ...(value('country') ? { country: value('country').toUpperCase() as PatchCountry } : {}) },
           // A queued website upload may have changed the logo since this form was submitted; without cached settings, keep the loaded logo.
           branding: { primaryColor: value('primaryColor'), logoKey: (cache.getQueryData<{ settings: GymSettings }>(gymSettingsKey)?.settings ?? settings).branding.logoKey ?? null },
           websiteEnabled: form.has('websiteEnabled'), existingSiteUrl: value('existingSiteUrl') || null } });

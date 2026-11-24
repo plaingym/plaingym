@@ -29,6 +29,12 @@ export function SmsIntegrationSection({ sms, editable, state }: { sms: SmsIntegr
   const [authKind, setAuthKind] = useState(sms.authKind ?? 'token');
   const [senderKind, setSenderKind] = useState(sms.messagingServiceSid ? 'service' : 'from');
   const [message, setMessage] = useState<{ kind: 'status' | 'alert'; text: string } | null>(null);
+  const country = gym.settings?.address.country;
+  const recognized = callingCode(country) !== null;
+  const testNumberHint = !gym.settings || recognized ? null
+    : senderKind === 'service' ? label('testHintServiceNoCountry')
+      : country ? text('sms.testHintUnsupportedCountry', { country })
+        : label('testHintNoCountry');
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setMessage(null);
     const form = new FormData(event.currentTarget), field = (name: string) => String(form.get(name) ?? '').trim();
@@ -125,7 +131,7 @@ export function SmsIntegrationSection({ sms, editable, state }: { sms: SmsIntegr
           {sms.baseUrl !== undefined && <Field name="baseUrl" type="url" value={sms.baseUrl} required={false}/>}
           <Field name="testTo" type="tel"/>
           <p className="text-sm text-muted-foreground">{label('testHint')}</p>
-          {senderKind === 'from' && gym.settings && callingCode(gym.settings.address.country) === null && <p className="text-sm text-muted-foreground">{label('testHintNoCountry')}</p>}
+          {testNumberHint && <p className="text-sm text-muted-foreground">{testNumberHint}</p>}
           <div className="flex flex-col gap-3 sm:flex-row">
             <Button type="submit">{label(busy ? 'saving' : 'save')}</Button>
             <Button variant="outline" onClick={() => setOpen(false)}>{label('cancel')}</Button>

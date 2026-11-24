@@ -115,6 +115,14 @@ describe('gym settings contracts', () => {
     expect(updateGymSettingsRequestSchema.parse({ revision: 1, name: 'New' })).toEqual({ revision: 1, name: 'New' });
     expect(gymSettingsSchema.parse({ ...settings, timezone: 'CET' }).timezone).toBe('CET');
   });
+  it('requires a supported region on new or changed gym countries while keeping stored countries readable', () => {
+    expect(updateGymSettingsRequestSchema.safeParse({ revision: 1, address: { country: 'UK' } }).success).toBe(false);
+    expect(updateGymSettingsRequestSchema.safeParse({ revision: 1, address: { country: 'GB' } }).success).toBe(true);
+    expect(gymSettingsSchema.parse({ ...settings, address: { country: 'UK' } }).address.country).toBe('UK');
+    const setupDetails = { name: 'Gym', timezone: 'UTC', currency: 'USD', address: { country: 'UK' }, branding: { logoKey: null, primaryColor: null }, revision: 1 };
+    expect(setupGymDetailsSchema.safeParse(setupDetails).success).toBe(false);
+    expect(setupGymDetailsSchema.safeParse({ ...setupDetails, address: { country: 'GB' } }).success).toBe(true);
+  });
   it.each(Object.entries(settingsContracts))('%s applies its declared staff capability', (_operation, contract) => {
     const ownerOnly = contract.permission.capability === 'ownership.transfer' || contract.permission.capability === 'integrations.manage';
     for (const role of staffRoles) expect(canStaff([role], contract.permission.capability)).toBe((ownerOnly ? ['owner'] : ['owner', 'admin']).includes(role));

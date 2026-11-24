@@ -13,7 +13,7 @@
   "smsHistory": "Texts: {count} recipients · {sent} sent · {failed} failed · {skipped} skipped",
   "smsScheduled": "Texts scheduled for {when}",
   "smsPending": "Text delivery is pending.",
-  "smsCapWarning_today": "Texts left in today's daily text cap: {remaining}. Text recipients: {count}; up to {over} of them may not get the text. They still get the email if they have an email address. Other texts sent today, and texts already queued for other announcements, also count against the cap but aren't counted here. An owner can raise the Daily text cap in Settings → Integrations → SMS.",
+  "smsCapWarning_today": "Texts left in today's daily text cap: {remaining}. Text recipients: {count}; up to {over} of them may not get the text. They still get the email if they have an email address. Texts sent later today, and texts already queued for other announcements, also count against the cap but aren't counted here. An owner can raise the Daily text cap in Settings → Integrations → SMS.",
   "smsCapWarning_tomorrow": "Texts go out tomorrow from 08:00. Texts left in tomorrow's daily text cap: {remaining}. Text recipients: {count}; up to {over} of them may not get the text. They still get the email if they have an email address. Texts already queued for other announcements also count against the cap but aren't counted here. An owner can raise the Daily text cap in Settings → Integrations → SMS.",
   "smsTestSent": "Test text sent to the entered number. It counts against the daily text cap.",
   "confirmSms": "Send {count} emails and {smsCount} texts",

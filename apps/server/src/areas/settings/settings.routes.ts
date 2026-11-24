@@ -30,7 +30,7 @@ const fieldErrors = (schema: typeof updateBillingRulesRequestSchema | typeof upd
   };
 const middleware = {
   updateBillingRules: fieldErrors(updateBillingRulesRequestSchema, { retryDays: 'invalid_retry_days' }),
-  updateGeneral: fieldErrors(updateGymSettingsRequestSchema, { timezone: 'invalid_timezone' }),
+  updateGeneral: fieldErrors(updateGymSettingsRequestSchema, { timezone: 'invalid_timezone', 'address.country': 'unsupported_country' }),
 } as const;
 const kinds = { updateGeneral: 'general', updateBookingRules: 'booking', updateBillingRules: 'billing', updateCurrency: 'currency', updateDropIn: 'drop_in' } as const;
 export function createSettingsRoutes(service = createSettingsService()) {

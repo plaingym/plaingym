@@ -387,7 +387,7 @@ describe('announcement screens', () => {
 
 describe('daily text cap warning', () => {
   const warning = "Texts left in today's daily text cap: 1. Text recipients: 3; up to 2 of them may not get the text. "
-    + "They still get the email if they have an email address. Other texts sent today, and texts already queued for other announcements, also count against the cap but aren't counted here. "
+    + "They still get the email if they have an email address. Texts sent later today, and texts already queued for other announcements, also count against the cap but aren't counted here. "
     + 'An owner can raise the Daily text cap in Settings → Integrations → SMS.';
   async function previewWith(result: Awaited<ReturnType<AnnouncementClient['preview']>>, rememberAttempt?: (attempt: AnnouncementAttempt | undefined) => void) {
     const service = client(); vi.mocked(service.preview).mockResolvedValue(result);

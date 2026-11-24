@@ -46,8 +46,9 @@ describe('setup wizard contracts', () => {
     // A stored zone from before the rule still reads back; the rule applies only to a new value, and a save that leaves the field out keeps it.
     expect(storedTimezoneSchema.safeParse('CET').success).toBe(true);
     expect(storedTimezoneSchema.safeParse('Mars/Olympus').success).toBe(false);
-    // The step's response reads its zone with the stored rule, which leaves it as it is.
+    // The step's response reads its zone and address with the stored rules, which leave them as they are.
     for (const timezone of ['CET', 'Etc/GMT+5']) expect(setupContracts.gym.response.safeParse({ data: { ...details, timezone } }).success).toBe(true);
+    expect(setupContracts.gym.response.safeParse({ data: { ...details, address: { country: 'UK' } } }).success).toBe(true);
   });
   it('requires gym currency and a valid IANA timezone at step 2', () => {
     expect(setupGymDetailsSchema.parse(details)).toEqual(details);

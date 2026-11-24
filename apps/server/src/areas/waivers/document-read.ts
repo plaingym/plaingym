@@ -12,7 +12,7 @@ import shellMessages from '../../../../../locales/en/shell/shell.json' with { ty
 export const documentReadBudget = 300;
 const t = createTranslator({ 'waivers/waivers': messages, 'shell/shell': shellMessages });
 /** A frame must explain a refusal without exposing a token or document details. */
-export function documentRetryPage(ctx: Context<RequestEnvironment>, status: 429 | 404, translate: Translator = t) {
+export function documentRetryPage(ctx: Context<RequestEnvironment>, status: 429 | 404, translate: Translator = t, locale = 'en') {
   setPolicy(ctx, ["default-src 'none'", "style-src 'self'", "frame-ancestors 'self'"]);
   ctx.header('Cache-Control', 'private, no-store');
   ctx.header('Referrer-Policy', 'no-referrer');
@@ -20,7 +20,7 @@ export function documentRetryPage(ctx: Context<RequestEnvironment>, status: 429 
   ctx.header('X-Frame-Options', 'SAMEORIGIN');
   ctx.header('Content-Type', 'text/html; charset=UTF-8');
   const text = (key: string) => translate('waivers/waivers:' + key);
-  return ctx.html('<!doctype html>' + jsx('html', { lang: 'en' },
+  return ctx.html('<!doctype html>' + jsx('html', { lang: locale },
     jsx('head', null, jsx('meta', { charset: 'utf-8' }), jsx('meta', { name: 'viewport', content: 'width=device-width, initial-scale=1' }),
       jsx('title', null, text('documentRetryTitle')), jsx('link', { rel: 'stylesheet', href: '/l/styles.css' })),
     jsx('body', { class: 'm-0 bg-background text-foreground' }, jsx('main', { class: 'mx-auto max-w-2xl space-y-4 px-4 py-6' },

@@ -130,9 +130,20 @@ describe('settings service and routes', () => {
     expect(refused.status).toBe(400);
     expect(await refused.json()).toMatchObject({ error: { code: 'invalid_request', details: { 'address.country': ['unsupported_country'] } } });
     expect(await service.get(gymId)).toEqual(before);
+    const combined = await patch(app, '/api/settings', { revision: before.revision, name: '', address: { country: 'UK' } });
+    expect(combined.status).toBe(400);
+    expect((await combined.json() as { error: { details: unknown } }).error.details).toEqual({
+      name: ['invalid'], 'address.country': ['unsupported_country'] });
+    expect(await service.get(gymId)).toEqual(before);
     const saved = await patch(app, '/api/settings', { revision: before.revision, address: { country: 'GB' } });
     expect(saved.status).toBe(200);
     expect((await service.get(gymId)).address.country).toBe('GB');
+  });
+  it('still reads a stored gym row holding an unsupported country', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId, { address: { country: 'UK' } });
+    const response = await server('owner', gymId).request('/api/settings');
+    expect(response.status).toBe(200);
+    expect(gymSettingsResponseSchema.parse(await response.json()).data.address.country).toBe('UK');
   });
   it('names every refused field of a general update, each with its own code, and leaves the gym unchanged', async () => {
     const gymId = uuidv7(); await factory('gyms', gymId);
@@ -142,7 +153,7 @@ describe('settings service and routes', () => {
       address: { country: 'canada' }, existingSiteUrl: 'ftp://example.org' });
     expect(response.status).toBe(400);
     expect((await response.json() as { error: { details: unknown } }).error.details).toEqual({
-      name: ['invalid'], timezone: ['invalid_timezone'], 'address.country': ['invalid'], existingSiteUrl: ['invalid'] });
+      name: ['invalid'], timezone: ['invalid_timezone'], 'address.country': ['unsupported_country'], existingSiteUrl: ['invalid'] });
     // One bad field that isn't the timezone is named too, and a body that supplies no change names none.
     const named = await patch(app, '/api/settings', { revision: before.revision, existingSiteUrl: 'ftp://example.org' });
     expect((await named.json() as { error: { details: unknown } }).error.details).toEqual({ existingSiteUrl: ['invalid'] });

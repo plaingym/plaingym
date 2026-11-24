@@ -124,10 +124,16 @@ describe('first-boot setup', () => {
     expect((await call('/api/setup/website', 'PUT', { revision, websiteEnabled: true, existingSiteUrl: null }, cookie)).status).toBe(409);
     // Settings and the shell bootstrap read the same address shape, so setup must not store any other.
     expect((await call('/api/setup/gym', 'PUT', { ...details, address: { street: '123 Main' }, revision }, cookie)).status).toBe(400);
+    // An unsupported country such as UK is refused before saving, while GB saves.
+    const badCountry = await call('/api/setup/gym', 'PUT', { ...details, address: { line1: '123 Main', country: 'UK' }, revision }, cookie);
+    expect(badCountry.status).toBe(400);
+    expect(await badCountry.json()).toMatchObject({ error: { code: 'invalid_request' } });
+    const [unchanged] = await database.forSystem((tx) => tx.select({ address: gyms.address }).from(gyms));
+    expect(unchanged!.address).toEqual({});
     // A pasted zone with spaces around it is the same zone here as in settings and `gyms create`.
-    const updated = await call('/api/setup/gym', 'PUT', { ...details, timezone: ' America/Vancouver ', revision }, cookie); expect(updated.status).toBe(200);
+    const updated = await call('/api/setup/gym', 'PUT', { ...details, address: { line1: '123 Main', country: 'GB' }, timezone: ' America/Vancouver ', revision }, cookie); expect(updated.status).toBe(200);
     const [stored] = await database.forSystem((tx) => tx.select({ address: gyms.address, timezone: gyms.timezone }).from(gyms));
-    expect(gymAddressSchema.parse(stored!.address)).toEqual({ line1: '123 Main' });
+    expect(gymAddressSchema.parse(stored!.address)).toEqual({ line1: '123 Main', country: 'GB' });
     expect(stored!.timezone).toBe('America/Vancouver');
     expect((await call('/api/setup/gym', 'PUT', { ...details, revision }, cookie)).status).toBe(409);
     revision = (await service.status()).revision;

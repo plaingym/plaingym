@@ -6,7 +6,6 @@ import { AppError, type Clock } from '@plaingym/shared';
 import { billingRulesSchema, gymAddressSchema, gymBrandingSchema, gymSettingsSchema, updateGymSettingsRequestSchema, updateBookingRulesRequestSchema, updateBillingRulesRequestSchema, updateGymCurrencyRequestSchema,
   updateDropInSettingsRequestSchema, type UpdateGymSettingsRequest, type UpdateBookingRulesRequest, type UpdateBillingRulesRequest, type UpdateGymCurrencyRequest,
   type UpdateDropInSettingsRequest } from '@plaingym/shared/contracts';
-import { supportedCountry } from '@plaingym/shared/phone';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { clock as defaultClock } from '../../core/clock.js';
@@ -68,9 +67,6 @@ export function createSettingsService(options: { scope?: typeof forGym; clock?: 
     async update(context: MutationContext, kind: keyof typeof updateSchemas,
       input: UpdateGymSettingsRequest | UpdateBookingRulesRequest | UpdateBillingRulesRequest | UpdateGymCurrencyRequest | UpdateDropInSettingsRequest) {
       const { revision, ...changes } = updateSchemas[kind].parse(input);
-      const country = 'address' in changes ? changes.address?.country : undefined;
-      if (country && !supportedCountry(country))
-        throw new AppError('invalid_request', 'The request is invalid.', { 'address.country': ['unsupported_country'] });
       try {
         return await scope(context.gymId, async (tx) => {
           const [before] = await tx.select(projection).from(gyms).where(eq(gyms.id, context.gymId)).for('update');

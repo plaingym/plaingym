@@ -16,6 +16,8 @@ const authenticationFailure = 'Twilio denied access. Check the Account SID and c
 const trialAccountFailure = 'A Twilio trial account can send only Twilio templates to verified numbers. Upgrade a trial account to send this test text. If your account is already upgraded, verify the test number or get its Primary Customer Profile approved in Twilio’s Trust Hub. The account also needs its own SMS-capable number as the sender. Nothing was saved.';
 const invalidPhone = 'Enter a valid phone number. Start it with + and its country code (for example +1 604 555 0123), or set the gym\'s country code in Settings → Gym details.';
 const noCountryHint = 'Your gym has no country code set in Settings → Gym details, so a test number without + uses the From number\'s country code.';
+const unsupportedCountryHint = (country: string) => `Your gym's country code in Settings → Gym details (${country}) isn't recognized (the United Kingdom is GB), so a test number without + uses the From number's country code.`;
+const serviceNoCountryHint = 'Your gym has no recognized country code in Settings → Gym details, so start the test number with + and its country code (for example +1 604 555 0123).';
 const setupHint = 'Use your gym’s own upgraded Twilio account and an SMS-capable number it owns. Register your sender with the provider before sending. Each text, including this test, costs your gym.';
 const removalBody = 'Member texts stop: booking and billing notices, announcements and texted links aren\'t sent until you connect a provider again.';
 const removalSecret = 'The stored credentials are deleted and can\'t be shown again. To undo this, enter them again.';
@@ -146,8 +148,10 @@ describe('SMS integration form', () => {
     const user = userEvent.setup(); renderSection();
     await user.click(await screen.findByRole('button', { name: 'Connect SMS provider' }));
     expect(await screen.findByText(noCountryHint)).toBeDefined();
+    expect(screen.queryByText(serviceNoCountryHint)).toBeNull();
     await user.selectOptions(screen.getByLabelText('Send using'), 'service');
     expect(screen.queryByText(noCountryHint)).toBeNull();
+    expect(screen.getByText(serviceNoCountryHint)).toBeDefined();
   });
   it('does not demand a country code in the test number hint', async () => {
     const user = userEvent.setup(); renderSection();
@@ -160,7 +164,13 @@ describe('SMS integration form', () => {
       ? reply(200, { data: { ...settings, address: { country: 'UK' } } }) : base(path));
     const user = userEvent.setup(); renderSection();
     await user.click(await screen.findByRole('button', { name: 'Connect SMS provider' }));
-    expect(await screen.findByText(noCountryHint)).toBeDefined();
+    expect(await screen.findByText(unsupportedCountryHint('UK'))).toBeDefined();
+    expect(screen.queryByText(noCountryHint)).toBeNull();
+    expect(screen.queryByText(serviceNoCountryHint)).toBeNull();
+    await user.selectOptions(screen.getByLabelText('Send using'), 'service');
+    expect(screen.getByText(serviceNoCountryHint)).toBeDefined();
+    expect(screen.queryByText(unsupportedCountryHint('UK'))).toBeNull();
+    expect(screen.queryByText(noCountryHint)).toBeNull();
   });
   it('shows no calling code hint when the gym country is set', async () => {
     const base = client.GET.getMockImplementation()!;
@@ -169,6 +179,12 @@ describe('SMS integration form', () => {
     const user = userEvent.setup(); renderSection();
     await user.click(await screen.findByRole('button', { name: 'Connect SMS provider' }));
     expect(screen.queryByText(noCountryHint)).toBeNull();
+    expect(screen.queryByText(serviceNoCountryHint)).toBeNull();
+    expect(screen.queryByText(/isn't recognized/)).toBeNull();
+    await user.selectOptions(screen.getByLabelText('Send using'), 'service');
+    expect(screen.queryByText(noCountryHint)).toBeNull();
+    expect(screen.queryByText(serviceNoCountryHint)).toBeNull();
+    expect(screen.queryByText(/isn't recognized/)).toBeNull();
   });
   it('directs owners to the submitted custom provider for authentication failures', async () => {
     const user = userEvent.setup(); renderSection(); const form = await fill(user);

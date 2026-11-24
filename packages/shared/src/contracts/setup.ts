@@ -2,7 +2,7 @@
 import { z } from 'zod';
 import type { EndpointContract } from './definition.js';
 import { currencySchema, idSchema, revisionSchema } from './common.js';
-import { gymAddressSchema, gymTimezoneSchema, storedTimezoneSchema } from './settings.js';
+import { gymAddressInputSchema, gymAddressSchema, gymTimezoneSchema, storedTimezoneSchema } from './settings.js';
 
 export const setupStepSchema = z.int32().min(0).max(8);
 export const setupTimezoneSchema = gymTimezoneSchema;
@@ -28,15 +28,15 @@ export const setupOwnerRequestSchema = z.strictObject({
 export const setupOwnerResponseSchema = z.strictObject({ data: z.strictObject({ userId: idSchema }) });
 export const setupGymDetailsSchema = z.strictObject({
   name: z.string().trim().min(1), timezone: setupTimezoneSchema,
-  address: gymAddressSchema, currency: currencySchema,
+  address: gymAddressInputSchema, currency: currencySchema,
   branding: z.strictObject({ logoKey: z.string().nullable(), primaryColor: z.string().regex(/^#[a-fA-F0-9]{6}$/).nullable() }),
   revision: revisionSchema,
 });
 // Currency is mandatory at step 2. Once any plan, charge type, membership or
 // invoice references it, a change is a conflict, never a silent conversion.
-// The response echoes the details as saved, so its zone already passed the request's rule; it is read with the
-// stored rule, which accepts it as it is rather than transforming it again.
-export const setupGymDetailsResponseSchema = z.strictObject({ data: setupGymDetailsSchema.extend({ timezone: storedTimezoneSchema }) });
+// The response echoes the details as saved, so its zone and address already passed the request's rule; they are read
+// with the stored rules, which accept them as they are rather than rejecting or transforming a stored value.
+export const setupGymDetailsResponseSchema = z.strictObject({ data: setupGymDetailsSchema.extend({ timezone: storedTimezoneSchema, address: gymAddressSchema }) });
 export const setupPacksRequestSchema = z.strictObject({
   revision: revisionSchema,
   packs: z.array(z.strictObject({ packId: z.string().regex(/^[a-z][a-z0-9-]*$/), version: z.int32().positive() }))

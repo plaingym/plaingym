@@ -150,8 +150,10 @@ again, and every change is recorded in the audit log without them.
   way to sign in (your account has no password and the gym has no Google client).
 * **SMS** connects your gym’s own Twilio account. Type the From and test numbers with
   + and the country code (for example +1 604 555 0123), or set the gym's country
-  code in **Settings → Gym details** first. With no country code set, a test number
-  without + uses the From number's country code. Enter its Account SID and either
+  code in **Settings → Gym details** first. With no recognized country code set (a
+  code such as `UK` isn't recognized; the United Kingdom is `GB`), a test number
+  without + uses the From number's country code, and with a Messaging Service
+  sender it must start with +. Enter its Account SID and either
   an auth token or an API key SID and secret, plus a From phone number or Messaging
   Service SID. The account is checked without sending a message, then one test
   text goes only to the number you enter. Credentials are saved encrypted only

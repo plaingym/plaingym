@@ -77,13 +77,19 @@ describe('waiver document delivery', () => {
     expect(html).toContain('<span class="sr-only">Version </span>');
     expect(html).not.toContain('aria-label="Version');
   });
-  it('passes a supplied translator to the document retry footer version label', async () => {
+  it('passes a supplied translator to the document retry footer version label and takes its lang from a given locale', async () => {
     const server = new OpenAPIHono<RequestEnvironment>();
     const probe = createTranslator({ 'shell/shell': { version: 'Probe {version}', versionPrefix: 'Probe' } });
     server.get('/probe', ctx => documentRetryPage(ctx, 404, probe));
+    server.get('/probe-fr', ctx => documentRetryPage(ctx, 404, probe, 'fr'));
     const response = await server.request('/probe');
     expect(response.status).toBe(404);
-    expect(await response.text()).toContain('<span class="sr-only">Probe </span>');
+    const html = await response.text();
+    expect(html).toContain('<span class="sr-only">Probe </span>');
+    expect(html).toContain('<html lang="en"');
+    const french = await server.request('/probe-fr');
+    expect(french.status).toBe(404);
+    expect(await french.text()).toContain('<html lang="fr"');
   });
   it('uses an application URL with a five-minute expiry and survives service recreation', async () => {
     const f = await fixture();
