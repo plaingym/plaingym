@@ -347,6 +347,9 @@ describe('portal schedule page', () => {
       await screen.findByText("We couldn't load the schedule. Please try again.");
       const refusalAlert = screen.getAllByRole('alert').find(node => /This change isn't available any more/.test(node.textContent ?? ''));
       expect(refusalAlert).toBeDefined();
+      const retry = screen.getByRole('button', { name: 'Try again' });
+      await waitFor(() => expect(document.activeElement).toBe(retry));
+      expect(document.activeElement).not.toBe(document.body);
       expect(document.activeElement).not.toBe(refusalAlert);
       expect(scrolled).not.toHaveBeenCalled();
     } finally { Element.prototype.scrollIntoView = original; }
@@ -372,13 +375,25 @@ describe('portal schedule page', () => {
       scrolled.mockClear();
       client.schedule.mockResolvedValue(answer([]));
       await act(() => vi.advanceTimersByTimeAsync(60_000));
-      expect(screen.getByText('Week of Monday, November 2')).toBeDefined();
+      const weekLabel = screen.getByText('Week of Monday, November 2');
+      expect(weekLabel).toBeDefined();
       expect(screen.queryByRole('dialog')).toBeNull();
       const pageAlert = screen.getByRole('alert');
       expect(pageAlert.textContent).toMatch(/This change isn't available any more/);
+      expect(document.activeElement).toBe(weekLabel);
+      expect(document.activeElement).not.toBe(document.body);
       expect(document.activeElement).not.toBe(pageAlert);
       expect(scrolled).not.toHaveBeenCalled();
     } finally { Element.prototype.scrollIntoView = original; vi.useRealTimers(); }
+  });
+  it('returns focus to the opening card when closed with the close button', async () => {
+    const user = userEvent.setup();
+    page();
+    const card = await screen.findByRole('button', cardName(session.name));
+    await user.click(card);
+    const dialog = within(screen.getByRole('dialog', { name: session.name }));
+    await user.click(dialog.getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(document.activeElement).toBe(card));
   });
   it('still refocuses the page-level alert when a later successful refetch drops the class', async () => {
     client.schedule.mockResolvedValue(answer([session]));

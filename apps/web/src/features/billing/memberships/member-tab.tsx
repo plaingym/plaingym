@@ -46,7 +46,7 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
   const bootstrap = useBootstrap();
   const cache = useQueryClient(), key = ['billing', gymId, 'memberships'];
   const plansKey = ['billing', gymId, 'plans'];
-  const [busy, setBusy] = useState(false), [message, setMessage] = useState(''), [reminder, setReminder] = useState(false);
+  const [busy, setBusy] = useState(false), [reloading, setReloading] = useState(false), [message, setMessage] = useState(''), [reminder, setReminder] = useState(false);
   const rows = useQuery({ queryKey: [...key, memberId], queryFn: () => client.memberships({ memberId }) });
   const plans = useQuery({ queryKey: plansKey, queryFn: () => client.plans(),
     enabled: !!bootstrap.data?.session && canStaff(bootstrap.data.session.roles, 'billing.read') });
@@ -85,6 +85,7 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
         const code = error.status === 409 && error.reason.find(reason => Object.hasOwn(refusalText, reason));
         if (code) {
           setMessage(text(refusalText[code]!));
+          setReloading(true);
           let refresh: PlanRefresh | undefined;
           if (code === 'plan_inactive') {
             const before = cache.getQueryData<Plan[]>(plansKey);
@@ -98,6 +99,7 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
         }
         if (error.status === 409 && error.reason.includes('membership_changed')) {
           setMessage(saveError(error));
+          setReloading(true);
           refused?.('membership_changed');
           await reloadRows();
           return false;
@@ -106,7 +108,7 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
       setMessage(saveError(error));
       return false;
     }
-    finally { setBusy(false); }
+    finally { setBusy(false); setReloading(false); }
   }
   return <section className="min-w-0 space-y-4" aria-label={text('title')}>
     <h2 className="text-lg font-semibold">{text('title')}</h2>
@@ -122,15 +124,15 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
       {bootstrap.isError && <Alert variant="error" role="alert">{text('error')} <Button variant="outline" onClick={() => void bootstrap.refetch()}>{text('retry')}</Button></Alert>}
       {setup.isError && <Alert variant="error" role="alert">{text('error')} <Button variant="outline" onClick={() => void setup.refetch()}>{text('retry')}</Button></Alert>}
       {setup.data && plans.data && bootstrap.data && <AssignmentForm key={memberId} catalog={plans.data}
-        gymId={gymId} discounts={discounts} householdId={setup.data.member.householdId} memberId={memberId} busy={busy} assign={(data, refused) => mutate('assignMembership', data, undefined, refused)}
+        gymId={gymId} discounts={discounts} householdId={setup.data.member.householdId} memberId={memberId} busy={busy} reloading={reloading} assign={(data, refused) => mutate('assignMembership', data, undefined, refused)}
         today={localDate(now ?? new Date(), bootstrap.data.gym.timezone)}
         billingDate={startsOn => householdBillingDate(startsOn, setup.data.household, setup.data.billingDay)}/>
       }
     </>}
   </section>;
 }
-function AssignmentForm({ catalog, memberId, householdId, today, billingDate, busy, assign, gymId, discounts }: {
-  catalog: Plan[]; memberId: string; householdId: string; today: string; billingDate: (startsOn: string) => string; busy: boolean;
+function AssignmentForm({ catalog, memberId, householdId, today, billingDate, busy, reloading, assign, gymId, discounts }: {
+  catalog: Plan[]; memberId: string; householdId: string; today: string; billingDate: (startsOn: string) => string; busy: boolean; reloading: boolean;
   assign: (data: unknown, refused: (reason: string, refresh?: PlanRefresh) => void) => Promise<boolean>;
   gymId: string; discounts?: DiscountClient | undefined;
 }) {
@@ -191,7 +193,7 @@ function AssignmentForm({ catalog, memberId, householdId, today, billingDate, bu
       <Label className="block min-w-0 sm:col-span-2">{text('firstPeriod')}<select className={selectClass} name="firstPeriod" defaultValue="prorate_now"><option value="prorate_now">{text('prorateNow')}</option><option value="next_billing_date">{text('nextBillingDate')}</option></select></Label>
       <p className="text-sm text-muted-foreground sm:col-span-2">{text('assignmentHelp')}</p>
       <DiscountSelection key={planId} gymId={gymId} planId={planId} currency={plan.currency} value={discount} onChange={setDiscount} client={discounts}/>
-      <Button className="sm:col-span-2" type="submit">{text(busy ? 'saving' : 'assign')}</Button>
+      <Button className="sm:col-span-2" type="submit">{text(reloading ? 'reloading' : busy ? 'saving' : 'assign')}</Button>
     </fieldset>}
   </form>;
 }

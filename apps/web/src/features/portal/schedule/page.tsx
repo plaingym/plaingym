@@ -84,15 +84,23 @@ export function PortalSchedulePage({ client = portalClient, now = currentTime }:
   const [week, setWeek] = useState(0), [message, setMessage] = useState<{ tone: 'success' | 'error'; text: string }>();
   const [selection, setSelection] = useState<{ id: string; weekStart: string; memberId: string }>();
   const cardPrefix = useId();
-  const restoreFocusTo = useRef<string>(null);
+  const cardId = (id: string) => `${cardPrefix}-${id}`;
+  const restoreFocusTo = useRef<string[] | null>(null);
   const [revealed, setRevealed] = useState<typeof message>();
   // Runs after the Alert's own effect, so the message counts as revealed once it has been shown.
   useEffect(() => { if (message) setRevealed(message); }, [message]);
   useEffect(() => {
     if (selection || restoreFocusTo.current === null) return;
-    document.getElementById(restoreFocusTo.current)?.focus({ preventScroll: true });
+    const errorId = `${cardPrefix}-error`;
+    for (const id of restoreFocusTo.current) {
+      const element = document.getElementById(id);
+      if (!element) continue;
+      const target = id === errorId ? element.querySelector('button') ?? element : element;
+      target.focus({ preventScroll: true });
+      break;
+    }
     restoreFocusTo.current = null;
-  }, [selection]);
+  }, [selection, cardPrefix]);
   const [tick, setTick] = useState(0);
   const wide = useWideScreen();
   const current = now(), instant = current.getTime();
@@ -143,7 +151,11 @@ export function PortalSchedulePage({ client = portalClient, now = currentTime }:
     : undefined;
   if (selection && !session) {
     setSelection(undefined);
-    if (selection.weekStart === range.start && selection.memberId === memberId && schedule.isSuccess) setRevealed(undefined);
+    if (selection.weekStart === range.start && selection.memberId === memberId && schedule.isSuccess) {
+      setRevealed(undefined);
+    } else {
+      restoreFocusTo.current = schedule.isError ? [`${cardPrefix}-error`] : [cardId(selection.id), `${cardPrefix}-week`];
+    }
   }
   if (!context.data || !members.data) return context.isPending || members.isPending || scope.settling ? <LoadingState />
     : <ErrorState message={text('error')} onRetry={() => { void context.refetch(); void members.refetch(); }} />;
@@ -159,10 +171,9 @@ export function PortalSchedulePage({ client = portalClient, now = currentTime }:
     setSelection(undefined);
     setWeek(value => Math.max(0, value + offset));
   }
-  const cardId = (id: string) => `${cardPrefix}-${id}`;
   function closeClass(id: string) {
     // Wait for the dialog to unmount so the current opener can receive focus.
-    restoreFocusTo.current = cardId(id);
+    restoreFocusTo.current = [cardId(id)];
     setSelection(undefined);
   }
   return <Page className="max-w-3xl lg:max-w-6xl"><PortalRecovery moving={scope.moving}>
@@ -170,12 +181,12 @@ export function PortalSchedulePage({ client = portalClient, now = currentTime }:
     <MemberPicker label={text('member')} members={members.data} value={memberId} onChange={id => { setSelection(undefined); setMessage(undefined); choose(id); }} />
     <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
       <Button variant="outline" disabled={week <= 0} onClick={() => moveWeek(-1)}>{text('previousWeek')}</Button>
-      <p className="text-center text-sm font-medium sm:flex-1" aria-live="polite">{text('weekOf', { date: dateLabel.format(new Date(range.from)) })}</p>
+      <p id={`${cardPrefix}-week`} tabIndex={-1} className="text-center text-sm font-medium sm:flex-1" aria-live="polite">{text('weekOf', { date: dateLabel.format(new Date(range.from)) })}</p>
       <Button variant="outline" onClick={() => moveWeek(1)}>{text('nextWeek')}</Button>
     </div>
     {!session && result}
     {schedule.isPending || (!schedule.data && scope.settling) ? <LoadingState label={text('loading')} />
-      : schedule.isError ? <ErrorState message={text('error')} onRetry={() => void schedule.refetch()} />
+      : schedule.isError ? <div id={`${cardPrefix}-error`}><ErrorState message={text('error')} onRetry={() => void schedule.refetch()} /></div>
         : !days.some(day => day.items.length) ? <EmptyState title={text('empty')} description={text('emptyDescription')} />
           : <WeekLayout days={days} today={today} wide={wide} hideEmptyDays
             agendaLabel={text('title')} todayLabel={t('schedule/schedule:today')} emptyDayLabel={text('noClassesDay')}

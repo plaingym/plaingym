@@ -562,9 +562,9 @@ it.each([
   vi.mocked(client.call).mockRejectedValueOnce(new ApiError(409, 'conflict', [reason]));
   await user.click(assignButton);
   expect(await screen.findByText(message)).toBeDefined();
-  const savingButton = form.getByRole('button', { name: /Saving/ });
-  expect(savingButton.matches(':disabled')).toBe(true);
-  await user.click(savingButton);
+  const loadingButton = form.getByRole('button', { name: 'Loading the latest details…' });
+  expect(loadingButton.matches(':disabled')).toBe(true);
+  await user.click(loadingButton);
   expect(client.call).toHaveBeenCalledTimes(1);
   refreshed.resolve(reloaded);
   const readyButton = await form.findByRole('button', { name: 'Assign a plan' });
@@ -585,9 +585,9 @@ it('keeps the assignment form disabled after a billing date refusal until the ho
   await user.click(assignButton);
   expect(await screen.findByText("The household's next billing date has changed. The form now shows the new date; check it and assign again.")).toBeDefined();
   await waitFor(() => expect(client.memberships).toHaveBeenCalledWith({ memberId: membership.memberId }));
-  const savingButton = form.getByRole('button', { name: /Saving/ });
-  expect(savingButton.matches(':disabled')).toBe(true);
-  await user.click(savingButton);
+  const loadingButton = form.getByRole('button', { name: 'Loading the latest details…' });
+  expect(loadingButton.matches(':disabled')).toBe(true);
+  await user.click(loadingButton);
   expect(client.call).toHaveBeenCalledTimes(1);
   household.resolve(reloaded);
   const readyButton = await form.findByRole('button', { name: 'Assign a plan' });
@@ -595,6 +595,22 @@ it('keeps the assignment form disabled after a billing date refusal until the ho
   expect(form.getByLabelText<HTMLInputElement>('Next billing date').value).toBe('2026-11-02');
   await user.click(readyButton);
   await waitFor(() => expect(client.call).toHaveBeenNthCalledWith(2, 'assignMembership', expect.objectContaining({ nextDueOn: '2026-11-02' }), {}));
+});
+it('never shows the loading text after a plain 500 failure on Assign a plan', async () => {
+  const user = userEvent.setup();
+  const failed = Promise.withResolvers<never>();
+  const client = start('admin', { call: () => failed.promise });
+  const assignButton = await screen.findByRole('button', { name: 'Assign a plan' });
+  const form = within(assignButton.closest('form')!);
+  await user.click(assignButton);
+  expect(form.getByRole('button', { name: 'Saving…' }).matches(':disabled')).toBe(true);
+  expect(form.queryByRole('button', { name: 'Loading the latest details…' })).toBeNull();
+  failed.reject(new ApiError(500, 'request_failed'));
+  expect(await screen.findByRole('alert')).toBeDefined();
+  expect(form.queryByRole('button', { name: 'Loading the latest details…' })).toBeNull();
+  const readyButton = form.getByRole('button', { name: 'Assign a plan' });
+  expect(readyButton.matches(':disabled')).toBe(false);
+  expect(client.call).toHaveBeenCalledTimes(1);
 });
 it('re-enables buttons after a changed membership once the member rows reload even when the members query never resolves', async () => {
   const user = userEvent.setup();

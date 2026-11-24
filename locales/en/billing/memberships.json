@@ -49,6 +49,7 @@
   "resumeHelp": "Choose the next billing date. The skipped cycle will stay skipped.",
   "save": "Save",
   "saving": "Saving…",
+  "reloading": "Loading the latest details…",
   "saved": "Membership saved.",
   "loading": "Loading memberships…",
   "error": "Could not load memberships. Please try again.",
