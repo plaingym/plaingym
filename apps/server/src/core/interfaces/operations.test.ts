@@ -82,8 +82,13 @@ describe('Operational read interfaces', () => {
       // Received more than 7 days before the clock below: still unresolved, but not recent.
       { gymId: gym, receivedAt: '2026-10-10T12:00:00Z', processedAt: null, failed: true },
     ], new TestClock('2026-10-22T12:00:00Z'));
-    expect(await fake.get(gym)).toEqual({ lastReceivedAt: '2026-10-21T12:00:00Z', lastProcessedAt: '2026-10-20T13:00:00Z', pendingCount: 1, failedCount: 2, recentFailedCount: 1 });
-    expect(await new FakeWebhookHealthQuery().get(gym)).toEqual({ lastReceivedAt: null, lastProcessedAt: null, pendingCount: 0, failedCount: 0, recentFailedCount: 0 });
+    expect(await fake.get(gym)).toEqual({
+      lastReceivedAt: '2026-10-21T12:00:00Z', lastProcessedAt: '2026-10-20T13:00:00Z',
+      pendingCount: 1, failedCount: 2, recentFailedCount: 1, firstChargeAttemptAt: null,
+    });
+    expect(await new FakeWebhookHealthQuery().get(gym)).toEqual({
+      lastReceivedAt: null, lastProcessedAt: null, pendingCount: 0, failedCount: 0, recentFailedCount: 0, firstChargeAttemptAt: null,
+    });
   });
   it('counts a webhook failure as recent by when it last failed, not when it was received', async () => {
     const fake = new FakeWebhookHealthQuery([
@@ -93,5 +98,19 @@ describe('Operational read interfaces', () => {
       { gymId: gym, receivedAt: '2026-09-22T12:00:00Z', processedAt: null, failed: true, failedAt: '2026-10-13T12:00:00Z' },
     ], new TestClock('2026-10-22T12:00:00Z'));
     expect(await fake.get(gym)).toMatchObject({ failedCount: 2, recentFailedCount: 1 });
+  });
+  it('ignores failed events that were already processed and exposes firstChargeAttemptAt when supplied', async () => {
+    const fake = new FakeWebhookHealthQuery([
+      { gymId: gym, receivedAt: '2026-10-21T12:00:00Z', processedAt: '2026-10-21T12:05:00Z', failed: true, failedAt: '2026-10-22T10:00:00Z' },
+      { gymId: gym, receivedAt: '2026-10-20T12:00:00Z', processedAt: null, failed: false },
+    ], new TestClock('2026-10-22T12:00:00Z'), { firstChargeAttemptAt: '2026-10-19T08:00:00Z' });
+    expect(await fake.get(gym)).toEqual({
+      lastReceivedAt: '2026-10-21T12:00:00Z',
+      lastProcessedAt: '2026-10-21T12:05:00Z',
+      pendingCount: 1,
+      failedCount: 0,
+      recentFailedCount: 0,
+      firstChargeAttemptAt: '2026-10-19T08:00:00Z',
+    });
   });
 });

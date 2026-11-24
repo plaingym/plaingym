@@ -17,6 +17,8 @@ export interface WebhookHealth {
   readonly failedCount: number;
   /** The part of `failedCount` that last failed within `recentWebhookFailureMs`; the rest are older and still unresolved. */
   readonly recentFailedCount: number;
+  /** The earliest Stripe charge attempt's creation time; absent or null when none. */
+  readonly firstChargeAttemptAt?: IsoInstant | null;
 }
 /** Implemented by the webhook inbox; no payloads, secrets or errors escape. */
 export interface WebhookHealthQuery { get(gymId: Id): Promise<WebhookHealth>; }
@@ -30,8 +32,14 @@ export interface WebhookHealthFixture {
 export class FakeWebhookHealthQuery implements WebhookHealthQuery {
   readonly #events: readonly WebhookHealthFixture[];
   readonly #clock: Clock;
-  constructor(events: readonly WebhookHealthFixture[] = [], clock: Clock = systemClock) {
+  readonly #firstChargeAttemptAt: IsoInstant | null;
+  constructor(
+    events: readonly WebhookHealthFixture[] = [],
+    clock: Clock = systemClock,
+    options: { firstChargeAttemptAt?: IsoInstant | null } = {},
+  ) {
     this.#events = structuredClone(events); this.#clock = clock;
+    this.#firstChargeAttemptAt = options.firstChargeAttemptAt ?? null;
   }
   async get(gymId: Id): Promise<WebhookHealth> {
     let lastReceivedAt: IsoInstant | null = null;
@@ -45,9 +53,16 @@ export class FakeWebhookHealthQuery implements WebhookHealthQuery {
       if (lastReceivedAt === null || instant(event.receivedAt) > instant(lastReceivedAt)) lastReceivedAt = event.receivedAt;
       if (event.processedAt !== null && (lastProcessedAt === null || instant(event.processedAt) > instant(lastProcessedAt)))
         lastProcessedAt = event.processedAt;
-      if (event.failed) { failedCount++; if (instant(event.failedAt ?? event.receivedAt) >= since) recentFailedCount++; }
-      else if (event.processedAt === null) pendingCount++;
+      if (event.failed && event.processedAt === null) {
+        failedCount++;
+        if (instant(event.failedAt ?? event.receivedAt) >= since) recentFailedCount++;
+      } else if (event.processedAt === null) {
+        pendingCount++;
+      }
     }
-    return { lastReceivedAt, lastProcessedAt, pendingCount, failedCount, recentFailedCount };
+    return {
+      lastReceivedAt, lastProcessedAt, pendingCount, failedCount, recentFailedCount,
+      firstChargeAttemptAt: this.#firstChargeAttemptAt,
+    };
   }
 }

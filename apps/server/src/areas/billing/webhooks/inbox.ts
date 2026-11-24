@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, count, eq, gte, isNotNull, isNull, max, or } from 'drizzle-orm';
-import { forGym, forSystem, stripeEvents, uuidv7, writeAudit } from '@plaingym/db';
+import { and, count, eq, gte, isNotNull, isNull, max, min, or } from 'drizzle-orm';
+import { forGym, forSystem, paymentAttempts, stripeEvents, uuidv7, writeAudit } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { z } from 'zod';
 import { clock as systemClock } from '../../../core/clock.js';
@@ -205,13 +205,18 @@ export function createWebhookHealthQuery(scope: typeof forGym = forGym, clock: C
       const [pending] = await tx.select({ total: count() }).from(stripeEvents)
         .where(and(eq(stripeEvents.gymId, gymId), isNull(stripeEvents.processedAt), isNull(stripeEvents.error)));
       const [failed] = await tx.select({ total: count() }).from(stripeEvents)
-        .where(and(eq(stripeEvents.gymId, gymId), isNotNull(stripeEvents.error)));
+        .where(and(eq(stripeEvents.gymId, gymId), isNull(stripeEvents.processedAt), isNotNull(stripeEvents.error)));
       const [recent] = await tx.select({ total: count() }).from(stripeEvents)
-        .where(and(eq(stripeEvents.gymId, gymId), isNotNull(stripeEvents.error),
+        .where(and(eq(stripeEvents.gymId, gymId), isNull(stripeEvents.processedAt), isNotNull(stripeEvents.error),
           // A row that failed before failure times were recorded counts by when it was received.
           or(gte(stripeEvents.failedAt, since), and(isNull(stripeEvents.failedAt), gte(stripeEvents.receivedAt, since)))));
-      return { lastReceivedAt: times?.received?.toISOString() ?? null, lastProcessedAt: times?.processed?.toISOString() ?? null,
-        pendingCount: pending?.total ?? 0, failedCount: failed?.total ?? 0, recentFailedCount: recent?.total ?? 0 };
+      const [first] = await tx.select({ at: min(paymentAttempts.createdAt) }).from(paymentAttempts)
+        .where(and(eq(paymentAttempts.gymId, gymId), isNotNull(paymentAttempts.paymentIntentId)));
+      return {
+        lastReceivedAt: times?.received?.toISOString() ?? null, lastProcessedAt: times?.processed?.toISOString() ?? null,
+        pendingCount: pending?.total ?? 0, failedCount: failed?.total ?? 0, recentFailedCount: recent?.total ?? 0,
+        firstChargeAttemptAt: first?.at?.toISOString() ?? null,
+      };
     });
   } };
 }

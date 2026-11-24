@@ -95,7 +95,9 @@ normal write path.
 A failed handler records only `handler_failed` and the failure time as
 `failed_at`, preserves any existing `processed_at` (a failed replay cannot erase
 a prior successful dispatch), and rethrows to the queue. A successful dispatch
-clears both `error` and `failed_at`. Health counts a failure as recent when its
+clears both `error` and `failed_at`. Health and the go-live webhook check count
+only failures still unprocessed, so a failed replay of a processed event shows
+only as a failed job. Health counts a failure as recent when its
 `failed_at` is within the last 7 days; a row that failed before failure times were
 recorded counts by its received time instead. Even if the marker write fails, dispatch logs the
 original failure as `billing.webhooks.handler_failed`
@@ -114,8 +116,9 @@ keeps that list in step with the handlers), and the message is letters and
 spaces only, at most 100 characters. Any other message, a provider's, one
 holding an ID or a name, or a fixed text with punctuation, is never logged.
 Dispatch jobs allow ten attempts with the queue's backoff.
-`createWebhookHealthQuery` exposes only per-gym timestamps and pending/failed
-counts; it never returns payloads or provider errors.
+`createWebhookHealthQuery` exposes only per-gym webhook timestamps, the first
+Stripe charge attempt time, and unprocessed pending/failed counts; it never
+returns payloads or provider errors.
 
 In demo mode pass `demoGyms` to the route factory and supply a resolver constructing
 gym-scoped providers from the shared Stripe **test** account and endpoint secret.

@@ -4,6 +4,7 @@ import { uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
+import { FakeWebhookHealthQuery } from '../../core/interfaces/webhook-health.js';
 import { createWebhookHealthQuery } from '../billing/webhooks/inbox.js';
 import { createHealthService } from './status.js';
 import { createStripeHealthProvider } from './stripe.js';
@@ -75,5 +76,44 @@ describe('Stripe health', () => {
     const response = await createHealthService([provider]).get({ gymId, roles: ['owner'], clock });
     expect(response.data.tiles.find(tile => tile.id === 'stripe_webhooks')).toMatchObject({ status: 'unavailable', details: null });
     expect(JSON.stringify(response)).not.toContain('private key');
+  });
+  it('warns when no webhook has arrived a day after the first charge attempt, until an event arrives', async () => {
+    const gymId = uuidv7();
+    const hoursAgo = (hours: number) => new Date(clock.now().getTime() - hours * 3_600_000).toISOString();
+    const read = (events: ConstructorParameters<typeof FakeWebhookHealthQuery>[0], firstChargeAttemptAt?: string | null) =>
+      createStripeHealthProvider({
+        webhooks: new FakeWebhookHealthQuery(events, clock, firstChargeAttemptAt === undefined ? {} : { firstChargeAttemptAt }),
+        configured: async () => true,
+      }).read({ gymId, roles: ['owner'], clock });
+
+    const noAttempt = await read([]);
+    expect(noAttempt).toMatchObject({ status: 'healthy' });
+    expect(noAttempt.message).toContain('No webhook has arrived yet');
+
+    const recentAttempt = await read([], hoursAgo(23));
+    expect(recentAttempt).toMatchObject({ status: 'healthy' });
+    expect(recentAttempt.message).toContain('No webhook has arrived yet');
+
+    const silent = await read([], hoursAgo(25));
+    expect(silent).toMatchObject({
+      status: 'warning',
+      message: 'Stripe charges have been attempted for more than a day, but no Stripe webhook has arrived. Check in Stripe that this install\'s webhook endpoint (/webhooks/stripe) is enabled and points here.',
+    });
+
+    const received = await read([{ gymId, receivedAt: hoursAgo(1), processedAt: hoursAgo(1), failed: false }], hoursAgo(25));
+    expect(received).toMatchObject({ status: 'healthy', message: 'Stripe webhooks are processing normally.' });
+  });
+  it('counts only unprocessed failures when computing status and failed counts', async () => {
+    const gymId = uuidv7();
+    const twoDaysAgo = new Date(clock.now().getTime() - 2 * 86_400_000).toISOString();
+    const read = (processedAt: string | null) => createStripeHealthProvider({
+      webhooks: new FakeWebhookHealthQuery([
+        { gymId, receivedAt: twoDaysAgo, processedAt, failed: true, failedAt: twoDaysAgo },
+      ], clock),
+      configured: async () => true,
+    }).read({ gymId, roles: ['owner'], clock });
+
+    expect(await read(twoDaysAgo)).toMatchObject({ status: 'healthy', details: { failed: 0 } });
+    expect(await read(null)).toMatchObject({ status: 'error', details: { failed: 1 } });
   });
 });

@@ -290,7 +290,7 @@ it('never dispatches, replays, or exposes health for another gym, even with forg
   await expect(inbox.replay(gymB, 'evt_test')).rejects.toMatchObject({ code: 'not_found' });
   expect(await database.forGym(gymB, (tx) => tx.select().from(stripeEvents))).toEqual([]);
   expect(await createWebhookHealthQuery(database.forGym, clock).get(gymB)).toEqual({
-    lastReceivedAt: null, lastProcessedAt: null, pendingCount: 0, failedCount: 0, recentFailedCount: 0,
+    lastReceivedAt: null, lastProcessedAt: null, pendingCount: 0, failedCount: 0, recentFailedCount: 0, firstChargeAttemptAt: null,
   });
   expect(await createWebhookHealthQuery(database.forGym, clock).get(gymA)).toMatchObject({ pendingCount: 1, failedCount: 0, recentFailedCount: 0 });
 });
@@ -382,12 +382,12 @@ it('routes untagged demo refunds through provider ownership lookups and rejects 
 });
 it('health counts only this gym and follows processing, failure, and recovery', async () => {
   const health = createWebhookHealthQuery(database.forGym, clock);
-  await deliver(); expect(await health.get(gymA)).toEqual({ lastReceivedAt: clock.now().toISOString(), lastProcessedAt: null, pendingCount: 1, failedCount: 0, recentFailedCount: 0 });
+  await deliver(); expect(await health.get(gymA)).toEqual({ lastReceivedAt: clock.now().toISOString(), lastProcessedAt: null, pendingCount: 1, failedCount: 0, recentFailedCount: 0, firstChargeAttemptAt: null });
   let fail = true;
   inbox.register('payment_intent.succeeded', async () => { if (fail) throw new Error('failure'); }); await jobs.runNext();
   expect(await health.get(gymA)).toMatchObject({ pendingCount: 0, failedCount: 1, recentFailedCount: 1 });
   fail = false; clock.advance(1000); await jobs.runNext();
-  expect(await health.get(gymA)).toEqual({ lastReceivedAt: '2026-10-24T12:00:00.000Z', lastProcessedAt: clock.now().toISOString(), pendingCount: 0, failedCount: 0, recentFailedCount: 0 });
+  expect(await health.get(gymA)).toEqual({ lastReceivedAt: '2026-10-24T12:00:00.000Z', lastProcessedAt: clock.now().toISOString(), pendingCount: 0, failedCount: 0, recentFailedCount: 0, firstChargeAttemptAt: null });
 });
 it('health counts a recent failure by when the event last failed, so an old event failing on replay is recent again', async () => {
   const day = 24 * 60 * 60_000, health = createWebhookHealthQuery(database.forGym, clock);
@@ -480,4 +480,33 @@ it('treats an event stored without its mode as test-mode only when it arrived be
   expect(handler.mock.calls.map(([received]) => (received as PaymentEvent).id)).toEqual(['evt_after']);
   expect(await skippedAudits()).toHaveLength(1);
   expect((await rows()).every((row) => row.processedAt !== null && row.error === null)).toBe(true);
+});
+it('health counts only unprocessed failed events, excluding processed events whose replay failed', async () => {
+  const health = createWebhookHealthQuery(database.forGym, clock);
+  let fail = false;
+  inbox.register('payment_intent.succeeded', async () => { if (fail) throw new Error('replay failure'); });
+  await deliver(event('evt_replayed'));
+  await inbox.dispatch({ eventId: 'evt_replayed' }, context());
+  fail = true;
+  clock.advance(1000);
+  await expect(inbox.dispatch({ eventId: 'evt_replayed', replay: true }, context())).rejects.toThrow('replay failure');
+  await deliver(event('evt_unprocessed_failed'));
+  await expect(inbox.dispatch({ eventId: 'evt_unprocessed_failed' }, context())).rejects.toThrow('replay failure');
+  await deliver(event('evt_pending'));
+  expect(await health.get(gymA)).toMatchObject({ failedCount: 1, recentFailedCount: 1, pendingCount: 1 });
+});
+it('health reports the earliest Stripe payment attempt per gym, ignoring attempts without a PaymentIntent ID', async () => {
+  const gym1 = uuidv7(), gym2 = uuidv7(), gymEmpty = uuidv7();
+  for (const id of [gym1, gym2, gymEmpty]) await factory('gyms', id);
+  const t = new Date('2026-10-20T12:00:00Z');
+  const tMinus1h = new Date(t.getTime() - 3_600_000);
+  const tPlus1h = new Date(t.getTime() + 3_600_000);
+  const tMinus2h = new Date(t.getTime() - 7_200_000);
+  await factory('paymentAttempts', gym1, { paymentIntentId: null, createdAt: tMinus1h });
+  await factory('paymentAttempts', gym1, { paymentIntentId: 'pi_first', createdAt: t });
+  await factory('paymentAttempts', gym1, { paymentIntentId: 'pi_second', createdAt: tPlus1h });
+  await factory('paymentAttempts', gym2, { paymentIntentId: 'pi_other_gym', createdAt: tMinus2h });
+  const health = createWebhookHealthQuery(database.forGym, clock);
+  expect((await health.get(gym1)).firstChargeAttemptAt).toBe(t.toISOString());
+  expect((await health.get(gymEmpty)).firstChargeAttemptAt).toBeNull();
 });
