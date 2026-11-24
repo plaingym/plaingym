@@ -7,9 +7,11 @@ including providers that are not configured. Each provider uses the frozen
 tile without exposing exception messages. Each tile has 5 seconds to answer; after that
 it reads "Still checking" and the other tiles render (the slow check keeps running and
 its late result is discarded; a refresh while it runs waits on that same check, one per
-gym and tile, instead of starting another). A tile slower than 2 seconds logs `health.tile_slow`
-with its tile ID and duration only. The Last backup tile reuses its bucket inventory
-for up to one minute (it is released from memory after that), dropped sooner when a backup or prune finishes or the destination or
+gym and tile, instead of starting another until the running read is 30 seconds old, when
+a new one replaces it). A read slower than 2 seconds logs `health.tile_slow` once, with its
+tile ID and duration from the read's start; each request that reaches the 5-second limit logs
+its own line with `timedOut: true`. The Last backup tile reuses its bucket inventory
+for up to one minute from when its listing started (it is released from memory after that; a listing running over 30 seconds is replaced by a new one, and a replaced listing that finishes still fills the cache unless a later one already has), dropped sooner when a backup or prune finishes or the destination or
 the backup runs change; pruning always reads the bucket itself.
 
 The Invoice effects tile (`invoice_effects`) stays in error while any invoice

@@ -269,4 +269,76 @@ describe('last-backup inventory cache', () => {
     expect(tiles.map((tile) => tile.status)).toEqual(['healthy', 'healthy']);
     expect(list).toHaveBeenCalledTimes(2);
   });
+  it('replaces a never-resolving listing after 30 s and discards its late resolution', async () => {
+    await snapshot();
+    const realList = store.listObjects.bind(store);
+    let listCalls = 0;
+    let enteredFirst!: () => void;
+    const firstEntered = new Promise<void>((resolve) => { enteredFirst = resolve; });
+    let resolveFirst!: (keys: Awaited<ReturnType<typeof realList>>) => void;
+    vi.spyOn(store, 'listObjects').mockImplementation((prefix) => {
+      listCalls++;
+      if (listCalls === 1) {
+        enteredFirst();
+        return new Promise((resolve) => { resolveFirst = resolve; });
+      }
+      return realList(prefix);
+    });
+    let scopeDone: (() => void) | undefined;
+    const health = createBackupHealthProvider({
+      scope: async (fn) => { try { return await database.forSystem(fn); } finally { scopeDone?.(); } },
+      config: async () => settings,
+      store: () => ({ store, close }),
+    });
+    const first = health.read(context);
+    await firstEntered;
+    expect(listCalls).toBe(1);
+    clock.advance(10_000);
+    const waitScope = new Promise<void>((resolve) => { scopeDone = resolve; });
+    const second = health.read(context);
+    await waitScope;
+    await Promise.resolve();
+    expect(listCalls).toBe(1);
+    clock.advance(21_000);
+    const third = health.read(context);
+    expect(await third).toMatchObject({ status: 'healthy' });
+    expect(listCalls).toBe(3);
+    resolveFirst([]);
+    await Promise.all([first, second]);
+    expect(await health.read(context)).toMatchObject({ status: 'healthy' });
+    expect(listCalls).toBe(4);
+  });
+  it('expires a slow listing 60 s after its start and caches a listing over 60 s for 0 ms', async () => {
+    await snapshot();
+    const realList = store.listObjects.bind(store);
+    const timers = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      let release!: () => void;
+      let entered!: () => void;
+      let waitEntered = new Promise<void>((resolve) => { entered = resolve; });
+      vi.spyOn(store, 'listObjects').mockImplementation(async (prefix) => {
+        if (prefix === 'snapshots/') {
+          entered();
+          await new Promise<void>((resolve) => { release = resolve; });
+        }
+        return realList(prefix);
+      });
+      const health = provider();
+      const first = health.read(context);
+      await waitEntered;
+      clock.advance(20_000);
+      release();
+      expect(await first).toMatchObject({ status: 'healthy' });
+      const forty = timers.mock.calls.filter((call) => call[1] === 40_000);
+      expect(forty).toHaveLength(1);
+      (forty[0]![0] as () => void)();
+      waitEntered = new Promise<void>((resolve) => { entered = resolve; });
+      const second = health.read(context);
+      await waitEntered;
+      clock.advance(70_000);
+      release();
+      expect(await second).toMatchObject({ status: 'healthy' });
+      expect(timers.mock.calls.some((call) => call[1] === 0)).toBe(true);
+    } finally { timers.mockRestore(); }
+  });
 });

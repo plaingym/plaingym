@@ -10,6 +10,8 @@ import { backupHealthGeneration } from './backups.health-cache.js';
 import { healthProvider, statusMessage } from './status.js';
 import { backupFailureCause, type BackupFailureCause } from './backups.failure.js';
 
+const maxLoadingAgeMs = 30_000;
+
 const causeMessages: Record<Exclude<BackupFailureCause, 'other'>, string> = {
   credentials_rejected: 'backupCredentialsRejected', bucket_missing: 'backupBucketMissing', endpoint_unreachable: 'backupEndpointUnreachable',
 };
@@ -39,28 +41,31 @@ export function createBackupHealthProvider(options: {
   // The key covers the destination, the keys, the runs and the backup generation; only its hash is kept.
   let cached: { key: string; storedAt: number; state: BackupInventory } | null = null;
   let expiry: ReturnType<typeof setTimeout> | undefined;
-  const loading = new Map<string, Promise<BackupInventory>>();
-  const cachedInventory = (settings: InstallBackupConfig, key: string, now: number): Promise<BackupInventory> => {
-    if (cached && cached.key === key && now - cached.storedAt < 60_000) return Promise.resolve(cached.state);
+  const loading = new Map<string, { startedAt: number; load: Promise<BackupInventory> }>();
+  const cachedInventory = (settings: InstallBackupConfig, key: string, now: () => number): Promise<BackupInventory> => {
+    const loadStart = now();
+    if (cached && cached.key === key && loadStart - cached.storedAt < 60_000) return Promise.resolve(cached.state);
     const inFlight = loading.get(key);
-    if (inFlight) return inFlight;
+    if (inFlight && loadStart - inFlight.startedAt <= maxLoadingAgeMs) return inFlight.load;
     const load = (async () => {
       const destination = open(settings);
       try { return await inventory(destination.store, settings.blobKey, runStatuses); }
       finally { destination.close(); }
     })();
-    loading.set(key, load);
-    // A failed load is never cached; a load the page gave up on still serves the next refresh.
+    const entry = { startedAt: loadStart, load };
+    loading.set(key, entry);
+    // A failed load is never cached; a load the page gave up on, or one a fresh load replaced, still serves the
+    // next refresh unless a load that started later has already been stored.
     load.then((state) => {
-      if (cached && cached.storedAt > now) return;
-      cached = { key, storedAt: now, state };
+      if (cached && cached.storedAt > loadStart) return;
+      cached = { key, storedAt: loadStart, state };
       // Drop the inventory once it is stale instead of holding the listings until the next read.
       if (expiry) clearTimeout(expiry);
       const stored = cached;
-      expiry = setTimeout(() => { if (cached === stored) cached = null; expiry = undefined; }, 60_000);
+      expiry = setTimeout(() => { if (cached === stored) cached = null; expiry = undefined; }, Math.max(0, 60_000 - (now() - loadStart)));
       expiry.unref();
     }, () => undefined)
-      .finally(() => { loading.delete(key); });
+      .finally(() => { if (loading.get(key) === entry) loading.delete(key); });
     return load;
   };
   return healthProvider('last_backup', async (context) => {
@@ -80,7 +85,7 @@ export function createBackupHealthProvider(options: {
     let damagedGuardSnapshot: string | null = null;
     let missingGuardSnapshot: string | null = null;
     try {
-      const state = await cachedInventory(settings, key, context.clock.now().getTime());
+      const state = await cachedInventory(settings, key, () => context.clock.now().getTime());
       // An abandoned run is cleaned up by the next prune; only what stops pruning is reported.
       const floorSnapshot = guardSnapshot(env);
       damagedGuardSnapshot = state.damaged.find(snapshot => snapshot.id === floorSnapshot)?.id ?? null;

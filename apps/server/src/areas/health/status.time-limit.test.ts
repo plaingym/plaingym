@@ -98,4 +98,55 @@ describe('health tile time limit', () => {
     expect(vi.getTimerCount()).toBe(0);
     expect(lines).toEqual([]);
   });
+  it('replaces an in-flight read older than maxReadAgeMs and ignores the old read when it settles late', async () => {
+    let calls = 0;
+    let resolveFirst!: (tile: HealthTile) => void;
+    let resolveSecond!: (tile: HealthTile) => void;
+    const provider = healthProvider(b, () => {
+      calls++;
+      return new Promise<HealthTile>((resolve) => {
+        if (calls === 1) resolveFirst = resolve;
+        else if (calls === 2) resolveSecond = resolve;
+      });
+    });
+    const service = createHealthService([provider], options);
+    const first = service.get(context);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect((await first).data.tiles.find((tile) => tile.id === b)).toMatchObject({ message: 'Still checking. Refresh in a moment.' });
+    // At 10 s (younger than 30 s), a refresh still shares the first read.
+    await vi.advanceTimersByTimeAsync(5000);
+    const second = service.get(context);
+    expect(calls).toBe(1);
+    await vi.advanceTimersByTimeAsync(5000);
+    await second;
+    // At 31 s (older than 30 s), a refresh starts a second read.
+    await vi.advanceTimersByTimeAsync(16_000);
+    const third = service.get(context);
+    expect(calls).toBe(2);
+    // First read settles late after the second started: it must not delete the second's entry.
+    resolveFirst(tileOf(b));
+    await Promise.resolve();
+    const fourth = service.get(context);
+    expect(calls).toBe(2);
+    resolveSecond(healthTileSchema.parse({ id: b, status: 'warning', checkedAt: clock.now().toISOString(), details: null, message: 'Second read' }));
+    const [thirdResult, fourthResult] = await Promise.all([third, fourth]);
+    expect(thirdResult.data.tiles.find((tile) => tile.id === b)).toMatchObject({ status: 'warning', message: 'Second read' });
+    expect(fourthResult.data.tiles.find((tile) => tile.id === b)).toMatchObject({ status: 'warning', message: 'Second read' });
+  });
+  it('logs health.tile_slow once per shared read from its start and still logs timedOut: true on timeout', async () => {
+    const slow = healthProvider(b, () => new Promise<HealthTile>((resolve) => { setTimeout(() => resolve(tileOf(b)), 3000); }));
+    const service = createHealthService([slow, after(c, null)], options);
+    const first = service.get(context);
+    await vi.advanceTimersByTimeAsync(2500);
+    const second = service.get(context);
+    await vi.advanceTimersByTimeAsync(2500);
+    expect((await first).data.tiles.find((tile) => tile.id === b)).toMatchObject({ message: 'Answered ' + b });
+    await vi.advanceTimersByTimeAsync(2500);
+    expect((await second).data.tiles.find((tile) => tile.id === b)).toMatchObject({ message: 'Answered ' + b });
+    expect(lines).toEqual([
+      { time: expect.any(String), level: 'warn', event: 'health.tile_slow', tile: b, ms: 3000, timedOut: false },
+      { time: expect.any(String), level: 'warn', event: 'health.tile_slow', tile: c, ms: 5000, timedOut: true },
+      { time: expect.any(String), level: 'warn', event: 'health.tile_slow', tile: c, ms: 5000, timedOut: true },
+    ]);
+  });
 });
