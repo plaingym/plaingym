@@ -14,6 +14,111 @@ afterEach(() => {
   style.removeProperty('overflow');
   style.removeProperty('overflow-y');
   style.removeProperty('scrollbar-gutter');
+  document.documentElement.removeAttribute('dir');
+  for (const key of ['clientWidth', 'getBoundingClientRect']) delete (document.documentElement as unknown as Record<string, unknown>)[key];
+});
+
+/** jsdom lays nothing out, so stub the root's widths: the page's scrollbar is `innerWidth - clientWidth`. */
+function stubRoot({ innerWidth, clientWidth, left = 0, width = clientWidth }: { innerWidth: number; clientWidth: number; left?: number; width?: number }) {
+  vi.stubGlobal('innerWidth', innerWidth);
+  Object.defineProperty(document.documentElement, 'clientWidth', { configurable: true, value: clientWidth });
+  Object.defineProperty(document.documentElement, 'getBoundingClientRect', { configurable: true, value: () => ({ left, width, right: left + width, top: 0, bottom: 0, height: 0, x: left, y: 0 }) });
+}
+
+it.each([
+  { clientWidth: 1000, gutter: '' },
+  { clientWidth: 985, gutter: 'stable' },
+])('reserves the scrollbar gutter only when the page had a scrollbar (clientWidth $clientWidth)', ({ clientWidth, gutter }) => {
+  stubRoot({ innerWidth: 1000, clientWidth });
+  const { style } = document.documentElement;
+  const view = render(<Dialog title="Editor" closeLabel="Close" onClose={vi.fn()}>Body</Dialog>);
+  expect(style.overflow).toBe('hidden');
+  expect(style.scrollbarGutter).toBe(gutter);
+  view.unmount();
+  expect(style.overflow).toBe('');
+  expect(style.scrollbarGutter).toBe('');
+});
+it.each([
+  { dir: 'rtl', left: 15, expected: ['15px', '0px'] },
+  { dir: 'ltr', left: 0, expected: ['0px', '15px'] },
+])('places the dialog by the side of the root gutter ($dir)', ({ dir, left, expected }) => {
+  document.documentElement.dir = dir;
+  stubRoot({ innerWidth: 1015, clientWidth: 1000, left, width: 1000 });
+  render(<Dialog title="Editor" closeLabel="Close" onClose={vi.fn()}>Body</Dialog>);
+  const { style } = screen.getByRole('dialog');
+  expect(style.getPropertyValue('--dialog-scrollbar-gutter')).toBe('15px');
+  expect([style.getPropertyValue('--dialog-gutter-left'), style.getPropertyValue('--dialog-gutter-right')]).toEqual(expected);
+});
+it('releases the page lock and calls onClose once when the browser closes the dialog', () => {
+  const { style } = document.documentElement;
+  const onClose = vi.fn();
+  render(<Dialog title="Editor" closeLabel="Close" onClose={onClose}>Body</Dialog>);
+  const dialog = screen.getByRole('dialog');
+  expect(style.overflow).toBe('hidden');
+  dialog.removeAttribute('open');
+  fireEvent(dialog, new Event('close'));
+  expect(style.overflow).toBe('');
+  expect(style.scrollbarGutter).toBe('');
+  expect(onClose).toHaveBeenCalledOnce();
+  cleanup();
+  expect(style.overflow).toBe('');
+  expect(onClose).toHaveBeenCalledOnce();
+});
+it('does not call onClose when suspending, resuming or unmounting closes the dialog itself', () => {
+  const onClose = vi.fn();
+  const tree = (suspended: boolean) => <DialogRecoveryContext.Provider value={{ suspended }}>
+    <Dialog title="Editor" closeLabel="Close" onClose={onClose}>Body</Dialog>
+  </DialogRecoveryContext.Provider>;
+  const view = render(tree(false));
+  const dialog = screen.getByRole('dialog', { hidden: true });
+  view.rerender(tree(true));
+  fireEvent(dialog, new Event('close'));
+  view.rerender(tree(false));
+  view.unmount();
+  fireEvent(dialog, new Event('close'));
+  expect(onClose).not.toHaveBeenCalled();
+});
+it('ignores a hidden bar and a bar inside a hidden wrapper when finding the end of the body', () => {
+  const view = render(<Dialog title="Editor" closeLabel="Close" onClose={vi.fn()}>
+    <p>Content</p><div hidden><DialogActions><button>Save</button></DialogActions></div>
+  </Dialog>);
+  expect(view.container.querySelector('[data-dialog-body]')!.hasAttribute('data-dialog-actions-end')).toBe(false);
+  expect(view.container.querySelector('[data-dialog-actions]')!.hasAttribute('data-dialog-actions-at-end')).toBe(false);
+});
+it('does not count an open nested dialog after the bar as trailing content', () => {
+  const tree = (nested: boolean) => <Dialog title="Editor" closeLabel="Close" onClose={vi.fn()}>
+    <DialogActions><button>Save</button></DialogActions>{nested && <dialog open>Nested</dialog>}
+  </Dialog>;
+  const view = render(tree(false));
+  const body = view.container.querySelector('[data-dialog-body]')!;
+  expect(body.hasAttribute('data-dialog-actions-end')).toBe(true);
+  view.rerender(tree(true));
+  fireEvent(window, new Event('resize'));
+  expect(body.hasAttribute('data-dialog-actions-end')).toBe(true);
+});
+it('re-checks the end of the body on a window resize', () => {
+  const view = render(<Dialog title="Editor" closeLabel="Close" onClose={vi.fn()}>
+    <DialogActions><button>Save</button></DialogActions><p>After</p>
+  </Dialog>);
+  const body = view.container.querySelector('[data-dialog-body]')!;
+  expect(body.hasAttribute('data-dialog-actions-end')).toBe(false);
+  const trailing = screen.getByText('After');
+  const real = window.getComputedStyle.bind(window);
+  vi.spyOn(window, 'getComputedStyle').mockImplementation((element, pseudo) =>
+    element === trailing ? { display: 'none', paddingBottom: '0px', marginBottom: '0px' } as CSSStyleDeclaration : real(element, pseudo));
+  fireEvent(window, new Event('resize'));
+  expect(body.hasAttribute('data-dialog-actions-end')).toBe(true);
+});
+it('builds one observer for a bar however often the dialog re-renders', () => {
+  const Real = MutationObserver;
+  let created = 0;
+  vi.stubGlobal('MutationObserver', class extends Real { constructor(callback: MutationCallback) { super(callback); created++; } });
+  const tree = (title: string) => <Dialog title={title} closeLabel="Close" onClose={vi.fn()}><DialogActions><button>Save</button></DialogActions></Dialog>;
+  const view = render(tree('One'));
+  view.rerender(tree('Two'));
+  view.rerender(tree('Three'));
+  view.rerender(tree('Four'));
+  expect(created).toBe(1);
 });
 
 it.each([
@@ -113,7 +218,7 @@ it('has one scroll container: the dialog clips and its column shrinks inside it'
   expect(dialog.classList.contains('overscroll-contain')).toBe(true);
   expect(body.classList.contains('overscroll-contain')).toBe(true);
 });
-it('moves the body bottom padding into a sticky action bar that ends the content', () => {
+it('moves the body bottom padding into a sticky action bar that ends the content', async () => {
   const view = render(<Dialog title="Editor" closeLabel="Close" onClose={vi.fn()}><form><input aria-label="Name"/><DialogActions><button>Save</button></DialogActions></form></Dialog>);
   const body = screen.getByRole('dialog').querySelector<HTMLElement>('[data-dialog-body]')!;
   const actions = screen.getByRole('button', { name: 'Save' }).parentElement!;
@@ -126,7 +231,8 @@ it('moves the body bottom padding into a sticky action bar that ends the content
   // Content after the bar keeps the body's normal padding and the bar's own height.
   view.rerender(<Dialog title="Editor" closeLabel="Close" onClose={vi.fn()}><form><input aria-label="Name"/><DialogActions><button>Save</button></DialogActions></form><p>After</p></Dialog>);
   const trailing = screen.getByRole('button', { name: 'Save' }).parentElement!;
-  expect(body.hasAttribute('data-dialog-actions-end')).toBe(false);
+  // The bar's observer reports the added sibling after the render.
+  await waitFor(() => expect(body.hasAttribute('data-dialog-actions-end')).toBe(false));
   expect(trailing.hasAttribute('data-dialog-actions-at-end')).toBe(false);
   expect(trailing.className).toContain('py-3');
   view.rerender(<Dialog title="Editor" closeLabel="Close" onClose={vi.fn()}><p>Body</p></Dialog>);

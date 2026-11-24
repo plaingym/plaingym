@@ -6,6 +6,7 @@ import { createRegistries } from '../lib/registries.js';
 import { t } from '../lib/i18n.js';
 import { Button } from '../components/ui/button.js';
 import { CloseIcon, MenuIcon } from '../components/ui/icons.js';
+import { lockPageScroll } from '../components/ui/dialog.js';
 import type { ShellBootstrap, ShellSession } from './services.js';
 import { sessionName } from './identity.js';
 import { useDemoSandbox } from '../features/demo/notice.js';
@@ -81,20 +82,18 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
       window.removeEventListener('scroll', measure);
     };
   }, [open]);
-  // The page behind the menu must not scroll or show a scrollbar. Padding keeps its content where it was.
+  // The page behind the menu must not scroll or show a scrollbar. The shared page lock keeps the content where it was
+  // and counts with any open dialog, so the two can close in either order.
   // Clip the body instead of hiding it: hiding it makes the body a scroll container, which breaks the sticky header.
   useLayoutEffect(() => {
     if (!open) return;
-    const root = document.documentElement, body = document.body;
-    const scrollbar = Math.max(0, window.innerWidth - root.clientWidth);
-    const previous = { rootOverflow: root.style.overflow, bodyOverflow: body.style.overflow, bodyPaddingRight: body.style.paddingRight };
-    root.style.overflow = 'hidden';
+    const body = document.body;
+    const previousBodyOverflow = body.style.overflow;
+    const release = lockPageScroll();
     body.style.overflow = 'clip';
-    if (scrollbar > 0) body.style.paddingRight = `${scrollbar}px`;
     return () => {
-      root.style.overflow = previous.rootOverflow;
-      body.style.overflow = previous.bodyOverflow;
-      body.style.paddingRight = previous.bodyPaddingRight;
+      body.style.overflow = previousBodyOverflow;
+      release();
     };
   }, [open]);
   useEffect(() => { if (open) nav.current?.querySelector<HTMLElement>('a')?.focus(); }, [open]);

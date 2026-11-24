@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -10,6 +11,7 @@ import { createAppRouter } from './router.js';
 import type { ShellBootstrap, ShellServices } from './services.js';
 import { createWebRegistries } from '@plaingym/shared';
 import { AdminShell, adminNavigationGroups, visibleAdminNavigation } from './admin-shell.js';
+import { Dialog } from '../components/ui/dialog.js';
 import { sessionName } from './identity.js';
 import { resetThemeChoice, themeStorageKey } from '../lib/theme.js';
 import { RootError, SourceFooter } from '../routes/__root.js';
@@ -420,10 +422,12 @@ describe('admin shell', () => {
       const locked = () => {
         expect(document.documentElement.style.overflow).toBe('hidden');
         expect(document.body.style.overflow).toBe('clip');
-        expect(document.body.style.paddingRight).toBe('15px');
+        expect(document.documentElement.style.scrollbarGutter).toBe('stable');
+        expect(document.body.style.paddingRight).toBe('');
       };
       const released = () => {
         expect(document.documentElement.style.overflow).toBe('');
+        expect(document.documentElement.style.scrollbarGutter).toBe('');
         expect(document.body.style.overflow).toBe('');
         expect(document.body.style.paddingRight).toBe('');
       };
@@ -439,6 +443,48 @@ describe('admin shell', () => {
       Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
       if (clientWidth) Object.defineProperty(document.documentElement, 'clientWidth', clientWidth);
       else delete (document.documentElement as unknown as Record<string, unknown>).clientWidth;
+    }
+  });
+  it.each(['menu', 'dialog'] as const)('restores the page styles once when the phone menu and a dialog overlap (%s closes first)', async firstToClose => {
+    const width = window.innerWidth;
+    const clientWidth = Object.getOwnPropertyDescriptor(document.documentElement, 'clientWidth');
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 360 });
+    Object.defineProperty(document.documentElement, 'clientWidth', { configurable: true, value: 345 });
+    const rootStyle = document.documentElement.style;
+    rootStyle.setProperty('overflow', 'auto'); rootStyle.setProperty('scrollbar-gutter', 'auto'); document.body.style.overflow = 'visible';
+    vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+    try {
+      const state = { ...anonymous, session: { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false } };
+      function Content() {
+        const [shown, setShown] = useState(false);
+        return <><button onClick={() => setShown(true)}>Open dialog</button>
+          {shown && <Dialog title="Overlap" closeLabel="Close dialog" onClose={() => setShown(false)}>Dialog body</Dialog>}</>;
+      }
+      const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><Content /></AdminShell> });
+      render(<RouterProvider router={createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) })} />);
+      const user = userEvent.setup();
+      const menu = await screen.findByRole('button', { name: 'Menu' });
+      const original = () => {
+        expect(rootStyle.overflow).toBe('auto');
+        expect(rootStyle.scrollbarGutter).toBe('auto');
+        expect(document.body.style.overflow).toBe('visible');
+      };
+      const locked = () => {
+        expect(rootStyle.overflow).toBe('hidden');
+        expect(rootStyle.scrollbarGutter).toBe('stable');
+      };
+      await user.click(menu); locked();
+      // A route change mounts the dialog without a pointer press, so the menu stays open.
+      fireEvent.click(screen.getByRole('button', { name: 'Open dialog', hidden: true })); locked();
+      const closeMenu = async () => { await user.keyboard('{Escape}'); await waitFor(() => expect(menu.getAttribute('aria-expanded')).toBe('false')); };
+      const closeDialog = async () => { fireEvent.click(screen.getByRole('button', { name: 'Close dialog', hidden: true })); await waitFor(() => expect(screen.queryByText('Dialog body')).toBeNull()); };
+      if (firstToClose === 'menu') { await closeMenu(); locked(); await closeDialog(); } else { await closeDialog(); locked(); await closeMenu(); }
+      original();
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+      if (clientWidth) Object.defineProperty(document.documentElement, 'clientWidth', clientWidth);
+      else delete (document.documentElement as unknown as Record<string, unknown>).clientWidth;
+      rootStyle.removeProperty('overflow'); rootStyle.removeProperty('scrollbar-gutter'); document.body.style.removeProperty('overflow');
     }
   });
   it('closes the phone menu and releases the page when the md media query changes', async () => {

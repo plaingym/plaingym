@@ -5,7 +5,13 @@ import { test, expect, createClass, demoClient, gymTimezone, showWeek, type Sand
 import { sizes } from '../responsive.js';
 
 // Cookies are bearer credentials. Keep them out of traces and screenshots.
-test.use({ trace: 'off', screenshot: 'off' });
+test.use({ trace: 'off', screenshot: 'off',
+  // Headless Chromium hides every scrollbar by default, so the page would have no gutter. Show them in this file,
+  // with the config's other launch arguments (a describe group can't change the launch options).
+  launchOptions: {
+    ignoreDefaultArgs: ['--hide-scrollbars'],
+    args: ['--no-proxy-server', '--host-resolver-rules=MAP *.localhost ' + (process.env.E2E_LOOPBACK ?? '127.0.0.1'), '--ignore-certificate-errors'],
+  } });
 
 /** The dialog never scrolls itself, and once the body holds more than fits, only the body scrolls. */
 async function onlyBodyScrolls(page: Page, dialog: Locator, surface: string) {
@@ -163,6 +169,13 @@ test.describe('page scroll behind a weekly class dialog', () => {
       const sandbox = sandboxes[1]!, owner = await demoClient(sandbox, 'owner');
       await owner.browser(page.context());
       await page.goto(sandbox.origin + '/admin/schedule');
+      // Playwright's Chromium hides scrollbars; give the page a real 15 px one so the gutter math runs.
+      // A constructed stylesheet, because the page's style policy refuses an inline style element.
+      await page.evaluate(() => {
+        const sheet = new CSSStyleSheet();
+        sheet.replaceSync('::-webkit-scrollbar { width: 15px }');
+        document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+      });
       const opener = page.getByRole('button', { name: 'New weekly class', exact: true }).first();
       await expect(opener).toBeVisible();
       const scrollY = () => page.evaluate(() => window.scrollY);
@@ -171,10 +184,13 @@ test.describe('page scroll behind a weekly class dialog', () => {
         window.scrollTo(0, 300);
       });
       expect(await scrollY()).toBe(300);
+      expect(await page.evaluate(() => document.documentElement.scrollHeight > window.innerHeight), 'the page behind scrolls').toBe(true);
+      expect(await page.evaluate(() => window.innerWidth - document.documentElement.clientWidth), 'the page has a real scrollbar').toBeGreaterThan(0);
       // Activate the opener at this scroll position without Playwright scrolling it into view.
       await opener.evaluate(button => (button as HTMLButtonElement).click());
       const dialog = page.getByRole('dialog', { name: 'New weekly class' });
       await expect(dialog).toBeVisible();
+      expect(await page.evaluate(() => getComputedStyle(document.documentElement).scrollbarGutter), 'the root keeps its gutter').toBe('stable');
       const dialogBox = (await dialog.boundingBox())!;
       if (size.width === 360) expect(dialogBox.width).toBe(size.width);
       else expect(dialogBox.x + dialogBox.width / 2).toBeCloseTo(size.width / 2, 0);

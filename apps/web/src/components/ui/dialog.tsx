@@ -12,17 +12,20 @@ const CancelContext = createContext<(() => void) | undefined>(undefined);
 let pageScrollLocks = 0;
 let restorePageScroll: (() => void) | undefined;
 
-function lockPageScroll() {
+/** Counted lock on the page's scroll: the first lock saves the root styles and the last release restores them. */
+export function lockPageScroll() {
   if (pageScrollLocks++ === 0) {
     const { scrollX, scrollY } = window;
     const { style } = document.documentElement;
+    // Reserve the scrollbar's gutter only when the page had a scrollbar, so a short page doesn't shift.
+    const hadScrollbar = window.innerWidth - document.documentElement.clientWidth > 0;
     // A shorthand can read as empty when only one axis has an inline value.
     const overflowProperties = style.overflow ? ['overflow'] : ['overflow', 'overflow-x', 'overflow-y'];
     const properties = [...overflowProperties, 'scrollbar-gutter'].map(name => ({
       name, value: style.getPropertyValue(name), priority: style.getPropertyPriority(name),
     }));
     style.setProperty('overflow', 'hidden');
-    style.setProperty('scrollbar-gutter', 'stable');
+    if (hadScrollbar) style.setProperty('scrollbar-gutter', 'stable');
     restorePageScroll = () => {
       for (const { name, value, priority } of properties) style.setProperty(name, value, priority);
       window.scrollTo(scrollX, scrollY);
@@ -38,10 +41,15 @@ function lockPageScroll() {
 
 const actionsEndingBody = new WeakMap<Element, HTMLDivElement>();
 
+const isHidden = (element: Element) => element.hasAttribute('hidden') || getComputedStyle(element).display === 'none';
+
 function endsDialogBody(actions: HTMLDivElement, body: Element) {
+  // A hidden bar, or a bar inside a hidden wrapper, ends nothing the user sees.
+  for (let node: Element | null = actions; node && node !== body; node = node.parentElement) if (isHidden(node)) return false;
   for (let node: Element | null = actions; node && node !== body; node = node.parentElement) {
     for (let sibling = node.nextElementSibling; sibling; sibling = sibling.nextElementSibling) {
-      if (!sibling.hasAttribute('hidden') && getComputedStyle(sibling).display !== 'none') return false;
+      // A nested dialog is in the top layer, not part of this body's flow.
+      if (sibling.tagName !== 'DIALOG' && !isHidden(sibling)) return false;
     }
     if (node !== actions) {
       const { paddingBottom, marginBottom } = getComputedStyle(node);
@@ -76,8 +84,10 @@ export function DialogActions({ children, className }: { children: ReactNode; cl
     update();
     const observer = new MutationObserver(update);
     observer.observe(body, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden', 'style', 'class'] });
-    return () => { observer.disconnect(); clearBodyEnd(); };
-  });
+    // A breakpoint class can show or hide trailing content without any DOM change.
+    window.addEventListener('resize', update);
+    return () => { observer.disconnect(); window.removeEventListener('resize', update); clearBodyEnd(); };
+  }, []);
   return <div ref={ref} data-dialog-actions className={cn('sticky bottom-0 z-10 flex flex-col gap-3 border-t border-border bg-background py-3 [&[data-dialog-actions-at-end]]:pb-7 sm:flex-row sm:flex-wrap sm:[&[data-dialog-actions-at-end]]:pb-9', className)}>{children}</div>;
 }
 /** A Cancel or Close button that asks through the dialog's guarded dismissal, so edits are not discarded silently. */
@@ -108,6 +118,8 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
   const lastFocused = useRef<HTMLElement | null>(null);
   const resume = useRef<{ focused: HTMLElement | null; positions: { element: HTMLElement; top: number; left: number }[] } | undefined>(undefined);
   const releasePageScroll = useRef<(() => void) | undefined>(undefined);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const [busy, setBusy] = useState(0), [confirm, setConfirm] = useState(false);
   const dirty = useRef(new Set<HTMLElement>());
   function saved(form?: HTMLFormElement) {
@@ -162,11 +174,30 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
   useLayoutEffect(() => {
     const dialog = ref.current;
     if (!dialog || suspended) return;
+    // The browser can close the dialog on its own (a second Escape, Android back). Release the page lock then.
+    // The cleanup runs before this component's own close() calls on suspend and unmount, so those don't land here.
+    const closed = () => {
+      if (dialog.hasAttribute('open')) return;
+      releasePageScroll.current?.();
+      releasePageScroll.current = undefined;
+      onCloseRef.current();
+    };
+    dialog.addEventListener('close', closed);
+    return () => dialog.removeEventListener('close', closed);
+  }, [suspended]);
+  useLayoutEffect(() => {
+    const dialog = ref.current;
+    if (!dialog || suspended) return;
     // The reserved root gutter also narrows the top layer. Keep the modal's
     // width and alignment relative to the full viewport.
     const fitViewport = () => {
-      const gutter = window.innerWidth - document.documentElement.getBoundingClientRect().width;
-      dialog.style.setProperty('--dialog-scrollbar-gutter', `${Math.max(0, gutter)}px`);
+      const rect = document.documentElement.getBoundingClientRect();
+      const gutter = Math.max(0, window.innerWidth - rect.width);
+      // The root scrollbar sits on the left in a right-to-left page.
+      const onLeft = rect.left > 0;
+      dialog.style.setProperty('--dialog-scrollbar-gutter', `${gutter}px`);
+      dialog.style.setProperty('--dialog-gutter-left', `${onLeft ? gutter : 0}px`);
+      dialog.style.setProperty('--dialog-gutter-right', `${onLeft ? 0 : gutter}px`);
     };
     fitViewport();
     window.addEventListener('resize', fitViewport);
@@ -191,7 +222,7 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
     onPointerDown={event => { startedOutside.current = event.target === event.currentTarget && outside(event.clientX, event.clientY); }}
     onClick={event => { if (event.target === event.currentTarget && startedOutside.current && outside(event.clientX, event.clientY)) requestClose(); startedOutside.current = false; }}
     onChangeCapture={event => { if (event.target instanceof HTMLElement) dirty.current.add(event.target); }}
-    className={cn('m-0 h-dvh max-h-none w-[calc(100%+var(--dialog-scrollbar-gutter,0px))] max-w-none [inset-inline-end:calc(-1*var(--dialog-scrollbar-gutter,0px))] overflow-hidden overscroll-contain border-0 [&[open]]:flex [&[open]]:flex-col bg-background p-0 text-foreground', userNames, 'backdrop:bg-foreground/40',
+    className={cn('m-0 h-dvh max-h-none w-[calc(100%+var(--dialog-scrollbar-gutter,0px))] max-w-none [left:calc(-1*var(--dialog-gutter-left,0px))] [right:calc(-1*var(--dialog-gutter-right,0px))] overflow-hidden overscroll-contain border-0 [&[open]]:flex [&[open]]:flex-col bg-background p-0 text-foreground', userNames, 'backdrop:bg-foreground/40',
       'sm:m-auto sm:h-fit sm:max-h-[90dvh] sm:w-[calc(100%+var(--dialog-scrollbar-gutter,0px)-2rem)] sm:rounded-xl sm:border sm:border-border sm:shadow-xl',
       size === 'wide' ? 'sm:max-w-4xl' : 'sm:max-w-2xl', className)}>
     <div className="flex min-h-0 w-full flex-1 flex-col">
