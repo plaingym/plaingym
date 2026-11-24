@@ -2,7 +2,7 @@
 import { createHash, createHmac, hkdfSync, randomBytes, timingSafeEqual } from 'node:crypto';
 import { and, asc, desc, eq, exists, gt, inArray, isNotNull, isNull, like, lt, lte, notExists, or, type SQL } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
-import { authVerification, authUser, authAccount, databaseCode, householdUsers, type Transaction } from '@plaingym/db';
+import { authVerification, authUser, authAccount, databaseCode, householdUsers, staffRoles, type Transaction } from '@plaingym/db';
 import { scopedDatabase, systemDatabase } from '@plaingym/db/client';
 import { AppError, type Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
@@ -152,6 +152,16 @@ export function createPortalInvitationStore(database = systemDatabase) {
     async loginEmails(gymId: string, householdId: string) {
       return forGym(gymId, tx => tx.select({ id: householdUsers.id, email: authUser.email }).from(householdUsers)
         .innerJoin(authUser, eq(authUser.id, householdUsers.userId)).where(eq(householdUsers.householdId, householdId)));
+    },
+    /** Whether `email` belongs to a staff login in this gym. */
+    async staffEmail(gymId: string, email: string): Promise<boolean> {
+      assertNoTransaction('auth.staffEmail');
+      const normalized = email.trim().toLowerCase();
+      if (!normalized) return false;
+      const [row] = await forGym(gymId, tx => tx.select({ id: staffRoles.id }).from(staffRoles)
+        .innerJoin(authUser, eq(authUser.id, staffRoles.userId))
+        .where(and(eq(staffRoles.gymId, gymId), eq(authUser.email, normalized))).limit(1));
+      return Boolean(row);
     },
     /** The household's unexpired invitations with the invitee's login email, newest first. Gym-scoped and for one household:
      * the caller is a staff member authorized for that household. Tokens are stored hashed and never returned. */

@@ -40,8 +40,15 @@ export function awaitingConfirmationCondition(tx: Transaction, gymId: string) {
 }
 
 const record = (row: typeof householdUsers.$inferSelect) => householdUserSchema.parse({ id: row.id, householdId: row.householdId, userId: row.userId, scope: row.scope, memberId: row.memberId, createdAt: row.createdAt.toISOString() });
-export function createHouseholdUsersService(options: { scope?: typeof forGym; clock?: Clock; loginEmails?: ReturnType<typeof createPortalInvitationStore>['loginEmails'] } = {}) {
+export function createHouseholdUsersService(options: {
+  scope?: typeof forGym;
+  clock?: Clock;
+  loginEmails?: ReturnType<typeof createPortalInvitationStore>['loginEmails'];
+  staffEmail?: ReturnType<typeof createPortalInvitationStore>['staffEmail'];
+} = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
+  const store = options.loginEmails && options.staffEmail ? undefined : createPortalInvitationStore();
+  const staffEmail = options.staffEmail ?? store!.staffEmail;
   const audit = (tx: Parameters<Parameters<typeof forGym>[1]>[0], context: MutationContext, action: string, id: string) => writeAudit(tx, {
     gymId: context.gymId, actorKind: context.actor.kind, ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
     action, targetType: 'household_user', targetId: id, occurredAt: clock.now(),
@@ -70,19 +77,21 @@ export function createHouseholdUsersService(options: { scope?: typeof forGym; cl
       });
     },
     async inviteRefused(gymId: string, householdId: string): Promise<{ reason: 'staff_identity' } | null> {
-      return scope(gymId, async tx => {
+      const email = await scope(gymId, async tx => {
         const [home] = await tx.select({ email: households.email }).from(households).where(eq(households.id, householdId));
         if (!home?.email?.trim()) return null;
         const [latest] = await tx.select({ action: auditEvents.action }).from(auditEvents)
           .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.targetType, 'household'), eq(auditEvents.targetId, householdId),
-            inArray(auditEvents.action, ['household_user.invite_refused', 'household_user.invited', 'household.email_changed']),
+            inArray(auditEvents.action, ['household_user.invite_refused', 'household_user.invited']),
             notExists(tx.select({ id: householdUsers.id }).from(householdUsers)
               .where(and(eq(householdUsers.householdId, householdId), eq(householdUsers.scope, 'payer'))))))
           .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
-        return latest?.action === 'household_user.invite_refused' ? { reason: 'staff_identity' } : null;
+        return latest?.action === 'household_user.invite_refused' ? home.email : null;
       });
+      if (!email) return null;
+      return await staffEmail(gymId, email) ? { reason: 'staff_identity' } : null;
     },
-    loginEmails: options.loginEmails ?? createPortalInvitationStore().loginEmails,
+    loginEmails: options.loginEmails ?? store!.loginEmails,
     async create(context: MutationContext & { timezone?: string }, householdId: string, raw: CreateHouseholdUserRequest) {
       const input = createHouseholdUserRequestSchema.parse(raw);
       return scope(context.gymId, async tx => {

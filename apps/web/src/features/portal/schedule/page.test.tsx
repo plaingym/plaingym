@@ -326,6 +326,77 @@ describe('portal schedule page', () => {
       expect(scrolled).not.toHaveBeenCalled();
     } finally { Element.prototype.scrollIntoView = original; }
   });
+  it('closes the dialog without refocusing an alert already shown when a schedule refetch fails', async () => {
+    client.schedule.mockResolvedValue(answer([session]));
+    client.book.mockRejectedValueOnce(new ApiError(409, 'request_failed'));
+    const scrolled = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrolled;
+    try {
+      const user = userEvent.setup();
+      const { cache } = page();
+      const dialog = await openClass(user);
+      await user.click(dialog.getByRole('button', { name: 'Book Fundamentals for Pat Parent' }));
+      await dialog.findByText(/This change isn't available any more/);
+      await waitFor(() => expect(document.activeElement).toBe(dialog.getByRole('alert')));
+      dialog.getByRole('button', { name: 'Close' }).focus();
+      scrolled.mockClear();
+      client.schedule.mockRejectedValueOnce(new Error('Offline'));
+      await act(async () => cache.invalidateQueries({ predicate: query => query.queryKey.includes('schedule') }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      await screen.findByText("We couldn't load the schedule. Please try again.");
+      const refusalAlert = screen.getAllByRole('alert').find(node => /This change isn't available any more/.test(node.textContent ?? ''));
+      expect(refusalAlert).toBeDefined();
+      expect(document.activeElement).not.toBe(refusalAlert);
+      expect(scrolled).not.toHaveBeenCalled();
+    } finally { Element.prototype.scrollIntoView = original; }
+  });
+  it('closes the dialog without refocusing an alert already shown when the week rolls over', async () => {
+    vi.useFakeTimers();
+    const scrolled = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrolled;
+    try {
+      vi.setSystemTime(new Date('2026-11-01T23:59:00Z'));
+      const sundaySession = { ...session, startsAt: '2026-11-01T23:59:30.000Z', endsAt: '2026-11-02T00:30:00.000Z', cancelBefore: '2026-11-01T23:00:00.000Z' };
+      client.schedule.mockResolvedValue(answer([sundaySession]));
+      client.book.mockRejectedValueOnce(new ApiError(409, 'request_failed'));
+      view(<PortalSchedulePage client={client as unknown as PortalClient} />);
+      await act(() => vi.advanceTimersByTimeAsync(50));
+      fireEvent.click(screen.getByRole('button', cardName('Fundamentals')));
+      const dialog = within(screen.getByRole('dialog', { name: 'Fundamentals' }));
+      fireEvent.click(dialog.getByRole('button', { name: 'Book Fundamentals for Pat Parent' }));
+      await act(() => vi.advanceTimersByTimeAsync(50));
+      expect(dialog.getByRole('alert').textContent).toMatch(/This change isn't available any more/);
+      dialog.getByRole('button', { name: 'Close' }).focus();
+      scrolled.mockClear();
+      client.schedule.mockResolvedValue(answer([]));
+      await act(() => vi.advanceTimersByTimeAsync(60_000));
+      expect(screen.getByText('Week of Monday, November 2')).toBeDefined();
+      expect(screen.queryByRole('dialog')).toBeNull();
+      const pageAlert = screen.getByRole('alert');
+      expect(pageAlert.textContent).toMatch(/This change isn't available any more/);
+      expect(document.activeElement).not.toBe(pageAlert);
+      expect(scrolled).not.toHaveBeenCalled();
+    } finally { Element.prototype.scrollIntoView = original; vi.useRealTimers(); }
+  });
+  it('still refocuses the page-level alert when a later successful refetch drops the class', async () => {
+    client.schedule.mockResolvedValue(answer([session]));
+    client.book.mockRejectedValueOnce(new ApiError(409, 'request_failed'));
+    const user = userEvent.setup();
+    const { cache } = page();
+    const dialog = await openClass(user);
+    await user.click(dialog.getByRole('button', { name: 'Book Fundamentals for Pat Parent' }));
+    await dialog.findByText(/This change isn't available any more/);
+    await waitFor(() => expect(document.activeElement).toBe(dialog.getByRole('alert')));
+    dialog.getByRole('button', { name: 'Close' }).focus();
+    client.schedule.mockResolvedValue(answer([]));
+    await act(async () => cache.invalidateQueries({ predicate: query => query.queryKey.includes('schedule') }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/This change isn't available any more/);
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+  });
   it('omits unknown waitlist positions in the booking and confirmation', async () => {
     const waiting = { ...booking, memberId: parent, status: 'waitlisted', queueRank: null };
     client.schedule.mockResolvedValue(answer([{ ...session, bookings: [waiting] }, { ...session, id: 'full', name: 'Full class', placesLeft: 0 }]));

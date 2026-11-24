@@ -141,7 +141,10 @@ export function PortalSchedulePage({ client = portalClient, now = currentTime }:
   const session = selection?.weekStart === range.start && selection.memberId === memberId && !schedule.isError
     ? days.flatMap(day => day.items).find(item => item.id === selection.id)
     : undefined;
-  if (selection && !session) { setSelection(undefined); setRevealed(undefined); }
+  if (selection && !session) {
+    setSelection(undefined);
+    if (selection.weekStart === range.start && selection.memberId === memberId && schedule.isSuccess) setRevealed(undefined);
+  }
   if (!context.data || !members.data) return context.isPending || members.isPending || scope.settling ? <LoadingState />
     : <ErrorState message={text('error')} onRetry={() => { void context.refetch(); void members.refetch(); }} />;
   const actionFor = (item: PortalScheduleSession): SessionAction => member ? sessionAction(item, member.id, current) : { kind: 'started' };

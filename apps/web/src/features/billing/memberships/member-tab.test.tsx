@@ -521,6 +521,108 @@ it('keeps Cancel membership disabled until the reload after a changed membership
   await waitFor(() => expect(client.call).toHaveBeenNthCalledWith(2, 'cancelMembership', { revision: 2 }, { membershipId: membership.id }));
 });
 it.each([
+  { reason: 'membership_status', message: "This membership's status has changed. The tab now shows its current status.", closes: true },
+  { reason: 'membership_cancelled', message: "This membership has been cancelled, so it can't be changed.", closes: true },
+  { reason: 'household_billing_date', message: "The household's next billing date has changed. The form now shows the new date; check it and assign again.", closes: false },
+  { reason: 'household_join_date', message: 'This household has no other active memberships, so billing starts on the start date. The form now shows it; check it and assign again.', closes: false },
+] as const)('keeps buttons disabled after $reason until the member rows reload resolves, then retries with the reloaded revision', async ({ reason, message, closes }) => {
+  const user = userEvent.setup();
+  const client = start('admin');
+  await user.click(await screen.findByRole('button', { name: 'Cancel membership' }));
+  const refreshed = Promise.withResolvers<Membership[]>();
+  vi.mocked(client.memberships).mockImplementation(query => query.memberId ? refreshed.promise : Promise.resolve([{ ...membership, revision: 2 }]));
+  vi.mocked(client.call).mockRejectedValueOnce(new ApiError(409, 'conflict', [reason]));
+  await user.click(screen.getByRole('button', { name: 'Confirm cancellation' }));
+  expect(await screen.findByText(message)).toBeDefined();
+  const cancelButton = screen.getByRole('button', { name: 'Cancel membership' });
+  expect(cancelButton.matches(':disabled')).toBe(true);
+  expect(screen.queryByRole('button', { name: 'Confirm cancellation' }) === null).toBe(closes);
+  await user.click(cancelButton);
+  expect(client.call).toHaveBeenCalledTimes(1);
+  refreshed.resolve([{ ...membership, revision: 2 }]);
+  await waitFor(() => expect(cancelButton.matches(':disabled')).toBe(false));
+  if (closes) await user.click(cancelButton);
+  const confirmButton = screen.getByRole('button', { name: 'Confirm cancellation' });
+  expect(confirmButton.matches(':disabled')).toBe(false);
+  await user.click(confirmButton);
+  await waitFor(() => expect(client.call).toHaveBeenNthCalledWith(2, 'cancelMembership', { revision: 2 }, { membershipId: membership.id }));
+});
+it.each([
+  { reason: 'household_billing_date', message: "The household's next billing date has changed. The form now shows the new date; check it and assign again.",
+    reloaded: [{ ...membership, nextDueOn: '2026-11-02', revision: 2 }], expectedDue: '2026-11-02' },
+  { reason: 'household_join_date', message: 'This household has no other active memberships, so billing starts on the start date. The form now shows it; check it and assign again.',
+    reloaded: [{ ...membership, status: 'cancelled' as const, cancelledAt: createdAt, revision: 2 }], expectedDue: '2026-10-26' },
+])('keeps the assignment form disabled after $reason until the member rows reload resolves', async ({ reason, message, reloaded, expectedDue }) => {
+  const user = userEvent.setup();
+  const client = start('admin');
+  const assignButton = await screen.findByRole('button', { name: 'Assign a plan' });
+  const form = within(assignButton.closest('form')!);
+  const refreshed = Promise.withResolvers<Membership[]>();
+  vi.mocked(client.memberships).mockImplementation(query => query.memberId ? refreshed.promise : Promise.resolve(reloaded));
+  vi.mocked(client.call).mockRejectedValueOnce(new ApiError(409, 'conflict', [reason]));
+  await user.click(assignButton);
+  expect(await screen.findByText(message)).toBeDefined();
+  const savingButton = form.getByRole('button', { name: /Saving/ });
+  expect(savingButton.matches(':disabled')).toBe(true);
+  await user.click(savingButton);
+  expect(client.call).toHaveBeenCalledTimes(1);
+  refreshed.resolve(reloaded);
+  const readyButton = await form.findByRole('button', { name: 'Assign a plan' });
+  await waitFor(() => expect(readyButton.matches(':disabled')).toBe(false));
+  await waitFor(() => expect(form.getByLabelText<HTMLInputElement>('Next billing date').value).toBe(expectedDue));
+  await user.click(readyButton);
+  await waitFor(() => expect(client.call).toHaveBeenNthCalledWith(2, 'assignMembership', expect.objectContaining({ nextDueOn: expectedDue }), {}));
+});
+it('keeps the assignment form disabled after a billing date refusal until the household billing reload resolves', async () => {
+  const user = userEvent.setup();
+  const client = start('admin');
+  const assignButton = await screen.findByRole('button', { name: 'Assign a plan' });
+  const form = within(assignButton.closest('form')!);
+  const reloaded = [{ ...membership, nextDueOn: '2026-11-02', revision: 2 }];
+  const household = Promise.withResolvers<Membership[]>();
+  vi.mocked(client.memberships).mockImplementation(query => query.memberId ? Promise.resolve(reloaded) : household.promise);
+  vi.mocked(client.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['household_billing_date']));
+  await user.click(assignButton);
+  expect(await screen.findByText("The household's next billing date has changed. The form now shows the new date; check it and assign again.")).toBeDefined();
+  await waitFor(() => expect(client.memberships).toHaveBeenCalledWith({ memberId: membership.memberId }));
+  const savingButton = form.getByRole('button', { name: /Saving/ });
+  expect(savingButton.matches(':disabled')).toBe(true);
+  await user.click(savingButton);
+  expect(client.call).toHaveBeenCalledTimes(1);
+  household.resolve(reloaded);
+  const readyButton = await form.findByRole('button', { name: 'Assign a plan' });
+  await waitFor(() => expect(readyButton.matches(':disabled')).toBe(false));
+  expect(form.getByLabelText<HTMLInputElement>('Next billing date').value).toBe('2026-11-02');
+  await user.click(readyButton);
+  await waitFor(() => expect(client.call).toHaveBeenNthCalledWith(2, 'assignMembership', expect.objectContaining({ nextDueOn: '2026-11-02' }), {}));
+});
+it('re-enables buttons after a changed membership once the member rows reload even when the members query never resolves', async () => {
+  const user = userEvent.setup();
+  const cache = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  const profileKey = ['members', id(1), membership.memberId];
+  cache.setQueryData(profileKey, { status: 'active', revision: 1 });
+  const memberRefetch = vi.fn(() => new Promise<never>(() => {}));
+  const observer = new QueryObserver(cache, { queryKey: profileKey, queryFn: memberRefetch });
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    const client = start('admin', { cache });
+    await user.click(await screen.findByRole('button', { name: 'Cancel membership' }));
+    const refreshed = Promise.withResolvers<Membership[]>();
+    vi.mocked(client.memberships).mockImplementation(query => query.memberId ? refreshed.promise : new Promise<never>(() => {}));
+    vi.mocked(client.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['membership_changed']));
+    await user.click(screen.getByRole('button', { name: 'Confirm cancellation' }));
+    expect(await screen.findByText('This record or the household billing date changed. Reload and review before saving.')).toBeDefined();
+    const cancelButton = screen.getByRole('button', { name: 'Cancel membership' });
+    expect(cancelButton.matches(':disabled')).toBe(true);
+    await waitFor(() => expect(memberRefetch).toHaveBeenCalledOnce());
+    refreshed.resolve([{ ...membership, revision: 2 }]);
+    await waitFor(() => expect(cancelButton.matches(':disabled')).toBe(false));
+    await user.click(cancelButton);
+    await user.click(screen.getByRole('button', { name: 'Confirm cancellation' }));
+    await waitFor(() => expect(client.call).toHaveBeenNthCalledWith(2, 'cancelMembership', { revision: 2 }, { membershipId: membership.id }));
+  } finally { unsubscribe(); cache.clear(); }
+});
+it.each([
   { button: 'Resume', status: 'frozen', field: 'Next billing date', selector: 'input[name="date"]', value: '2026-12-01', operation: 'resumeMembership' },
   { button: 'Change price', status: 'active', field: /^Price/, selector: 'input[name="price"]', value: '50', operation: 'updateMembership' },
 ] as const)('closes a refused $button form while the cancelled membership reloads', async ({ button, status, field, selector, value, operation }) => {
@@ -535,7 +637,7 @@ it.each([
   expect(await screen.findByText("This membership has been cancelled, so it can't be changed.")).toBeDefined();
   expect(client.call).toHaveBeenCalledWith(operation, expect.objectContaining({ revision: 1 }), { membershipId: membership.id });
   expect(screen.queryByLabelText(field, { selector })).toBeNull();
-  expect(screen.getByRole('button', { name: button })).toBeDefined();
+  expect(screen.getByRole('button', { name: button }).matches(':disabled')).toBe(true);
   refreshed.resolve([{ ...membership, status: 'cancelled', cancelledAt: createdAt, revision: 2 }]);
   expect(await screen.findByText(/^Cancelled/)).toBeDefined();
   expect(screen.queryByRole('button', { name: button })).toBeNull();

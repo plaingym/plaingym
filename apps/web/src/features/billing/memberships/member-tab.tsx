@@ -58,6 +58,14 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
   async function reload() {
     await Promise.all([cache.invalidateQueries({ queryKey: key }), cache.invalidateQueries({ queryKey: ['members', gymId] })]);
   }
+  /** Reloads this member's rows (and, with `setup`, the assignment form's household dates) while the rest reloads in the background. */
+  async function reloadRows(setup = false) {
+    const own = (queryKey: readonly unknown[]) => queryKey[key.length] === memberId
+      && (queryKey.length === key.length + 1 || (setup && queryKey.length === key.length + 2 && queryKey[key.length + 1] === 'assignment'));
+    void cache.invalidateQueries({ queryKey: ['members', gymId] });
+    void cache.invalidateQueries({ queryKey: key, predicate: query => !own(query.queryKey) });
+    await cache.invalidateQueries({ queryKey: key, predicate: query => own(query.queryKey) });
+  }
   async function mutate(operation: Action | 'assignMembership', input: unknown, membershipId?: string, refused?: (reason: string, refresh?: PlanRefresh) => void) {
     setBusy(true); setMessage(''); setReminder(false);
     try {
@@ -77,7 +85,6 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
         const code = error.status === 409 && error.reason.find(reason => Object.hasOwn(refusalText, reason));
         if (code) {
           setMessage(text(refusalText[code]!));
-          if (staleRefusals.has(code)) void reload();
           let refresh: PlanRefresh | undefined;
           if (code === 'plan_inactive') {
             const before = cache.getQueryData<Plan[]>(plansKey);
@@ -86,12 +93,13 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
             if (before && after) refresh = { before, after };
           }
           refused?.(code, refresh);
+          if (staleRefusals.has(code)) await reloadRows(code === 'household_billing_date' || code === 'household_join_date');
           return false;
         }
         if (error.status === 409 && error.reason.includes('membership_changed')) {
           setMessage(saveError(error));
           refused?.('membership_changed');
-          await reload();
+          await reloadRows();
           return false;
         }
       }

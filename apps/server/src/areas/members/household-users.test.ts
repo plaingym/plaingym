@@ -2,7 +2,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
-import { householdUsers, auditEvents, uuidv7, writeAudit } from '@plaingym/db';
+import { householdUsers, households, auditEvents, uuidv7, writeAudit } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { staffRoles, type StaffRole } from '@plaingym/shared';
@@ -24,9 +24,15 @@ import { createPortalInvitationService } from './household-users.invitations.js'
 import { createMembersService } from './members.js';
 
 const db = useTestDatabase(), factory = createFactories(db), clock = new TestClock('2026-10-28T12:00:00Z');
-const gym = uuidv7(), otherGym = uuidv7(), context = createMemberHouseholdContext(db.forGym), service = createHouseholdUsersService({ scope: db.forGym, clock, loginEmails: createPortalInvitationStore(() => db.system.db).loginEmails });
+const store = createPortalInvitationStore(() => db.system.db);
+const gym = uuidv7(), otherGym = uuidv7(), context = createMemberHouseholdContext(db.forGym), service = createHouseholdUsersService({ scope: db.forGym, clock, loginEmails: store.loginEmails, staffEmail: store.staffEmail });
 let staffUser: string;
 beforeAll(async () => { await factory('gyms', gym); await factory('gyms', otherGym); staffUser = (await factory('authUser', gym)).id; });
+async function createStaffLogin(gymId: string, email: string) {
+  const user = await factory('authUser', gymId, { email: email.trim().toLowerCase() });
+  await factory('staffRoles', gymId, { userId: user.id, role: 'coach' });
+  return user;
+}
 async function fixture() {
   const household = await factory('households', gym), otherHousehold = await factory('households', gym);
   const member = await factory('members', gym, { householdId: household.id }), sibling = await factory('members', gym, { householdId: household.id }), foreign = await factory('members', gym, { householdId: otherHousehold.id });
@@ -109,6 +115,7 @@ describe('household login routes', () => {
     expect(await logins(erased.id)).not.toHaveProperty('awaitingConfirmation');
   });
   it('shows the latest household invitation refusal until a successful invitation or payer login', async () => {
+    await createStaffLogin(gym, 'staff@example.invalid');
     const household = await factory('households', gym, { email: 'staff@example.invalid' }), householdId = household.id;
     const path = `/api/households/${householdId}/portal-logins`;
     const frontDesk = staff('front_desk'), server = app(frontDesk);
@@ -151,6 +158,7 @@ describe('household login routes', () => {
   it('drops the join refusal hint when the household is erased or its email changes, while keeping it for phone-only or case-only updates', async () => {
     const localClock = new TestClock(clock.now()), membersService = createMembersService({ scope: db.forGym, clock: localClock });
     const actor = { gymId: gym, actor: { kind: 'system' as const } };
+    await createStaffLogin(gym, 'Before@Example.invalid');
     const home = await factory('households', gym, { email: 'Before@Example.invalid' });
     const erased = await factory('households', gym, { email: null });
     const refuse = (targetId: string) => db.forGym(gym, tx => writeAudit(tx, {
@@ -172,7 +180,7 @@ describe('household login routes', () => {
     expect(await service.inviteRefused(gym, home.id)).toEqual({ reason: 'staff_identity' });
 
     localClock.advance(1000);
-    await membersService.updateHousehold(actor, home.id, { revision: sameEmailCase.revision, email: 'after@example.invalid' });
+    const nonStaff = await membersService.updateHousehold(actor, home.id, { revision: sameEmailCase.revision, email: 'after@example.invalid' });
     expect(await service.inviteRefused(gym, home.id)).toBeNull();
 
     const emailAudits = await db.forGym(gym, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, home.id)));
@@ -180,6 +188,33 @@ describe('household login routes', () => {
     expect(emailChanges).toHaveLength(1);
     expect(emailChanges[0]).toMatchObject({ targetType: 'household', targetId: home.id, before: null, after: null });
     expect(JSON.stringify(emailChanges[0])).not.toMatch(/before@example\.invalid|after@example\.invalid/i);
+
+    localClock.advance(1000);
+    const backToStaff = await membersService.updateHousehold(actor, home.id, { revision: nonStaff.revision, email: 'Before@Example.invalid' });
+    expect(await service.inviteRefused(gym, home.id)).toEqual({ reason: 'staff_identity' });
+
+    await db.forGym(gym, tx => tx.update(households).set({ email: null }).where(eq(households.id, home.id)));
+    expect(await service.inviteRefused(gym, home.id)).toBeNull();
+    localClock.advance(1000);
+    await membersService.updateHousehold(actor, home.id, { revision: backToStaff.revision, email: 'before@example.invalid' });
+    expect(await service.inviteRefused(gym, home.id)).toEqual({ reason: 'staff_identity' });
+  });
+  it('shows the join refusal hint only while the household address is a staff login in this gym', async () => {
+    const refuse = (householdId: string) => db.forGym(gym, tx => writeAudit(tx, {
+      gymId: gym, actorKind: 'system', action: 'household_user.invite_refused', targetType: 'household', targetId: householdId, occurredAt: clock.now(),
+    }));
+    await factory('authUser', gym, { email: 'non-staff@example.invalid' });
+    const nonStaffHome = await factory('households', gym, { email: 'non-staff@example.invalid' });
+    await refuse(nonStaffHome.id);
+    expect(await service.inviteRefused(gym, nonStaffHome.id)).toBeNull();
+
+    await createStaffLogin(otherGym, 'other-gym-staff@example.invalid');
+    const foreignStaffHome = await factory('households', gym, { email: 'other-gym-staff@example.invalid' });
+    await refuse(foreignStaffHome.id);
+    expect(await service.inviteRefused(gym, foreignStaffHome.id)).toBeNull();
+    expect(await store.staffEmail(gym, 'other-gym-staff@example.invalid')).toBe(false);
+    expect(await store.staffEmail(otherGym, '  OTHER-GYM-STAFF@Example.invalid  ')).toBe(true);
+    expect(await store.staffEmail(otherGym, '   ')).toBe(false);
   });
   it('returns staff-only invitation refusal details and preserves the claim response', async () => {
     const manager = await factory('staffRoles', gym, { role: 'owner' });
