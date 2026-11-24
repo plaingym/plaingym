@@ -38,7 +38,7 @@ export interface BookingCancelNoticeOptions {
 
 /**
  * Tells one member that staff cancelled their booking, by the channels staff chose. Each channel rechecks, right before
- * its provider call, that the booking is still cancelled, the member is not erased, the channel's switch is on and the
+ * its provider call, that the class has not started, the booking is still cancelled, the member is not erased, the channel's switch is on and the
  * address or consented phone is still the one reserved. An accepted (or possibly accepted) channel is never sent again.
  */
 export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
@@ -47,14 +47,14 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
   const emails = createEmailDeliveries({ scope, clock }), texts = createSmsDeliveries({ scope, clock });
   const t = createTranslator({ 'bookings/bookings': messages });
 
-  /** The cancelled booking and its class, unless the member has been erased or booked that class again since. */
+  /** The cancelled booking and its class, unless the class has started, the member has been erased, or they booked that class again since. */
   async function loadIn(tx: Transaction, gymId: string, bookingId: string) {
     const [row] = await tx.select({ memberId: classBookings.memberId, sessionId: classBookings.sessionId, createdAt: classBookings.createdAt,
       name: classSessions.name, startsAt: classSessions.startsAt })
       .from(classBookings).innerJoin(classSessions, eq(classSessions.id, classBookings.sessionId))
       .innerJoin(members, eq(members.id, classBookings.memberId))
       .where(and(eq(classBookings.gymId, gymId), eq(classBookings.id, bookingId), eq(classBookings.status, 'cancelled'), isNull(members.anonymizedAt)));
-    if (!row) return undefined;
+    if (!row || row.startsAt <= clock.now()) return undefined;
     // Booking the class again adds a new row and leaves this one cancelled. Only the member's latest booking for the
     // class speaks for it, whatever that booking's status is now: a later booking (even one cancelled since, with or
     // without its own notice) supersedes this one. Creation time orders them; the time-ordered ID breaks a tie. The

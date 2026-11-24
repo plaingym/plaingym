@@ -4,7 +4,7 @@ import type { classSessions, classTags, classTemplates } from '../../../db/src/s
 import { canStaff, isRoutePermission } from '../permissions.js';
 import {
   classSessionListQuerySchema, classSessionSchema, classTagSchema, classTemplateSchema,
-  createClassSessionRequestSchema, createClassTemplateRequestSchema, scheduleContracts,
+  createClassSessionRequestSchema, createClassTemplateRequestSchema, restoreSessionResponseSchema, scheduleContracts,
   scheduleRevisionRequestSchema, updateClassSessionRequestSchema, updateClassTagRequestSchema,
   updateClassTemplateRequestSchema, updateSessionCapacityRequestSchema,
   type ClassSession, type ClassTag, type ClassTemplate,
@@ -50,6 +50,13 @@ describe('weekly templates and materialized sessions', () => {
       { memberIds: [id] }, { gymId: otherId }, { status: 'scheduled' }])
       expect(schema.safeParse({ revision: 1, ...extra }).success).toBe(false);
     for (const revision of [undefined, 0, 1.5, '1']) expect(schema.safeParse({ revision }).success).toBe(false);
+    const validSession = { ...session, id, templateId: null, createdAt, revision: 2, status: 'scheduled' as const, kind: 'class' as const, cancelBefore: '2026-11-01T00:00:00Z' };
+    expect(contract.response).toBe(restoreSessionResponseSchema);
+    expect(restoreSessionResponseSchema.parse({ data: validSession })).toEqual({ data: validSession });
+    expect(restoreSessionResponseSchema.parse({ data: validSession, restoredBookings: 0 })).toEqual({ data: validSession, restoredBookings: 0 });
+    expect(restoreSessionResponseSchema.parse({ data: validSession, restoredBookings: 2 })).toEqual({ data: validSession, restoredBookings: 2 });
+    for (const bad of [{ restoredBookings: -1 }, { restoredBookings: 1.5 }, { restoredBookings: null }, { restoredBookings: '0' }, { extra: true }])
+      expect(restoreSessionResponseSchema.safeParse({ data: validSession, ...bad }).success).toBe(false);
   });
   it('preserves local wall time and accepts the repeated DST hour as a positive duration', () => {
     // Kind defaults to a class on create.

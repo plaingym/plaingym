@@ -55,6 +55,7 @@
   "restoreEmail": "Email the members whose places come back",
   "restoreText": "Text the members whose places come back",
   "restored": "Class restored. The places its cancellation cancelled are back.",
+  "restoredNone": "Class restored. No places were waiting to come back; members need to book again.",
   "notCancelled": "This session isn't cancelled any more. No notice was queued.",
   "restoreStarted": "This session has started and can't be restored.",
   "saved": "Saved.",

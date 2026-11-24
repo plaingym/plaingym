@@ -52,7 +52,10 @@ export function createScheduleRoutes(service = createScheduleService()) {
     route({ ...contracts.cancelSession, request: { params: contracts.cancelSession.params, body: body(contracts.cancelSession.body) }, responses: response(contracts.cancelSession.response) },
       async (c) => c.json({ data: await service.changeSession(mutation(c), c.req.valid('param').id, 'cancel', c.req.valid('json')) }, 200)),
     route({ ...contracts.restoreSession, request: { params: contracts.restoreSession.params, body: body(contracts.restoreSession.body) }, responses: response(contracts.restoreSession.response) },
-      async (c) => c.json({ data: await service.restoreSession(mutation(c), c.req.valid('param').id, c.req.valid('json')) }, 200)),
+      async (c) => {
+        const { restoredBookings, ...data } = await service.restoreSession(mutation(c), c.req.valid('param').id, c.req.valid('json'));
+        return c.json({ data, restoredBookings }, 200);
+      }),
     route({ ...contracts.swapCoach, request: { params: contracts.swapCoach.params, body: body(contracts.swapCoach.body) }, responses: response(contracts.swapCoach.response) },
       async (c) => c.json({ data: await service.changeSession(mutation(c), c.req.valid('param').id, 'coach', c.req.valid('json')) }, 200)),
     route({ ...contracts.updateNotes, request: { params: contracts.updateNotes.params, body: body(contracts.updateNotes.body) }, responses: response(contracts.updateNotes.response) },

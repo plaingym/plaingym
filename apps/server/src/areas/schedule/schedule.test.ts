@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import { auditEvents, attendances, classBookings, classSessions, classTemplates, classSessionPrograms, classSessionTags, members, uuidv7, RevisionConflictError } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -423,7 +423,7 @@ describe('restoring a cancelled session', () => {
     expect(marked.E).toMatchObject({ status: 'cancelled', waitlistPosition: null, sessionCancelStatus: 'waitlisted', sessionCancelPosition: 2 });
     expect(marked.F).toMatchObject({ status: 'cancelled', cancelledAt: new Date('2026-02-25T00:00:00Z'), sessionCancelStatus: null });
     expect(await f.audits('booking.cancelled')).toHaveLength(5);
-    expect(await f.restore()).toMatchObject({ id: f.session.id, status: 'scheduled', revision: 3 });
+    expect(await f.restore()).toMatchObject({ id: f.session.id, status: 'scheduled', revision: 3, restoredBookings: 5 });
     const rows = await f.bookings();
     expect(f.booked(rows)).toEqual(['A', 'B', 'C']); expect(f.waitlist(rows)).toEqual(['D', 'E']);
     for (const name of ['A', 'B', 'C', 'D', 'E'] as const)
@@ -469,10 +469,25 @@ describe('restoring a cancelled session', () => {
     const empty = await factory('classSessions', f.gymId, { status: 'cancelled', startsAt: new Date('2026-03-02T18:00:00Z'), endsAt: new Date('2026-03-02T19:00:00Z') });
     await factory('classSessionPrograms', f.gymId, { sessionId: empty.id });
     const before = await f.bookings();
-    expect(await f.service.restoreSession(f.actor, empty.id, { revision: empty.revision, notify: true })).toMatchObject({ status: 'scheduled' });
+    expect(await f.service.restoreSession(f.actor, empty.id, { revision: empty.revision, notify: true })).toMatchObject({ status: 'scheduled', restoredBookings: 0 });
     expect(await f.bookings()).toEqual(before);
     expect(await f.audits('booking.restored')).toHaveLength(0);
     expect(f.enqueue).not.toHaveBeenCalled();
+  });
+  it('reports how many marked bookings came back, and 0 when none carried a cancellation marker', async () => {
+    const two = await roster();
+    await two.cancel();
+    await database.forGym(two.gymId, tx => tx.update(classBookings).set({ sessionCancelStatus: null, sessionCancelPosition: null })
+      .where(and(eq(classBookings.sessionId, two.session.id), inArray(classBookings.memberId, [two.ids.C, two.ids.D, two.ids.E]))));
+    expect(await two.restore()).toMatchObject({ status: 'scheduled', restoredBookings: 2 });
+    const unmarked = await roster();
+    await unmarked.cancel();
+    await database.forGym(unmarked.gymId, tx => tx.update(classBookings).set({ sessionCancelStatus: null, sessionCancelPosition: null })
+      .where(eq(classBookings.sessionId, unmarked.session.id)));
+    expect(await unmarked.restore({ notify: true })).toMatchObject({ status: 'scheduled', restoredBookings: 0 });
+    expect(Object.values(await unmarked.bookings()).every(row => row.status === 'cancelled')).toBe(true);
+    expect(await unmarked.audits('booking.restored')).toHaveLength(0);
+    expect(unmarked.enqueue).not.toHaveBeenCalled();
   });
   it('queues one notice for every restored member, by both channels unless staff chose one', async () => {
     const f = await roster();
@@ -555,7 +570,7 @@ describe('restoring a cancelled session', () => {
     expect((await service.getSession(gymA, session.id))).toMatchObject({ status: 'cancelled', revision: 2 });
     const restored = await request(server('coach'), 'POST', path, { revision: 2 });
     expect(restored.status).toBe(200);
-    expect(scheduleContracts.restoreSession.response.parse(await restored.json()).data).toMatchObject({ status: 'scheduled', revision: 3 });
+    expect(scheduleContracts.restoreSession.response.parse(await restored.json())).toMatchObject({ data: { status: 'scheduled', revision: 3 }, restoredBookings: 0 });
   });
 });
 describe('template capacity edits on upcoming sessions', () => {

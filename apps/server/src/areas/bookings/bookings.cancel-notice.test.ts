@@ -65,7 +65,9 @@ it.each(selections)('queues one job for %j and delivers only to the chosen chann
   const mail = f.email.messages[0], text = f.sms.messages[0];
   if (mail) {
     expect(mail.to).toBe('parent@example.test');
-    for (const value of ['Evening practice', '2026-11-10', '7:30 PM EST', 'Mia Rivera', 'Bring your own mat next week.']) expect(mail.text).toContain(value);
+    const body = 'A booking or waitlist place for Evening practice on 2026-11-10 at 7:30 PM EST has been cancelled by the gym.';
+    for (const value of [body, 'Mia Rivera', 'Bring your own mat next week.']) expect(mail.text).toContain(value);
+    expect(mail.html).toContain(body);
   }
   if (text) {
     expect(text.to).toBe(phone);
@@ -359,4 +361,61 @@ it('reads only its own gym booking', async () => {
   await f.delivery.sendCancelNotice(g.notices()[0]!.payload, f.gymId);
   expect(f.email.messages).toHaveLength(0); expect(f.sms.messages).toHaveLength(0);
   expect(g.email.messages).toHaveLength(0); expect(g.sms.messages).toHaveLength(0);
+});
+
+it.each(['at_start', 'after_start'] as const)('sends nothing and writes no delivery when the class is %s before the job runs', async timing => {
+  const f = await fixture(); await f.cancel(['email', 'sms']);
+  f.clock.set(timing === 'at_start' ? f.session.startsAt : new Date(f.session.startsAt.getTime() + 60_000));
+  await f.run();
+  expect(f.email.messages).toHaveLength(0); expect(f.sms.messages).toHaveLength(0);
+  expect(f.resolver.resolve).not.toHaveBeenCalled();
+  expect(await db.forGym(f.gymId, tx => tx.$count(emailDeliveries))).toBe(0);
+  expect(await db.forGym(f.gymId, tx => tx.$count(smsDeliveries))).toBe(0);
+});
+
+it('suppresses email and text at their guards when the class starts between the first read and the provider call', async () => {
+  const emailRun = await fixture(); await emailRun.cancel(['email']);
+  const guardedEmail = createBookingDelivery({ scope: db.forGym, clock: emailRun.clock, jobs: emailRun.jobs, mailer: async () => {
+    emailRun.clock.set(emailRun.session.startsAt);
+    return emailRun.email;
+  } });
+  await guardedEmail.sendCancelNotice(emailRun.notices()[0]!.payload, emailRun.gymId);
+  expect(emailRun.email.messages).toHaveLength(0);
+  expect(await db.forGym(emailRun.gymId, tx => tx.select({ state: emailDeliveries.state }).from(emailDeliveries))).toEqual([{ state: 'not_accepted' }]);
+
+  const smsGuard = await fixture(); await smsGuard.cancel(['sms']);
+  smsGuard.resolver.resolve.mockImplementationOnce(async id => {
+    smsGuard.clock.set(smsGuard.session.startsAt);
+    return { gymId: id, name: 'Cedar Gym', sms: smsGuard.sms };
+  });
+  await smsGuard.run();
+  expect(smsGuard.sms.messages).toHaveLength(0);
+  expect(await db.forGym(smsGuard.gymId, tx => tx.select({ state: smsDeliveries.state }).from(smsDeliveries))).toEqual([{ state: 'not_accepted' }]);
+  expect(await db.forGym(smsGuard.gymId, tx => tx.select().from(smsDailyUsage))).toEqual([]);
+
+  const smsLastCheck = await fixture(); await smsLastCheck.cancel(['sms']);
+  const real = createGymSettingsAccessor({ scope: db.forGym }); let pending = true;
+  const settings: GymSettingsAccessor = { async get(id) {
+    const value = await real.get(id);
+    if (pending && smsLastCheck.resolver.resolve.mock.calls.length) {
+      pending = false;
+      smsLastCheck.clock.set(smsLastCheck.session.startsAt);
+    }
+    return value;
+  } };
+  const lastCheckDelivery = createBookingDelivery({ scope: db.forGym, clock: smsLastCheck.clock, jobs: new FakeJobs(smsLastCheck.clock),
+    settings, mailer: async () => smsLastCheck.email,
+    sms: { resolver: smsLastCheck.resolver, phoneDigest: createSmsPhoneDigest('cancel-notice-test') } });
+  await lastCheckDelivery.sendCancelNotice(smsLastCheck.notices()[0]!.payload, smsLastCheck.gymId);
+  expect(pending).toBe(false);
+  expect(smsLastCheck.sms.messages).toHaveLength(0);
+  expect(await db.forGym(smsLastCheck.gymId, tx => tx.select({ state: smsDeliveries.state }).from(smsDeliveries))).toEqual([{ state: 'not_accepted' }]);
+  expect(await db.forGym(smsLastCheck.gymId, tx => tx.select().from(smsDailyUsage))).toEqual([]);
+});
+
+it('sends both channels as usual while the class is still ahead', async () => {
+  const f = await fixture(); await f.cancel(['email', 'sms']);
+  f.clock.set(new Date(f.session.startsAt.getTime() - 1));
+  await f.run();
+  expect(f.email.messages).toHaveLength(1); expect(f.sms.messages).toHaveLength(1);
 });

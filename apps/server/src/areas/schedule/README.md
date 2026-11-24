@@ -77,24 +77,29 @@ without changing the revision or queuing another notice. A cancellation after a 
 session's restore count to its notice (`round`), so it gets its own notice (see the announcements README).
 
 `POST /api/schedule/sessions/{id}/restore` (`schedule.manage`) brings a cancelled session that hasn't
-started back to `scheduled` and increments its internal `restore_count` (not in the response). It
-takes the revision, optional `notify: true` and optional `channels`, with the same rules as cancelling,
-and no note. Under the session row lock it brings back only the bookings the session's cancellation
-cancelled (those with a marker): first the ones that were booked, in booking order, each booked while
-the capacity allows (always when there is none) and otherwise waitlisted; then the old waitlist in its
-order. Waitlisted places take the session's highest position plus one. Each restored booking clears its
-cancellation time and marker and gets one `booking.restored` audit. A booking its member cancelled
-before the session was cancelled stays cancelled, as does a marked booking of a member erased while the
-class was cancelled or who already holds another place in the session; its marker is cleared too, so a
-cancellation's bookings come back at most once. A member whose membership changed meanwhile comes back
-like anyone else; only promotion from the waitlist checks eligibility, as always. A free place then promotes the waitlist as a capacity change does,
-with its `booking.promoted` audits and promotion notices. The session gets a `schedule.session.restored`
-audit with both snapshots. Refusals change nothing: a session that isn't cancelled is a 409 `conflict`
-with reason `not_cancelled`, one whose start time has been reached a 409 with reason `session_started`,
-and a stale revision the usual revision conflict. With notification, the same rule as cancelling
-applies (an owner, an admin or the session's coach), checked by the same helper; any coach may restore
-without it. When at least one booking came back, the "back on" notice job for those members commits
-with the restore.
+started back to `scheduled`, increments its internal `restore_count` (not in the response), and
+carries `restoredBookings` (the count of bookings brought back, booked or waitlisted; waitlist
+promotions afterward don't count). It takes the revision, optional `notify: true` and optional
+`channels`, with the same rules as cancelling, and no note. Under the session row lock it brings
+back only the bookings the session's cancellation cancelled (those with a marker): first the ones
+that were booked, in booking order, each booked while the capacity allows (always when there is
+none) and otherwise waitlisted; then the old waitlist in its order. Waitlisted places take the
+session's highest position plus one. Each restored booking clears its cancellation time and marker
+and gets one `booking.restored` audit. A booking its member cancelled before the session was
+cancelled stays cancelled, as does a marked booking of a member erased while the class was
+cancelled or who already holds another place in the session; its marker is cleared too, so a
+cancellation's bookings come back at most once. A session cancelled before the release that marks
+cancelled bookings has no markers, so it restores to `scheduled` with no bookings back, queues no
+notice, and reports `restoredBookings: 0` so members book again. A member whose membership changed
+meanwhile comes back like anyone else; only promotion from the waitlist checks eligibility, as
+always. A free place then promotes the waitlist as a capacity change does, with its
+`booking.promoted` audits and promotion notices. The session gets a `schedule.session.restored`
+audit with both snapshots. Refusals change nothing: a session that isn't cancelled is a 409
+`conflict` with reason `not_cancelled`, one whose start time has been reached a 409 with reason
+`session_started`, and a stale revision the usual revision conflict. With notification, the same
+rule as cancelling applies (an owner, an admin or the session's coach), checked by the same helper;
+any coach may restore without it. When at least one booking came back, the "back on" notice job for
+those members commits with the restore.
 
 The session dialog offers two unchecked options, Email and Text, each with the
 booked-plus-waitlisted count, when fresh panel counts are available and the actor may
@@ -102,8 +107,8 @@ notify. Staff can tick either or both; no text is sent unless Text is ticked. A 
 Text says texts go to each member's own phone when they agreed to notices texts, otherwise to
 their household's billing phone when it agreed to them, and only while Member
 texts is on in Settings → Go-live. With nobody booked or waitlisted, both are locked.
-Ticking either reveals the optional note, which appears in email only. The request sends `notify: true` with the
-ticked `channels`; with neither ticked it sends neither field. A failed roster refresh
+Ticking Email reveals the optional note, which appears in email only. The request sends `notify: true` with the
+ticked `channels`; with neither ticked it sends neither field, and without Email it sends no `note`. A failed roster refresh
 keeps the selected options and note, and waits for fresh counts before sending.
 Each notice lists the booked or waitlisted members its destination covers, except when
 one member receives it at their own email or consented phone. A household fallback
@@ -115,8 +120,8 @@ For a cancelled session that hasn't started, a user with `schedule.manage` sees 
 where the cancel form is: a paragraph on what restoring brings back, then, for a user who may notify,
 two unticked boxes (email and text the members whose places come back, the text box with the same
 hint), and a **Restore class** button. It posts the revision, plus `notify: true` and the ticked
-channels when either box is ticked. On success the dialog says the class is restored and its panels
-reload. A `session_started` refusal says the session can no longer be restored and hides the form; a
+channels when either box is ticked. On success the dialog says the class is restored—and that no places
+were waiting to come back when `restoredBookings` is 0—and its panels reload. A `session_started` refusal says the session can no longer be restored and hides the form; a
 `not_cancelled` one says no notice was queued and refreshes the session. A started cancelled session
 shows no restore form.
 

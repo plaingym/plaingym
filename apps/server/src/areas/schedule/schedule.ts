@@ -403,7 +403,7 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
         }
         const after = await sessionSnapshot(tx, afterRow);
         await audit(tx, context, 'session.restored', id, before, after);
-        return sessionResponse(after, rules);
+        return { ...sessionResponse(after, rules), restoredBookings: restored.length };
       }));
     },
     async materialize(gymId: string, timezone: string, jobClock: Clock = clock) {

@@ -90,6 +90,7 @@ export const classSessionSchema = sessionFieldsSchema.extend({
   createdAt: instantSchema, revision: revisionSchema,
 }).refine(orderedTimes, { path: ['endsAt'], message: 'Session must end after it starts' });
 export const classSessionResponseSchema = z.strictObject({ data: classSessionSchema });
+export const restoreSessionResponseSchema = z.strictObject({ data: classSessionSchema, restoredBookings: z.int().nonnegative().optional() });
 export const classSessionListResponseSchema = listResponseSchema(classSessionSchema);
 /** Filter interval is [from, until); compare instants, including explicit DST offsets. */
 export const classSessionListQuerySchema = paginationSchema.extend({
@@ -121,7 +122,7 @@ export const scheduleContracts = {
   createSession: { method: 'post', path: '/api/schedule/sessions', permission: manageSchedule, body: createClassSessionRequestSchema, response: classSessionResponseSchema },
   updateSession: { method: 'put', path: '/api/schedule/sessions/{id}', permission: manageSchedule, params: scheduleIdParamsSchema, body: updateClassSessionRequestSchema, response: classSessionResponseSchema },
   cancelSession: { method: 'post', path: '/api/schedule/sessions/{id}/cancel', permission: manageSchedule, params: scheduleIdParamsSchema, body: cancelSessionRequestSchema, response: classSessionResponseSchema },
-  restoreSession: { method: 'post', path: '/api/schedule/sessions/{id}/restore', permission: manageSchedule, params: scheduleIdParamsSchema, body: restoreSessionRequestSchema, response: classSessionResponseSchema },
+  restoreSession: { method: 'post', path: '/api/schedule/sessions/{id}/restore', permission: manageSchedule, params: scheduleIdParamsSchema, body: restoreSessionRequestSchema, response: restoreSessionResponseSchema },
   swapCoach: { method: 'post', path: '/api/schedule/sessions/{id}/coach', permission: manageSchedule, params: scheduleIdParamsSchema, body: swapSessionCoachRequestSchema, response: classSessionResponseSchema },
   updateNotes: { method: 'patch', path: '/api/schedule/sessions/{id}/notes', permission: manageNotes, params: scheduleIdParamsSchema, body: updateSessionNotesRequestSchema, response: classSessionResponseSchema },
   updateCapacity: { method: 'patch', path: '/api/schedule/sessions/{id}/capacity', permission: manageSchedule, params: scheduleIdParamsSchema, body: updateSessionCapacityRequestSchema, response: classSessionResponseSchema },
@@ -152,4 +153,5 @@ export type ClassTagListResponse = z.infer<typeof classTagListResponseSchema>;
 export type ClassTemplateResponse = z.infer<typeof classTemplateResponseSchema>;
 export type ClassTemplateListResponse = z.infer<typeof classTemplateListResponseSchema>;
 export type ClassSessionResponse = z.infer<typeof classSessionResponseSchema>;
+export type RestoreSessionResponse = z.infer<typeof restoreSessionResponseSchema>;
 export type ClassSessionListResponse = z.infer<typeof classSessionListResponseSchema>;

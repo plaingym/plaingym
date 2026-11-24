@@ -209,7 +209,7 @@ address); text goes to the consented phone from `memberNoticePhones` through
 `MemberSms` notices consent, switch and cap checks. Both name the member whose
 booking was cancelled, at the member's own address or phone too, since siblings
 can have one parent's address or phone on their own records. Right before each provider
-call the handler rechecks that the booking is still cancelled, it is still the
+call the handler rechecks that the booking is still cancelled, its class hasn't started, it is still the
 member's latest booking for that class (rebooking adds a new row; a later booking
 supersedes this one whatever its status, so after a rebooking only the latest
 cancellation's notice and note can go out; creation time orders the rows and the
@@ -218,7 +218,7 @@ switch is on and the address or consented phone is still the one reserved. For a
 recipient is checked again after provider credentials resolve, first in the
 transaction that takes the cap slot, since `MemberSms` accepts a household phone
 for any member of that household. That check locks and reads the gym settings,
-locks the class session, rechecks that the booking is still cancelled and still
+locks the class session, rechecks that the booking is still cancelled, its class hasn't started and it is still
 the member's latest for the class, then locks the member and their household
 (giving way to a staff erasure or deletion as the promotion text does) and reruns
 `memberNoticePhones`: a member who gained their own consented phone meanwhile

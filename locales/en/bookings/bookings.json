@@ -50,7 +50,7 @@
   "promotionBody": "A place opened up and you have been moved from the waitlist to booked for {name} on {date}. You can view your booking in the member portal.",
   "emailFooter": "You received this notice because you joined this class's waitlist.",
   "cancelNoticeSubject": "Booking cancelled: {name}",
-  "cancelNoticeBody": "Your booking for {name} on {date} at {time} has been cancelled by the gym.",
+  "cancelNoticeBody": "A booking or waitlist place for {name} on {date} at {time} has been cancelled by the gym.",
   "cancelNoticeMembers": "Booking for: {names}",
   "cancelNoticeFooter": "You received this notice because you or someone in your household had a booking for this class.",
   "cancelNoticeSms": "The booking for {names} in {name} on {date} at {time} has been cancelled by the gym.",
