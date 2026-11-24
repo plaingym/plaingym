@@ -6,7 +6,8 @@ import SMTPConnection from 'nodemailer/lib/smtp-connection/index.js';
 import type SMTPTransport from 'nodemailer/lib/smtp-transport/index.js';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { logWarn } from '../../core/log.js';
-import { DeliveryError, listUnsubscribeUrl, type Email, type EmailMessage, type EmailResult } from './index.js';
+import { DeliveryError } from './delivery-error.js';
+import { listUnsubscribeUrl, type Email, type EmailMessage, type EmailResult } from './index.js';
 import { publicAddresses, SmtpHostRefusedError, type HostCheck } from './smtp-host.js';
 
 export interface SmtpConfig {
@@ -20,10 +21,10 @@ export interface SmtpConfig {
   /** A server a tenant named: connect only to a public address, resolved and checked once per session (`smtp-host.ts`). */
   readonly publicHostOnly?: boolean;
   /**
-   * Told how each send through the transport ended: accepted, or refused with a classified `DeliveryError`. Called
+   * Told how each send through the transport ended: accepted, or refused with a classified `SmtpDeliveryError`. Called
    * outside any transaction; an error it throws is logged and never changes what `sendEmail` returns or throws.
    */
-  readonly report?: (outcome: { ok: true } | { ok: false; error: DeliveryError }) => Promise<void>;
+  readonly report?: (outcome: { ok: true } | { ok: false; error: SmtpDeliveryError }) => Promise<void>;
 }
 
 const invalidHeader = (value: string) => !value.trim() || /[\r\n\0]/.test(value);
@@ -58,6 +59,13 @@ export function smtpOptions(config: SmtpConfig): SMTPTransport.Options {
   };
 }
 
+/**
+ * A send failure the SMTP transport itself made, from a session, a refused host or a closed session. Only these name
+ * the gym's sending service as the cause; a `DeliveryError` from the delivery layer or from composing the message
+ * never reached SMTP.
+ */
+export class SmtpDeliveryError extends DeliveryError {}
+
 type Stage = 'connect' | 'login' | 'send';
 /** A whole session ends by this deadline, however its replies trickle in; keyed send state relies on it (deliveries.ts). */
 export const smtpSessionLimitMs = 5 * 60_000;
@@ -68,17 +76,17 @@ interface SentInfo { messageId: string; accepted: string[]; rejected: string[] }
  * so its error alone cannot prove a non-send. The stage this session reached can: nothing is handed over
  * before MAIL FROM, which only the send stage issues.
  */
-function classify(stage: Stage, error: SMTPConnection.SMTPError): DeliveryError {
-  if (stage === 'connect') return new DeliveryError('not_accepted', 'SMTP connection failed', { cause: error });
-  if (stage === 'login') return new DeliveryError('not_accepted', 'SMTP authentication failed', { cause: error });
+function classify(stage: Stage, error: SMTPConnection.SMTPError): SmtpDeliveryError {
+  if (stage === 'connect') return new SmtpDeliveryError('not_accepted', 'SMTP connection failed', { cause: error });
+  if (stage === 'login') return new SmtpDeliveryError('not_accepted', 'SMTP authentication failed', { cause: error });
   // Refused sender, every recipient refused, refused DATA command, or a local check before MAIL FROM.
   if (error.code === 'EENVELOPE' || error.code === 'EREQUIRETLS' || (error.code === 'EMESSAGE' && error.command !== 'DATA'))
-    return new DeliveryError('not_accepted', 'SMTP server refused the message envelope', { cause: error });
+    return new SmtpDeliveryError('not_accepted', 'SMTP server refused the message envelope', { cause: error });
   // A 4xx/5xx reply to the end of the body: the server did not take responsibility for it (RFC 5321 §4.1.1.4).
   if (error.code === 'EMESSAGE' && error.command === 'DATA' && (error.responseCode ?? 0) >= 400)
-    return new DeliveryError('not_accepted', 'SMTP server refused the message', { cause: error });
+    return new SmtpDeliveryError('not_accepted', 'SMTP server refused the message', { cause: error });
   // Socket loss and timeouts once the envelope is under way: the server may already hold the message.
-  return new DeliveryError('unknown', 'SMTP delivery outcome is unknown', { cause: error });
+  return new SmtpDeliveryError('unknown', 'SMTP delivery outcome is unknown', { cause: error });
 }
 
 interface SessionConfig {
@@ -104,8 +112,8 @@ async function connectionTargets(config: SessionConfig): Promise<readonly SMTPCo
     const addresses = await publicAddresses(host, config.hostCheck);
     return addresses.map((address) => ({ ...config.options, host: address, ...(isIP(host) ? {} : { servername: host }) }));
   } catch (error) {
-    if (error instanceof SmtpHostRefusedError) throw new DeliveryError('not_accepted', error.message);
-    throw new DeliveryError('not_accepted', 'SMTP connection failed', { cause: error });
+    if (error instanceof SmtpHostRefusedError) throw new SmtpDeliveryError('not_accepted', error.message);
+    throw new SmtpDeliveryError('not_accepted', 'SMTP connection failed', { cause: error });
   }
 }
 
@@ -172,7 +180,7 @@ async function session(config: SessionConfig, message?: { envelope: SMTPConnecti
     const targets = await connectionTargets(config);
     for (let index = 0; ; index++) {
       // Checked in the same step as the attempt opens its connection, so no close() can fall between the two.
-      if (closed) throw new DeliveryError('not_accepted', 'SMTP connection failed');
+      if (closed) throw new SmtpDeliveryError('not_accepted', 'SMTP connection failed');
       try {
         return await attempt(targets[index]!, config, message, deadline, (connection) => { current = connection; });
       } catch (failure) {
@@ -243,7 +251,7 @@ export class SmtpEmail implements Email {
         } : {}),
       });
     } catch (error) {
-      if (error instanceof DeliveryError) {
+      if (error instanceof SmtpDeliveryError) {
         // A classified session error or a refused host: the transport's own outcome, so it is reported.
         await this.#reportOutcome({ ok: false, error });
         throw error;

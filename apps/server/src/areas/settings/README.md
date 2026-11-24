@@ -47,7 +47,8 @@ without credentials or recipients. A failed test's audit and response carry
 `test: 'failed'` and `failure` (`connection`, `tls`, `authentication`, or
 `sender_refused`). Neither includes the server's reply. The class comes from
 transport error codes, response numbers and the reply's leading enhanced status
-code only, and uses the stored port and security for a timeout on port 465.
+code only, and uses the stored port and security for a session timeout or a
+refused connection on port 465.
 Failed tests leave the saved settings unchanged. The audit records
 `test: 'sent'` only with the save.
 Real sends record the gym's email state (`email-status.ts`): every config from
@@ -55,8 +56,9 @@ Real sends record the gym's email state (`email-status.ts`): every config from
 that writes a system `email.delivery_failed` audit row (`after: { failure }`, the class
 only) when a send fails through the sending service (`emailServiceFailure`:
 connection, TLS, authentication, or a refused sender address, never an unknown
-outcome or a refused recipient, unless the refusal's code reads as a login
-requirement: 530, or 550/554 with 5.7.0 or 5.7.1) and that class isn't already shown, and
+outcome, a failure that never reached SMTP, or a refused recipient: a recipient
+refused at `RCPT TO` with 550 or 554 counts only as the recipient's, while 530 at
+any command reads as a login requirement) and that class isn't already shown, and
 `email.delivery_recovered` when a send works after a recorded failure. Rows are
 written only on a change, in a short transaction after the send; a failed record is
 logged and never changes the send. `readEmailSendFailure` returns the newest failure

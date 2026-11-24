@@ -18,7 +18,7 @@ recipient. A failed test's audit and response carry `test: 'failed'` and `failur
 (`connection`, `tls`, `authentication`, or `sender_refused`). Neither includes
 the server's reply. The class comes from transport error codes, response numbers
 and the reply's leading enhanced status code only, and uses the stored port and
-security for a timeout on port 465. A delivered test records `test: 'sent'` in the transaction
+security for a session timeout or a refused connection on port 465. A delivered test records `test: 'sent'` in the transaction
 that saves the settings. If the save loses the revision check, it records
 nothing. Step 5 completion records `test: 'sent'` or `'not_sent'`, so skipping
 cannot replace the Health tile's last test time.

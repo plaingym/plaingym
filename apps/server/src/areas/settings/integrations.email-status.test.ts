@@ -11,7 +11,7 @@ import { authorize } from '../staff/auth.permissions.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { TestClock } from '../../core/clock.js';
 import { authConfig } from '../../infra/auth/config.js';
-import { DeliveryError } from '../../infra/email/index.js';
+import { SmtpDeliveryError } from '../../infra/email/smtp.js';
 import { createEmailStatusRecorder } from './email-status.js';
 import { createIntegrationsService } from './integrations.js';
 import { createIntegrationsRoutes } from './integrations.routes.js';
@@ -56,7 +56,7 @@ describe('the last send failure in Settings → Integrations → Email', () => {
     expect((await read(gymA, ownerA)).lastSendFailure).toBeNull();
     clock.advance(1000);
     const at = clock.now().toISOString();
-    await recorder(gymA, smtp)({ ok: false, error: new DeliveryError('not_accepted', 'SMTP authentication failed',
+    await recorder(gymA, smtp)({ ok: false, error: new SmtpDeliveryError('not_accepted', 'SMTP authentication failed',
       { cause: { code: 'EAUTH', responseCode: 535, response: '535 5.7.8 Authentication failed' } }) });
     expect((await read(gymA, ownerA)).lastSendFailure).toEqual({ failure: 'authentication', at });
     expect((await read(gymB, ownerB)).lastSendFailure).toBeNull();

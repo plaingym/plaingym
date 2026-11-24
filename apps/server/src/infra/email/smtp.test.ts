@@ -5,6 +5,7 @@ import { useTestDatabase } from '../../../../../packages/db/src/testing/database
 import { uuidv7 } from '@plaingym/db';
 import { createServer } from 'node:net';
 import { DeliveryError, deliveryAcceptance, SmtpEmail, smtpOptions, type SmtpConfig } from './index.js';
+import { SmtpDeliveryError } from './smtp.js';
 import { captureSmtp } from './test-smtp.js';
 import { setLogSink } from '../../core/log.js';
 
@@ -94,6 +95,7 @@ describe('SMTP transport', () => {
       expect(authenticated.messages).toHaveLength(1);
       await expect(bad.verifyConnection()).rejects.toMatchObject({ acceptance: 'not_accepted', cause: { code: 'EAUTH' } });
       await expect(bad.sendEmail(message)).rejects.toMatchObject({ acceptance: 'not_accepted', cause: { code: 'EAUTH' } });
+      await expect(bad.sendEmail(message)).rejects.toBeInstanceOf(SmtpDeliveryError);
       expect(authenticated.messages).toHaveLength(1);
     } finally { good.close(); bad.close(); await authenticated.close(); }
   });
@@ -147,6 +149,10 @@ describe('SMTP transport', () => {
       await expect(email.sendEmail({ ...message, [field]: 'value\r\nBcc: b@example.test' })).rejects.toMatchObject({
         acceptance: 'not_accepted', message: 'Invalid email ' + field });
     expect(capture.connections).toBe(before);
+    // Refused before the transport is reached: a plain DeliveryError, never one that blames the sending service.
+    const invalid = await email.sendEmail({ ...message, to: 'value\r\nBcc: b@example.test' }).then(() => undefined, (error: unknown) => error);
+    expect(invalid).toBeInstanceOf(DeliveryError);
+    expect(invalid).not.toBeInstanceOf(SmtpDeliveryError);
   });
 });
 
@@ -161,15 +167,17 @@ describe('delivery classification', () => {
     const refused = new SmtpEmail({ host: '127.0.0.1', port, security: 'plain', from: 'owner@example.test' });
     try {
       const error = await rejection(refused.sendEmail(message));
-      expect(error).toBeInstanceOf(DeliveryError);
+      expect(error).toBeInstanceOf(SmtpDeliveryError);
       expect(error).toMatchObject({ acceptance: 'not_accepted', code: 'not_accepted', message: 'SMTP connection failed' });
     } finally { refused.close(); }
   });
 
   it('classifies an unresolvable host as not accepted', async () => {
     const missing = new SmtpEmail({ host: 'smtp.invalid', port: 25, security: 'plain', from: 'owner@example.test' });
-    try { await expect(missing.sendEmail(message)).rejects.toMatchObject({ acceptance: 'not_accepted' }); }
-    finally { missing.close(); }
+    try {
+      await expect(missing.sendEmail(message)).rejects.toMatchObject({ acceptance: 'not_accepted' });
+      await expect(missing.sendEmail(message)).rejects.toBeInstanceOf(SmtpDeliveryError);
+    } finally { missing.close(); }
   });
 
   it('classifies a connection lost before the greeting completes as not accepted', async () => {

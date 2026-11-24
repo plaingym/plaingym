@@ -8,13 +8,14 @@ import { TestClock } from '../../core/clock.js';
 import { setLogSink } from '../../core/log.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { DeliveryError } from '../../infra/email/index.js';
+import { SmtpDeliveryError } from '../../infra/email/smtp.js';
 import { createEmailStatusRecorder, emailStatusActions, readEmailSendFailure } from './email-status.js';
 import { createSmtpResolver, encryptSmtpConfig } from './smtp.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
 const clock = new TestClock('2026-11-21T09:00:00.000Z');
 const settings = { port: 587, security: 'starttls' } as const;
-const failed = (cause: unknown) => ({ ok: false as const, error: new DeliveryError('not_accepted', 'SMTP failed', { cause }) });
+const failed = (cause: unknown) => ({ ok: false as const, error: new SmtpDeliveryError('not_accepted', 'SMTP failed', { cause }) });
 const authentication = failed({ code: 'EAUTH', responseCode: 535, response: '535 5.7.8 Authentication failed for desk@gym.example' });
 const tls = failed({ code: 'ETLS' });
 const sent = { ok: true as const };

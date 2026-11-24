@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { assertNoTransaction } from '@plaingym/shared/transaction';
+import { DeliveryError, type DeliveryAcceptance } from './delivery-error.js';
 
 export interface EmailMessage {
   readonly to: string;
@@ -17,18 +18,7 @@ export interface Email {
   sendEmail(message: EmailMessage): Promise<EmailResult>;
 }
 
-/** `not_accepted` is proof that no recipient received the message; anything less is `unknown`. */
-export type DeliveryAcceptance = 'not_accepted' | 'unknown';
-/** Provider-neutral send failure. The message never quotes recipients or server replies. */
-export class DeliveryError extends Error {
-  override readonly name = 'DeliveryError';
-  /** Mirrors `acceptance` so structured logs, which record error codes only, show the classification. */
-  readonly code: DeliveryAcceptance;
-  constructor(readonly acceptance: DeliveryAcceptance, message: string, options?: { cause?: unknown }) {
-    super(message, options);
-    this.code = acceptance;
-  }
-}
+export { DeliveryError, type DeliveryAcceptance };
 /** Only a DeliveryError can prove a non-send; every other failure may have followed acceptance. */
 export function deliveryAcceptance(error: unknown): DeliveryAcceptance {
   return error instanceof DeliveryError ? error.acceptance : 'unknown';

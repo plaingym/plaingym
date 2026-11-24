@@ -6,6 +6,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { setLogSink } from '../../core/log.js';
 import { DeliveryError, type Email } from '../email/index.js';
+import { SmtpDeliveryError } from '../email/smtp.js';
 import { createEmailDeliveries } from '../email/deliveries.js';
 import { authConfig } from './config.js';
 import { createAuthEmailSender } from './delivery.js';
@@ -14,9 +15,9 @@ import { createAuthService } from './service.js';
 const database = useTestDatabase(), factory = createFactories(database);
 const secret = 'magic-link-email-test-secret-at-least-32-characters';
 const config = authConfig({ AUTH_SECRET: secret, NODE_ENV: 'production', AUTH_PASSWORD_LOGIN: 'off' }, false);
-const loginRefused = () => new DeliveryError('not_accepted', 'SMTP authentication failed',
+const loginRefused = () => new SmtpDeliveryError('not_accepted', 'SMTP authentication failed',
   { cause: { code: 'EAUTH', responseCode: 535, response: '535 5.7.8 Authentication failed for desk@gym.example' } });
-const recipientRefused = () => new DeliveryError('not_accepted', 'SMTP server refused the message envelope',
+const recipientRefused = () => new SmtpDeliveryError('not_accepted', 'SMTP server refused the message envelope',
   { cause: { code: 'EENVELOPE', command: 'RCPT TO', responseCode: 550 } });
 let ip = 1;
 beforeAll(async () => {
@@ -77,6 +78,12 @@ describe('an email sign-in link the gym\'s sending service could not send', () =
     const working = await fixture(async () => undefined);
     expect((await working.ask(working.staff)).status).toBe(200);
     expect(await working.ask(working.stranger)).toEqual(await working.ask(working.staff));
+  });
+  it('answers 500, not 503, for a delivery error the SMTP transport did not make', async () => {
+    const f = await fixture(async () => { throw new DeliveryError('not_accepted', 'Email delivery could not be reserved'); });
+    const answer = await f.ask(f.staff);
+    expect(answer.status).toBe(500);
+    expect(answer.body).not.toContain('EMAIL_UNAVAILABLE');
   });
   it('keeps the delivery error for a login link the app sends itself', async () => {
     const error = loginRefused();

@@ -14,7 +14,7 @@ import { createServerRegistry } from '../../core/registry.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { encryptSmtpConfig } from '../settings/smtp.js';
 import { createEmailStatusRecorder } from '../settings/email-status.js';
-import { DeliveryError } from '../../infra/email/index.js';
+import { SmtpDeliveryError } from '../../infra/email/smtp.js';
 import { encryptSmsConfig } from '../settings/sms.js';
 import { encryptGoogleConfig } from '../settings/google-login.js';
 import { PostgresJobStatsQuery } from '../../infra/jobs/postgres.js';
@@ -159,7 +159,7 @@ describe('built-in providers', () => {
     const id = uuidv7(), smtp = { host: 'sending.host', port: 587, security: 'starttls', from: 'owner@example.test', username: 'u', password: 'p' } as const;
     await factory('gyms', id, { smtpConfig: encryptSmtpConfig(key, id, smtp) });
     const sendClock = new TestClock('2026-11-21T09:00:00Z'), report = createEmailStatusRecorder({ scope: database.forGym, clock: sendClock })(id, smtp);
-    await report({ ok: false, error: new DeliveryError('not_accepted', 'SMTP authentication failed', { cause: { code: 'EAUTH', responseCode: 535 } }) });
+    await report({ ok: false, error: new SmtpDeliveryError('not_accepted', 'SMTP authentication failed', { cause: { code: 'EAUTH', responseCode: 535 } }) });
     const failed = await tile('smtp', id);
     expect(failed).toMatchObject({ status: 'warning', details: { configured: true, lastTestAt: null } });
     expect(failed.message).toContain('own SMTP');

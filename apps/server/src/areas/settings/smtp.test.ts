@@ -50,11 +50,14 @@ describe('SMTP test failures', () => {
     [{ code: 'ETIMEDOUT', command: 'CONN' }, { port: 465, security: 'tls' }, 'connection'],
     [{ code: 'ETIMEDOUT', command: 'CONN' }, undefined, 'connection'],
     [{ code: 'ECONNECTION', originalCode: 'ECONNREFUSED' }, { port: 465, security: 'starttls' }, 'tls'],
+    [{ code: 'ETIMEDOUT' }, { port: 465, security: 'starttls' }, 'connection'],
   ] as const)('classifies a timeout %o on %o as %s', (cause, settings, expected) => {
     expect(smtpTestFailure(new DeliveryError('unknown', 'SMTP failed', { cause }), settings)).toBe(expected);
   });
   it.each([
     [{ code: 'EENVELOPE', command: 'RCPT TO', responseCode: 530 }, 'authentication'],
+    [{ code: 'EENVELOPE', command: 'MAIL FROM', responseCode: 530 }, 'authentication'],
+    [{ code: 'EENVELOPE', command: 'MAIL FROM', responseCode: 550, response: '550 5.7.1 Sender address rejected' }, 'sender_refused'],
     [{ code: 'EENVELOPE', command: 'RCPT TO', responseCode: 550, response: '550 5.7.1 Relaying denied' }, 'authentication'],
     [{ code: 'EENVELOPE', command: 'RCPT TO', responseCode: 554, response: '554 5.7.0 Not allowed' }, 'authentication'],
     [{ code: 'EENVELOPE', command: 'RCPT TO', responseCode: 550, response: '550 5.1.1 No such user' }, 'sender_refused'],
