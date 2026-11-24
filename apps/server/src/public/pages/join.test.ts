@@ -344,15 +344,15 @@ describe('trial and zero-value joining', () => {
     const local = await submit('no-choice@example.invalid', { phoneCountry: '', phone: '(604) 555-0123' });
     expect(local.home).toMatchObject({ phone: '(604) 555-0123', phoneE164: '+16045550123' });
   });
-  it('reads a native form phone typed with the chosen country\'s international prefix with the gym\'s country, and keeps the text consent', async () => {
+  it.each(['GB', 'US'] as const)('sends a native form phone typed with the chosen country\'s international prefix as a + number in a %s gym, and keeps text consent', async country => {
     const f = await fixture();
-    await db.forGym(f.gymId, tx => tx.update(gyms).set({ address: { line1: '12 Mat Street', country: 'GB' } }).where(eq(gyms.id, f.gymId)));
-    const form = nativeForm(f, f.free.id, 'gb-prefix@example.invalid');
+    await db.forGym(f.gymId, tx => tx.update(gyms).set({ address: { line1: '12 Mat Street', country } }).where(eq(gyms.id, f.gymId)));
+    const form = nativeForm(f, f.free.id, `gb-prefix-${country.toLowerCase()}@example.invalid`);
     for (const [name, value] of Object.entries({ phoneCountry: 'GB', phone: '0044 20 7946 0018', smsNoticesConsent: 'on' })) form.set(name, value);
     const response = await f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: form }));
     expect(response.status).toBe(303);
-    const home = (await f.rows()).homes.find(row => row.email === 'gb-prefix@example.invalid')!;
-    expect(home).toMatchObject({ phone: '0044 20 7946 0018', phoneE164: '+442079460018', smsNoticesConsentSource: 'join' });
+    const home = (await f.rows()).homes.find(row => row.email === `gb-prefix-${country.toLowerCase()}@example.invalid`)!;
+    expect(home).toMatchObject({ phone: '+44 20 7946 0018', phoneE164: '+442079460018', smsNoticesConsentSource: 'join' });
     expect(home.smsNoticesConsentAt).not.toBeNull();
   });
   it('starts a trial only after its recorded card setup and bills the first full period at trial end', async () => {

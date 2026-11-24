@@ -38,6 +38,18 @@ describe('PhoneInput', () => {
     expect(country().value).toBe('');
   });
 
+  it('forgets an earlier country choice once a + number is typed', async () => {
+    const user = userEvent.setup(), onChange = vi.fn();
+    render(<Harness onChange={onChange}/>);
+    await user.selectOptions(country(), 'GB');
+    await user.type(number(), '+44 20 7946 0018');
+    await user.clear(number());
+    expect(country().value).toBe('CA');
+    await user.type(number(), '604 555 0123');
+    expect(onChange).toHaveBeenLastCalledWith('+1 604 555 0123');
+    expect(country().value).toBe('CA');
+  });
+
   it('keeps showing no country for a + number when another country is chosen, and sends the number as typed', async () => {
     const user = userEvent.setup(), onChange = vi.fn();
     render(<Harness initial="+44 20 7946 0018" onChange={onChange}/>);

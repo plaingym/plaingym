@@ -5,7 +5,7 @@ import type { PublicBranding, WaiverTemplate } from '@plaingym/shared/contracts'
 import { formatMoney } from '../../core/money.js';
 import { buildLabel, buildLabelItem } from '../../areas/health/build-label.js';
 import { logoVersion } from '../short-hash.js';
-import { callingCode, phoneCountryOptions } from '@plaingym/shared/phone-countries';
+import { callingCode, internationalPrefix, keepsInternationalPrefix, phoneCountryOptions } from '@plaingym/shared/phone-countries';
 /** Native browser preview and a separate link also work without JavaScript. */
 export function waiverDocumentView(template: WaiverTemplate, t: Translator, href = `/api/public/waivers/${template.id}/document?view=1`, preview = true) {
   if (!template.document) return h('div', { class: 'max-h-96 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-4', tabindex: 0, 'aria-label': template.name }, template.body);
@@ -65,7 +65,9 @@ export function publicLayout(input: { gym: PublicBranding; title: string; t: Tra
 }
 /**
  * A country code choice beside the phone number. Works without script: the form handler (or the page script) joins
- * `+<calling code> <number>` unless the number starts with +. `selected` (a redisplayed choice, possibly empty) wins over the gym's country.
+ * `+<calling code> <number>` unless the number starts with +, or replaces the chosen country's international prefix
+ * with + (or keeps it as typed when its prefix carries a carrier code). `selected` (a redisplayed choice, possibly empty)
+ * wins over the gym's country.
  */
 export function phoneField(t: Translator, options: { label: string; country?: string | null | undefined; selected?: string; value?: string }) {
   const choices = phoneCountryOptions();
@@ -74,7 +76,13 @@ export function phoneField(t: Translator, options: { label: string; country?: st
     h('label', { for: 'phoneCountry', class: 'block' }, t('shell/phone:country')),
     h('select', { id: 'phoneCountry', name: 'phoneCountry', class: inputClass },
       h('option', { value: '', selected: selected === '' }, t('shell/phone:choose')),
-      ...choices.map(choice => h('option', { value: choice.value, 'data-calling-code': choice.callingCode, selected: choice.value === selected }, choice.label))),
+      ...choices.map(choice => h('option', {
+        value: choice.value,
+        'data-calling-code': choice.callingCode,
+        'data-international-prefix': internationalPrefix(choice.callingCode),
+        ...(keepsInternationalPrefix(choice.callingCode) ? { 'data-keep-prefix': 'true' } : {}),
+        selected: choice.value === selected,
+      }, choice.label))),
     h('label', { for: 'phone', class: 'block' }, options.label),
     h('input', { id: 'phone', name: 'phone', type: 'tel', autocomplete: 'tel', maxlength: 95, ...(options.value !== undefined ? { value: options.value } : {}), class: inputClass }));
 }

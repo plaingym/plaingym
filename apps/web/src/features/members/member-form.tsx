@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useId, type FormEvent } from 'react';
+import { useId, useState, type FormEvent } from 'react';
 import * as c from '@plaingym/shared/contracts';
 import { Button } from '../../components/ui/button.js';
 import { Input } from '../../components/ui/input.js';
@@ -19,6 +19,8 @@ export function MemberForm({ member, householdId, onSaved }: { member?: c.Member
     emailOptOut: member?.emailOptOut ?? false, emergencyContacts: member?.emergencyContacts ?? ([] as c.EmergencyContact[]) });
   const state = useMemberSave(), { values, set } = draft, contacts = values.emergencyContacts;
   const country = useBootstrap().data?.gym.country;
+  // Counts resets, so the phone field drops a country chosen with no number even when the reset leaves its value unchanged.
+  const [resets, setResets] = useState(0);
   function submit(event: FormEvent) {
     event.preventDefault();
     void state.save(async () => {
@@ -31,12 +33,12 @@ export function MemberForm({ member, householdId, onSaved }: { member?: c.Member
       const result = member ? await memberRequest(c.memberResponseSchema, `/api/members/${member.id}`, 'PATCH', c.updateMemberRequestSchema.parse({ ...fields, revision: member.revision }))
         : await memberRequest(c.memberResponseSchema, '/api/members', 'POST', c.createMemberRequestSchema.parse({ ...fields, householdId }));
       onSaved?.(result.data);
-    }, draft.reset);
+    }, () => { draft.reset(); setResets((count) => count + 1); });
   }
   return <form className="space-y-4" onSubmit={submit}><ErrorMessage error={state.error}/>
     <div className="grid gap-3 sm:grid-cols-2"><Field name="firstName" value={values.firstName} onChange={(value) => set('firstName', value)} required/><Field name="lastName" value={values.lastName} onChange={(value) => set('lastName', value)} required/>
       <Field name="email" type="email" value={values.email} onChange={(value) => set('email', value)}/><PhoneInput id="member-phone" label={text('phone')} value={values.phone} onChange={(value) => set('phone', value)} defaultCountry={country}
-        {...(country ? {} : { hint: t('shell/phone:noGymCountry') })}/>
+        resetKey={resets} {...(country ? {} : { hint: t('shell/phone:noGymCountry') })}/>
       <div className="min-w-0 space-y-2"><Label className="grid gap-2">{text('dateOfBirth')}<Input type="date" aria-describedby={dateOfBirthHintId} value={values.dateOfBirth} onChange={(event) => set('dateOfBirth', event.target.value)}/></Label>
         <p id={dateOfBirthHintId} className="text-sm text-muted-foreground">{text('dateOfBirthHint')}</p></div>
       <div className="min-w-0 space-y-2"><Label className="grid gap-2">{text('status')}<Select aria-describedby={statusHelpId} value={values.status} onChange={(event) => set('status', c.memberStatusSchema.parse(event.target.value))}>{c.memberStatusSchema.options.map((value) => <option key={value} value={value}>{text('status.' + value)}</option>)}</Select></Label>

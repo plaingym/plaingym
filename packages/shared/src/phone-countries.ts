@@ -32,11 +32,22 @@ export const phoneCountries: readonly (readonly [country: string, callingCode: s
 ];
 
 /** International dialling prefixes that differ from the usual `00`, by calling code. */
-const internationalPrefixes: ReadonlyMap<string, string> = new Map([['1', '011']]);
+const internationalPrefixes: ReadonlyMap<string, string> = new Map([
+  ['1', '011'], ['7', '810'], ['53', '119'], ['61', '0011'], ['81', '010'], ['234', '009'], ['238', '0'], ['254', '000'],
+  ['375', '810'], ['592', '001'], ['680', '011'], ['685', '0'], ['692', '011'], ['976', '001'], ['992', '810'], ['993', '810'],
+]);
 
-/** The prefix a caller in a country with this calling code dials before a foreign number: `011` for +1, `00` otherwise. */
+/** The prefix a caller in a country with this calling code dials before a foreign number, falling back to `00`. */
 export function internationalPrefix(callingCode: string): string {
   return internationalPrefixes.get(callingCode) ?? '00';
+}
+
+// A number typed with these regions' prefix is sent as typed, for the server's own parse, because the form can't tell where the carrier code ends.
+const carrierPrefixCodes = new Set(['55', '57', '62', '65', '66', '82', '255', '256', '591', '852', '855', '886']);
+
+/** Whether a calling code's international prefix is followed by a carrier code and must be kept as typed. */
+export function keepsInternationalPrefix(callingCode: string): boolean {
+  return carrierPrefixCodes.has(callingCode);
 }
 
 const codes = new Map<string, string>(phoneCountries);
@@ -47,15 +58,28 @@ export function callingCode(country: string | null | undefined): string | null {
 }
 
 /**
- * What a form sends: `+<calling code> <number>`, unless the number already starts with +, no region is chosen, or the number
- * starts with the chosen region's international prefix (`00`, or `011` for +1), which the server reads with that region.
+ * What a form sends: `+<calling code> <number>`, unless the number starts with +, no region is chosen, or the number
+ * starts with the chosen region's international prefix, which is replaced with + (or kept as typed when its prefix carries
+ * a carrier code).
  */
 export function joinPhone(country: string | null | undefined, number: string | null | undefined): string {
   const typed = (number ?? '').trim();
   if (!typed) return '';
   const code = callingCode(country);
   if (typed.startsWith('+') || code === null) return typed;
-  return typed.replace(/[\s\-.()]/g, '').startsWith(internationalPrefix(code)) ? typed : `+${code} ${typed}`;
+  const prefix = internationalPrefix(code);
+  const digits = typed.replace(/[\s\-.()]/g, '');
+  if (!digits.startsWith(prefix)) return `+${code} ${typed}`;
+  if (keepsInternationalPrefix(code)) return typed;
+  let index = 0, matched = 0;
+  while (index < typed.length && matched < prefix.length) {
+    if (/[\s\-.()]/.test(typed[index]!)) index += 1;
+    else { matched += 1; index += 1; }
+  }
+  while (index < typed.length && /[\s\-.()]/.test(typed[index]!)) index += 1;
+  const rest = typed.slice(index);
+  // A calling code never starts with 0, so a rest that does (`00 …` with a one-digit prefix) isn't a number to send with +.
+  return rest && !rest.startsWith('0') ? `+${rest}` : typed;
 }
 
 /** The inverse of `joinPhone` for a stored value, favouring the preferred region (the gym's) when the calling code matches. */

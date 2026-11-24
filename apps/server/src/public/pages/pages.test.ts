@@ -510,11 +510,15 @@ describe('phone country choice on the intake pages', () => {
     expect(html.match(/<select[^>]*name="phoneCountry"/g)).toHaveLength(1);
     expect(optionOf(html, 'CA')).toContain('data-calling-code="1"');
     expect(optionOf(html, 'CA')).toContain('selected');
+    expect(optionOf(html, 'JP')).toContain('data-international-prefix="010"');
+    expect(optionOf(html, 'GB')).toContain('data-international-prefix="00"');
+    expect(optionOf(html, 'GB')).not.toContain('data-keep-prefix');
+    expect(optionOf(html, 'BR')).toContain('data-keep-prefix="true"');
     expect(html).not.toMatch(/<option value=""[^>]*selected/);
     expect(html.match(/<option [^>]*selected/g)).toHaveLength(1);
     expect(/<input[^>]*name="phone"[^>]*>/.exec(html)?.[0]).toContain('maxlength="95"');
     const select = html.slice(html.indexOf('<div class="space-y-1"><label for="phoneCountry"'), html.indexOf('name="phone"'));
-    expect(select.length).toBeLessThan(18_000);
+    expect(select.length).toBeLessThan(26_000);
   });
   it.each(['/trial', '/drop-in'])('starts on "Choose a country" on %s when the gym has none', async path => {
     const f = await fixture(), html = await (await f.server.request(origin + path)).text();

@@ -60,6 +60,22 @@ it('says where to set the gym\'s country code when the gym has none', () => {
   expect(screen.getByText(noGymCountry)).toBeDefined();
   expect((screen.getByRole('combobox', { name: 'Country code' }) as HTMLSelectElement).value).toBe('');
 });
+it('drops a country chosen with an empty phone after creating a member', async () => {
+  view(<MemberForm householdId={homeId}/>);
+  const country = screen.getByRole('combobox', { name: 'Country code' }) as HTMLSelectElement;
+  fireEvent.change(country, { target: { value: 'GB' } });
+  fireEvent.change(screen.getByLabelText('First name'), { target: { value: 'First' } });
+  fireEvent.change(screen.getByLabelText('Last name'), { target: { value: 'Person' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Create member' }));
+  await waitFor(() => expect(memberRequest).toHaveBeenCalledTimes(1));
+  expect(country.value).toBe('CA');
+  fireEvent.change(screen.getByLabelText('First name'), { target: { value: 'Second' } });
+  fireEvent.change(screen.getByLabelText('Last name'), { target: { value: 'Person' } });
+  fireEvent.change(screen.getByLabelText('Phone'), { target: { value: '604 555 0123' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Create member' }));
+  await waitFor(() => expect(memberRequest).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(memberRequest).mock.calls[1]![3]).toMatchObject({ phone: '+1 604 555 0123' });
+});
 it('still saves a changed date of birth', async () => {
   view(<MemberForm member={member} householdId={homeId}/>);
   fireEvent.change(screen.getByLabelText('Date of birth'), { target: { value: '2010-05-05' } });

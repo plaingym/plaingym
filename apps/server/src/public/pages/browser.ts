@@ -15,7 +15,8 @@ export const refusalScript = publicCopyScript + String.raw`
   }`;
 /**
  * The browser twin of `joinPhone` (`@plaingym/shared/phone-countries`): `+<calling code> <number>` unless the number starts
- * with +, no country is chosen, or the number starts with the country's international prefix (`011` for +1, `00` otherwise).
+ * with +, no country is chosen, or the number starts with the chosen country's international prefix, which is replaced with +
+ * (or kept as typed when `data-keep-prefix` is `true`).
  */
 export const phoneScript = String.raw`
   function formPhone(form, fields) {
@@ -24,7 +25,17 @@ export const phoneScript = String.raw`
     const code = option ? option.getAttribute('data-calling-code') : null;
     if (!number) return '';
     if (number.startsWith('+') || !code) return number;
-    return number.replace(/[\s\-.()]/g, '').startsWith(code === '1' ? '011' : '00') ? number : '+' + code + ' ' + number;
+    const prefix = option.getAttribute('data-international-prefix') || '00';
+    if (!number.replace(/[\s\-.()]/g, '').startsWith(prefix)) return '+' + code + ' ' + number;
+    if (option.getAttribute('data-keep-prefix') === 'true') return number;
+    let index = 0, matched = 0;
+    while (index < number.length && matched < prefix.length) {
+      if (/[\s\-.()]/.test(number[index])) index += 1;
+      else { matched += 1; index += 1; }
+    }
+    while (index < number.length && /[\s\-.()]/.test(number[index])) index += 1;
+    const rest = number.slice(index);
+    return rest && !rest.startsWith('0') ? '+' + rest : number;
   }`;
 /** Plain browser JavaScript stays independent of server bundler helpers. No hydration. */
 export const publicBrowserScript = String.raw`// SPDX-License-Identifier: AGPL-3.0-only

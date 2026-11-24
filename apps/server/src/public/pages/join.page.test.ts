@@ -55,6 +55,10 @@ describe('join form phone country choice', () => {
     expect(html.match(/<select[^>]*name="phoneCountry"/g)).toHaveLength(1);
     expect(optionOf(html, 'CA')).toContain('data-calling-code="1"');
     expect(optionOf(html, 'CA')).toContain('selected');
+    expect(optionOf(html, 'JP')).toContain('data-international-prefix="010"');
+    expect(optionOf(html, 'GB')).toContain('data-international-prefix="00"');
+    expect(optionOf(html, 'GB')).not.toContain('data-keep-prefix');
+    expect(optionOf(html, 'BR')).toContain('data-keep-prefix="true"');
     expect(optionOf(html, '')).not.toContain('selected');
     expect(selectedCountries(html)).toHaveLength(1);
     expect(/<input[^>]*name="phone"[^>]*>/.exec(html)?.[0]).toContain('maxlength="95"');
@@ -74,7 +78,7 @@ describe('join form phone country choice', () => {
     expect(optionOf(form({ country: 'CA' }, { phoneCountry: '', phone: '604 555 0123' }), '')).toContain('selected');
   });
 
-  it('adds under 18,000 characters of markup', () => {
-    expect(String(phoneField(t, { label: 'Phone', country: 'CA' })).length).toBeLessThan(18_000);
+  it('adds under 26,000 characters of markup', () => {
+    expect(String(phoneField(t, { label: 'Phone', country: 'CA' })).length).toBeLessThan(26_000);
   });
 });

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { joinBrowserScript, joinPollIntervalMs, joinPollLimit } from './join.browser.js';
 import { createTranslator } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
-import { joinPhone } from '@plaingym/shared/phone-countries';
+import { callingCode, internationalPrefix, joinPhone, keepsInternationalPrefix } from '@plaingym/shared/phone-countries';
 import { phoneScript, publicBrowserScript, refusalScript } from './browser.js';
 import { phoneField } from './page.js';
 
@@ -89,7 +89,11 @@ describe('phone country choice in the browser scripts', () => {
   /** A form whose country select has this option selected (null: no select at all). */
   const formWith = (selected: { getAttribute(name: string): string | null } | null) =>
     ({ querySelector: (selector: string) => selector === 'select[name=phoneCountry]' && selected ? { selectedOptions: [selected] } : null });
-  const code = (value: string | null) => ({ getAttribute: (name: string) => name === 'data-calling-code' ? value : null });
+  const code = (value: string | null, prefix?: string, keep = false) => ({
+    getAttribute: (name: string) => name === 'data-calling-code' ? value
+      : name === 'data-international-prefix' ? (prefix ?? null)
+      : name === 'data-keep-prefix' && keep ? 'true' : null,
+  });
   it('joins the chosen calling code like the native form does', () => {
     expect(formPhone(formWith(code('1')), new Map([['phone', '604 555 0123']]))).toBe('+1 604 555 0123');
     expect(formPhone(formWith(code('1')), new Map([['phone', ' +44 20 7946 0018 ']]))).toBe('+44 20 7946 0018');
@@ -98,15 +102,20 @@ describe('phone country choice in the browser scripts', () => {
     expect(formPhone(formWith(code('1')), new Map([['phone', '   ']]))).toBe('');
     expect(formPhone(formWith(code('1')), new Map())).toBe('');
   });
-  it('sends a number typed with the chosen country\'s international prefix as typed, as joinPhone does', () => {
-    const cases: [string, string, string][] = [
-      ['44', '0044 7700 900123', '0044 7700 900123'], ['1', '011 44 20 7946 0018', '011 44 20 7946 0018'],
-      ['1', '(011) 44-20.7946 0018', '(011) 44-20.7946 0018'], ['44', '07700 900123', '+44 07700 900123'], ['1', '0044 20 7946 0018', '+1 0044 20 7946 0018'],
+  it('matches joinPhone on every international-prefix case and falls back to 00 without the prefix attribute', () => {
+    const cases: [string, string][] = [
+      ['GB', '0044 20 7946 0018'], ['US', '011 44 20 7946 0018'], ['US', '(011) 44-20.7946 0018'],
+      ['JP', '010 44 20 7946 0018'], ['RU', '810 44 20 7946 0018'], ['RU', '8 10 44 20 7946 0018'],
+      ['AU', '0011 44 20 7946 0018'], ['JP', '03 1234 5678'], ['US', '0044 20 7946 0018'],
+      ['GB', '00'], ['BR', '0021 44 20 7946 0018'], ['GB', '07700 900123'],
+      ['CV', '00 44 20 7946 0018'], ['CV', '0 44 20 7946 0018'],
     ];
-    for (const [calling, typed, sent] of cases) {
-      expect(formPhone(formWith(code(calling)), new Map([['phone', typed]]))).toBe(sent);
-      expect(joinPhone(calling === '1' ? 'US' : 'GB', typed)).toBe(sent);
+    for (const [region, typed] of cases) {
+      const regionCode = callingCode(region)!;
+      const selected = code(regionCode, internationalPrefix(regionCode), keepsInternationalPrefix(regionCode));
+      expect(formPhone(formWith(selected), new Map([['phone', typed]]))).toBe(joinPhone(region, typed));
     }
+    expect(formPhone(formWith(code('44')), new Map([['phone', '0044 20 7946 0018']]))).toBe('+44 20 7946 0018');
   });
   it('autofills the number as a full phone number and leaves the country select without autocomplete', () => {
     const html = String(phoneField(createTranslator(locales.en ?? {}), { label: 'Phone', country: 'GB' }));

@@ -2,7 +2,7 @@
 import { getCountries, getCountryCallingCode } from 'libphonenumber-js/max';
 import { describe, expect, it } from 'vitest';
 import { normalizePhone } from './phone.js';
-import { callingCode, internationalPrefix, joinPhone, phoneCountries, phoneCountryOptions, splitPhone } from './phone-countries.js';
+import { callingCode, internationalPrefix, joinPhone, keepsInternationalPrefix, phoneCountries, phoneCountryOptions, splitPhone } from './phone-countries.js';
 
 describe('phone countries', () => {
   it('lists every region the phone library knows, in its order, with its calling code', () => {
@@ -31,18 +31,38 @@ describe('phone countries', () => {
     expect(joinPhone('CA', null)).toBe('');
   });
 
-  it('sends a number typed with the chosen country\'s international prefix as typed', () => {
+  it('replaces a chosen country\'s international prefix with +, or keeps it when the prefix carries a carrier code', () => {
     expect(internationalPrefix('1')).toBe('011');
+    expect(internationalPrefix('81')).toBe('010');
+    expect(internationalPrefix('7')).toBe('810');
     expect(internationalPrefix('44')).toBe('00');
-    expect(joinPhone('GB', '0044 7700 900123')).toBe('0044 7700 900123');
-    // The phone library reads the prefix; 07700 900xxx is a fictional range it holds invalid, so the London number checks the parse.
-    expect(joinPhone('GB', '0044 20 7946 0018')).toBe('0044 20 7946 0018');
-    expect(normalizePhone('0044 20 7946 0018', 'GB')).toBe('+442079460018');
-    expect(normalizePhone('011 44 20 7946 0018', 'US')).toBe('+442079460018');
-    expect(joinPhone('US', '011 44 20 7946 0018')).toBe('011 44 20 7946 0018');
-    expect(joinPhone('US', '(011) 44-20.7946 0018')).toBe('(011) 44-20.7946 0018');
+    expect(keepsInternationalPrefix('55')).toBe(true);
+    expect(keepsInternationalPrefix('44')).toBe(false);
+
+    expect(joinPhone('GB', '0044 7700 900123')).toBe('+44 7700 900123');
+    for (const [region, typed, expected] of [
+      ['GB', '0044 20 7946 0018', '+44 20 7946 0018'],
+      ['US', '011 44 20 7946 0018', '+44 20 7946 0018'],
+      ['US', '(011) 44-20.7946 0018', '+44-20.7946 0018'],
+    ] as const) {
+      const joined = joinPhone(region, typed);
+      expect(joined).toBe(expected);
+      expect(normalizePhone(joined, 'US')).toBe('+442079460018');
+      expect(normalizePhone(joined, null)).toBe('+442079460018');
+    }
+
+    expect(joinPhone('JP', '010 44 20 7946 0018')).toBe('+44 20 7946 0018');
+    expect(joinPhone('RU', '810 44 20 7946 0018')).toBe('+44 20 7946 0018');
+    expect(joinPhone('RU', '8 10 44 20 7946 0018')).toBe('+44 20 7946 0018');
+    expect(joinPhone('AU', '0011 44 20 7946 0018')).toBe('+44 20 7946 0018');
+
+    expect(joinPhone('JP', '03 1234 5678')).toBe('+81 03 1234 5678');
     expect(joinPhone('GB', '07700 900123')).toBe('+44 07700 900123');
     expect(joinPhone('US', '0044 20 7946 0018')).toBe('+1 0044 20 7946 0018');
+    expect(joinPhone('GB', '00')).toBe('00');
+    expect(joinPhone('BR', '0021 44 20 7946 0018')).toBe('0021 44 20 7946 0018');
+    expect(joinPhone('CV', '0 44 20 7946 0018')).toBe('+44 20 7946 0018');
+    expect(joinPhone('CV', '00 44 20 7946 0018')).toBe('00 44 20 7946 0018');
   });
 
   it('splits a stored number back into a choice and a number', () => {
