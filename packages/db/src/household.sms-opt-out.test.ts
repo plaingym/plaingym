@@ -114,6 +114,27 @@ it('fills records with no audit answer from the gym\'s opted-out numbers, inside
   expect(await read(f.otherLogin, queries => queries.smsOptedOut('household', [f.home.id]))).toEqual({});
 });
 
+it('leaves records with stored SMS consent out of the list fallback while keeping their own opt-out audit', async () => {
+  const f = await fixture(), listed = '+12025550123';
+  await factory('smsOptedOutNumbers', f.gymId, { phoneE164: listed, optedOutAt: at(10) });
+  await database.forGym(f.gymId, async tx => {
+    await tx.update(members).set({ phone: listed, phoneE164: listed, smsNoticesConsentAt: at(5), smsNoticesConsentSource: 'join' }).where(eq(members.id, f.adult.id));
+    await tx.update(members).set({ phone: listed, phoneE164: listed, smsAnnouncementsConsentAt: at(5), smsAnnouncementsConsentSource: 'join' }).where(eq(members.id, f.child.id));
+    await tx.update(members).set({ phone: listed, phoneE164: listed }).where(eq(members.id, f.quiet.id));
+    await tx.update(households).set({ phone: listed, phoneE164: listed, smsNoticesConsentAt: at(5), smsNoticesConsentSource: 'join' }).where(eq(households.id, f.home.id));
+    await tx.update(households).set({ phone: listed, phoneE164: listed }).where(eq(households.id, f.other.id));
+  });
+  expect(await read(f.payer, queries => queries.smsOptedOut('member', [f.adult.id, f.child.id, f.quiet.id])))
+    .toEqual({ [f.quiet.id]: at(10).toISOString() });
+  expect(await read(f.payer, queries => queries.smsOptedOut('household', [f.home.id]))).toEqual({});
+  expect(await read(f.otherLogin, queries => queries.smsOptedOut('household', [f.other.id])))
+    .toEqual({ [f.other.id]: at(10).toISOString() });
+  // A record's own opt-out audit still answers.
+  await f.audit('member', f.adult.id, 'sms_opted_out', 3);
+  expect(await read(f.payer, queries => queries.smsOptedOut('member', [f.adult.id, f.child.id, f.quiet.id])))
+    .toEqual({ [f.adult.id]: at(3).toISOString(), [f.quiet.id]: at(10).toISOString() });
+});
+
 it('refuses more than 100 IDs in one read', async () => {
   const f = await fixture();
   const ids = Array.from({ length: 101 }, () => uuidv7());

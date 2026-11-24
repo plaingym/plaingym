@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { databaseCode, forGym, members, households, smsDailyUsage, smsOptedOutNumbers, writeAudit, type Transaction } from '@plaingym/db';
-import { and, eq, gt, inArray } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, notExists, or } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- SQL only sets local timeouts and atomically decrements gym-scoped SMS usage.
 import { sql } from 'drizzle-orm';
 import type { Clock } from '@plaingym/shared';
@@ -213,16 +213,28 @@ export class MemberSms implements Sms {
       if (error instanceof SmsDeliveryError && error.reason === 'recipient_opted_out') {
         try {
           await scope(gymId, async tx => {
+            // Lock households first (matching erasure's household-then-member lock order), then members, then read time.
+            // The household lock leaves foreign-key checks free, so a writer holding a member while it adds a row that
+            // references the household never waits on it.
+            const lockedHomes = await tx.select({ id: households.id, revision: households.revision, phoneE164: households.phoneE164 }).from(households)
+              .where(and(eq(households.gymId, gymId), or(eq(households.phoneE164, message.to),
+                inArray(households.id, tx.select({ householdId: members.householdId }).from(members)
+                  .where(and(eq(members.gymId, gymId), eq(members.phoneE164, message.to)))))))
+              .orderBy(households.id).for('no key update');
             const people = await tx.select({ id: members.id, revision: members.revision }).from(members)
               .where(and(eq(members.gymId, gymId), eq(members.phoneE164, message.to))).orderBy(members.id).for('update');
-            const homes = await tx.select({ id: households.id, revision: households.revision }).from(households)
-              .where(and(eq(households.gymId, gymId), eq(households.phoneE164, message.to))).orderBy(households.id).for('update');
-            // Read the time after both locks, so every consent write this opt-out waited on is ordered before it.
+            const homes = lockedHomes.filter(home => home.phoneE164 === message.to);
+            // Read the time after every lock, so every consent write this opt-out waited on is ordered before it.
             const now = clock.now();
-            // The number stays on the gym's list, held or not, until consent is recorded for it again.
             if (/^\+[1-9][0-9]{1,14}$/.test(message.to)) {
-              await tx.insert(smsOptedOutNumbers).values({ gymId, phoneE164: message.to, optedOutAt: now, createdAt: now })
-                .onConflictDoUpdate({ target: [smsOptedOutNumbers.gymId, smsOptedOutNumbers.phoneE164], set: { optedOutAt: now } });
+              if (people.length || homes.length) {
+                await tx.insert(smsOptedOutNumbers).values({ gymId, phoneE164: message.to, optedOutAt: now, createdAt: now })
+                  .onConflictDoUpdate({ target: [smsOptedOutNumbers.gymId, smsOptedOutNumbers.phoneE164], set: { optedOutAt: now } });
+              } else {
+                await tx.delete(smsOptedOutNumbers).where(and(eq(smsOptedOutNumbers.gymId, gymId), eq(smsOptedOutNumbers.phoneE164, message.to),
+                  notExists(tx.select({ id: members.id }).from(members).where(and(eq(members.gymId, gymId), eq(members.phoneE164, message.to), isNull(members.anonymizedAt)))),
+                  notExists(tx.select({ id: households.id }).from(households).where(and(eq(households.gymId, gymId), eq(households.phoneE164, message.to))))));
+              }
             }
             for (const member of people) {
               await tx.update(members).set({ smsNoticesConsentAt: null, smsNoticesConsentSource: null,

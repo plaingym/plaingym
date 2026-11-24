@@ -692,6 +692,36 @@ describe('join admission cleanup', () => {
       expect(retried.audits.filter(a => a.action === 'public.join.retained')).toEqual(kept.audits.filter(a => a.action === 'public.join.retained'));
       expect((await f.uploads.head(images[0]![0]!.signatureImageKey))!.deletedAt).toBeUndefined();
     });
+  it('drops an abandoned join\'s listed number on cleanup and keeps it when cleanup is refused or another record holds it', async () => {
+    const f = await fixture();
+    const cleaned = '+16045550123', kept = '+16045550144', shared = '+16045550155';
+    const admitWithPhone = async (email: string, phone: string) => {
+      const response = await f.post('/join/signatures', {
+        planId: f.plan.id, contact: { name: 'Pat Payer', email, phone }, honeypot: '',
+        members: [{ member: adult(), signatures: f.templates.map(template => ({
+          templateId: template.id, templateVersion: template.version, pngBase64, signer: { kind: 'self', name: 'Avery Joiner' },
+        })) }],
+      });
+      expect(response.status).toBe(200);
+    };
+    await admitWithPhone('cleaned-stop@example.invalid', '(604) 555-0123');
+    await admitWithPhone('kept-stop@example.invalid', '(604) 555-0144');
+    await admitWithPhone('shared-stop@example.invalid', '(604) 555-0155');
+    // Attach staff work to the second admission so cleanup refuses it, and give another member the third number.
+    const rows = await f.rows();
+    const keptHome = rows.homes.find(h => h.email === 'kept-stop@example.invalid')!;
+    const keptMember = rows.members.find(m => m.householdId === keptHome.id)!;
+    await factory('leads', f.gymId, { memberId: keptMember.id });
+    await factory('members', f.gymId, { householdId: f.existingHome.id, phone: '(604) 555-0155', phoneE164: shared });
+    for (const phoneE164 of [cleaned, kept, shared]) await factory('smsOptedOutNumbers', f.gymId, { phoneE164 });
+    await factory('smsOptedOutNumbers', f.otherGym, { phoneE164: cleaned });
+    f.clock.set('2026-10-31T07:00:00Z');
+    expect(await f.join.cleanup.run(f.gymId, timezone)).toBe(2);
+    const listed = (gymId: string) => db.forGym(gymId, tx => tx.select({ phoneE164: smsOptedOutNumbers.phoneE164 }).from(smsOptedOutNumbers))
+      .then(list => list.map(row => row.phoneE164).sort());
+    expect(await listed(f.gymId)).toEqual([kept, shared].sort());
+    expect(await listed(f.otherGym)).toEqual([cleaned]);
+  });
   it('keeps the durable cleanup claim after a storage failure and rejects a racing submission', async () => {
     const f = await fixture(), people = [adult()], email = 'retry@example.invalid', images = await f.admit(people, email, f.plan.id);
     f.clock.set('2026-10-31T07:00:00Z');

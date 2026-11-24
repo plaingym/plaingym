@@ -751,8 +751,10 @@ Old versions and documents referenced by signatures remain retained after retire
   and audits every consent it clears. A withdrawal with no stored consent leaves
   the record unchanged. Portal consent changes preserve unsaved household contact edits.
   The gym's list of numbers that replied STOP (`sms_opted_out_numbers`) is gym-scoped
-  personal data, cleared when consent is recorded for the number and when erasure
-  removes the last current record holding it; reads return only its date.
+  personal data, cleared when consent is recorded for the number and when no current
+  member or household holds the number (after a phone change, hard delete, erasure, or
+  a refusal that found no holder); reads return only its date, and only for records
+  that store no consent.
   Staff can text `pay_invoice` and `update_card` links only to the consenting
   billing phone, or otherwise a consenting member at the billing email, as selected
   by `householdNoticePhones`. Both phone types must still normalize to their stored

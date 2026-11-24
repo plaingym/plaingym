@@ -393,9 +393,10 @@ map from ID to the time that record's number replied STOP. It runs two statement
 reads the newest `<type>.sms_opted_out`, `<type>.sms_consent_changed` or
 `<type>.sms_number_changed` audit of each record (latest `occurred_at`, then the larger ID)
 and keeps the record only when that audit is the opt-out. The second fills only the records
-the audits left without a date: it joins each one's stored `phone_e164` to the gym's
-`sms_opted_out_numbers` row, so a record that took a number after it replied STOP still gets
-the number's date. The audit's date wins over the list's. The staff read `readSmsOptedOut` in
+the audits left without a date that store no SMS consent (both member consent columns null;
+household notices null): it joins each one's stored `phone_e164` to the gym's
+`sms_opted_out_numbers` row, so a record that took a number after it replied STOP, while
+another current record still held it, still gets the number's date. The audit's date wins over the list's. The staff read `readSmsOptedOut` in
 `apps/server/src/areas/members/sms-opt-out.ts` uses the same actions, order and fallback, except
 that for a record with no stored `phone_e164` it looks the list up by the number as read.
 Members are limited to the grant's members; the household needs household-profile access and

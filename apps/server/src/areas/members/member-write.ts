@@ -5,6 +5,7 @@ import { AppError } from '@plaingym/shared';
 import { normalizePhone } from '@plaingym/shared/phone';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { logError } from '../../core/log.js';
+import { forgetUnheldSmsOptOut } from './sms-opt-out.js';
 
 export type SmsSource = 'staff' | 'portal' | 'join';
 export type SmsChangeSource = SmsSource | 'import';
@@ -55,8 +56,9 @@ export async function auditSmsConsent(tx: Transaction, context: MutationContext,
     after: { kind, at: after.at?.toISOString() ?? null, source: after.source, changeSource: source } });
 }
 /**
- * Callers run this exactly when the stored number changes: it audits each consent the change cleared, then the change
- * itself, which also ends any earlier opt-out for the record. Neither audit holds either form of the phone.
+ * Callers run this after updating the record, exactly when the stored number changes: it audits each consent the
+ * change cleared, then the change itself (which also ends any earlier opt-out for the record), and drops the old
+ * number from the gym's STOP list once no current record holds it. Neither audit holds either form of the phone.
  */
 export async function auditSmsCleared(tx: Transaction, context: MutationContext, type: 'member' | 'household', id: string,
   row: SmsColumns, source: SmsChangeSource, now: Date) {
@@ -66,6 +68,7 @@ export async function auditSmsCleared(tx: Transaction, context: MutationContext,
   await writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
     ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
     action: type + '.sms_number_changed', targetType: type, targetId: id, occurredAt: now, after: { changeSource: source } });
+  await forgetUnheldSmsOptOut(tx, row.phoneE164);
 }
 
 /** A member visible before waiting for a lock may have been deleted by the time the lock is granted. */

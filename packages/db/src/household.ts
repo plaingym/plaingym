@@ -245,10 +245,10 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
       const listed = type === 'member'
         ? await tx.select({ id: members.id, optedOutAt: smsOptedOutNumbers.optedOutAt }).from(members)
           .innerJoin(smsOptedOutNumbers, and(eq(smsOptedOutNumbers.gymId, members.gymId), eq(smsOptedOutNumbers.phoneE164, members.phoneE164)))
-          .where(and(memberPredicate, inArray(members.id, missing)))
+          .where(and(memberPredicate, inArray(members.id, missing), isNull(members.smsNoticesConsentAt), isNull(members.smsAnnouncementsConsentAt)))
         : await tx.select({ id: households.id, optedOutAt: smsOptedOutNumbers.optedOutAt }).from(households)
           .innerJoin(smsOptedOutNumbers, and(eq(smsOptedOutNumbers.gymId, households.gymId), eq(smsOptedOutNumbers.phoneE164, households.phoneE164)))
-          .where(and(eq(households.gymId, grant.gymId), eq(households.id, grant.householdId), inArray(households.id, missing)));
+          .where(and(eq(households.gymId, grant.gymId), eq(households.id, grant.householdId), inArray(households.id, missing), isNull(households.smsNoticesConsentAt)));
       for (const row of listed) dates.set(row.id, row.optedOutAt.toISOString());
       return dates;
     },

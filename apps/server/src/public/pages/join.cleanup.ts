@@ -10,6 +10,7 @@ import { checkSubmittedJoin, joinFollowedUp, submittedJoinSessions, voidAbandone
   type SubmittedJoin } from '../../areas/billing/transitions/join-cleanup.js';
 import { endDiscount, liveDiscounts, releaseDiscountUses } from '../../areas/billing/discounts/apply.js';
 import { createMembershipService } from '../../areas/billing/memberships.js';
+import { forgetUnheldSmsOptOut } from '../../areas/members/sms-opt-out.js';
 import type { Payments } from '../../infra/payments/index.js';
 import type { Uploads } from '../../infra/storage/index.js';
 import { logError, logInfo } from '../../core/log.js';
@@ -103,6 +104,9 @@ export function createJoinCleanup(options: JoinCleanupOptions) {
       await tx.update(signedLinks).set({ revokedAt: clock.now() }).where(eq(signedLinks.householdId, householdId));
       // Accounting retains its household and invoice, but the abandoned prospects are removed.
       if (!bills.length) await tx.delete(households).where(eq(households.id, householdId));
+      for (const phoneE164 of new Set([...people.map(p => p.phoneE164), home.phoneE164])) {
+        if (phoneE164 !== null) await forgetUnheldSmsOptOut(tx, phoneE164);
+      }
       return true;
     },
   });

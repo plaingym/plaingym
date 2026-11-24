@@ -16,24 +16,25 @@ and new consent, and source without recording a phone.
 When the provider refuses a text because the number replied STOP, `MemberSms`
 clears consent on every member and household with that number and audits
 `member.sms_opted_out` / `household.sms_opted_out`. It also records the number
-in the gym's `sms_opted_out_numbers` list with the opt-out's time, even when no
-record holds the number any more. `GET /api/members/{memberId}`
+in the gym's `sms_opted_out_numbers` list with the opt-out's time when a current
+record holds it, and removes the row when none does. `GET /api/members/{memberId}`
 and `GET /api/households/{householdId}` then report `sms.optedOutAt`, the time of
 that opt-out, read by `readSmsOptedOut` (`sms-opt-out.ts`) inside the request's
 gym transaction: it is the newest opt-out, consent-change or number-change audit
-for the record when that audit is an opt-out. Without one, it is the list's date
+for the record when that audit is an opt-out. Without one, and only when the
+record stores no SMS consent, it is the list's date
 for the record's stored number (the staff reads use the number as read for a
 record with none stored; the portal reads leave such a record out), so a member or household that takes an opted-out
-number later (a new record, a phone edit, or a number changed away and back) shows
+number later (a new record or a phone edit) while another current record still holds it shows
 the STOP line too. It is null once consent is recorded again or the record's number
 changes to one not on the list. The portal's household, member and payer's member
 list reads report the same date through the household query `smsOptedOut`, inside
 the request's household transaction and limited to the login's grant. Recording
 consent for a number (staff or portal consent, or a `/join` SMS choice) removes it
-from the list in the same transaction. Erasing a member removes the member's number,
-and when the household's last member is erased the household's billing number, once
-no current member and no household holds it. Deleting a member or household leaves
-the list as it is. Staff list
+from the list in the same transaction. The number is also dropped from the list
+once no current member and no household holds it: after a phone change, a hard
+delete (member or household deletion, or abandoned join and drop-in cleanup), an
+erasure, or a refusal that found no holder. Staff list
 reads, the people export and imports omit the field. The staff and portal consent
 panels show the date in the gym's timezone; the staff panels also ask staff to
 confirm the person replied START before recording verbal consent again. When a member's

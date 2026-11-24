@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it, vi } from 'vitest';
 import '@hono/zod-openapi';
-import { auditEvents, members, households, waiverSignatures, waiverTemplates, invoices, leads, uuidv7 } from '@plaingym/db';
+import { auditEvents, members, households, smsOptedOutNumbers, waiverSignatures, waiverTemplates, invoices, leads, uuidv7 } from '@plaingym/db';
 import { eq } from 'drizzle-orm';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -232,6 +232,35 @@ describe('core public pages through the production registrations', () => {
     expect((await f.post('/api/public/drop-in', input)).status).toBe(404);
     expect((await f.rows()).signatures).toHaveLength(0);
     expect(await f.service.cleanup!.remove(f.gymId, id)).toBe(true);
+  });
+
+  it('drops a cleaned drop-in prospect\'s listed numbers and keeps them when cleanup is refused', async () => {
+    const f = await fixture(false, 'CA');
+    const cleanedMemberPhone = '+16045550123', cleanedHomePhone = '+16045550124', keptPhone = '+16045550144';
+    const cleaned = await f.admit(body('cleaned-stop@example.invalid'));
+    const kept = await f.admit(body('kept-stop@example.invalid'));
+    const cleanedId = cleaned.waivers[0]!.signatureImageKey.split('/')[2]!;
+    const keptId = kept.waivers[0]!.signatureImageKey.split('/')[2]!;
+    const before = await f.rows();
+    const cleanedMember = before.members.find(m => m.id === cleanedId)!;
+    const keptMember = before.members.find(m => m.id === keptId)!;
+    await db.forGym(f.gymId, async tx => {
+      await tx.update(members).set({ phone: cleanedMemberPhone, phoneE164: cleanedMemberPhone }).where(eq(members.id, cleanedId));
+      await tx.update(households).set({ phone: cleanedHomePhone, phoneE164: cleanedHomePhone }).where(eq(households.id, cleanedMember.householdId));
+      await tx.update(members).set({ phone: keptPhone, phoneE164: keptPhone }).where(eq(members.id, keptId));
+      await tx.update(households).set({ phone: keptPhone, phoneE164: keptPhone }).where(eq(households.id, keptMember.householdId));
+    });
+    // A signed waiver protects the second prospect from cleanup.
+    await f.waivers.sign({ gymId: f.gymId, actor: { kind: 'system' } }, { ...kept.waivers[0]!, memberId: keptId },
+      { timezone: 'America/Vancouver', ipAddress: '192.0.2.1' });
+    for (const phoneE164 of [cleanedMemberPhone, cleanedHomePhone, keptPhone]) await factory('smsOptedOutNumbers', f.gymId, { phoneE164 });
+    await factory('smsOptedOutNumbers', f.otherGym, { phoneE164: cleanedMemberPhone });
+    f.clock.advance(dropInAdmissionWindowMs);
+    expect(await f.service.cleanup!.run(f.gymId)).toBe(1);
+    const listed = (gymId: string) => db.forGym(gymId, tx => tx.select({ phoneE164: smsOptedOutNumbers.phoneE164 }).from(smsOptedOutNumbers))
+      .then(list => list.map(row => row.phoneE164).sort());
+    expect(await listed(f.gymId)).toEqual([keptPhone]);
+    expect(await listed(f.otherGym)).toEqual([cleanedMemberPhone]);
   });
 
   it('refuses new trial and drop-in admissions at the shared ceiling with page text while an existing visit finishes', async () => {

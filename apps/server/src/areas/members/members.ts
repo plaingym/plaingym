@@ -333,7 +333,7 @@ export function createMembersService(options: MembersOptions = {}) {
           const { tx } = transaction;
           const found = missing((await tx.select({ householdId: members.householdId }).from(members).where(eq(members.id, id)))[0]);
           const home = await getHouseholdRow(tx, found.householdId);
-          const before = missing((await tx.select({ householdId: members.householdId, email: members.emailAddress, photoKey: members.photoKey, revision: members.revision })
+          const before = missing((await tx.select({ householdId: members.householdId, email: members.emailAddress, phoneE164: members.phoneE164, photoKey: members.photoKey, revision: members.revision })
             .from(members).where(eq(members.id, id)).for('update'))[0]);
           if (before.householdId !== home.id) throw new AppError('conflict', 'The member changed households while waiting to delete');
           if (before.revision !== revision) throw new AppError('conflict', 'The record changed since it was read.');
@@ -369,11 +369,13 @@ export function createMembersService(options: MembersOptions = {}) {
           await tx.delete(signedLinks).where(eq(signedLinks.memberId, id));
           await tx.delete(memberships).where(eq(memberships.memberId, id));
           await tx.delete(members).where(eq(members.id, id));
+          await forgetUnheldSmsOptOut(tx, before.phoneE164);
           await audit(tx, context, 'member.deleted', 'member', id);
           if (last) {
             await tx.delete(householdUsers).where(eq(householdUsers.householdId, home.id));
             await tx.delete(signedLinks).where(eq(signedLinks.householdId, home.id));
             await tx.delete(households).where(eq(households.id, home.id));
+            await forgetUnheldSmsOptOut(tx, home.phoneE164);
             await audit(tx, context, 'household.deleted', 'household', home.id);
           }
           const files = [...(before.photoKey ? [before.photoKey] : []), ...waivers.map((waiver) => waiver.key)];
@@ -430,13 +432,14 @@ export function createMembersService(options: MembersOptions = {}) {
       c.revisionSchema.parse(revision);
       try {
         return await scope(context.gymId, async (tx) => {
-          await getHouseholdRow(tx, id);
+          const home = await getHouseholdRow(tx, id);
           for (const table of [members, invoices, householdUsers, signedLinks]) {
             if ((await tx.select({ id: table.id }).from(table).where(eq(table.householdId, id)).limit(1)).length)
               throw new AppError('conflict', 'Only unused households can be deleted');
           }
           const guard = revisionGuard(households.revision, revision);
           assertRevised(await tx.delete(households).where(and(eq(households.id, id), guard.matches)).returning({ id: households.id }));
+          await forgetUnheldSmsOptOut(tx, home.phoneE164);
           await audit(tx, context, 'household.deleted', 'household', id);
         });
       } catch (error) {

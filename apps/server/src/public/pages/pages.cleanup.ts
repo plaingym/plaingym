@@ -4,6 +4,7 @@ import { announcementOptOuts, announcementRecipients, attendances, auditEvents, 
   forGym, households, householdUsers, invoices, leadContacts, leads, memberRanks, members, memberships, memberTagLinks,
   paymentMethods, signedLinks, staffProfiles, waiverSignatures } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
+import { forgetUnheldSmsOptOut } from '../../areas/members/sms-opt-out.js';
 import type { Uploads } from '../../infra/storage/index.js';
 import { logError } from '../../core/log.js';
 import { createAdmissionCleanup } from './admission.cleanup.js';
@@ -45,6 +46,8 @@ export function createDropInCleanup(options: { scope?: typeof forGym; clock: Clo
       if (lead) await tx.delete(leads).where(eq(leads.id, lead.id));
       await tx.delete(members).where(eq(members.id, memberId));
       await tx.delete(households).where(eq(households.id, home.id));
+      await forgetUnheldSmsOptOut(tx, fresh.phoneE164);
+      if (home.phoneE164 !== fresh.phoneE164) await forgetUnheldSmsOptOut(tx, home.phoneE164);
       return true;
     },
   });
