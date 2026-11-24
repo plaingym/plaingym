@@ -60,8 +60,10 @@ outcome, a failure that never reached SMTP, or a refused recipient: a recipient
 refused at `RCPT TO` with 550 or 554 counts only as the recipient's, while 530 at
 any command reads as a login requirement) and that class isn't already shown, and
 `email.delivery_recovered` when a send works after a recorded failure. Rows are
-written only on a change, in a short transaction after the send; a failed record is
-logged and never changes the send. `readEmailSendFailure` returns the newest failure
+written only on a change, in a short transaction after the send; a send's report is
+skipped when the email settings changed (saved, removed, or saved at setup step 5)
+after its settings were resolved, and a failed record is logged and never changes
+the send. `readEmailSendFailure` returns the newest failure
 until a recovery, `integrations.email_saved`, `integrations.email_removed`, or setup
 step 5 with settings saved (a skip, `test: 'not_sent'`, doesn't count) follows it; the Email section shows it as `lastSendFailure`, with its time.
 Removing an unreadable stored value is never refused, since it takes no sign-in

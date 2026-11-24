@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, desc, eq, gt, inArray, or } from 'drizzle-orm';
-import { auditEvents, forGym, writeAudit, type Transaction } from '@plaingym/db';
+import { auditEvents, forGym, gyms, writeAudit, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { smtpTestFailureSchema, type SmtpTestFailure } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
@@ -21,6 +21,25 @@ const savedAtEmailStep = (after: unknown) => {
 type SmtpSettings ={ port: number; security: 'starttls' | 'tls' | 'plain' };
 type Report = NonNullable<SmtpConfig['report']>;
 type Row = { id: string; action: string; after: unknown; occurredAt: Date };
+export type SettingsMark = { occurredAt: Date; id: string } | null;
+
+/** The newest email-settings audit row for the gym, or null when none exists. */
+export async function readSettingsMark(tx: Transaction, gymId: string): Promise<SettingsMark> {
+  const [row] = await tx.select({ occurredAt: auditEvents.occurredAt, id: auditEvents.id })
+    .from(auditEvents).where(and(eq(auditEvents.gymId, gymId), inArray(auditEvents.action, [...settingsActions, setupStepAction])))
+    .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
+  return row ?? null;
+}
+
+async function settingsChangedAfter(tx: Transaction, gymId: string, mark: SettingsMark): Promise<boolean> {
+  const newer = mark
+    ? or(gt(auditEvents.occurredAt, mark.occurredAt), and(eq(auditEvents.occurredAt, mark.occurredAt), gt(auditEvents.id, mark.id)))
+    : undefined;
+  const later = await tx.select({ action: auditEvents.action, after: auditEvents.after }).from(auditEvents)
+    .where(and(eq(auditEvents.gymId, gymId), inArray(auditEvents.action, [...settingsActions, setupStepAction]), newer));
+  // Skipping setup's email step (`test: 'not_sent'`) saves no settings, so it leaves the failure standing.
+  return later.some((row) => row.action !== setupStepAction || savedAtEmailStep(row.after));
+}
 
 async function newestStatus(tx: Transaction, gymId: string): Promise<Row | undefined> {
   const [row] = await tx.select({ id: auditEvents.id, action: auditEvents.action, after: auditEvents.after, occurredAt: auditEvents.occurredAt })
@@ -38,11 +57,7 @@ export async function readEmailSendFailure(tx: Transaction, gymId: string): Prom
   if (newest?.action !== 'email.delivery_failed') return null;
   const failure = smtpTestFailureSchema.safeParse((newest.after as { failure?: unknown } | null)?.failure);
   if (!failure.success) return null;
-  const newer = or(gt(auditEvents.occurredAt, newest.occurredAt), and(eq(auditEvents.occurredAt, newest.occurredAt), gt(auditEvents.id, newest.id)));
-  const later = await tx.select({ action: auditEvents.action, after: auditEvents.after }).from(auditEvents)
-    .where(and(eq(auditEvents.gymId, gymId), inArray(auditEvents.action, [...settingsActions, setupStepAction]), newer));
-  // Skipping setup's email step (`test: 'not_sent'`) saves no settings, so it leaves the failure standing.
-  if (later.some((row) => row.action !== setupStepAction || savedAtEmailStep(row.after))) return null;
+  if (await settingsChangedAfter(tx, gymId, { occurredAt: newest.occurredAt, id: newest.id })) return null;
   return { failure: failure.data, at: newest.occurredAt.toISOString() };
 }
 
@@ -54,16 +69,23 @@ export async function readEmailSendFailure(tx: Transaction, gymId: string): Prom
  */
 export function createEmailStatusRecorder(options: { scope?: typeof forGym; clock?: Clock } = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
-  return (gymId: string, settings: SmtpSettings): Report => async (outcome) => {
+  return (gymId: string, settings: SmtpSettings, mark?: SettingsMark): Report => async (outcome) => {
     const failure = outcome.ok ? null : emailServiceFailure(outcome.error, settings);
     if (!outcome.ok && failure === null) return;
     try {
       await scope(gymId, async (tx) => {
+        // A settings save locks the gym row while it writes its audit row. Sharing that lock first means a save in
+        // progress commits before the check, so it can't land between the check and the write.
+        const stale = async () => {
+          if (mark === undefined) return false;
+          await tx.select({ id: gyms.id }).from(gyms).where(eq(gyms.id, gymId)).for('share');
+          return settingsChangedAfter(tx, gymId, mark);
+        };
         if (failure !== null) {
-          if ((await readEmailSendFailure(tx, gymId))?.failure === failure) return;
+          if ((await readEmailSendFailure(tx, gymId))?.failure === failure || await stale()) return;
           await writeAudit(tx, { gymId, actorKind: 'system', action: 'email.delivery_failed', targetType: 'gym', targetId: gymId,
             after: { failure }, occurredAt: clock.now() });
-        } else if ((await newestStatus(tx, gymId))?.action === 'email.delivery_failed') {
+        } else if ((await newestStatus(tx, gymId))?.action === 'email.delivery_failed' && !await stale()) {
           await writeAudit(tx, { gymId, actorKind: 'system', action: 'email.delivery_recovered', targetType: 'gym', targetId: gymId,
             after: null, occurredAt: clock.now() });
         }

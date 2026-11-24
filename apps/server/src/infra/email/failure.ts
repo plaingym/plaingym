@@ -90,6 +90,12 @@ export function emailServiceFailure(error: unknown, settings?: { port: number; s
     return failure;
   }
   if (failure === 'connection' || failure === 'tls') return failure;
-  if (failure === 'sender_refused' && facts.commands.has('MAIL FROM')) return failure;
+  if (failure === 'sender_refused') {
+    if (facts.codes.has('EMESSAGE') && !facts.codes.has('EENVELOPE')) return null;
+    if (facts.commands.has('MAIL FROM')) return failure;
+    // Postfix's default smtpd_delay_reject=yes defers sender-address policy checks to RCPT TO (553 5.7.1).
+    if (facts.codes.has('EENVELOPE') && facts.commands.has('RCPT TO')
+      && facts.responseCodes.has(553) && facts.enhancedStatuses.has('5.7.1')) return failure;
+  }
   return null;
 }

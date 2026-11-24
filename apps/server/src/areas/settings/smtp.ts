@@ -9,7 +9,7 @@ import { smtpTestFailure } from '../../infra/email/failure.js';
 import { decryptSecret, encryptSecret } from '../../core/secrets.js';
 import { tenancyMode } from '../../core/tenancy.js';
 import { readStoredSecret } from './unreadable-secret.js';
-import { createEmailStatusRecorder } from './email-status.js';
+import { createEmailStatusRecorder, readSettingsMark } from './email-status.js';
 
 /** The gym's own sending service, stored encrypted in `gyms.smtp_config_encrypted`. */
 export const storedSmtpSchema = z.strictObject({
@@ -79,13 +79,16 @@ export function createSmtpResolver(options: { key: Buffer; env?: NodeJS.ProcessE
     return readStoredSecret(options.key, 'smtp_config', gymId, stored ?? null, () =>
       readSmtpSchema.parse(JSON.parse(decryptSecret(options.key, { secretClass: 'smtp_config', owner: gymId }, stored!))));
   }
-  async function ownConfig(gymId: string) {
-    return readOwnConfig(gymId, await storedConfig(gymId));
-  }
   async function config(gymId: string): Promise<SmtpConfig | null> {
-    const own = await ownConfig(gymId);
+    // Read the settings mark before the stored SMTP value so a concurrent save makes the report skip instead of recording a stale result.
+    const { mark, stored } = await scope(gymId, async (tx) => {
+      const mark = await readSettingsMark(tx, gymId);
+      const [row] = await tx.select({ smtp: gyms.smtpConfig }).from(gyms).where(eq(gyms.id, gymId));
+      return { mark, stored: row?.smtp };
+    });
+    const own = readOwnConfig(gymId, stored);
     const resolved = own ? fromStored(own, tenantHosts) : fallback;
-    return resolved && { ...resolved, report: recorder(gymId, { port: resolved.port, security: resolved.security ?? 'starttls' }) };
+    return resolved && { ...resolved, report: recorder(gymId, { port: resolved.port, security: resolved.security ?? 'starttls' }, mark) };
   }
   return { config, async status(gymId) {
     const stored = await storedConfig(gymId);

@@ -49,4 +49,15 @@ describe('the sending service\'s failures', () => {
     expect(emailServiceFailure(refused({ code: 'EENVELOPE', command: 'RCPT TO', responseCode: 530 }))).toBe('authentication');
     expect(emailServiceFailure(refused({ code: 'EAUTH' }))).toBe('authentication');
   });
+  it('blames nothing for Nodemailer\'s own message-size refusal, and catches a delayed sender refusal at RCPT TO', () => {
+    expect(emailServiceFailure(refused({ code: 'EMESSAGE', command: 'MAIL FROM' }))).toBeNull();
+    expect(emailServiceFailure(refused({ code: 'EENVELOPE', command: 'MAIL FROM', responseCode: 550 }))).toBe('sender_refused');
+    expect(emailServiceFailure(refused({ code: 'EENVELOPE', command: 'RCPT TO', responseCode: 553,
+      response: '553 5.7.1 <desk@gym.example>: Sender address rejected: not owned by user' }))).toBe('sender_refused');
+    expect(emailServiceFailure(refused({ code: 'EENVELOPE', command: 'RCPT TO', responseCode: 550,
+      response: '550 5.1.1 <member@gym.example>: Recipient address rejected' }))).toBeNull();
+    expect(emailServiceFailure(refused({ code: 'EENVELOPE', command: 'RCPT TO', responseCode: 553,
+      response: '553 5.1.3 <bad@>: Invalid address syntax' }))).toBeNull();
+    expect(emailServiceFailure(refused({ code: 'EENVELOPE', command: 'RCPT TO', responseCode: 553 }))).toBeNull();
+  });
 });

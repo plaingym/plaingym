@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { beforeAll, describe, expect, it } from 'vitest';
 import { and, asc, eq, inArray } from 'drizzle-orm';
-import { auditEvents, uuidv7, writeAudit } from '@plaingym/db';
+import { auditEvents, gyms, uuidv7, writeAudit } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
@@ -140,5 +140,74 @@ describe('the SMTP resolver\'s report', () => {
     expect(await shown(installed)).toMatchObject({ failure: 'tls' });
     expect(await shown(own)).toMatchObject({ failure: 'authentication' });
     expect(await rows(own)).toHaveLength(1);
+  });
+  it('skips recording when email settings changed after config() resolved', async () => {
+    const gymId = await newGym();
+    const smtp = createSmtpResolver({ key, env, scope: database.forGym, clock });
+    const staleConfig = await smtp.config(gymId);
+    await audit(gymId, 'integrations.email_saved', { source: 'gym' });
+    clock.advance(1000);
+    await staleConfig!.report!(authentication);
+    expect(await rows(gymId)).toEqual([]);
+    expect(await shown(gymId)).toBeNull();
+
+    const freshConfig = await smtp.config(gymId);
+    clock.advance(1000);
+    await freshConfig!.report!(authentication);
+    expect(await shown(gymId)).toMatchObject({ failure: 'authentication' });
+    expect(await rows(gymId)).toHaveLength(1);
+
+    clock.advance(1000);
+    await staleConfig!.report!(sent);
+    expect(await rows(gymId)).toHaveLength(1);
+    expect(await shown(gymId)).toMatchObject({ failure: 'authentication' });
+  });
+  it('still records when only another setup step or a skipped email step happened after config() resolved', async () => {
+    const gymA2 = await newGym();
+    const smtp = createSmtpResolver({ key, env, scope: database.forGym, clock });
+    const skippedConfig = await smtp.config(gymA2);
+    await audit(gymA2, 'setup.step_completed', { step: 5, test: 'not_sent' });
+    clock.advance(1000);
+    await skippedConfig!.report!(authentication);
+    expect(await shown(gymA2)).toMatchObject({ failure: 'authentication' });
+
+    const gymA3 = await newGym();
+    const otherStepConfig = await smtp.config(gymA3);
+    await audit(gymA3, 'setup.step_completed', { step: 3 });
+    clock.advance(1000);
+    await otherStepConfig!.report!(authentication);
+    expect(await shown(gymA3)).toMatchObject({ failure: 'authentication' });
+  });
+  it('records a failure when no settings audit exists at all', async () => {
+    const gymId = await newGym();
+    const smtp = createSmtpResolver({ key, env, scope: database.forGym, clock });
+    const installConfig = await smtp.config(gymId);
+    clock.advance(1000);
+    await installConfig!.report!(authentication);
+    expect(await shown(gymId)).toMatchObject({ failure: 'authentication' });
+  });
+  it('waits for a settings save in progress and then records nothing', async () => {
+    const gymId = await newGym();
+    const smtp = createSmtpResolver({ key, env, scope: database.forGym, clock });
+    const staleConfig = await smtp.config(gymId);
+    let locked!: () => void, release!: () => void;
+    const lockHeld = new Promise<void>((resolve) => { locked = resolve; });
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    // A save locks the gym row and writes its audit row in one transaction, as Settings → Email does.
+    const save = database.forGym(gymId, async (tx) => {
+      await tx.select({ id: gyms.id }).from(gyms).where(eq(gyms.id, gymId)).for('update');
+      locked();
+      await released;
+      clock.advance(1000);
+      await writeAudit(tx, { gymId, actorKind: 'system', action: 'integrations.email_saved', targetType: 'gym', targetId: gymId,
+        after: { source: 'gym' }, occurredAt: clock.now() });
+    });
+    await lockHeld;
+    const report = staleConfig!.report!(authentication);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    release();
+    await Promise.all([save, report]);
+    expect(await rows(gymId)).toEqual([]);
+    expect(await shown(gymId)).toBeNull();
   });
 });
