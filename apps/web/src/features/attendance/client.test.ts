@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { onApiError } from '../../lib/api.js';
 import { attendanceClient } from './client.js';
 const id = (n: number) => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
 const entry = (n: number) => ({ id: id(n), memberId: id(1), sessionId: id(2), programId: null,
@@ -76,5 +77,27 @@ describe('attendance HTTP client', () => {
     await expect(attendanceClient.roster(id(2), 0)).rejects.toThrow('Attendance request failed');
     await expect(attendanceClient.members('River')).rejects.toThrow('Attendance request failed');
     await expect(attendanceClient.record({ memberId: id(1), sessionId: null, programId: null })).rejects.toThrow('Attendance request failed');
+  });
+  it('notifies refusal listeners once per 403 response and throws a plain Attendance request failed error', async () => {
+    const listener = vi.fn();
+    const unsubscribe = onApiError(listener);
+    try {
+      const forbidden = () => Response.json({ error: { details: { reason: ['role_required'] } } }, { status: 403 });
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => forbidden()));
+      for (const call of [
+        () => attendanceClient.members('River'),
+        () => attendanceClient.record({ memberId: id(1), sessionId: null, programId: null }),
+        () => attendanceClient.undo(id(10)),
+      ]) {
+        const failure = await call().catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(Error);
+        expect((failure as Error).constructor).toBe(Error);
+        expect((failure as Error).message).toBe('Attendance request failed');
+      }
+      expect(listener).toHaveBeenCalledTimes(3);
+      expect(listener).toHaveBeenCalledWith(expect.objectContaining({ status: 403, reason: ['role_required'] }));
+    } finally {
+      unsubscribe();
+    }
   });
 });

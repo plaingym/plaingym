@@ -7,7 +7,7 @@ const source = join(import.meta.dirname, '..');
 /** Files that may build an error from a non-literal status themselves. */
 const statusExceptions = new Set(['lib/api.ts']);
 /** Files allowed to call `reportApiRefusal` directly instead of `refusalError` or `readRefusal`. */
-const reportExceptions = new Set(['lib/api.ts', 'features/attendance/client.ts', 'features/waivers/api.ts']);
+const reportExceptions = new Set(['lib/api.ts']);
 const nonLiteralStatusError = /new\s+ApiError\s*\((?!\s*\d)/g;
 const directRefusalReport = /\breportApiRefusal\s*\(/g;
 

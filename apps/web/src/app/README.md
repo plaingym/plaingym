@@ -20,8 +20,7 @@ client's middleware and the JSON transport report structured HTTP 403 reasons;
 custom fetch clients throw `await refusalError(response, code)` (or use
 `readRefusal` for allowed messages and custom reasons), which reads the refused
 body once and notifies at most once per response, whichever helpers read it.
-`reportApiRefusal` stays for the remaining plain-error callers (`features/attendance/client.ts`,
-`features/waivers/api.ts`); other clients use `refusalError` or `readRefusal`.
+`reportApiRefusal` is used only by the typed client's middleware in `lib/api.ts`; other clients use `refusalError` or `readRefusal`.
 `ApiError` construction and `checked` only build or throw errors, and a source
 check (`lib/api.sources.test.ts`) fails when a client outside `lib/api.ts` builds an `ApiError`
 from a non-literal status or calls `reportApiRefusal` outside the listed callers.

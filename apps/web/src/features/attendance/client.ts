@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { parseResponse } from '../../lib/response.js';
-import { reportApiRefusal } from '../../lib/api.js';
+import { readRefusal } from '../../lib/api.js';
 import {
   attendanceContracts, attendanceTotalsResponseSchema, bookingsContracts,
   memberListResponseSchema, ranksContracts, classTagListResponseSchema,
@@ -10,7 +10,7 @@ import {
 async function get(path: string, query: Record<string, string | number>) {
   const params = new URLSearchParams(Object.entries(query).map(([key, value]) => [key, String(value)]));
   const result = await fetch(`${path}?${params}`, { credentials: 'same-origin', redirect: 'error', headers: { Accept: 'application/json' } });
-  if (!result.ok) { await reportApiRefusal(result); throw new Error('Attendance request failed'); }
+  if (!result.ok) { await readRefusal(result); throw new Error('Attendance request failed'); }
   return result.json() as Promise<unknown>;
 }
 async function catalog<T>(path: string, parse: (value: unknown) => { data: T[]; pagination: { total: number } }) {
@@ -52,7 +52,7 @@ export const attendanceClient = {
     const result = await fetch(attendanceContracts.record.path, { method: 'POST', credentials: 'same-origin', redirect: 'error',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(attendanceContracts.record.body.parse(input)) });
-    if (!result.ok) { await reportApiRefusal(result); throw new Error('Attendance request failed'); }
+    if (!result.ok) { await readRefusal(result); throw new Error('Attendance request failed'); }
     return parseResponse(attendanceContracts.record.response, await result.json()).data;
   },
   async undo(id: string) {
@@ -60,7 +60,7 @@ export const attendanceClient = {
     const params = contract.params.parse({ id });
     const result = await fetch(contract.path.replace('{id}', params.id), { method: 'POST', credentials: 'same-origin', redirect: 'error',
       headers: { Accept: 'application/json' } });
-    if (!result.ok) { await reportApiRefusal(result); throw new Error('Attendance request failed'); }
+    if (!result.ok) { await readRefusal(result); throw new Error('Attendance request failed'); }
     return parseResponse(contract.response, await result.json()).data;
   },
 };

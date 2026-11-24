@@ -150,7 +150,11 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
     try { await action(); }
     catch (failure) {
       const reasons = failure instanceof ApiError ? failure.reason : [];
-      setError(failure instanceof ApiError && failure.status === 403 ? 'setupLink' : failure instanceof ApiError && failure.status === 409 ? 'changed'
+      const emailUnavailable = failure instanceof ApiError && failure.status === 503 && failure.code === 'EMAIL_UNAVAILABLE';
+      // No link went out this time, so an earlier "check your inbox" note would contradict the alert.
+      if (emailUnavailable) setSent(false);
+      setError(emailUnavailable ? 'emailUnavailable'
+        : failure instanceof ApiError && failure.status === 403 ? 'setupLink' : failure instanceof ApiError && failure.status === 409 ? 'changed'
         : reasons.includes('unreachable') ? 'unreachable' : reasons.includes('google_rejected') ? 'googleRejected' : 'failed');
       if (failure instanceof ApiError && failure.status === 409) await refresh();
     } finally { setBusy(false); }

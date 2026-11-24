@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { parseResponse } from '../../lib/response.js';
 import { setupContracts, ranksContracts } from '@plaingym/shared/contracts';
-import { readRefusal, refusalError } from '../../lib/api.js';
+import { readRefusal, refusalError, createJsonTransport } from '../../lib/api.js';
 
 /** The server's refusal codes (`details`) in a parsed error body, never its message. */
 function refusalCodes(body: unknown): string[] {
@@ -44,9 +44,9 @@ export function createSetupClient(fetcher: typeof fetch = fetch) {
       return parseResponse(ranksContracts.catalog.response, await response.json()).data;
     },
     async magicLink(email: string) {
-      const response = await fetcher('/api/auth/sign-in/magic-link', { method: 'POST', credentials: 'same-origin', redirect: 'error',
-        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, callbackURL: '/setup', errorCallbackURL: '/setup' }) });
-      if (!response.ok) throw await refusalError(response, 'request_failed');
+      await createJsonTransport(fetcher, { serverCode: true })('/api/auth/sign-in/magic-link', {
+        email, callbackURL: '/setup', errorCallbackURL: '/setup',
+      });
     },
   };
 }

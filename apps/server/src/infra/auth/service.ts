@@ -60,7 +60,8 @@ export interface AuthServiceOptions {
 export const portalClaimCallbackPath = '/portal/claim';
 /**
  * A sign-in link request answers 503 with this code when the gym's sending service failed (`emailServiceFailure`).
- * The web sign-in page (`apps/web/src/routes/login.tsx`) compares this exact literal, so change both together.
+ * The web sign-in page (`apps/web/src/routes/login.tsx`) and the setup wizard (`apps/web/src/features/setup/wizard.tsx`,
+ * through `features/setup/api.ts`) compare this exact literal, so change them together.
  */
 export const emailUnavailableCode = 'EMAIL_UNAVAILABLE';
 const validClaimCode = (code: string) => portalClaimCodeSchema.safeParse(code).success;

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { waiverContracts, waiverDocumentResponseSchema } from '@plaingym/shared/contracts';
 import { billingRequest } from '../billing/catalog/api.js';
-import { readRefusal, reportApiRefusal } from '../../lib/api.js';
+import { readRefusal } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 export class WaiverRequestError extends Error {}
 export function createWaiversClient(fetcher: typeof fetch = fetch) {
@@ -18,8 +18,7 @@ export function createWaiversClient(fetcher: typeof fetch = fetch) {
   };
   return { uploadDocument: async (file: File) => {
     const response = await transport(waiverContracts.uploadDocument.path, { method: 'POST', headers: { 'Content-Type': 'application/pdf' }, body: file });
-    await reportApiRefusal(response);
-    if (!response.ok) throw new Error('Document upload failed');
+    if (!response.ok) { await readRefusal(response); throw new Error('Document upload failed'); }
     return waiverDocumentResponseSchema.parse(await response.json());
   }, call: <K extends keyof typeof waiverContracts>(name: K, input?: unknown, params: Record<string, string> = {}, query: Record<string, string | number> = {}) =>
     billingRequest(waiverContracts[name], input, params, query, transport) as Promise<ReturnType<typeof waiverContracts[K]['response']['parse']>> };

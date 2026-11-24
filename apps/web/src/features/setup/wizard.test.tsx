@@ -1043,4 +1043,65 @@ describe('setup wizard restore progress', () => {
     expect(screen.queryByText(restoring)).toBeNull();
     expect(sessionStorage.getItem('setup.restore')).toBeNull();
   });
+  it('shows the email-unavailable message when sending the owner sign-in link fails with 503 EMAIL_UNAVAILABLE', async () => {
+    const emailUnavailable = "The gym's email isn't working right now, so no sign-in link was sent. Check the server's email (SMTP) settings, then try again.";
+    const genericFailed = 'Could not save this step. Check the details and try again.';
+    vi.mocked(services.loadBootstrap).mockResolvedValue({
+      gym: { id: 'gym', name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] },
+      session: null,
+      login: { password: false, magicLink: true },
+    });
+    const { fetcher } = start(2);
+    const base = fetcher.getMockImplementation()!;
+    const sentText = 'Check your inbox for a sign-in link, then return here to continue setup.';
+    const responses = [
+      Response.json({ status: true }),
+      Response.json({ code: 'EMAIL_UNAVAILABLE', message: 'x' }, { status: 503 }),
+      Response.json({ code: 'OTHER_ERROR', message: 'x' }, { status: 503 }),
+      Response.json({ error: { code: 'internal' } }, { status: 500 }),
+    ];
+    fetcher.mockImplementation((path, options) => String(path) === '/api/auth/sign-in/magic-link'
+      ? Promise.resolve(responses.shift()!)
+      : base(path, options));
+
+    await userEvent.type(await screen.findByLabelText('Email address'), 'owner@example.org');
+    const signInButton = screen.getByRole('button', { name: 'Sign in' });
+
+    await userEvent.click(signInButton);
+    expect(await screen.findByText(sentText)).toBeDefined();
+
+    // A resend that fails because the email is down drops the earlier "check your inbox" note.
+    await userEvent.click(signInButton);
+    expect(await screen.findByText(emailUnavailable)).toBeDefined();
+    expect(screen.queryByText(sentText)).toBeNull();
+
+    await userEvent.click(signInButton);
+    const otherServiceFailure = await screen.findByText(genericFailed);
+
+    // The 500's alert replaces the previous one (the error clears when the request starts).
+    await userEvent.click(signInButton);
+    await waitFor(() => expect(screen.getByText(genericFailed)).not.toBe(otherServiceFailure));
+    expect(responses).toHaveLength(0);
+    expect(screen.queryByText(emailUnavailable)).toBeNull();
+  });
+  it('shows the email-unavailable message at step 1 when owner creation falls back to a magic link that returns 503 EMAIL_UNAVAILABLE', async () => {
+    const emailUnavailable = "The gym's email isn't working right now, so no sign-in link was sent. Check the server's email (SMTP) settings, then try again.";
+    vi.mocked(services.loadBootstrap).mockResolvedValue({
+      gym: { id: 'gym', name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] },
+      session: null,
+      login: { password: false, magicLink: true },
+    });
+    const { fetcher } = start(1);
+    const base = fetcher.getMockImplementation()!;
+    fetcher.mockImplementation((path, options) => String(path) === '/api/auth/sign-in/magic-link'
+      ? Promise.resolve(Response.json({ code: 'EMAIL_UNAVAILABLE', message: 'x' }, { status: 503 }))
+      : base(path, options));
+
+    await userEvent.type(await screen.findByLabelText('Your name'), 'Gym Owner');
+    await userEvent.type(screen.getByLabelText('Email address'), 'owner@example.org');
+    await userEvent.type(screen.getByLabelText('Password (12–128 characters)'), 'owner-password-123');
+    await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Save and continue' }));
+
+    expect(await screen.findByText(emailUnavailable)).toBeDefined();
+  });
 });
