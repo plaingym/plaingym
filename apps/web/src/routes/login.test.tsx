@@ -88,6 +88,11 @@ describe('an email-link request that fails', () => {
     await userEvent.click(screen.getByRole('button', { name: /link/i }));
     expect((await screen.findByRole('alert')).textContent).toBe(message);
   });
+  it.each(['request_failed', 'SOMETHING_ELSE'])('keeps the generic text for an email-link 503 coded %s', async (code) => {
+    await ask(new ApiError(503, code));
+    await userEvent.click(screen.getByRole('button', { name: /link/i }));
+    expect((await screen.findByRole('alert')).textContent).toBe('Unable to sign in. Check your details and try again.');
+  });
   it('keeps the generic text for a password sign-in that answers 503', async () => {
     await ask(new ApiError(503, 'unavailable'), { password: true, magicLink: true });
     await userEvent.type(screen.getByLabelText('Password'), 'a-password-123');

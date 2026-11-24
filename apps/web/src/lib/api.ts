@@ -94,6 +94,11 @@ export async function readApiError(response: Response, allowedMessages: readonly
 export async function apiErrorReasons(response: Response): Promise<readonly string[]> {
   return (await readApiError(response)).reasons;
 }
+/** The body's `code` only when it is a short upper-case token (such as `EMAIL_UNAVAILABLE`); never the body's message. */
+function serverCodeIn(body: unknown): string | undefined {
+  const code = body && typeof body === 'object' && 'code' in body ? body.code : undefined;
+  return typeof code === 'string' && code.length <= 64 && /^[A-Z0-9_]+$/.test(code) ? code : undefined;
+}
 /** Restrict all API calls to this gym's origin, including injected auth transports. */
 export function createJsonTransport(fetcher?: typeof fetch) {
   return async function request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
@@ -104,7 +109,10 @@ export function createJsonTransport(fetcher?: typeof fetch) {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }), ...(signal ? { signal } : {}),
     });
     // Never display arbitrary server/SQL messages to the user.
-    if (!response.ok) throw await refusalError(response, response.status === 429 ? 'rate_limited' : 'request_failed');
+    if (!response.ok) {
+      const refusal = await readRefusal(response);
+      throw refusal.error(serverCodeIn(refusal.body) ?? (response.status === 429 ? 'rate_limited' : 'request_failed'));
+    }
     return await response.json() as T;
   };
 }

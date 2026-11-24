@@ -143,6 +143,14 @@ describe('API transport', () => {
       await expect(createJsonTransport(limited)('/api/x')).rejects.toMatchObject({ status: 429, code: 'rate_limited' });
     } finally { stop(); }
   });
+  it('carries only a short upper-case code from an error body into the transport error', async () => {
+    const answer = (body: unknown) => createJsonTransport(vi.fn<typeof fetch>().mockResolvedValue(Response.json(body, { status: 503 })))('/api/x').catch((value: unknown) => value as ApiError);
+    expect(await answer({ code: 'EMAIL_UNAVAILABLE', message: 'secret detail' })).toMatchObject({ status: 503, code: 'EMAIL_UNAVAILABLE' });
+    for (const code of ['x'.repeat(65).toUpperCase(), 'lower_case', 'HAS SPACE', 42]) {
+      expect(await answer({ code, message: 'secret detail' })).toMatchObject({ status: 503, code: 'request_failed' });
+    }
+    expect(JSON.stringify(await answer({ code: 'A', message: 'secret detail' }))).not.toContain('secret detail');
+  });
   it('overrides error reasons and returns allowed messages only for a matching status and code', async () => {
     const body = { error: { code: 'forbidden', message: 'Allowed', details: { reason: ['r'] } } };
     const refusal = await readRefusal(Response.json(body, { status: 409 }), [{ status: 409, code: 'forbidden' }]);
