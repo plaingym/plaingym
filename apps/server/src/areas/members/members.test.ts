@@ -560,7 +560,7 @@ describe('members and households', () => {
       expect(gymId).toBe(gymA);
       expect((await service.getMember(gymId, person.id)).anonymizedAt).not.toBeNull();
       expect((await database.forGym(gymA, tx => tx.select().from(paymentMethods).where(eq(paymentMethods.householdId, home.id)))).every(card => card.revokedAt)).toBe(true);
-      if (failure && processorId === cards[0]!.processorId) throw new Error('Provider unavailable');
+      if (failure && processorId === cards[0]!.processorId) throw Object.assign(new Error('Provider unavailable'), { statusCode: 503 });
       await payments.detachPaymentMethod(processorId, options);
     });
     const app = new OpenAPIHono<RequestEnvironment>();

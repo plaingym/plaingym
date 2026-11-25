@@ -202,9 +202,9 @@ tagging (only when it wrote the tag, once per household and customer), and detac
 erasure has cleared the household's customer link, the job adopts the customer ID the
 erasure read from that household, which its payload carries as `customerId`. A stored
 link always wins. A job queued without the field (by an older release, a staff removal
-or a debit-account retirement) behaves as before. The second detach still refuses a
+or a debit-account retirement) adopts the stored link as before. The second detach still refuses a
 method attached to any other customer. A customer
-tagged for another gym or deleted is still refused. A rate limit, Stripe server error,
+tagged for another gym or deleted is still refused. A detach queued before the erasure (no `customerId` in its payload) adopts the customer the household's latest `household.anonymized` audit recorded. A rate limit, Stripe server error,
 lost connection, rejected key or missing key permission is retried without adoption.
 Without that operation removal returns unavailable.
 The Jobs interface rejects enqueue inside a transaction and provides no

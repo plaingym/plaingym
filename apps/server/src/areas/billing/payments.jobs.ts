@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, inArray, isNotNull, isNull, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lte } from 'drizzle-orm';
 import { auditEvents, forGym, households, invoices, paymentMethods, payments, refunds, writeAudit } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { idSchema } from '@plaingym/shared/contracts';
@@ -71,14 +71,19 @@ export function createPaymentJobs(options?: DeliveryOptions): readonly JobRegist
       const { paymentMethodId, redactBillingDetails, customerId } = payload as { paymentMethodId: string; redactBillingDetails?: boolean; customerId?: unknown };
       idSchema.parse(paymentMethodId);
       const options = read(), scope = options.scope ?? forGym;
-      const { row, stripeCustomerId, detached } = await scope(ctx.gymId, async tx => {
+      const { row, stripeCustomerId, anonymizedCustomerId, detached } = await scope(ctx.gymId, async tx => {
         const found = (await tx.select({ row: paymentMethods, stripeCustomerId: households.stripeCustomerId })
           .from(paymentMethods).innerJoin(households, eq(households.id, paymentMethods.householdId)).where(and(
             eq(paymentMethods.id, paymentMethodId), eq(paymentMethods.isDefault, false))))[0] ?? notFound();
         const done = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
           eq(auditEvents.action, cardDetachedAction), eq(auditEvents.targetType, 'payment_method'),
           eq(auditEvents.targetId, paymentMethodId))).limit(1);
-        return { row: found.row, stripeCustomerId: found.stripeCustomerId, detached: done.length > 0 };
+        const anonymized = found.stripeCustomerId === null ? (await tx.select({ before: auditEvents.before }).from(auditEvents).where(and(
+          eq(auditEvents.action, 'household.anonymized'), eq(auditEvents.targetType, 'household'),
+          eq(auditEvents.targetId, found.row.householdId))).orderBy(desc(auditEvents.createdAt), desc(auditEvents.id)).limit(1))[0] : undefined;
+        return { row: found.row, stripeCustomerId: found.stripeCustomerId,
+          anonymizedCustomerId: (anonymized?.before as { stripeCustomerId?: unknown } | null | undefined)?.stripeCustomerId,
+          detached: done.length > 0 };
       });
       // Only an erasure asks for the card's billing details to be cleared; a staff removal queues the job without the flag.
       if (!row.revokedAt) return;
@@ -86,9 +91,11 @@ export function createPaymentJobs(options?: DeliveryOptions): readonly JobRegist
       const detach = () => redactBillingDetails === true ? options.detachCard(ctx.gymId, row.processorId, { redactBillingDetails: true })
         : options.detachCard(ctx.gymId, row.processorId);
       // An erasure clears the household's customer link in the transaction that queues this job, so its payload carries
-      // the customer ID it read from that household's row. The stored link always wins; the payload's only fills a null one.
-      const erasedCustomerId = typeof customerId === 'string' && /^cus_[A-Za-z0-9]+$/.test(customerId) ? customerId : null;
-      const adoptId = stripeCustomerId ?? erasedCustomerId;
+      // the customer ID it read from that household's row; a detach queued before the erasure falls back to the latest
+      // household.anonymized audit's cleared ID. The stored link wins, then the payload's, then the audit's.
+      const validCustomerId = (value: unknown) => typeof value === 'string' && /^cus_[A-Za-z0-9]+$/.test(value) ? value : null;
+      const erasedCustomerId = validCustomerId(customerId);
+      const adoptId = stripeCustomerId ?? erasedCustomerId ?? validCustomerId(anonymizedCustomerId);
       try { await detach(); }
       catch (first) {
         // A people CSV can save the household's method and mandate on its customer without tagging it. Adopt only the

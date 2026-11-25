@@ -5,7 +5,7 @@ import type { forGym } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { route, type JobRegistration } from '../../core/registry.js';
-import { logError } from '../../core/log.js';
+import { logError, logInfo } from '../../core/log.js';
 import { readJsonBody } from '../../core/errors.js';
 import type { RequestContext } from '../../core/context.js';
 import { createMembersService, type MembersService } from './members.js';
@@ -17,7 +17,7 @@ import type { DetachOptions } from '../../infra/payments/index.js';
 import { releaseFiles } from '../../infra/storage/release.js';
 import { clearBillingEmailJob, clearErasedBillingEmail, type ClearBillingEmail, queueEarlierRedactions, redactCustomerJob, redactEarlierJob, releaseErasedFiles, releaseErasedFilesJob } from './erasure-redaction.js';
 import { createPortalInvitationStore } from '../../infra/auth/portal-invitations.js';
-import { recordErasureDetach } from '../billing/payments.mutations.js';
+import { recordErasureDetach, transientFailure } from '../billing/payments.mutations.js';
 
 function mutation(context: RequestContext) {
   if (context.principal.kind !== 'staff' || context.principal.gymId !== context.gym.gymId) throw new AppError('not_found', 'Resource not found');
@@ -130,7 +130,11 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
       await Promise.all([
         ...(detachCard ? revokedCards : []).map(async card => {
           try { await detachCard!(gymId, card.processorId, { redactBillingDetails: true }); }
-          catch (error) { logError('members.erasure.detach_failed', { gymId, memberId, paymentMethodId: card.id }, error); return; }
+          catch (error) {
+            if (!transientFailure(error)) logInfo('members.erasure.detach_deferred', { gymId, memberId, paymentMethodId: card.id });
+            else logError('members.erasure.detach_failed', { gymId, memberId, paymentMethodId: card.id }, error);
+            return;
+          }
           try { await recordErasureDetach(gymId, { id: card.id, householdId }, clock, scope); }
           catch (error) { logError('members.erasure.detach_record_failed', { gymId, memberId, paymentMethodId: card.id }, error); }
         }),

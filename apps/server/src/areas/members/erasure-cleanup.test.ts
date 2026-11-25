@@ -11,6 +11,9 @@ import { setLogSink } from '../../core/log.js';
 import { createServerRegistry } from '../../core/registry.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { FakeJobs, type Jobs } from '../../infra/jobs/index.js';
+import type { DetachOptions } from '../../infra/payments/index.js';
+import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
+import { StripePayments } from '../../infra/payments/stripe.js';
 import { FakeUploads } from '../../infra/storage/index.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { detachJob } from '../billing/payments.mutations.js';
@@ -54,7 +57,12 @@ async function fixture(uploads: FakeUploads) {
   }
   return { home, person, cards, files: [photoKey, signatureKey], sessions, waiting };
 }
-function app(options: { jobs?: Pick<Jobs, 'enqueue'>; uploads: FakeUploads; detachCard?: () => Promise<void>; redactCustomer?: () => Promise<void> }) {
+function app(options: {
+  jobs?: Pick<Jobs, 'enqueue'>;
+  uploads: FakeUploads;
+  detachCard?: (gymId: string, processorId: string, detachOptions?: DetachOptions) => Promise<void>;
+  redactCustomer?: () => Promise<void>;
+}) {
   const server = new OpenAPIHono<RequestEnvironment>();
   server.use('*', async (ctx, next) => {
     ctx.set('context', { gym: { gymId, timezone: 'UTC', enabledModules: new Set() },
@@ -76,7 +84,7 @@ describe('erasure cleanup after commit', () => {
     await database.forGym(gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_cleanup' }).where(eq(households.id, home.id)));
     promotion.fail.add(sessions[0]!.id);
     // The inline attempts fail too: the queued jobs are what keeps the detaches.
-    const providerError = Object.assign(new Error('Provider unavailable'), { code: 'provider_refused' });
+    const providerError = Object.assign(new Error('Provider unavailable'), { code: 'provider_refused', statusCode: 503 });
     const detachCard = vi.fn(async () => { throw providerError; });
     const redactCustomer = vi.fn(async () => { throw providerError; });
     const logs: { event?: string; sessionId?: string; error?: { name: string; code?: string } }[] = [], previous = setLogSink(entry => { logs.push(JSON.parse(entry)); });
@@ -122,6 +130,51 @@ describe('erasure cleanup after commit', () => {
     expect(markDeleted).not.toHaveBeenCalled();
     await expect(createErasureJobs({}).find(registration => registration.id === releaseErasedFilesJob)!.handler(queued!.payload,
       { jobId: 'release', gymId, timezone: 'UTC', attempt: 1, clock })).rejects.toThrow('not configured');
+  });
+  it('logs an ownership refusal on an untagged CSV customer as info detach_deferred, while a 503 still logs detach_failed', async () => {
+    const uploads = new FakeUploads(gymId, clock), jobs = new FakeJobs(clock);
+    const home = await factory('households', gymId, { stripeCustomerId: 'cus_csv' });
+    const person = await factory('members', gymId, { householdId: home.id });
+    const card = await factory('paymentMethods', gymId, { householdId: home.id, processorId: 'pm_csv_erasure', isDefault: true });
+    const stripe = new StripeFixtures(gymId);
+    stripe.objects.clear();
+    stripe.objects.set('cus_csv', { id: 'cus_csv', object: 'customer', email: 'payer@example.invalid', metadata: {} });
+    stripe.objects.set('pm_csv_erasure', {
+      id: 'pm_csv_erasure', object: 'payment_method', created: stripe.now, type: 'card',
+      customer: 'cus_csv', metadata: {}, card: { brand: 'visa', last4: '4242', exp_month: 12, exp_year: 2030 },
+    });
+    const provider = new StripePayments(gymId, { transport: stripe, webhookSecret: 'whsec_SYNTHETIC' });
+    const detachCard = vi.fn((_gym: string, processorId: string, options?: DetachOptions) => provider.detachPaymentMethod(processorId, options));
+    type LogEntry = { level?: string; event?: string; gymId?: string; memberId?: string; paymentMethodId?: string; error?: { name: string } };
+    const logs: LogEntry[] = [], previous = setLogSink(entry => { logs.push(JSON.parse(entry)); });
+    let status: number;
+    try { status = (await app({ jobs, uploads, detachCard })(person.id)).status; } finally { setLogSink(previous); }
+    expect(status).toBe(200);
+    expect(detachCard).toHaveBeenCalledExactlyOnceWith(gymId, 'pm_csv_erasure', { redactBillingDetails: true });
+    expect(logs.filter(entry => entry.event === 'members.erasure.detach_failed')).toEqual([]);
+    expect(logs.filter(entry => entry.event === 'members.erasure.detach_deferred')).toEqual([expect.objectContaining({
+      level: 'info', event: 'members.erasure.detach_deferred', gymId, memberId: person.id, paymentMethodId: card.id,
+    })]);
+    expect(jobs.jobs.filter(job => job.name === detachJob).map(job => job.payload)).toEqual([
+      { paymentMethodId: card.id, redactBillingDetails: true, customerId: 'cus_csv' },
+    ]);
+
+    // A transient 503 outage still logs members.erasure.detach_failed at error level.
+    const secondHome = await factory('households', gymId, { stripeCustomerId: 'cus_outage' });
+    const secondPerson = await factory('members', gymId, { householdId: secondHome.id });
+    const secondCard = await factory('paymentMethods', gymId, { householdId: secondHome.id, processorId: 'pm_outage', isDefault: true });
+    const unavailable = Object.assign(new Error('Stripe server error'), { statusCode: 503 });
+    const failingDetach = vi.fn(async () => { throw unavailable; });
+    const outageLogs: LogEntry[] = [], previousOutage = setLogSink(entry => { outageLogs.push(JSON.parse(entry)); });
+    let outageStatus: number;
+    try { outageStatus = (await app({ jobs: new FakeJobs(clock), uploads, detachCard: failingDetach })(secondPerson.id)).status; }
+    finally { setLogSink(previousOutage); }
+    expect(outageStatus).toBe(200);
+    expect(outageLogs.filter(entry => entry.event === 'members.erasure.detach_deferred')).toEqual([]);
+    expect(outageLogs.filter(entry => entry.event === 'members.erasure.detach_failed')).toEqual([expect.objectContaining({
+      level: 'error', event: 'members.erasure.detach_failed', gymId, memberId: secondPerson.id, paymentMethodId: secondCard.id,
+    })]);
+    expect(JSON.stringify(outageLogs)).not.toContain('Stripe server error');
   });
   it('refuses an erasure without a queue before changing anything', async () => {
     const uploads = new FakeUploads(gymId, clock), { person, cards, files } = await fixture(uploads);
