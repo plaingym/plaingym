@@ -23,7 +23,7 @@ async function fixture(count: number, options: { error?: 'handler_failed' | null
   const error = options.error === undefined ? 'handler_failed' : options.error;
   await db.forGym(gymId, async tx => {
     await tx.insert(stripeEvents).values(ids.map(id => ({ id, gymId, eventId: 'evt_' + id, type: 'payment_intent.succeeded',
-      payload: {}, receivedAt: earlier, error })));
+      payload: {}, receivedAt: earlier, error, failedAt: error ? clock.now() : null })));
     const resets = ids.flatMap(id => Array.from({ length: options.resets ?? 1 }, () => ({ gymId, actorKind: 'system',
       action: webhookDispatchRetried, targetType: 'stripe_event', targetId: id, after: {}, occurredAt: earlier })));
     if (resets.length) await tx.insert(auditEvents).values(resets);

@@ -227,6 +227,50 @@ it('logs the original handler failure even when the inbox cannot save its marker
   expect(lines.map(line => JSON.parse(line))).toMatchObject([{ event: 'billing.webhooks.handler_failed',
     gymId: gymA, eventId: 'evt_test', type: 'payment_intent.succeeded', reason: 'Saved card household is unresolved' }]);
 });
+it('records a replay failure marker when reading the stored event throws, and rethrows and logs the original error if the marker write also throws', async () => {
+  await deliver();
+  clock.advance(60_000);
+  const readError = Object.assign(new Error('Stored read interrupted'), { code: '57P01' });
+  const writeError = Object.assign(new Error('Marker write unavailable'), { code: '08006' });
+  // An original dispatch leaves marking to the recovery sweep, while still logging and rethrowing.
+  let originalCalls = 0;
+  const originalService = createWebhookInbox({ paymentsFor: async () => fake, jobs, gymSettings, clock,
+    scope: (gymId, run) => {
+      if (++originalCalls === 1) throw readError;
+      return database.forGym(gymId, run);
+    } });
+  const originalLogs: string[] = [], prevOriginal = setLogSink(line => originalLogs.push(line));
+  try { await expect(originalService.dispatch({ eventId: 'evt_test' }, context())).rejects.toBe(readError); }
+  finally { setLogSink(prevOriginal); }
+  expect((await rows())[0]).toMatchObject({ error: null, failedAt: null, processedAt: null });
+  const [originalLogged] = originalLogs.map(line => JSON.parse(line) as Record<string, unknown>);
+  expect(originalLogged).toMatchObject({ event: 'billing.webhooks.handler_failed', gymId: gymA, eventId: 'evt_test',
+    errorName: 'Error', errorCode: '57P01' });
+  expect(originalLogged).not.toHaveProperty('type');
+  // A replay dispatch records handler_failed and failed_at as best effort when the stored read throws.
+  let replayCalls = 0;
+  const replayService = createWebhookInbox({ paymentsFor: async () => fake, jobs, gymSettings, clock,
+    scope: (gymId, run) => {
+      if (++replayCalls === 1) throw readError;
+      return database.forGym(gymId, run);
+    } });
+  const replayLogs: string[] = [], prevReplay = setLogSink(line => replayLogs.push(line));
+  try { await expect(replayService.dispatch({ eventId: 'evt_test', replay: true }, context())).rejects.toBe(readError); }
+  finally { setLogSink(prevReplay); }
+  expect((await rows())[0]).toMatchObject({ error: 'handler_failed', failedAt: clock.now(), processedAt: null });
+  expect(replayLogs.map(line => JSON.parse(line))).toMatchObject([{ event: 'billing.webhooks.handler_failed',
+    gymId: gymA, eventId: 'evt_test', errorName: 'Error', errorCode: '57P01' }]);
+  // When the best-effort marker write also throws, the original read error is still logged and rethrown.
+  let bothCalls = 0;
+  const bothFailService = createWebhookInbox({ paymentsFor: async () => fake, jobs, gymSettings, clock,
+    scope: () => { throw ++bothCalls === 1 ? readError : writeError; } });
+  const bothLogs: string[] = [], prevBoth = setLogSink(line => bothLogs.push(line));
+  try { await expect(bothFailService.dispatch({ eventId: 'evt_test', replay: true }, context())).rejects.toBe(readError); }
+  finally { setLogSink(prevBoth); }
+  expect(bothCalls).toBe(2);
+  expect(bothLogs.map(line => JSON.parse(line))).toMatchObject([{ event: 'billing.webhooks.handler_failed',
+    gymId: gymA, eventId: 'evt_test', errorName: 'Error', errorCode: '57P01' }]);
+});
 it('can replay an exhausted handler and retries a failed replay too', async () => {
   let fail = true;
   inbox.register('payment_intent.succeeded', async () => { if (fail) throw new Error('failure'); });

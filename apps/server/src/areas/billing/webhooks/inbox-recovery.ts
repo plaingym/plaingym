@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, count, eq, exists, gt, inArray, isNotNull, isNull, max, not, notExists, or, type SQL, type SQLWrapper } from 'drizzle-orm';
+import { and, asc, count, eq, exists, gt, gte, inArray, isNotNull, isNull, max, not, notExists, or, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { auditEvents, forGym, stripeEvents, writeAudit, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { clock as defaultClock } from '../../../core/clock.js';
@@ -24,20 +24,20 @@ function latestExhaustion(tx: Transaction, gymId: string, eventId: EventId) {
     eq(auditEvents.action, webhookDispatchRecoveryExhausted), eq(auditEvents.targetId, eventId)));
 }
 
-/** True for an audit row after the event's latest exhaustion audit, and for every row while it has none. */
+/** True for an audit row at or after the event's latest exhaustion audit, and for every row while it has none. */
 function sinceExhaustion(tx: Transaction, gymId: string, eventId: EventId): SQL {
   return or(notExists(dispatchAudits(tx, gymId, webhookDispatchRecoveryExhausted, eventId)),
-    gt(auditEvents.occurredAt, latestExhaustion(tx, gymId, eventId)))!;
+    gte(auditEvents.occurredAt, latestExhaustion(tx, gymId, eventId)))!;
 }
 
-/** Automatic recovery is closed once an exhaustion audit has no reset after it; a redelivery's reset reopens it. */
+/** Automatic recovery is closed once an exhaustion audit has no reset at or after it; a redelivery's reset reopens it. */
 export function closedEvent(tx: Transaction, gymId: string, eventId: EventId): SQL {
   return and(exists(dispatchAudits(tx, gymId, webhookDispatchRecoveryExhausted, eventId)),
     notExists(dispatchAudits(tx, gymId, webhookDispatchRetried, eventId,
-      gt(auditEvents.occurredAt, latestExhaustion(tx, gymId, eventId)))))!;
+      gte(auditEvents.occurredAt, latestExhaustion(tx, gymId, eventId)))))!;
 }
 
-/** The resets the limit counts: those after the latest exhaustion audit, or all of them before the first one. */
+/** The resets the limit counts: those at or after the latest exhaustion audit, or all of them before the first one. */
 function resetsSinceExhaustion(tx: Transaction, gymId: string, eventId: string) {
   return dispatchAudits(tx, gymId, webhookDispatchRetried, eventId, sinceExhaustion(tx, gymId, eventId)).limit(webhookRecoveryLimit);
 }
@@ -65,9 +65,14 @@ function openEvents(tx: Transaction, gymId: string, eventIds: string[]) {
 }
 
 // Health can count a failed dispatch whose attempts never recorded a handler error, from when its job failed;
-// the sweep's own marker follows the job's latest failure after a reset.
-function needsMarker(row: { error: string | null; failedAt: Date | null }, failedAt: Date) {
-  return row.error === null || (row.error === 'dispatch_failed' && (!row.failedAt || row.failedAt < failedAt));
+// an existing marker's failure time also follows the job's latest failure after a reset, keeping its marker kind.
+function markerUpdate(row: { error: string | null; failedAt: Date | null }, failedAt: Date): 'dispatch_failed' | 'failed_at' | null {
+  if (row.error === null) return 'dispatch_failed';
+  if (!row.failedAt || row.failedAt < failedAt) {
+    if (row.error === 'dispatch_failed') return 'dispatch_failed';
+    if (row.error === 'handler_failed') return 'failed_at';
+  }
+  return null;
 }
 
 /** Reset the original dispatch (`job`), never a replay or a newly enqueued copy. */
@@ -84,14 +89,20 @@ export function createWebhookInboxRecovery(options: { job: string; scope?: typeo
       const failed = await recovery.failedJobs(options.job, rows.map(row => row.id), { gymId });
       if (!failed.length) continue;
       // Decide the cooldown without a lock; only an event the sweep may mark, reset or close goes on to the locked step.
-      const open = new Map((await scope(gymId, tx => openEvents(tx, gymId, failed.map(job => job.idempotencyKey))))
-        .map(row => [row.id, row]));
+      let open: Map<string, Awaited<ReturnType<typeof openEvents>>[number]>;
+      try {
+        open = new Map((await scope(gymId, tx => openEvents(tx, gymId, failed.map(job => job.idempotencyKey))))
+          .map(row => [row.id, row]));
+      } catch (error) {
+        logError('billing.webhook.recovery_failed', { gymId }, error);
+        continue;
+      }
       const checkedAt = clock.now().getTime();
       for (const job of failed) {
         const eventId = job.idempotencyKey, seen = open.get(eventId);
         if (!seen) continue;
         const resets = Math.min(seen.resets, webhookRecoveryLimit);
-        if (!needsMarker(seen, job.failedAt) && resets < webhookRecoveryLimit
+        if (!markerUpdate(seen, job.failedAt) && resets < webhookRecoveryLimit
           && checkedAt - job.failedAt.getTime() < webhookRecoveryDelayMs * 2 ** resets) continue;
         try {
           const outcome = await withJobTransaction(scope, gymId, async transaction => {
@@ -107,8 +118,11 @@ export function createWebhookInboxRecovery(options: { job: string; scope?: typeo
             const now = clock.now();
             const [current] = await recovery.failedJobs(options.job, [eventId], { gymId }, transaction);
             if (!current) return;
-            if (needsMarker(row, current.failedAt))
+            const update = markerUpdate(row, current.failedAt);
+            if (update === 'dispatch_failed')
               await tx.update(stripeEvents).set({ error: 'dispatch_failed', failedAt: current.failedAt }).where(event);
+            else if (update === 'failed_at')
+              await tx.update(stripeEvents).set({ failedAt: current.failedAt }).where(event);
             const resets = (await resetsSinceExhaustion(tx, gymId, eventId)).length;
             if (resets >= webhookRecoveryLimit) {
               await writeAudit(tx, { gymId, actorKind: 'system', action: webhookDispatchRecoveryExhausted, targetType: 'stripe_event',

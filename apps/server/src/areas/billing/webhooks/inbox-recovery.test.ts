@@ -12,6 +12,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { isInTransaction } from '@plaingym/shared/transaction';
 import { TestClock } from '../../../core/clock.js';
+import { setLogSink } from '../../../core/log.js';
 import { FakeJobs, PostgresJobs } from '../../../infra/jobs/index.js';
 import { FakePayments, type PaymentEvent } from '../../../infra/payments/index.js';
 import { jobs as billingJobs } from '../jobs.js';
@@ -202,6 +203,113 @@ it('moves the sweep marker’s failure time to the dispatch’s latest failure a
   expect(await f.build().recoverFailed(f.gymId)).toEqual({ recovered: 0, exhausted: 0 });
   expect(await f.stored()).toMatchObject({ error: 'dispatch_failed', failedAt: second!.failedAt, processedAt: null });
   expect(await health.get(f.gymId)).toMatchObject({ failedCount: 1, recentFailedCount: 1 });
+});
+
+it('moves a handler_failed row’s failure time forward to its reset job’s latest failure without changing the marker', async () => {
+  let failRead = false;
+  const f = await fixture(async (gymId, fn) => {
+    if (failRead) {
+      failRead = false;
+      throw new Error('Inbox read interrupted');
+    }
+    return db.forGym(gymId, fn);
+  });
+  f.handler.mockRejectedValue(new Error('Unavailable'));
+  await f.deliver();
+  await f.exhaust();
+  const saved = await f.stored(), firstFailedAt = saved.failedAt!, health = createWebhookHealthQuery(db.forGym, f.clock);
+  expect(saved).toMatchObject({ error: 'handler_failed', failedAt: firstFailedAt, processedAt: null });
+  f.clock.advance(9 * 86_400_000);
+  expect(await health.get(f.gymId)).toMatchObject({ failedCount: 1, recentFailedCount: 0 });
+  expect(await f.build().recoverFailed(f.gymId)).toEqual({ recovered: 1, exhausted: 0 });
+  await f.exhaust(() => { failRead = true; });
+  expect(await f.stored()).toMatchObject({ error: 'handler_failed', failedAt: firstFailedAt, processedAt: null });
+  const [second] = await f.queue.failedJobs(webhookDispatchJob, [saved.id], { gymId: f.gymId });
+  expect(second!.failedAt.getTime()).toBeGreaterThan(firstFailedAt.getTime());
+  expect(await f.build().recoverFailed(f.gymId)).toEqual({ recovered: 0, exhausted: 0 });
+  expect(await f.stored()).toMatchObject({ error: 'handler_failed', failedAt: second!.failedAt, processedAt: null });
+  expect(await health.get(f.gymId)).toMatchObject({ failedCount: 1, recentFailedCount: 1 });
+});
+
+it('leaves a handler_failed row unchanged when its failure time is later than its job’s failure', async () => {
+  const f = await fixture();
+  f.handler.mockRejectedValue(new Error('Unavailable'));
+  await f.deliver();
+  await f.exhaust();
+  const saved = await f.stored();
+  const [failed] = await f.queue.failedJobs(webhookDispatchJob, [saved.id], { gymId: f.gymId });
+  f.clock.advance(60_000);
+  await expect(f.inbox.dispatch({ eventId: saved.eventId, replay: true },
+    { gymId: f.gymId, timezone: 'UTC', clock: f.clock, jobId: uuidv7(), attempt: 1 })).rejects.toThrow('Unavailable');
+  const laterFailedAt = f.clock.now();
+  expect(laterFailedAt.getTime()).toBeGreaterThan(failed!.failedAt.getTime());
+  expect(await f.stored()).toMatchObject({ error: 'handler_failed', failedAt: laterFailedAt, processedAt: null });
+  expect(await f.build().recoverFailed(f.gymId)).toEqual({ recovered: 0, exhausted: 0 });
+  expect(await f.stored()).toMatchObject({ error: 'handler_failed', failedAt: laterFailedAt, processedAt: null });
+});
+
+it('reopens recovery when a redelivery reset ties the exhaustion time and keeps an earlier reset closed', async () => {
+  const f = await fixture(), queue = new FakeJobs(f.clock);
+  const id = uuidv7(), exhaustedAt = f.clock.now();
+  await factory('stripeEvents', f.gymId, { id, eventId: 'evt_' + id, type: 'payment_intent.succeeded',
+    payload: {}, receivedAt: exhaustedAt, error: 'handler_failed', failedAt: exhaustedAt });
+  await db.forGym(f.gymId, tx => tx.insert(auditEvents).values([
+    { gymId: f.gymId, actorKind: 'system', action: webhookDispatchRecoveryExhausted,
+      targetType: 'stripe_event', targetId: id, after: { resets: webhookRecoveryLimit }, occurredAt: exhaustedAt },
+    { gymId: f.gymId, actorKind: 'system', action: webhookDispatchRetried,
+      targetType: 'stripe_event', targetId: id, after: {}, occurredAt: new Date(exhaustedAt.getTime() - 1) },
+  ]));
+  const paged = async () => (await db.forGym(f.gymId, tx => webhookRecoveryPage(tx, f.gymId))).map(row => row.id);
+  expect(await paged()).not.toContain(id);
+  await db.forGym(f.gymId, tx => tx.insert(auditEvents).values({
+    gymId: f.gymId, actorKind: 'system', action: webhookDispatchRetried,
+    targetType: 'stripe_event', targetId: id, after: {}, occurredAt: exhaustedAt,
+  }));
+  expect(await paged()).toContain(id);
+  queue.handle(webhookDispatchJob, async () => { throw new Error('Unavailable'); });
+  await queue.enqueue(webhookDispatchJob, { eventId: 'evt_' + id }, { gymId: f.gymId, timezone: 'UTC', idempotencyKey: id, maxAttempts: 1 });
+  expect(await queue.runNext()).toBe(true);
+  const recover = () => createWebhookInbox({ ...f.options, jobs: queue, recovery: queue }).recoverFailed(f.gymId);
+  f.clock.advance(webhookRecoveryDelayMs);
+  expect(await recover()).toEqual({ recovered: 0, exhausted: 0 });
+  f.clock.advance(webhookRecoveryDelayMs);
+  expect(await recover()).toEqual({ recovered: 1, exhausted: 0 });
+  expect((await f.audits()).at(-1)).toMatchObject({ targetId: id, after: { delayMs: 2 * webhookRecoveryDelayMs } });
+});
+
+it('logs a failed pre-check read and continues to recover an eligible event on the next page', async () => {
+  const f = await fixture(), queue = new FakeJobs(f.clock);
+  const old = new Date(f.clock.now().getTime() - 86_400_000);
+  const ids = Array.from({ length: 101 }, (_, n) => uuidv7(10 + n));
+  await db.forGym(f.gymId, tx => tx.insert(stripeEvents).values(ids.map(id => ({
+    id, gymId: f.gymId, eventId: 'evt_' + id, type: 'payment_intent.succeeded',
+    payload: {}, receivedAt: old, error: 'handler_failed', failedAt: old,
+  }))));
+  queue.handle(webhookDispatchJob, async () => { throw new Error('Unavailable'); });
+  for (const id of [ids[0]!, ids[100]!]) {
+    await queue.enqueue(webhookDispatchJob, { eventId: 'evt_' + id }, { gymId: f.gymId, timezone: 'UTC', idempotencyKey: id, maxAttempts: 1 });
+    expect(await queue.runNext()).toBe(true);
+  }
+  f.clock.advance(webhookRecoveryDelayMs);
+  let scopeCalls = 0;
+  const scope: typeof db.forGym = (gymId, fn) => {
+    if (++scopeCalls === 2) throw new Error('Pre-check read interrupted');
+    return db.forGym(gymId, fn);
+  };
+  const lines: string[] = [], previous = setLogSink(line => lines.push(line));
+  try {
+    expect(await createWebhookInbox({ ...f.options, scope, jobs: queue, recovery: queue }).recoverFailed(f.gymId))
+      .toEqual({ recovered: 1, exhausted: 0 });
+  } finally {
+    setLogSink(previous);
+  }
+  expect(lines.map(line => JSON.parse(line))).toEqual(expect.arrayContaining([
+    expect.objectContaining({ level: 'error', event: 'billing.webhook.recovery_failed', gymId: f.gymId,
+      error: expect.objectContaining({ name: 'Error' }) }),
+  ]));
+  expect(queue.jobs.find(job => job.options.idempotencyKey === ids[0])?.status).toBe('failed');
+  expect(queue.jobs.find(job => job.options.idempotencyKey === ids[100])?.status).toBe('queued');
+  expect(await f.audits()).toMatchObject([{ targetId: ids[100] }]);
 });
 
 it('does not reset an event processed while the original dispatch was down', async () => {

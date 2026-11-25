@@ -144,7 +144,25 @@ export function createWebhookInbox(options: {
             targetType: 'stripe_event', targetId: row.id, after: { jobId: job.jobId }, occurredAt: clock.now() }));
     },
     async dispatch(payload: unknown, context: JobContext): Promise<void> {
-      const input = dispatchSchema.parse(payload), row = await stored(context.gymId, input.eventId);
+      const input = dispatchSchema.parse(payload);
+      const logFailure = (error: unknown, type?: string) => {
+        const reason = failureReason(error);
+        logError('billing.webhooks.handler_failed', { gymId: context.gymId, eventId: input.eventId,
+          ...(type ? { type } : {}), ...(reason ? { reason } : {}), ...handlerFailureFields(error) });
+      };
+      let row: Awaited<ReturnType<typeof stored>>;
+      try {
+        row = await stored(context.gymId, input.eventId);
+      } catch (error) {
+        if (input.replay === true) {
+          try {
+            await scope(context.gymId, (tx) => tx.update(stripeEvents).set({ error: 'handler_failed', failedAt: clock.now() })
+              .where(match(context.gymId, input.eventId)));
+          } catch { /* Best effort: keep and rethrow the original read failure. */ }
+        }
+        logFailure(error);
+        throw error;
+      }
       if (!row || (row.processedAt && !input.replay)) return;
       try {
         const event = storedEventSchema.parse(row.payload);
@@ -176,9 +194,7 @@ export function createWebhookInbox(options: {
             .where(match(context.gymId, input.eventId)));
         } finally {
           // Keep the original diagnostic even when the database cannot record the failure marker.
-          const reason = failureReason(error);
-          logError('billing.webhooks.handler_failed', { gymId: context.gymId, eventId: input.eventId, type: row.type,
-            ...(reason ? { reason } : {}), ...handlerFailureFields(error) });
+          logFailure(error, row.type);
         }
         throw error; // The job queue owns retry/backoff and the attempt limit.
       }
