@@ -12,6 +12,7 @@ import { FakePayments, type Payments } from '../../../infra/payments/index.js';
 import { createRestoreCheckLease } from '../../health/restore.billing-lease.js';
 import { createGymSettingsAccessor } from '../../settings/settings.js';
 import { createInvoiceTransitions } from '../transitions/index.js';
+import { stripeTestClearedAction } from '../stripe-writes.js';
 import { createChargeRunner } from './index.js';
 import { configureChargeRunner, createRunnerJobs, rerunRestoreReconciliation } from './runner.jobs.js';
 
@@ -101,6 +102,37 @@ describe('a retried attempt of the original restore job', () => {
     } finally { enqueue.mockRestore(); }
     expect(await g.starts()).toBe(0);
   });
+  it('queues one follow-up on the last attempt when a Stripe switch commits during listChangesSince', async () => {
+    const g = await restoredGym(), jobId = uuidv7();
+    const testProvider = new FakePayments(g.gymId, clock);
+    testProvider.keyMode = 'test';
+    const list = vi.spyOn(testProvider, 'listChangesSince').mockImplementationOnce(async () => {
+      await scope(g.gymId, tx => writeAudit(tx, { gymId: g.gymId, actorKind: 'system', action: stripeTestClearedAction,
+        targetType: 'gym', targetId: g.gymId, occurredAt: clock.now() }));
+      return { changes: [], nextCursor: null };
+    });
+    resolvers.set(g.gymId, async () => testProvider);
+    const enqueue = vi.spyOn(jobs, 'enqueue');
+    try {
+      await expect(g.run(3, jobId)).resolves.toBeUndefined();
+      expect(list).toHaveBeenCalledTimes(1);
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      expect(enqueue).toHaveBeenCalledWith('billing.runner.restore', { ...g.payload, after: jobId },
+        { gymId: g.gymId, timezone: 'UTC', runAt: new Date(clock.now().getTime() + 60_000),
+          idempotencyKey: 'restore-check:' + g.gymId + ':after:' + jobId });
+      expect(await g.starts()).toBe(1);
+      expect(await g.reports()).toBe(0);
+      const live = new FakePayments(g.gymId, clock);
+      live.keyMode = 'live';
+      resolvers.set(g.gymId, async () => live);
+      await expect(restoreJob.handler(enqueue.mock.calls[0]![1],
+        { jobId: uuidv7(), gymId: g.gymId, timezone: 'UTC', attempt: 1, clock })).resolves.toBeUndefined();
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      expect(await g.starts()).toBe(2);
+      expect(await g.reports()).toBe(1);
+      expect(await g.latestReport()).toMatchObject({ unresolved: 0, stripeConfigured: true, stripeMode: 'live' });
+    } finally { enqueue.mockRestore(); resolvers.delete(g.gymId); }
+  });
 });
 
 describe('the first attempt and the owner rerun', () => {
@@ -120,5 +152,42 @@ describe('the first attempt and the owner rerun', () => {
       .toMatchObject({ readyForOwnerReview: true, issues: [] });
     expect(await g.starts()).toBe(3);
     expect(await g.reports()).toBe(3);
+  });
+  it('still writes the incomplete report and queues nothing on a first attempt when a Stripe switch commits during listChangesSince', async () => {
+    const g = await restoredGym();
+    const testProvider = new FakePayments(g.gymId, clock);
+    testProvider.keyMode = 'test';
+    const list = vi.spyOn(testProvider, 'listChangesSince').mockImplementationOnce(async () => {
+      await scope(g.gymId, tx => writeAudit(tx, { gymId: g.gymId, actorKind: 'system', action: stripeTestClearedAction,
+        targetType: 'gym', targetId: g.gymId, occurredAt: clock.now() }));
+      return { changes: [], nextCursor: null };
+    });
+    resolvers.set(g.gymId, async () => testProvider);
+    const enqueue = vi.spyOn(jobs, 'enqueue');
+    try {
+      await expect(g.run(1)).rejects.toThrow('Restore reconciliation requires manual resolution');
+      expect(list).toHaveBeenCalledTimes(1);
+      expect(enqueue).not.toHaveBeenCalled();
+      expect(await g.starts()).toBe(1);
+      expect(await g.reports()).toBe(1);
+      expect(await g.latestReport()).toMatchObject({ inspected: 0, unresolved: 1, stripeConfigured: true, stripeMode: 'test' });
+    } finally { enqueue.mockRestore(); resolvers.delete(g.gymId); }
+  });
+  it('ends quietly with no check or queued job when a first attempt is for an older restore, while rerun still reports not ready', async () => {
+    const g = await restoredGym();
+    clock.advance(1000);
+    await scope(g.gymId, tx => writeAudit(tx, { gymId: g.gymId, actorKind: 'system', action: 'restore.completed',
+      targetType: 'gym', targetId: g.gymId, occurredAt: clock.now() }));
+    const enqueue = vi.spyOn(jobs, 'enqueue');
+    try {
+      await expect(g.run(1)).resolves.toBeUndefined();
+      expect(enqueue).not.toHaveBeenCalled();
+      expect(await g.starts()).toBe(0);
+      expect(await g.reports()).toBe(0);
+      await expect(rerunRestoreReconciliation(g.gymId, new Date(snapshotAt), g.restoreId))
+        .resolves.toEqual({ inspected: 0, readyForOwnerReview: false, issues: [], superseded: true });
+      expect(await g.starts()).toBe(0);
+      expect(await g.reports()).toBe(0);
+    } finally { enqueue.mockRestore(); }
   });
 });

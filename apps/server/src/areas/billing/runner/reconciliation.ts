@@ -19,7 +19,15 @@ import type { MutationContext } from '../../../core/interfaces/common.js';
 
 export interface ReconciliationIssue { kind: string; id: string; reason: string; }
 /** `stripeConfigured` is absent when the check didn't run (a delayed job for an earlier restore). */
-export interface RestoreCheck { inspected: number; readyForOwnerReview: boolean; issues: ReconciliationIssue[]; stripeConfigured?: boolean; stripeMode?: 'test' | 'live' | null; }
+export interface RestoreCheck {
+  inspected: number;
+  readyForOwnerReview: boolean;
+  issues: ReconciliationIssue[];
+  stripeConfigured?: boolean;
+  stripeMode?: 'test' | 'live' | null;
+  /** The restore is not the latest; nothing was checked. */
+  superseded?: true;
+}
 /** A stored Stripe reference on a gym with no payments provider: connecting Stripe and checking again resolves it. */
 export const notConfigured = 'stripe_not_configured';
 const checkoutReviewReasons = ['customer_mismatch', 'pending', 'attempt_resolved'] as const;
@@ -323,7 +331,7 @@ export function createReconciliation(options: Options) {
     const latestRestore = await scope(gymId, async tx => (await tx.select({ id: auditEvents.id }).from(auditEvents)
       .where(eq(auditEvents.action, 'restore.completed')).orderBy(desc(auditEvents.createdAt), desc(auditEvents.id)).limit(1))[0]);
     // A delayed job for an earlier restore must never clear the current restore's gate.
-    if (restoreId && latestRestore?.id !== restoreId) return { inspected: 0, readyForOwnerReview: false, issues: [] };
+    if (restoreId && latestRestore?.id !== restoreId) return { inspected: 0, readyForOwnerReview: false, issues: [], superseded: true };
     restoreId ??= latestRestore?.id;
     const check = await scope(gymId, tx => started(tx, gymId, snapshotAt, restoreId));
     return restoreCheck(gymId, snapshotAt, check.id);
@@ -335,7 +343,8 @@ export function createReconciliation(options: Options) {
    * even when they can't be read. It reads the switch snapshot before it resolves the provider, so the guard covers the
    * key it resolved. It then decides again and records the start in one transaction under the gym row lock that turning
    * billing on takes, so billing can't turn on while it starts and a start bars billing until its report. A switch
-   * committed since the snapshot throws there, with no start and no Stripe call, and the retry resolves the current key;
+   * committed since the snapshot throws there, with no start and no Stripe call, and the job queues a follow-up that
+   * resolves the current key;
    * so do Stripe settings saved since the resolver found none. One seen during the check throws too, whatever the key
    * mode, with no report and no further Stripe call (`restoreCheck`).
    */
@@ -364,7 +373,8 @@ export function createReconciliation(options: Options) {
    * with the switch snapshot it read before resolving it; otherwise both are read here, the snapshot first. Whatever the
    * key mode, the check compares the snapshot after each read that ends with no guarded transaction, before each Stripe
    * write and before its report. A switch seen during the check ends it with the incomplete report in the mode it ran
-   * with, except in a follow-up: there it throws with no report, so the retry resolves the current key.
+   * with, except in a follow-up: there it throws with no report, and the job queues a follow-up that resolves the current
+   * key.
    */
   async function restoreCheck(gymId: string, snapshotAt: Date, checkId: string,
     resolved?: { provider: Payments | null; switched: string | null; stored: boolean }): Promise<RestoreCheck> {

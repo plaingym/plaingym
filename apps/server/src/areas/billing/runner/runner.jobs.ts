@@ -7,6 +7,7 @@ import { gymSettingsAccessor } from '../../settings/settings.js';
 import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
 import { checkoutNeedsReview, notConfigured } from './reconciliation.js';
 import { restoreCheckLease, RestoreCheckBusyError, type RestoreCheckLease } from '../../health/restore.billing-lease.js';
+import { StripeTestModeSwitched } from '../stripe-writes.js';
 
 let configured: ChargeRunner | undefined;
 export function configureChargeRunner(runner: ChargeRunner) { configured = runner; }
@@ -64,17 +65,19 @@ export function createRunnerJobs(read: () => ChargeRunner | undefined = () => co
       const result = await lease(context.gymId, () => decides
         ? required().followUpRestore(context.gymId, new Date(snapshotAt), restoreId)
         : required().postRestore(context.gymId, new Date(snapshotAt), restoreId)).catch(error => {
-        if (error instanceof RestoreCheckBusyError) return 'busy' as const;
+        if (error instanceof RestoreCheckBusyError || (error instanceof StripeTestModeSwitched && decides)) return 'busy' as const;
         throw error;
       });
       if (result === 'busy') {
-        // The holder may end without a usable result (a failed rerun, or this job's own reclaimed earlier attempt), so
-        // contention queues one follow-up check a minute later instead of spending this job's attempts.
+        // The holder may end without a usable result (a failed rerun, or this job's own reclaimed earlier attempt), and a
+        // follow-up or retry stopped by a Stripe switch wrote no report, so either queues one follow-up check a minute
+        // later instead of spending this job's attempts.
         await required().queueRestoreCheck(context.gymId, context.timezone,
           { snapshotAt, ...(restoreId ? { restoreId } : {}), after: context.jobId }, new Date(context.clock.now().getTime() + 60_000));
         return;
       }
       if (!result) return; // A follow-up or retry with nothing left to check.
+      if (result.superseded) return; // A delayed job for a restore that is no longer the latest.
       // Without Stripe a retry would find the same stored references; the report lists them for the owner, who connects
       // Stripe and checks again. A check that ran with Stripe and left issues retries.
       if (!result.readyForOwnerReview && result.stripeConfigured !== false)

@@ -38,11 +38,13 @@ Stripe credentials, so a follow-up with nothing to do succeeds even when they ca
 be read, and it reads the switch snapshot (below) before its key. It then decides again
 and records its start in one transaction holding the gym row lock that turning
 billing on takes. If it finds a newer snapshot there, or Stripe settings saved since
-it found none (a first connection), the job retries with the current settings before
-recording a start or calling Stripe. Whatever the key mode, a switch seen during its
-check throws too, with no report and no further Stripe call, so the retry checks with
-the current key; so do Stripe settings saved before its report by a follow-up that
-found none.
+it found none (a first connection), `followUpRestore` throws `StripeTestModeSwitched`
+before recording a start or calling Stripe. Whatever the key mode, a switch seen during its
+check throws too, with no report and no further Stripe call; so do Stripe settings saved
+before its report by a follow-up that found none. When a follow-up or retry meets a Stripe
+switch, the restore job handler queues one follow-up check a minute later
+(`queueRestoreCheck`, keyed by the job's ID) and succeeds, like a busy job, so a switch
+never uses up the job's last attempt.
 A start it records keeps billing off until its report, and a report with issues
 retries as a first check's does. A retried attempt of the original restore job
 (an earlier attempt failed, or the queue reclaimed it after it may already have
@@ -51,7 +53,8 @@ whether it still needs to run: it succeeds with no check when billing is on, the
 restore isn't the latest, or the latest check is already clear for the saved Stripe
 mode. Only the first attempt and the go-live rerun skip that decision and start a
 new check even after a clear report; they still refuse while billing is on and leave
-a restore that isn't the latest unchecked. A busy rerun answers 409. The lease has no elapsed-time takeover and is released when the call finishes or its
+a restore that isn't the latest unchecked (a job for a restore that is no longer the
+latest ends with no check and no failure). A busy rerun answers 409. The lease has no elapsed-time takeover and is released when the call finishes or its
 process exits. Abandoned audit markers do not reserve a check.
 
 Generation locks one household and its due memberships in each short transaction.
@@ -161,7 +164,7 @@ intent or Checkout before reservation. A switch committed during that work makes
 the charge resolve its provider again. Pending and restore reconciliation carry
 the same snapshot into their writes, and a switch seen during either stops its
 Stripe reads at once: the restore report is the incomplete one in the mode it ran
-with (a follow-up writes none and retries), and the hourly run reports nothing that
+with (a follow-up writes none and queues another), and the hourly run reports nothing that
 hour. Whatever the key mode, both compare the snapshot under the gym row lock
 (`assertStripeSnapshot`) after a read that ends with no guarded transaction (nothing
 found, a provider error, an unknown outcome, a page of changes), before cancelling a

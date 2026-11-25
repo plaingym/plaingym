@@ -67,12 +67,15 @@ describe('a queued restore check that finds the lease busy', () => {
     expect(r.postRestore).not.toHaveBeenCalled();
     expect(r.queueRestoreCheck).not.toHaveBeenCalled();
   });
-  it('still runs a first job as a full check', async () => {
+  it('still runs a first job as a full check and does not swallow StripeTestModeSwitched on it', async () => {
     const r = spiedJob();
     await r.job.handler({ snapshotAt }, r.context);
     expect(r.postRestore).toHaveBeenCalledTimes(1);
     expect(r.postRestore).toHaveBeenCalledWith(r.gymId, new Date(snapshotAt), undefined);
     expect(r.followUpRestore).not.toHaveBeenCalled();
+    r.postRestore.mockRejectedValueOnce(new StripeTestModeSwitched());
+    await expect(r.job.handler({ snapshotAt }, r.context)).rejects.toBeInstanceOf(StripeTestModeSwitched);
+    expect(r.queueRestoreCheck).not.toHaveBeenCalled();
   });
   it('keys the follow-up by the busy job, so its replays queue no second one', async () => {
     const gymId = uuidv7(), enqueue = vi.fn(async () => undefined);
@@ -97,7 +100,8 @@ const payments = async (gymId: string) => {
   if (!provider) throw new AppError('unavailable', 'Stripe is not configured for this gym');
   return provider;
 };
-const runner = createChargeRunner({ scope, clock, settings, jobs: new FakeJobs(clock), payments,
+const jobs = new FakeJobs(clock);
+const runner = createChargeRunner({ scope, clock, settings, jobs, payments,
   transitions: createInvoiceTransitions({ scope, clock }) });
 const restoreJob = createRunnerJobs(() => runner, settings, lease).find(job => job.id === 'billing.runner.restore')!;
 const goLive = createGoLiveService({ scope, clock, smtpConfigured: async () => true, restoreCheckLease: lease,
@@ -122,9 +126,11 @@ async function restoredGym(stripe = false, stored = false) {
     await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'user', actorUserId: userId, action: 'integrations.stripe_saved',
       targetType: 'gym', targetId: gymId, after: { mode: 'test' }, occurredAt: clock.now() }));
   }
-  const context = () => ({ jobId: uuidv7(), gymId, timezone: 'UTC', attempt: 1, clock });
+  const context = (options?: { jobId?: string; attempt?: number }) =>
+    ({ jobId: options?.jobId ?? uuidv7(), gymId, timezone: 'UTC', attempt: options?.attempt ?? 1, clock });
   const first = () => restoreJob.handler({ snapshotAt, restoreId: restore.id }, context());
-  const followUp = (restoreId = restore.id) => restoreJob.handler({ snapshotAt, restoreId, after: uuidv7() }, context());
+  const followUp = (restoreId = restore.id, options?: { jobId?: string; attempt?: number }) =>
+    restoreJob.handler({ snapshotAt, restoreId, after: uuidv7() }, context(options));
   const enable = async () => goLive.update({ gymId, actor: { kind: 'user', userId } },
     { revision: (await goLive.checklist(gymId)).revision, billingEnabled: true });
   const count = async (action: string) => (await scope(gymId, tx => tx.select({ id: auditEvents.id }).from(auditEvents)
@@ -194,6 +200,36 @@ describe('a busy check’s follow-up and a test-to-live switch', () => {
       expect(report?.after).toMatchObject({ stripeConfigured: true, stripeMode: 'live' });
       for (const [name, spy] of spies) expect(spy, name).not.toHaveBeenCalled();
     } finally { resolvers.delete(g.gymId); connected.delete(g.gymId); }
+  });
+  it('queues one follow-up on the last attempt when a switch commits during listChangesSince, and the follow-up checks in the new mode', async () => {
+    const g = await restoredGym(true), jobId = uuidv7();
+    const list = vi.spyOn(g.provider, 'listChangesSince').mockImplementationOnce(async () => {
+      await scope(g.gymId, tx => writeAudit(tx, { gymId: g.gymId, actorKind: 'system', action: stripeTestClearedAction,
+        targetType: 'gym', targetId: g.gymId, occurredAt: clock.now() }));
+      return { changes: [], nextCursor: null };
+    });
+    const enqueue = vi.spyOn(jobs, 'enqueue');
+    try {
+      await expect(g.followUp(g.restoreId, { jobId, attempt: 3 })).resolves.toBeUndefined();
+      expect(list).toHaveBeenCalledTimes(1);
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      expect(enqueue).toHaveBeenCalledWith('billing.runner.restore',
+        { snapshotAt, restoreId: g.restoreId, after: jobId },
+        { gymId: g.gymId, timezone: 'UTC', runAt: new Date(clock.now().getTime() + 60_000),
+          idempotencyKey: 'restore-check:' + g.gymId + ':after:' + jobId });
+      expect([await g.starts(), await g.reports()]).toEqual([1, 0]);
+      const queuedPayload = enqueue.mock.calls[0]![1];
+      const live = new FakePayments(g.gymId, clock);
+      live.keyMode = 'live';
+      connected.set(g.gymId, live);
+      await expect(restoreJob.handler(queuedPayload, { jobId: uuidv7(), gymId: g.gymId, timezone: 'UTC', attempt: 1, clock }))
+        .resolves.toBeUndefined();
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      expect([await g.starts(), await g.reports()]).toEqual([2, 1]);
+      const [report] = await scope(g.gymId, tx => tx.select({ after: auditEvents.after }).from(auditEvents)
+        .where(eq(auditEvents.action, 'billing.runner.restore_checked')));
+      expect(report?.after).toMatchObject({ unresolved: 0, stripeConfigured: true, stripeMode: 'live' });
+    } finally { enqueue.mockRestore(); connected.delete(g.gymId); }
   });
 });
 
@@ -272,20 +308,26 @@ describe('a busy check’s follow-up and a switch during a read that changes not
       expect([await g.starts(), await g.reports()]).toEqual([1, 0]);
     } finally { connected.delete(g.gymId); }
   });
-  it('uses the Checkout session already read and stops if its mode switched during the read', async () => {
-    const g = await checkoutGym();
+  it('uses the Checkout session already read and queues a follow-up if its mode switched during the read', async () => {
+    const g = await checkoutGym(), jobId = uuidv7();
     g.read.mockImplementationOnce(async ref => {
       await g.clear();
       return { status: 'found', value: { kind: 'checkout', object: { id: ref.id, mode: 'payment', savesCard: false,
         status: 'open', paymentStatus: 'unpaid', customerId: 'cus_restored', url: 'https://gym.invalid/checkout',
         metadata: { gymId: g.gymId } } } };
     });
+    const enqueue = vi.spyOn(jobs, 'enqueue');
     try {
-      await expect(g.followUp()).rejects.toBeInstanceOf(StripeTestModeSwitched);
+      await expect(g.followUp(g.restoreId, { jobId })).resolves.toBeUndefined();
       expect(g.read).toHaveBeenCalledTimes(1);
       expect(g.list).not.toHaveBeenCalled();
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      expect(enqueue).toHaveBeenCalledWith('billing.runner.restore',
+        { snapshotAt, restoreId: g.restoreId, after: jobId },
+        { gymId: g.gymId, timezone: 'UTC', runAt: new Date(clock.now().getTime() + 60_000),
+          idempotencyKey: 'restore-check:' + g.gymId + ':after:' + jobId });
       expect([await g.starts(), await g.reports()]).toEqual([1, 0]);
-    } finally { connected.delete(g.gymId); }
+    } finally { enqueue.mockRestore(); connected.delete(g.gymId); }
   });
   it('reports the unread session as an issue when no switch commits', async () => {
     const g = await checkoutGym();
@@ -297,18 +339,24 @@ describe('a busy check’s follow-up and a switch during a read that changes not
       expect([await g.starts(), await g.reports()]).toEqual([1, 1]);
     } finally { connected.delete(g.gymId); }
   });
-  it('retries without publishing a provider error when the mode switches during a failed change-page read', async () => {
-    const g = await restoredGym(true);
+  it('queues a follow-up without publishing a provider error when the mode switches during a failed change-page read', async () => {
+    const g = await restoredGym(true), jobId = uuidv7();
     const list = vi.spyOn(g.provider, 'listChangesSince').mockImplementationOnce(async () => {
       await scope(g.gymId, tx => writeAudit(tx, { gymId: g.gymId, actorKind: 'system', action: stripeTestClearedAction,
         targetType: 'gym', targetId: g.gymId, occurredAt: clock.now() }));
       throw new Error('Stripe is unreachable');
     });
+    const enqueue = vi.spyOn(jobs, 'enqueue');
     try {
-      await expect(g.followUp()).rejects.toBeInstanceOf(StripeTestModeSwitched);
+      await expect(g.followUp(g.restoreId, { jobId })).resolves.toBeUndefined();
       expect(list).toHaveBeenCalledTimes(1);
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      expect(enqueue).toHaveBeenCalledWith('billing.runner.restore',
+        { snapshotAt, restoreId: g.restoreId, after: jobId },
+        { gymId: g.gymId, timezone: 'UTC', runAt: new Date(clock.now().getTime() + 60_000),
+          idempotencyKey: 'restore-check:' + g.gymId + ':after:' + jobId });
       expect([await g.starts(), await g.reports()]).toEqual([1, 0]);
-    } finally { connected.delete(g.gymId); }
+    } finally { enqueue.mockRestore(); connected.delete(g.gymId); }
   });
 });
 
@@ -401,18 +449,25 @@ describe('a busy check’s follow-up and a first Stripe connection', () => {
     });
     const reports = async () => (await scope(g.gymId, tx => tx.select({ after: auditEvents.after }).from(auditEvents)
       .where(eq(auditEvents.action, 'billing.runner.restore_checked')))).map(row => row.after);
+    const enqueue = vi.spyOn(jobs, 'enqueue'), jobId = uuidv7();
     resolvers.set(g.gymId, resolver);
     try {
-      await expect(g.followUp()).rejects.toBeInstanceOf(StripeTestModeSwitched);
+      await expect(g.followUp(g.restoreId, { jobId })).resolves.toBeUndefined();
       expect(resolver).toHaveBeenCalledTimes(1);
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      expect(enqueue).toHaveBeenCalledWith('billing.runner.restore',
+        { snapshotAt, restoreId: g.restoreId, after: jobId },
+        { gymId: g.gymId, timezone: 'UTC', runAt: new Date(clock.now().getTime() + 60_000),
+          idempotencyKey: 'restore-check:' + g.gymId + ':after:' + jobId });
       expect([await g.starts(), await g.reports()]).toEqual([0, 0]);
       expect(await snapshots(g.gymId)).toEqual({ cleared: null, snapshot: null });
-      // The retry inspects the new account.
+      // The queued follow-up inspects the new account.
       resolvers.set(g.gymId, async () => g.provider);
-      await expect(g.followUp()).resolves.toBeUndefined();
+      await expect(restoreJob.handler(enqueue.mock.calls[0]![1],
+        { jobId: uuidv7(), gymId: g.gymId, timezone: 'UTC', attempt: 1, clock })).resolves.toBeUndefined();
       expect(await g.starts()).toBe(1);
       expect(await reports()).toEqual([expect.objectContaining({ stripeConfigured: true, stripeMode: 'test' })]);
-    } finally { resolvers.delete(g.gymId); }
+    } finally { enqueue.mockRestore(); resolvers.delete(g.gymId); }
   });
   it('still checks, without retrying, when a resolver finds no provider for settings already stored at its early read', async () => {
     const g = await restoredGym(false, true);

@@ -180,11 +180,13 @@ check is clear for the saved Stripe mode. If any applies, it finishes before
 resolving Stripe credentials. Otherwise it resolves the provider, then rechecks
 those conditions and the Stripe switch (the latest test-data clear, or the latest
 Payments save that changed the Stripe mode) under the same gym row lock used to
-enable billing. A switch during resolution makes the job retry, and so do Stripe
-settings saved after resolution found none. If a check still needs to run, it
-records its start under the lock. With either key mode, a switch seen during the
-check, after any Stripe read, before cancelling a payment or before the report, also
-makes the job retry, with no report and no further Stripe call. The go-live checklist requires a clear result for the
+enable billing. A switch during resolution stops it, and so do Stripe settings
+saved after resolution found none. If a check still needs to run, it records its
+start under the lock. With either key mode, a switch seen during the check, after
+any Stripe read, before cancelling a payment or before the report, also stops it,
+with no report and no further Stripe call. Either way the job completes and queues
+one follow-up check a minute later, which uses the current Stripe settings, so a
+switch never uses up the job's attempts. The go-live checklist requires a clear result for the
 latest check before billing can resume.
 
 A restart resumes without needing to retain the age private identity.
