@@ -73,7 +73,7 @@ export function createRunnerJobs(read: () => ChargeRunner | undefined = () => co
         // follow-up or retry stopped by a Stripe switch wrote no report, so either queues one follow-up check a minute
         // later instead of spending this job's attempts.
         await required().queueRestoreCheck(context.gymId, context.timezone,
-          { snapshotAt, ...(restoreId ? { restoreId } : {}), after: context.jobId }, new Date(context.clock.now().getTime() + 60_000));
+          { snapshotAt, ...(restoreId ? { restoreId } : {}), after: context.jobId }, new Date(context.clock.now().getTime() + 60_000), context.attempt);
         return;
       }
       if (!result) return; // A follow-up or retry with nothing left to check.

@@ -90,7 +90,7 @@ describe('a retried attempt of the original restore job', () => {
     expect(await g.starts()).toBe(0);
     expect(await g.reports()).toBe(0);
   });
-  it('queues one follow-up keyed by its own job when the lease is busy', async () => {
+  it('queues one follow-up keyed by its own job and attempt when the lease is busy', async () => {
     const g = await restoredGym(), jobId = uuidv7();
     const enqueue = vi.spyOn(jobs, 'enqueue');
     try {
@@ -98,7 +98,7 @@ describe('a retried attempt of the original restore job', () => {
       expect(enqueue).toHaveBeenCalledTimes(1);
       expect(enqueue).toHaveBeenCalledWith('billing.runner.restore', { ...g.payload, after: jobId },
         { gymId: g.gymId, timezone: 'UTC', runAt: new Date(clock.now().getTime() + 60_000),
-          idempotencyKey: 'restore-check:' + g.gymId + ':after:' + jobId });
+          idempotencyKey: 'restore-check:' + g.gymId + ':after:' + jobId + ':2' });
     } finally { enqueue.mockRestore(); }
     expect(await g.starts()).toBe(0);
   });
@@ -119,7 +119,7 @@ describe('a retried attempt of the original restore job', () => {
       expect(enqueue).toHaveBeenCalledTimes(1);
       expect(enqueue).toHaveBeenCalledWith('billing.runner.restore', { ...g.payload, after: jobId },
         { gymId: g.gymId, timezone: 'UTC', runAt: new Date(clock.now().getTime() + 60_000),
-          idempotencyKey: 'restore-check:' + g.gymId + ':after:' + jobId });
+          idempotencyKey: 'restore-check:' + g.gymId + ':after:' + jobId + ':3' });
       expect(await g.starts()).toBe(1);
       expect(await g.reports()).toBe(0);
       const live = new FakePayments(g.gymId, clock);

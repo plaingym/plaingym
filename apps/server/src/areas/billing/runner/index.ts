@@ -357,10 +357,10 @@ export function createChargeRunner(options: RunnerOptions) {
       throw error;
     }
   }
-  /** A busy restore check's one follow-up: the key names the busy job, so its replays queue no second one. */
-  function queueRestoreCheck(gymId: string, timezone: string, payload: { snapshotAt: string; restoreId?: string; after: string }, runAt: Date) {
+  /** A busy or switched job's one follow-up per attempt: the key names the job and its attempt, so a replay of the same attempt queues none and a reclaimed later attempt queues its own. */
+  function queueRestoreCheck(gymId: string, timezone: string, payload: { snapshotAt: string; restoreId?: string; after: string }, runAt: Date, attempt: number) {
     return options.jobs.enqueue('billing.runner.restore', payload, { gymId, timezone, runAt,
-      idempotencyKey: 'restore-check:' + gymId + ':after:' + payload.after });
+      idempotencyKey: 'restore-check:' + gymId + ':after:' + payload.after + ':' + attempt });
   }
   return { daily, charge, collectAssigned, retry, reconcile, postRestore: reconciliation.postRestore,
     followUpRestore: reconciliation.followUpRestore, queueRestoreCheck,

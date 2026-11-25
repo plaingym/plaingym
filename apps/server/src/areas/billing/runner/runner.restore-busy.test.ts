@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import '@hono/zod-openapi';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { desc, eq } from 'drizzle-orm';
-// eslint-disable-next-line database/system-tables -- One test turns billing on without go-live's gate.
-import { auditEvents, gyms, invoices, paymentAttempts, uuidv7, writeAudit } from '@plaingym/db';
+// eslint-disable-next-line database/system-tables -- Tests toggle billing outside go-live and inspect queued restore job rows.
+import { auditEvents, gyms, invoices, jobs as jobsTable, paymentAttempts, uuidv7, writeAudit } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError } from '@plaingym/shared';
 import { TestClock } from '../../../core/clock.js';
 import type { GymSettings, GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
-import { FakeJobs, type Jobs } from '../../../infra/jobs/index.js';
+import { FakeJobs, PostgresJobs, type Jobs } from '../../../infra/jobs/index.js';
 import { FakePayments } from '../../../infra/payments/index.js';
 import { StripeFixtures } from '../../../infra/payments/stripe-fixtures.js';
 import { stripeProvisioner } from '../../../infra/payments/setup.js';
@@ -51,7 +51,7 @@ describe('a queued restore check that finds the lease busy', () => {
     expect(r.followUpRestore).not.toHaveBeenCalled();
     expect(r.queueRestoreCheck).toHaveBeenCalledTimes(1);
     expect(r.queueRestoreCheck).toHaveBeenCalledWith(r.gymId, 'UTC', { snapshotAt, restoreId: r.restoreId, after: r.context.jobId },
-      new Date(r.clock.now().getTime() + 60_000));
+      new Date(r.clock.now().getTime() + 60_000), 1);
   });
   it('runs a follow-up as one, and retries it when its check leaves issues with Stripe', async () => {
     const r = spiedJob();
@@ -77,16 +77,16 @@ describe('a queued restore check that finds the lease busy', () => {
     await expect(r.job.handler({ snapshotAt }, r.context)).rejects.toBeInstanceOf(StripeTestModeSwitched);
     expect(r.queueRestoreCheck).not.toHaveBeenCalled();
   });
-  it('keys the follow-up by the busy job, so its replays queue no second one', async () => {
+  it('keys the follow-up by the job and its attempt, so a replay of the same attempt queues none', async () => {
     const gymId = uuidv7(), enqueue = vi.fn(async () => undefined);
     const runner = createChargeRunner({ scope: db.forGym, clock: new TestClock('2028-03-01T17:00:00Z'),
       settings: { async get() { return { billingEnabled: false } as GymSettings; } },
       transitions: {} as BillingInvoiceTransitions, jobs: { enqueue } as unknown as Pick<Jobs, 'enqueue'>,
       async payments() { throw new Error('No provider in this test'); } });
     const payload = { snapshotAt, restoreId: uuidv7(), after: uuidv7() }, runAt = new Date('2028-03-01T17:01:00Z');
-    await runner.queueRestoreCheck(gymId, 'UTC', payload, runAt);
+    await runner.queueRestoreCheck(gymId, 'UTC', payload, runAt, 2);
     expect(enqueue).toHaveBeenCalledWith('billing.runner.restore', payload,
-      { gymId, timezone: 'UTC', runAt, idempotencyKey: 'restore-check:' + gymId + ':after:' + payload.after });
+      { gymId, timezone: 'UTC', runAt, idempotencyKey: 'restore-check:' + gymId + ':after:' + payload.after + ':2' });
   });
 });
 
@@ -216,7 +216,7 @@ describe('a busy check’s follow-up and a test-to-live switch', () => {
       expect(enqueue).toHaveBeenCalledWith('billing.runner.restore',
         { snapshotAt, restoreId: g.restoreId, after: jobId },
         { gymId: g.gymId, timezone: 'UTC', runAt: new Date(clock.now().getTime() + 60_000),
-          idempotencyKey: 'restore-check:' + g.gymId + ':after:' + jobId });
+          idempotencyKey: 'restore-check:' + g.gymId + ':after:' + jobId + ':3' });
       expect([await g.starts(), await g.reports()]).toEqual([1, 0]);
       const queuedPayload = enqueue.mock.calls[0]![1];
       const live = new FakePayments(g.gymId, clock);
@@ -325,7 +325,7 @@ describe('a busy check’s follow-up and a switch during a read that changes not
       expect(enqueue).toHaveBeenCalledWith('billing.runner.restore',
         { snapshotAt, restoreId: g.restoreId, after: jobId },
         { gymId: g.gymId, timezone: 'UTC', runAt: new Date(clock.now().getTime() + 60_000),
-          idempotencyKey: 'restore-check:' + g.gymId + ':after:' + jobId });
+          idempotencyKey: 'restore-check:' + g.gymId + ':after:' + jobId + ':1' });
       expect([await g.starts(), await g.reports()]).toEqual([1, 0]);
     } finally { enqueue.mockRestore(); connected.delete(g.gymId); }
   });
@@ -354,7 +354,7 @@ describe('a busy check’s follow-up and a switch during a read that changes not
       expect(enqueue).toHaveBeenCalledWith('billing.runner.restore',
         { snapshotAt, restoreId: g.restoreId, after: jobId },
         { gymId: g.gymId, timezone: 'UTC', runAt: new Date(clock.now().getTime() + 60_000),
-          idempotencyKey: 'restore-check:' + g.gymId + ':after:' + jobId });
+          idempotencyKey: 'restore-check:' + g.gymId + ':after:' + jobId + ':1' });
       expect([await g.starts(), await g.reports()]).toEqual([1, 0]);
     } finally { enqueue.mockRestore(); connected.delete(g.gymId); }
   });
@@ -458,7 +458,7 @@ describe('a busy check’s follow-up and a first Stripe connection', () => {
       expect(enqueue).toHaveBeenCalledWith('billing.runner.restore',
         { snapshotAt, restoreId: g.restoreId, after: jobId },
         { gymId: g.gymId, timezone: 'UTC', runAt: new Date(clock.now().getTime() + 60_000),
-          idempotencyKey: 'restore-check:' + g.gymId + ':after:' + jobId });
+          idempotencyKey: 'restore-check:' + g.gymId + ':after:' + jobId + ':1' });
       expect([await g.starts(), await g.reports()]).toEqual([0, 0]);
       expect(await snapshots(g.gymId)).toEqual({ cleared: null, snapshot: null });
       // The queued follow-up inspects the new account.
@@ -591,5 +591,105 @@ describe('a busy check’s follow-up and turning billing on', () => {
       await expect(running).resolves.toBeUndefined();
       await expect(g.enable()).resolves.toMatchObject({ billingEnabled: true });
     } finally { release(); connected.delete(g.gymId); }
+  });
+});
+
+describe('a reclaimed restore job’s follow-up on the PostgreSQL queue', () => {
+  beforeEach(async () => { await db.forSystem(tx => tx.delete(jobsTable)); });
+
+  function pgFixture() {
+    const pgClock = new TestClock('2028-03-01T17:00:00Z');
+    const queue = new PostgresJobs({ database: db, clock: pgClock });
+    const pgSettings = createGymSettingsAccessor({ scope, clock: pgClock });
+    const pgRunner = createChargeRunner({ scope, clock: pgClock, settings: pgSettings, jobs: queue, payments,
+      transitions: createInvoiceTransitions({ scope, clock: pgClock }) });
+    const pgRestoreJob = createRunnerJobs(() => pgRunner, pgSettings, lease).find(job => job.id === 'billing.runner.restore')!;
+    queue.handle('billing.runner.restore', pgRestoreJob.handler);
+    const queuedRows = (gymId: string) => scope(gymId, tx => tx.select({ id: jobsTable.id, status: jobsTable.status })
+      .from(jobsTable).where(eq(jobsTable.name, 'billing.runner.restore')));
+    return { pgClock, queue, pgRestoreJob, queuedRows };
+  }
+
+  it('queues a second follow-up when a later reclaimed attempt meets another Stripe switch, and running it writes a clear report', async () => {
+    const f = pgFixture(), g = await restoredGym(true, true), jobId = uuidv7();
+    const key2 = 'restore-check:' + g.gymId + ':after:' + jobId + ':2';
+    const key3 = 'restore-check:' + g.gymId + ':after:' + jobId + ':3';
+    vi.spyOn(g.provider, 'listChangesSince').mockImplementationOnce(async () => {
+      await scope(g.gymId, tx => writeAudit(tx, { gymId: g.gymId, actorKind: 'system', action: stripeTestClearedAction,
+        targetType: 'gym', targetId: g.gymId, occurredAt: f.pgClock.now() }));
+      return { changes: [], nextCursor: null };
+    });
+    try {
+      // Attempt 2 meets a Stripe switch during listChangesSince and queues follow-up F1 keyed by job and attempt 2.
+      await expect(f.pgRestoreJob.handler({ snapshotAt, restoreId: g.restoreId },
+        { jobId, gymId: g.gymId, timezone: 'UTC', attempt: 2, clock: f.pgClock })).resolves.toBeUndefined();
+      expect(await f.queuedRows(g.gymId)).toMatchObject([{ status: 'pending' }]);
+      expect(await f.queue.existingJobs('billing.runner.restore', [key2, key3], { gymId: g.gymId })).toEqual([key2]);
+      expect([await g.starts(), await g.reports()]).toEqual([1, 0]);
+
+      // F1 runs in the new live mode and writes a clear report.
+      const liveFirst = new FakePayments(g.gymId, f.pgClock);
+      liveFirst.keyMode = 'live';
+      connected.set(g.gymId, liveFirst);
+      await scope(g.gymId, tx => writeAudit(tx, { gymId: g.gymId, actorKind: 'user', actorUserId: g.userId,
+        action: 'integrations.stripe_saved', targetType: 'gym', targetId: g.gymId, after: { mode: 'live' }, occurredAt: f.pgClock.now() }));
+      f.pgClock.advance(60_000);
+      expect(await f.queue.runNext()).toBe(true);
+      expect(await f.queue.runNext()).toBe(false);
+      expect(await f.queuedRows(g.gymId)).toMatchObject([{ status: 'succeeded' }]);
+      expect([await g.starts(), await g.reports()]).toEqual([2, 1]);
+
+      // A further mode switch commits before the reclaimed attempt 3 runs.
+      const testSecond = new FakePayments(g.gymId, f.pgClock);
+      testSecond.keyMode = 'test';
+      connected.set(g.gymId, testSecond);
+      await scope(g.gymId, tx => writeAudit(tx, { gymId: g.gymId, actorKind: 'user', actorUserId: g.userId,
+        action: 'integrations.stripe_saved', targetType: 'gym', targetId: g.gymId, after: { mode: 'test' }, occurredAt: f.pgClock.now() }));
+      vi.spyOn(testSecond, 'listChangesSince').mockImplementationOnce(async () => {
+        await scope(g.gymId, tx => writeAudit(tx, { gymId: g.gymId, actorKind: 'system', action: stripeTestClearedAction,
+          targetType: 'gym', targetId: g.gymId, occurredAt: f.pgClock.now() }));
+        return { changes: [], nextCursor: null };
+      });
+
+      // Attempt 3 of the same job meets another switch and queues its own follow-up keyed by job and attempt 3.
+      await expect(f.pgRestoreJob.handler({ snapshotAt, restoreId: g.restoreId },
+        { jobId, gymId: g.gymId, timezone: 'UTC', attempt: 3, clock: f.pgClock })).resolves.toBeUndefined();
+      expect(await f.queuedRows(g.gymId)).toHaveLength(2);
+      expect((await f.queue.existingJobs('billing.runner.restore', [key2, key3], { gymId: g.gymId })).sort()).toEqual([key2, key3].sort());
+      expect([await g.starts(), await g.reports()]).toEqual([3, 1]);
+
+      // Running the second follow-up writes a clear report in the new live mode.
+      const liveSecond = new FakePayments(g.gymId, f.pgClock);
+      liveSecond.keyMode = 'live';
+      connected.set(g.gymId, liveSecond);
+      await scope(g.gymId, tx => writeAudit(tx, { gymId: g.gymId, actorKind: 'user', actorUserId: g.userId,
+        action: 'integrations.stripe_saved', targetType: 'gym', targetId: g.gymId, after: { mode: 'live' }, occurredAt: f.pgClock.now() }));
+      f.pgClock.advance(60_000);
+      expect(await f.queue.runNext()).toBe(true);
+      expect(await f.queue.runNext()).toBe(false);
+      expect(await f.queuedRows(g.gymId)).toMatchObject([{ status: 'succeeded' }, { status: 'succeeded' }]);
+      expect([await g.starts(), await g.reports()]).toEqual([4, 2]);
+      const [latestReport] = await scope(g.gymId, tx => tx.select({ after: auditEvents.after }).from(auditEvents)
+        .where(eq(auditEvents.action, 'billing.runner.restore_checked')).orderBy(desc(auditEvents.createdAt), desc(auditEvents.id)).limit(1));
+      expect(latestReport?.after).toMatchObject({ unresolved: 0, stripeConfigured: true, stripeMode: 'live' });
+    } finally { connected.delete(g.gymId); }
+  });
+
+  it('leaves exactly one follow-up row when the same attempt meets a switch twice', async () => {
+    const f = pgFixture(), g = await restoredGym(true, true), jobId = uuidv7();
+    const key3 = 'restore-check:' + g.gymId + ':after:' + jobId + ':3';
+    vi.spyOn(g.provider, 'listChangesSince').mockImplementation(async () => {
+      await scope(g.gymId, tx => writeAudit(tx, { gymId: g.gymId, actorKind: 'system', action: stripeTestClearedAction,
+        targetType: 'gym', targetId: g.gymId, occurredAt: f.pgClock.now() }));
+      return { changes: [], nextCursor: null };
+    });
+    try {
+      await expect(f.pgRestoreJob.handler({ snapshotAt, restoreId: g.restoreId },
+        { jobId, gymId: g.gymId, timezone: 'UTC', attempt: 3, clock: f.pgClock })).resolves.toBeUndefined();
+      await expect(f.pgRestoreJob.handler({ snapshotAt, restoreId: g.restoreId },
+        { jobId, gymId: g.gymId, timezone: 'UTC', attempt: 3, clock: f.pgClock })).resolves.toBeUndefined();
+      expect(await f.queuedRows(g.gymId)).toHaveLength(1);
+      expect(await f.queue.existingJobs('billing.runner.restore', [key3], { gymId: g.gymId })).toEqual([key3]);
+    } finally { connected.delete(g.gymId); }
   });
 });

@@ -29,7 +29,7 @@ exposes the same controllable entry points used by the jobs and PostgreSQL scena
 The restore job and go-live rerun share a per-gym PostgreSQL session lease before
 calling `postRestore`. The dedicated connection holds no transaction while checking
 the provider. A busy job queues one follow-up check a minute later
-(`queueRestoreCheck`, keyed by the busy job's ID) and succeeds, since the holder
+(`queueRestoreCheck`, keyed by the job's ID and attempt) and succeeds, since the holder
 can end without a usable result. The follow-up (`followUpRestore`, under the lease)
 does nothing when billing is back on, when its restore isn't the latest, or when the
 latest check is already clear for the saved Stripe mode, so it never replaces a
@@ -43,7 +43,7 @@ before recording a start or calling Stripe. Whatever the key mode, a switch seen
 check throws too, with no report and no further Stripe call; so do Stripe settings saved
 before its report by a follow-up that found none. When a follow-up or retry meets a Stripe
 switch, the restore job handler queues one follow-up check a minute later
-(`queueRestoreCheck`, keyed by the job's ID) and succeeds, like a busy job, so a switch
+(`queueRestoreCheck`, keyed by the job's ID and attempt) and succeeds, like a busy job, so a switch
 never uses up the job's last attempt.
 A start it records keeps billing off until its report, and a report with issues
 retries as a first check's does. A retried attempt of the original restore job
