@@ -14,7 +14,7 @@ Use Node **24.22.1**, pnpm **10.34.7**, and Docker with Linux containers.
 2. Replace all three password placeholders with different random, URL-safe values.
    Update `DATABASE_URL` and `MAINTENANCE_DATABASE_URL` to match the app and
    maintenance passwords, database name and port.
-   Set `SOURCE_URL` to the public source URL for your checkout.
+   Set `SOURCE_URL` to the public source URL for your checkout; the server's Source code link redirects there.
    Generate independent `AUTH_SECRET` and `SETUP_TOKEN` values, and a 32-byte
    `APP_ENCRYPTION_KEY` encoded as 64 hex characters (`openssl rand -hex 32`).
 3. Choose a unique `COMPOSE_PROJECT_NAME` and unused ports if another worktree is running.

@@ -81,14 +81,14 @@ credentials, Git history, dependencies, and local build outputs.
 
 To build an extracted source archive without Git history, use the pinned Node
 and pnpm versions from `.nvmrc` and `package.json`, then run
-`pnpm install --frozen-lockfile` in the extracted directory. Set `SOURCE_URL`
-to the exact public source URL for the archive, then run `pnpm build`.
+`pnpm install --frozen-lockfile` in the extracted directory, then run
+`pnpm build`.
 Without explicit build identity variables this embeds `<package version>+unknown` and commit
 `unknown`; it is a development build, not a release. Supply both
 `APP_BUILD_VERSION` and a full 40-character `APP_BUILD_REVISION` to embed a known
-identity; supplying only one is an error. Keep `SOURCE_URL` set when running
-the server too: the Source code link uses its `/source` redirect, which otherwise
-defaults to the project repository.
+identity; supplying only one is an error. Set `SOURCE_URL` to the exact public
+source URL for the archive when you run the server: the Source code link uses
+its `/source` redirect, which otherwise defaults to the project repository.
 Docker builds from an archive are also supported: set `SOURCE_URL` to the archive's
 exact public source URL and run `node scripts/release/build-image.mjs plaingym:archive`
 in the extracted directory. The helper supplies the package's `+unknown` version

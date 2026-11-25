@@ -3,6 +3,10 @@ ARG NODE_IMAGE=node:24.22.1-bookworm-slim@sha256:be8204d4bd327363357f532187b752f
 FROM ${NODE_IMAGE} AS identity
 ARG VERSION
 ARG REVISION
+# An empty SOURCE_URL would give the runtime stage an empty source link and url label, so it fails here, where the
+# constant marker keeps the value out of the build layers' cache keys. The default matches the runtime stage's.
+ARG SOURCE_URL=https://github.com/plaingym/plaingym
+RUN test -n "$SOURCE_URL" || { echo 'SOURCE_URL must not be empty: omit the build argument to link to the project repository.' >&2; exit 1; }
 # Identity is mandatory for both labels and runtime schema compatibility. The helper also handles source archives.
 RUN { test -n "$VERSION" && test -n "$REVISION" || { echo 'Supply VERSION and REVISION build arguments, or use node scripts/release/build-image.mjs IMAGE.' >&2; exit 1; }; } && touch /identity-valid
 
@@ -22,10 +26,9 @@ COPY packages/db/package.json packages/db/
 COPY packages/shared/package.json packages/shared/
 RUN --mount=type=cache,id=plaingym-pnpm-store,target=/pnpm/store npm_config_store_dir=/pnpm/store pnpm install --frozen-lockfile
 COPY . .
-ARG SOURCE_URL=https://github.com/plaingym/plaingym
 ARG VERSION
 ARG REVISION
-RUN test -n "$SOURCE_URL" && SOURCE_URL="$SOURCE_URL" APP_BUILD_VERSION="$VERSION" APP_BUILD_REVISION="$REVISION" pnpm build
+RUN APP_BUILD_VERSION="$VERSION" APP_BUILD_REVISION="$REVISION" pnpm build
 
 FROM ${NODE_IMAGE} AS runtime
 COPY deploy/pgdg.asc /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc

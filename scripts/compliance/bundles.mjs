@@ -27,8 +27,6 @@ export async function bundleInputs(root) {
     const web = join(root, 'apps/web');
     const { build } = await import(pathToFileURL(createRequire(join(web, 'package.json')).resolve('vite')).href);
     const ids = [];
-    // The source link value cannot change which inputs are bundled.
-    process.env.SOURCE_URL ||= 'https://example.invalid/compliance';
     await build({
       root: web,
       configFile: join(web, 'vite.config.ts'),
