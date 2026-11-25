@@ -147,7 +147,8 @@ only when the member could have acted on the payment. Cancelling a still-`pendin
 attempt (its intent was never confirmed) closes it `failed` with `confirm_abandoned`
 and changes nothing else: no invoice status, dunning or retry effects (on the last
 retry day the runner queues one more retry itself; `../runner/README.md`). Cancelling an
-action-needed attempt records `intent_canceled` and is handled as a failure. Neither
+action-needed attempt records `intent_canceled` and moves the invoice as a failure, but
+queues no new failed-payment notice, for both one-off and recurring invoices. Neither
 cancelled intent can later record a success or another outcome. `applyChargeOutcome`
 records a cancelled intent that carries a processor Charge (`latestChargeId`) as a
 decline first: its confirmation reached the card and was declined before the
@@ -277,7 +278,9 @@ in the gym's timezone, including DST changes. Repeated failures and settings
 edits never reset that schedule or move queued jobs. Legacy invoices keep their
 original effects and jobs; the runner uses `[3, 7]` when their audit has no saved days.
 Each failure of the latest attempt sends one dunning email, up to five from the
-first failure and four automatic retries when member emails are enabled.
+first failure and four automatic retries when member emails are enabled. The
+cancellation of an action-needed attempt is the exception: its authentication
+notice stands, and the cancellation sends nothing more.
 Dunning for an older attempt is suppressed; an abandoned newer attempt
 (`create_abandoned` or `confirm_abandoned`) doesn't count as newer. Retry jobs recheck
 unpaid state and billing enablement; the injected runner must also check these
@@ -290,9 +293,10 @@ leaves the invoice past due. One-off failures return the invoice to open and
 never enqueue retries. Only a declined or action-needed staff charge enqueues
 the failed-payment notice: `failedInvoice` reads the attempt's
 `billing.runner.reserved` audit and marks that `dunning` effect `staffCharge`.
-Cancelling that action-needed intent later (before another charge or a cash
-payment) sends nothing more. Automatic, retry and Checkout failures of a
-one-off send nothing.
+Cancelling an action-needed intent later (before another charge or a cash or
+check payment) queues no new failed-payment notice, for either a one-off or a
+recurring invoice. Automatic, retry and Checkout failures of a one-off send
+nothing.
 
 Runner collection is explicit for staff one-offs. Daily collection includes only
 cycles and assignment one-offs; the assignment route invokes `collectAssigned`

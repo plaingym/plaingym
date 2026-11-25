@@ -220,7 +220,7 @@ describe('billing scenarios: PostgreSQL invoice transitions and published effect
 
   it.each([
     ['never-confirmed', 'pending', 'confirm_abandoned', 'open', []],
-    ['action-needed', 'requires_action', 'intent_canceled', 'past_due', ['dunning', 'dunning', 'retry', 'retry']],
+    ['action-needed', 'requires_action', 'intent_canceled', 'past_due', ['dunning', 'retry', 'retry']],
   ] as const)('never resurrects a cancelled %s intent', async (_label, status, code, invoiceStatus, work) => {
     const f = await fixture();
     if (status === 'requires_action') await f.transitions.cardFailed(f.context, { ...f.failure, outcome: 'requires_action' });

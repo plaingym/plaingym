@@ -381,6 +381,48 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect(after.audits.filter(row => row.action === 'billing.attempt.resolved' && row.targetId === second.id)).toHaveLength(1);
     expect(f.email.messages.slice(sent)).toEqual([]);
   });
+  it.each(['cycle', 'past_due_assignment'] as const)(
+    'queues no second failed-payment notice when cancelling an action-needed attempt on a %s invoice', async mode => {
+    const f = await fixture(mode === 'cycle' ? 'cycle' : 'one_off');
+    if (mode === 'past_due_assignment')
+      await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'past_due' }).where(eq(invoices.id, f.invoice.id)));
+    const effectsOf = (rows: Awaited<ReturnType<Fixture['read']>>, kind: TransitionEffect['kind']) =>
+      rows.audits.filter(row => row.action === effectCreated && (row.after as TransitionEffect).kind === kind);
+    expect(await f.transitions.cardFailed(f.context, { ...f.failure, outcome: 'requires_action' }))
+      .toMatchObject({ outcome: 'applied', invoice: { status: 'past_due' } });
+    await f.drain();
+    expect(effectsOf(await f.read(), 'dunning')).toHaveLength(1);
+    if (mode === 'cycle')
+      expect(f.email.messages).toMatchObject([{ to: 'payer@example.invalid', subject: 'Authentication needed for invoice 1' }]);
+    expect(await f.transitions.cardFailed(f.context, { ...f.failure, outcome: 'canceled' }))
+      .toMatchObject({ outcome: 'applied', invoice: { status: 'past_due' } });
+    expect((await f.transitions.cardFailed(f.context, { ...f.failure, outcome: 'canceled' })).outcome).toBe('ignored');
+    await f.drain();
+    const after = await f.read();
+    expect(after.invoice.status).toBe('past_due');
+    expect(after.attempts[0]).toMatchObject({ status: 'failed', declineCode: 'intent_canceled' });
+    expect(effectsOf(after, 'dunning')).toHaveLength(1);
+    expect(effectsOf(after, 'retry')).toHaveLength(2);
+    expect(after.audits.filter(row => row.action === 'billing.invoice.dunning_started')).toHaveLength(1);
+    expect(f.email.messages).toHaveLength(mode === 'cycle' ? 1 : 0);
+  });
+  it.each(['failed', 'canceled'] as const)(
+    'queues one dunning effect and retries when a processing cycle attempt ends %s', async outcome => {
+    const f = await fixture('cycle');
+    expect(await f.transitions.paymentProcessing(f.context, {
+      invoiceId: f.invoice.id, attemptId: f.attempt.id, paymentIntentId: f.success.paymentIntentId,
+    })).toMatchObject({ outcome: 'applied', invoice: { status: 'processing' } });
+    expect(await f.transitions.cardFailed(f.context, { ...f.failure, outcome }))
+      .toMatchObject({ outcome: 'applied', invoice: { status: 'past_due' } });
+    await f.drain();
+    const after = await f.read();
+    expect(after.invoice.status).toBe('past_due');
+    expect(after.attempts[0]).toMatchObject({ status: 'failed', declineCode: outcome === 'canceled' ? 'intent_canceled' : null });
+    expect(after.audits.filter(row => row.action === effectCreated && (row.after as TransitionEffect).kind === 'dunning')).toHaveLength(1);
+    expect(after.audits.filter(row => row.action === effectCreated && (row.after as TransitionEffect).kind === 'retry')).toHaveLength(2);
+    expect(after.audits.filter(row => row.action === 'billing.invoice.dunning_started')).toHaveLength(1);
+    expect(f.email.messages).toMatchObject([{ to: 'payer@example.invalid', subject: 'Payment needed for invoice 1' }]);
+  });
   it('records manual payments idempotently and rejects reused IDs or another manual payment', async () => {
     const f = await fixture();
     expect((await f.transitions.manualPayment(f.context, f.manual)).outcome).toBe('applied');

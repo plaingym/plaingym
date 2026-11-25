@@ -468,7 +468,7 @@ export function invoiceTransitionsContract(name: string, create: (options?: { pa
       expect((await h.transitions.cardSucceeded(h.context, h.success)).outcome).toBe('ignored');
       expect((await h.read()).invoice).toBe(before.invoice);
     });
-    it('keeps the cancellation of an action-needed attempt a decline with dunning', async () => {
+    it('keeps the cancellation of an action-needed attempt a decline without a second dunning notice', async () => {
       const h = await create();
       const { invoiceId, attemptId, paymentIntentId } = h.success;
       await h.transitions.cardFailed(h.context, { invoiceId, attemptId, paymentIntentId, outcome: 'requires_action' });
@@ -476,7 +476,7 @@ export function invoiceTransitionsContract(name: string, create: (options?: { pa
       expect(result).toMatchObject({ outcome: 'applied', invoice: { status: 'past_due' } });
       const after = await h.read();
       expect(after.attempt).toEqual({ status: 'failed', declineCode: 'intent_canceled' });
-      expect(count(after.effects, 'dunning')).toBe(2);
+      expect(count(after.effects, 'dunning')).toBe(1);
       expect((await h.transitions.cardSucceeded(h.context, h.success)).outcome).toBe('ignored');
     });
     it.each([false, true])('reverses a processor refund that fails after success, with pack sale: %s', async packSale => {

@@ -33,8 +33,9 @@ export interface CardFailure {
   readonly attemptId: Id;
   readonly paymentIntentId: string;
   /** Provider outcome: canceled is persisted as failed. A cancelled attempt that was still pending (its intent was
-   * never confirmed) gets declineCode confirm_abandoned and leaves the invoice, dunning and retries untouched; any
-   * other cancellation gets intent_canceled and is a decline.
+   * never confirmed) gets declineCode confirm_abandoned and leaves the invoice, dunning and retries untouched;
+   * cancelling a requires_action attempt gets intent_canceled and moves the invoice as a failure without queueing a
+   * second dunning notice; any other cancellation gets intent_canceled and is a decline.
    * The adapter normalizes every authentication_required shape to requires_action. */
   readonly outcome: 'failed' | 'requires_action' | 'canceled' | BankFailureCode;
 }
@@ -312,7 +313,7 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
     if (invoice.status === 'processing' && attempt.status !== 'processing' && this.#processingHistory.get(key)?.at(-1) !== request.paymentIntentId)
       return this.#result('ignored', invoice);
     const bankCode = request.outcome === 'insufficient_funds' || request.outcome === 'payment_method_unusable' ? request.outcome : undefined;
-    return this.#failInvoice(context.gymId, invoice, bankCode);
+    return this.#failInvoice(context.gymId, invoice, bankCode, request.outcome === 'canceled' && attempt.status === 'requires_action');
   }
   async manualPayment(context: MutationContext, request: ManualPayment): Promise<InvoiceTransitionResult> {
     return this.#recordPayment(context, request, request.method);
@@ -343,11 +344,11 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
     this.#checkouts.delete(key);
     return this.#failInvoice(context.gymId, invoice, request.code);
   }
-  #failInvoice(gymId: Id, invoice: InvoiceSnapshot, bankCode?: BankFailureCode): InvoiceTransitionResult {
+  #failInvoice(gymId: Id, invoice: InvoiceSnapshot, bankCode?: BankFailureCode, skipDunning = false): InvoiceTransitionResult {
     const recurring = invoice.kind === 'cycle' || (!!bankCode || invoice.status === 'past_due') && this.options.assignmentInvoice?.(invoice.id);
     const next: InvoiceSnapshot = { ...invoice, status: recurring ? 'past_due' : 'open' };
     this.#invoices.set(scopedKey(gymId, invoice.id), next);
-    if (recurring || bankCode === 'payment_method_unusable') this.#effect(gymId, invoice.id, 'dunning');
+    if (!skipDunning && (recurring || bankCode === 'payment_method_unusable')) this.#effect(gymId, invoice.id, 'dunning');
     return this.#result('applied', next);
   }
   async settleZero(context: MutationContext, request: { invoiceId: Id }): Promise<InvoiceTransitionResult> {

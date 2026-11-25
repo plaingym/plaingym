@@ -108,10 +108,10 @@ describe('the runner cancelling its own unconfirmed charge', () => {
     expect(state.attempts).toMatchObject([{ id: first!.id, status: 'failed', declineCode: 'intent_canceled' },
       { attemptNumber: 2, status: 'requires_action' }]);
     expect(state.invoices[0]!.status).toBe('past_due');
-    // The cancellation records a failure of its own (its email is suppressed for the newer attempt).
+    // The cancellation closes the attempt as intent_canceled without queueing a second dunning notice for it.
     expect(state.audits.filter(row => row.action === 'billing.attempt.resolved' && row.targetId === first!.id)
       .map(row => row.after)).toContainEqual({ status: 'failed', declineCode: 'intent_canceled' });
-    expect(effects(state).filter(kind => kind === 'dunning')).toHaveLength(3);
+    expect(effects(state).filter(kind => kind === 'dunning')).toHaveLength(2);
     expect(effects(state).filter(kind => kind === 'retry')).toHaveLength(2);
   });
 });

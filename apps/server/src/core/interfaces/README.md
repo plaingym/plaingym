@@ -29,7 +29,9 @@ are implemented here.
   no staff-charge notice). A provider canceled
   outcome is stored as failed: with declineCode confirm_abandoned when the attempt
   was still pending (its intent was never confirmed, so the invoice, dunning and
-  retries are untouched), otherwise with intent_canceled as a decline. Both codes
+  retries are untouched), otherwise with intent_canceled as a decline (cancelling
+  an action-needed attempt records intent_canceled and moves the invoice as a
+  failure with no second dunning notice). Both codes
   preserve terminal cancellation through the locked schema and after reloading a
   fake fixture. Refunds reserve pending amounts and only successful refunds change
   the invoice's refund state, with one backward move: a processor refund that fails

@@ -211,7 +211,8 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Billi
         if (terminal(invoice) || row.attemptNumber < latest.attemptNumber || alreadyResolved) return result('ignored', invoice);
         if (invoice.status === 'processing' && row.status !== 'processing' && (await processingIntents(tx, invoice.id)).at(-1) !== request.paymentIntentId)
           return result('ignored', invoice);
-        return failedInvoice(tx, context, invoice, row.id, bankCode, row.savedPaymentMethod, request.outcome === 'canceled');
+        return failedInvoice(tx, context, invoice, row.id, bankCode, row.savedPaymentMethod,
+          request.outcome !== 'canceled' ? false : row.status === 'requires_action' ? 'action_needed' : 'other');
       });
     },
     async refund(context: MutationContext, request: RefundTransition) {
@@ -236,7 +237,7 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Billi
     },
   };
   async function failedInvoice(tx: Transaction, context: MutationContext, invoice: InvoiceRow, attemptId?: string,
-    failureCode?: CheckoutFailureCode, processorId?: string, canceled = false) {
+    failureCode?: CheckoutFailureCode, processorId?: string, canceled: false | 'action_needed' | 'other' = false) {
     const bankCode = failureCode === 'insufficient_funds' || failureCode === 'payment_method_unusable' ? failureCode : undefined;
     const checkoutFailureCode = attemptId ? undefined : failureCode;
     // An assignment invoice a bank failure made past due stays past due on a later card failure, so its retries continue.
@@ -253,9 +254,10 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Billi
     const source = { ...(attemptId ? { attemptId } : {}), ...(bankCode ? { bankCode } : {}),
       ...(checkoutFailureCode && !bankCode ? { checkoutBankFailure: true as const } : {}) };
     // A declined or action-needed staff charge of a saved method on a one-off: the payer hears of it, with no retries.
-    // Cancelling an action-needed intent (before another charge or a cash payment) sends nothing: that attempt was notified.
+    // Cancelling an action-needed intent (before another charge or a cash or check payment) queues no new notice, for
+    // one-off and recurring invoices alike: the payer already had the authentication notice for that attempt, if any.
     const staffCharge = !canceled && !recurring && !bankCode && !!attemptId && await staffReserved(tx, attemptId);
-    if (recurring || bankCode === 'payment_method_unusable' || staffCharge)
+    if (canceled !== 'action_needed' && (recurring || bankCode === 'payment_method_unusable' || staffCharge))
       await effect(tx, context, clock, { kind: 'dunning', invoiceId: invoice.id, ...source, ...(staffCharge ? { staffCharge: true as const } : {}) });
     if (recurring && !stop && !await recorded(tx, 'billing.invoice.dunning_started', invoice.id) && !await recorded(tx, retriesStopped, invoice.id)) {
       const { retryDays } = await readBillingRules(tx, context.gymId);
