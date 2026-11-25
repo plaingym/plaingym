@@ -12,7 +12,7 @@ const gymId = 'gym_cards', householdId = 'household_cards', customerId = 'cus_ca
 const ids = Array.from({ length: 102 }, (_, i) => 'pm_import_' + i);
 function stripe(options: { gymId?: string; householdId?: string; deleted?: boolean } = {}) {
   const transport = new StripeFixtures(gymId);
-  transport.objects.set(customerId, { id: customerId, object: 'customer', deleted: options.deleted ?? false,
+  transport.objects.set(customerId, { id: customerId, object: 'customer', email: 'payer@example.invalid', deleted: options.deleted ?? false,
     metadata: { ...(options.gymId === '' ? {} : { gym_id: options.gymId ?? gymId }), household_id: options.householdId ?? householdId } });
   for (const methodId of [...ids, 'pm_foreign', 'pm_detached']) transport.objects.set(methodId, { id: methodId, object: 'payment_method',
     created: transport.now, customer: methodId === 'pm_foreign' ? 'cus_foreign' : methodId === 'pm_detached' ? null : customerId,
@@ -22,7 +22,8 @@ function stripe(options: { gymId?: string; householdId?: string; deleted?: boole
 customerCardsContract('StripePayments', stripe);
 customerCardsContract('FakePayments', options => {
   const payments = new FakePayments(gymId, new TestClock('2026-01-01T00:00:00Z'));
-  payments.seedCustomer({ id: customerId, email: 'payer@example.invalid', gymId: options?.gymId ?? gymId,
+  payments.seedCustomer({ id: customerId, email: 'payer@example.invalid',
+    gymId: options?.gymId === '' ? null : options?.gymId ?? gymId,
     householdId: options?.householdId ?? householdId, deleted: options?.deleted ?? false });
   for (const methodId of [...ids, 'pm_foreign']) payments.recordPaymentMethod({ id: methodId,
     customerId: methodId === 'pm_foreign' ? 'cus_foreign' : customerId, last4: '4242', brand: 'visa', expiresMonth: 12, expiresYear: 2035 });
@@ -149,6 +150,25 @@ it('reports a fake method recorded for another gym and leaves it out', async () 
   const recorder = new FixtureRecorder(gymId), recorded = recorder.wrap(payments);
   const recordedPage = await recorded.listCustomerCards(customerId, { householdId });
   expect(await replayPayments(JSON.parse(JSON.stringify(recorder.tape)), gymId).listCustomerCards(customerId, { householdId })).toEqual(recordedPage);
+});
+it('reports a fake method recorded for another household and lists one tagged for this household', async () => {
+  const payments = new FakePayments(gymId, new TestClock('2026-01-01T00:00:00Z'));
+  payments.seedCustomer({ id: customerId, email: 'payer@example.invalid', householdId });
+  payments.recordPaymentMethod({ id: 'pm_own_household', customerId, last4: '4242', brand: 'visa', expiresMonth: 12, expiresYear: 2035,
+    createdAt: new Date('2026-01-02T00:00:00Z'), householdId });
+  payments.recordPaymentMethod({ id: 'pm_other_household', customerId, last4: '4242', brand: 'visa', expiresMonth: 12, expiresYear: 2035,
+    householdId: 'other-household' });
+  payments.recordPaymentMethod({ id: 'pm_other_household_bank', customerId, type: 'us_bank_account', last4: '6789',
+    householdId: 'other-household' });
+  const page = await payments.listCustomerCards(customerId, { householdId });
+  expect(page).toMatchObject({ cards: [{ id: 'pm_own_household' }], nextCursor: null,
+    skippedForeign: [{ id: 'pm_other_household', type: 'card' }] });
+  expect(page.cards).toHaveLength(1);
+  expect((await payments.listCustomerCards(customerId, { householdId, types: ['card', 'us_bank_account'] })).skippedForeign)
+    .toEqual(expect.arrayContaining([
+      { id: 'pm_other_household', type: 'card' },
+      { id: 'pm_other_household_bank', type: 'us_bank_account' },
+    ]));
 });
 it.each([
   { data: [], has_more: true }, { data: null, has_more: false },

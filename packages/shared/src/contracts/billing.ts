@@ -193,7 +193,7 @@ export const billingContracts = {
     response: paymentMethodListResponseSchema, successStatus: 200 },
   importCustomerCards: { method: 'post', path: '/api/billing/households/{householdId}/payment-methods/import',
     permission: collect, params: billingHouseholdParamsSchema, body: billingEmptyRequestSchema,
-    description: 'Queues a chunked import of cards attached to this household\'s gym-tagged Stripe customer. Keeps an existing default and revoked cards.',
+    description: 'Queues a chunked import of cards attached to this household\'s Stripe customer, tagging an untagged one for the gym first. Fills missing details of the household\'s cards and keeps an existing default and revoked cards.',
     response: resendReceiptResponseSchema, successStatus: 200 },
   setDefaultPaymentMethod: { method: 'post', path: '/api/billing/households/{householdId}/payment-methods/{paymentMethodId}/default',
     permission: collect, params: billingPaymentMethodParamsSchema, body: billingEmptyRequestSchema,

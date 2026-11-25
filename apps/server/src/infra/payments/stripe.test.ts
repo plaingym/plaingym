@@ -578,10 +578,10 @@ it('adopts an imported customer once, so charges and email matching accept it, a
   const imported = { ...charge, customerId: 'cus_imported', paymentMethodId: 'pm_imported', idempotencyKey: 'invoice_imported:1:create' };
   await expect(payments.createCharge(imported)).rejects.toThrow('no gym metadata');
   expect(await payments.findCustomerByEmail('imported@example.invalid')).toEqual([]);
-  expect(await payments.adoptCustomer('cus_imported')).toEqual({ id: 'cus_imported', email: 'imported@example.invalid' });
+  expect(await payments.adoptCustomer('cus_imported')).toEqual({ id: 'cus_imported', email: 'imported@example.invalid', adopted: true });
   expect(transport.objects.get('cus_imported')!.metadata).toEqual({ legacy_id: '42', gym_id: gymId });
   const writes = transport.requests.filter((request) => request.method === 'POST').length;
-  await payments.adoptCustomer('cus_imported');
+  expect(await payments.adoptCustomer('cus_imported')).toEqual({ id: 'cus_imported', email: 'imported@example.invalid', adopted: false });
   expect(transport.requests.filter((request) => request.method === 'POST')).toHaveLength(writes);
   expect(await payments.findCustomerByEmail('imported@example.invalid')).toEqual([{ id: 'cus_imported', email: 'imported@example.invalid' }]);
   await expect(payments.createCharge(imported)).resolves.toMatchObject({ id: expect.stringMatching(/^pi_/) });

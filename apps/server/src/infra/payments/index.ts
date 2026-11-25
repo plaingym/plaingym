@@ -247,9 +247,10 @@ export interface Payments {
   /**
    * Tags a customer created outside this app (an imported Stripe customer ID) with this gym, so charges and
    * Checkout accept it. Idempotent; refuses a customer tagged for another gym, and raises `CustomerDeleted` for a deleted one.
+   * `adopted` is true only when this call wrote the gym tag.
    * Call it only on staff-provided IDs, never on IDs taken from untrusted input.
    */
-  adoptCustomer(customerId: string): Promise<{ id: string; email: string | null }>;
+  adoptCustomer(customerId: string): Promise<{ id: string; email: string | null; adopted: boolean }>;
   /** One bounded page of attached cards. Requires this gym's tag and refuses another household's metadata. */
   listCustomerCards(customerId: string, options?: CustomerCardQuery): Promise<CustomerCardPage>;
   /**
@@ -386,7 +387,7 @@ export class FakePayments implements Payments {
   readonly #checkouts = new Map<string, CheckoutSession>();
   readonly #checkoutRequests = new Map<string, CheckoutRequest>();
   readonly #refunds = new Map<string, Refund>();
-  readonly #methods = new Map<string, { method: PaymentMethod; gymId?: string }>();
+  readonly #methods = new Map<string, { method: PaymentMethod; gymId?: string; householdId?: string }>();
   readonly #detached = new Set<string>();
   readonly #setups = new Map<string, SetupOutcome>();
   readonly #disputes = new Map<string, Dispute>();
@@ -430,8 +431,8 @@ export class FakePayments implements Payments {
   /** The card's billing details; absent once erasure cleared them. */
   billingDetails(processorId: string): BillingDetails | undefined { return structuredClone(this.#billing.get(processorId)); }
   recordPaymentMethod(input: (Omit<CardPaymentMethod, 'createdAt' | 'type'> & { type?: 'card' }
-    | Omit<BankPaymentMethod, 'createdAt' | 'type'> & { type?: BankPaymentMethod['type'] }) & { createdAt?: Date; gymId?: string }): void {
-    const { id, customerId, last4, gymId } = input;
+    | Omit<BankPaymentMethod, 'createdAt' | 'type'> & { type?: BankPaymentMethod['type'] }) & { createdAt?: Date; gymId?: string; householdId?: string }): void {
+    const { id, customerId, last4, gymId, householdId } = input;
     const previous = this.#methods.get(id)?.method;
     const type = input.type ?? previous?.type ?? 'card';
     const identity = { id, customerId, last4, createdAt: input.createdAt ?? previous?.createdAt ?? this.clock.now() };
@@ -443,7 +444,8 @@ export class FakePayments implements Payments {
     } else {
       method = { ...identity, type, ...('bankName' in input ? { bankName: input.bankName } : {}) };
     }
-    this.#methods.set(id, structuredClone({ method, ...(gymId === undefined ? {} : { gymId }) }));
+    this.#methods.set(id, structuredClone({ method, ...(gymId === undefined ? {} : { gymId }),
+      ...(householdId === undefined ? {} : { householdId }) }));
     this.#record('payment_method', id);
   }
   recordSetup(setup: SetupOutcome): void {
@@ -888,14 +890,15 @@ export class FakePayments implements Payments {
         .map(({ id, email, householdId }) => ({ id, email: email!, ...(householdId ? { householdId } : {}) })),
     );
   }
-  async adoptCustomer(customerId: string): Promise<{ id: string; email: string | null }> {
+  async adoptCustomer(customerId: string): Promise<{ id: string; email: string | null; adopted: boolean }> {
     assertNoTransaction('payments.adoptCustomer');
     const customer = this.#customers.find((item) => item.id === customerId);
     if (!customer) throw new Error('No such customer');
     if (customer.deleted) throw new CustomerDeleted();
     if (customer.gymId !== null && customer.gymId !== this.gymId) throw new Error('Customer belongs to another gym');
+    const adopted = customer.gymId === null;
     customer.gymId = this.gymId;
-    return { id: customer.id, email: customer.email };
+    return { id: customer.id, email: customer.email, adopted };
   }
   async detachPaymentMethod(processorId: string, options: DetachOptions = {}): Promise<void> {
     assertNoTransaction('payments.detachPaymentMethod');
@@ -925,7 +928,9 @@ export class FakePayments implements Payments {
     const start = options.cursor ? methods.findIndex(({ method }) => method.id === options.cursor) + 1 : 0;
     if (options.cursor && !start) throw new CardCursorRefused('Invalid card cursor');
     const page = methods.slice(start, start + limit);
-    const foreign = ({ gymId }: { gymId?: string }) => gymId !== undefined && gymId !== this.gymId;
+    const foreign = ({ gymId, householdId }: { gymId?: string; householdId?: string }) =>
+      gymId !== undefined && gymId !== this.gymId
+      || householdId !== undefined && householdId !== options.householdId;
     const skippedForeign = page.filter(entry => foreign(entry) && types.has(entry.method.type))
       .map(({ method }) => ({ id: method.id, type: method.type }));
     const cards = page.filter(entry => !foreign(entry)).map(({ method }) => method)

@@ -10,7 +10,9 @@ gym or household is left out and reported in `skippedForeign` (its ID and type);
 the cursor still continues after the last listed method. The customer's own
 metadata still refuses the whole page. It never adopts an untagged customer or
 changes Stripe's default. A rejected continuation raises `CardCursorRefused`;
-ownership refusals raise `CardImportRefused`. `FakePayments` implements the same contract.
+ownership refusals raise `CardImportRefused`. `FakePayments` implements the same contract:
+`recordPaymentMethod` accepts `gymId` and `householdId` tags, and `listCustomerCards` skips
+foreign-tagged methods as Stripe does.
 
 The provider reads three payment method types. A `card` has expiry fields and
 an optional brand. A `us_bank_account` (ACH) or `acss_debit` (Canadian PAD) has
@@ -39,11 +41,11 @@ Staff choose **Import cards from Stripe** on household billing or invoice detail
 (`payments.record`). The import commits at most 100 cards per background job,
 atomically queues its continuation, deduplicates processor IDs and keeps revoked
 cards revoked. It rechecks the local customer link and test-to-live switch after
-provider reads. Ownership changes finish as stale, cards already stored for another
-household are skipped. A refused cursor or a change of the gym's currency
+provider reads. Ownership changes finish as stale; methods tagged in Stripe for another
+gym or household and rows already stored for another household are skipped. A refused cursor or a change of the gym's currency
 restarts listing, at most three times in total, without saving the listed page.
 Each request records its restart, completion, refusal or stale outcome in the
-audit trail, including the cards and bank accounts already imported, skipped
+audit trail, including the cards and bank accounts already imported, filled cards, skipped
 methods and restarts. A refusal at the limit records whether a cursor or the
 currency caused it, and also settles a default for methods already imported.
 
@@ -79,7 +81,8 @@ and webhook endpoints receive `gym_id` metadata. Checkout also puts metadata on 
 PaymentIntent or SetupIntent. Stripe-generated child objects are matched through
 their parent: a card's Customer, or a refund/dispute's Charge and PaymentIntent.
 Customers created elsewhere (imported Stripe customer IDs) carry no `gym_id` and are
-refused until `adoptCustomer(id)` tags them; it is idempotent and refuses customers
+refused until `adoptCustomer(id)` tags them; it is idempotent, returns `{ id, email, adopted }`
+(`adopted` is true only when this call wrote the gym tag), and refuses customers
 tagged for another gym. Call it only on staff-provided IDs. A test key can't see
 live-mode objects, so a live customer it reads looks missing, as one from another
 account does; `keyMode` (`test` or `live` for `StripePayments`, unset by default

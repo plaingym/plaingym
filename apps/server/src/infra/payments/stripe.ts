@@ -708,15 +708,16 @@ export class StripePayments implements Payments {
       throw error;
     }
   }
-  async adoptCustomer(customerId: string): Promise<{ id: string; email: string | null }> {
+  async adoptCustomer(customerId: string): Promise<{ id: string; email: string | null; adopted: boolean }> {
     assertNoTransaction('payments.adoptCustomer');
     const path = this.#path('customers', customerId), customer = await this.#get(path);
     if (customer.deleted === true) throw new CustomerDeleted();
     const owner = data(customer.metadata ?? {}).gym_id;
     if (owner !== undefined && owner !== this.gymId) throw new NotForGym('Payment object belongs to another gym');
     // Metadata updates merge, so the customer's other keys stay.
-    if (owner === undefined) await this.#post(path, { metadata: { gym_id: this.gymId } }, 'customer:' + customerId + ':adopt');
-    return { id: id(customer.id), email: typeof customer.email === 'string' ? customer.email : null };
+    const adopted = owner === undefined;
+    if (adopted) await this.#post(path, { metadata: { gym_id: this.gymId } }, 'customer:' + customerId + ':adopt');
+    return { id: id(customer.id), email: typeof customer.email === 'string' ? customer.email : null, adopted };
   }
   async listCustomerCards(customerId: string, options: CustomerCardQuery = {}): Promise<CustomerCardPage> {
     assertNoTransaction('payments.listCustomerCards');

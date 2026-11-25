@@ -21,12 +21,14 @@ const t = createTranslator(locales.en ?? {});
 const cursorSchema = z.string().regex(/^[A-Za-z0-9_]+$/);
 /** Marks a payload whose `switched` is the write guard's snapshot (`stripeSwitchSnapshot`); see `configurationCurrent`. */
 export const cardImportSnapshotVersion = 2;
-const payloadSchema = z.strictObject({ householdId: idSchema, customerId: z.string().regex(/^[A-Za-z0-9_]+$/),
+// Read from stored jobs: a newer release may add keys, which this one ignores after a rollback.
+const payloadSchema = z.object({ householdId: idSchema, customerId: z.string().regex(/^[A-Za-z0-9_]+$/),
   requestId: idSchema, switched: idSchema.nullable(), switchedVersion: z.literal(cardImportSnapshotVersion).optional(),
   cursor: cursorSchema.nullish(), skippedCursor: cursorSchema.nullish(),
   currency: z.string().optional(),
   restarts: z.number().int().min(0).max(customerCardRestartLimit).default(0),
   importedCards: z.number().int().nonnegative().default(0), importedBankAccounts: z.number().int().nonnegative().default(0),
+  filledCards: z.number().int().nonnegative().default(0),
   skippedCards: z.number().int().nonnegative().default(0), skippedBankAccounts: z.number().int().nonnegative().default(0),
   skippedMandatePermissions: z.number().int().nonnegative().default(0) });
 
@@ -78,8 +80,10 @@ export function createCustomerCardImportJobs(options: CustomerCardImportOptions)
   const scope = options.scope ?? forGym;
   return [{ id: customerCardImportJob, lane: 'batch', async handler(input, context) {
     const payload = payloadSchema.parse(input), { gymId } = context;
+    const { filledCards: carriedFilledCards, ...payloadWithoutFilled } = payload;
     const actor = { gymId, actor: { kind: 'system' as const } };
     const committedCounts = { importedCards: payload.importedCards, importedBankAccounts: payload.importedBankAccounts,
+      ...(carriedFilledCards ? { filledCards: carriedFilledCards } : {}),
       skippedCards: payload.skippedCards, ...(payload.skippedBankAccounts ? { skippedBankAccounts: payload.skippedBankAccounts } : {}),
       ...(payload.skippedMandatePermissions ? { skippedMandatePermissions: payload.skippedMandatePermissions } : {}) };
     async function outcome(reason: string, restart = false) {
@@ -98,10 +102,10 @@ export function createCustomerCardImportJobs(options: CustomerCardImportOptions)
             reason: !current ? 'customer_or_configuration_changed' : restart && !restarting ? restartLimitReason : reason,
             ...committedCounts, restarts: payload.restarts });
         if (restarting) {
-          const next = { ...payload }; delete next.cursor; delete next.skippedCursor; delete next.currency;
+          const next = { ...payloadWithoutFilled }; delete next.cursor; delete next.skippedCursor; delete next.currency;
           // Start both listings again. Committed methods already counted in this request remain counted.
-          await options.jobs.enqueue(customerCardImportJob, { ...next, restarts: payload.restarts + 1, skippedCards: 0,
-            skippedBankAccounts: 0, skippedMandatePermissions: 0 },
+          await options.jobs.enqueue(customerCardImportJob, { ...next, ...(carriedFilledCards ? { filledCards: carriedFilledCards } : {}),
+            restarts: payload.restarts + 1, skippedCards: 0, skippedBankAccounts: 0, skippedMandatePermissions: 0 },
             { gymId, timezone: context.timezone, idempotencyKey: `${payload.requestId}:restart:${payload.restarts + 1}`, maxAttempts: 8 }, transaction);
         }
       });
@@ -156,6 +160,7 @@ export function createCustomerCardImportJobs(options: CustomerCardImportOptions)
       let skippedBankAccounts = payload.skippedBankAccounts + skippedPage.cards.length + (skippedPage.skippedForeign?.length ?? 0);
       let skippedMandatePermissions = payload.skippedMandatePermissions;
       let { importedCards, importedBankAccounts } = payload;
+      let filledCards = carriedFilledCards;
       for (const method of page.skippedForeign ?? []) {
         if (method.type === 'card') skippedCards++;
         else skippedBankAccounts++;
@@ -185,8 +190,11 @@ export function createCustomerCardImportJobs(options: CustomerCardImportOptions)
               .where(and(eq(paymentMethods.id, row.id), eq(paymentMethods.type, 'card'), isNull(paymentMethods.revokedAt),
                 isNull(paymentMethods.last4)))
               .returning({ id: paymentMethods.id });
-            if (filled) await catalogAudit(tx, actor, options.clock, 'billing.card.import_details_filled', 'payment_method', row.id,
-              undefined, { householdId: household.id, requestId: payload.requestId });
+            if (filled) {
+              filledCards++;
+              await catalogAudit(tx, actor, options.clock, 'billing.card.import_details_filled', 'payment_method', row.id,
+                undefined, { householdId: household.id, requestId: payload.requestId });
+            }
           }
           continue; // Includes revoked rows: importing is never consent to restore a removed card.
         }
@@ -224,10 +232,12 @@ export function createCustomerCardImportJobs(options: CustomerCardImportOptions)
           summary: skippedMandatePermissions
             ? t('billing/customer-card-import:summaryWithMandateReadSkips', { imported, count: skippedMandatePermissions }) : imported };
         await catalogAudit(tx, actor, options.clock, 'billing.card.import_finished', 'household', household.id, undefined,
-          { requestId: payload.requestId, outcome: 'finished', skippedCards, restarts: payload.restarts, ...bankSummary });
+          { requestId: payload.requestId, outcome: 'finished', ...(filledCards ? { filledCards } : {}), skippedCards,
+            restarts: payload.restarts, ...bankSummary });
       }
       if (page.nextCursor || skippedPage.nextCursor) await options.jobs.enqueue(customerCardImportJob,
-        { ...payload, ...(legacyCardListing ? {} : { currency }), importedCards, importedBankAccounts, skippedCards, skippedBankAccounts,
+        { ...payloadWithoutFilled, ...(legacyCardListing ? {} : { currency }), importedCards, importedBankAccounts,
+          ...(filledCards ? { filledCards } : {}), skippedCards, skippedBankAccounts,
           skippedMandatePermissions, cursor: page.nextCursor, skippedCursor: skippedPage.nextCursor },
         { gymId, timezone: context.timezone, idempotencyKey: `${payload.requestId}:${payload.restarts}:${page.nextCursor ?? ''}:${skippedPage.nextCursor ?? ''}`,
           maxAttempts: 8 }, transaction);

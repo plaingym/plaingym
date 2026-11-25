@@ -27,6 +27,11 @@ export function customerCardsContract(name: string, create: (options?: { gymId?:
       const { payments, customerId, householdId } = create(fixture);
       await expect(payments.listCustomerCards(customerId, { householdId })).rejects.toThrow('not owned');
     });
+    it('adopts an untagged customer once, reporting adopted only on the write', async () => {
+      const { payments, customerId } = create({ gymId: '' });
+      expect(await payments.adoptCustomer(customerId)).toEqual({ id: customerId, email: 'payer@example.invalid', adopted: true });
+      expect(await payments.adoptCustomer(customerId)).toEqual({ id: customerId, email: 'payer@example.invalid', adopted: false });
+    });
     it('refuses transaction I/O, unsafe IDs and unbounded pages', async () => {
       const { payments, customerId, householdId } = create();
       await runInTransaction(async () => { await expect(payments.listCustomerCards(customerId, { householdId })).rejects.toThrow('transaction'); });
@@ -218,7 +223,7 @@ export function fullPaymentsContract(name: string, create: (card?: Card) => Prom
       expect(await payments.createCustomer(request)).toEqual(customer);
       await expect(payments.createCustomer({ ...request, name: 'Changed Household' })).rejects.toThrow();
       expect(await payments.findCustomerByEmail(request.email)).toContainEqual({ ...customer, householdId: request.householdId });
-      expect(await payments.adoptCustomer(customer.id)).toEqual(customer);
+      expect(await payments.adoptCustomer(customer.id)).toEqual({ ...customer, adopted: false });
       expect(await payments.createCheckout({ mode: 'setup', customerId: customer.id,
         successUrl: checkout.successUrl, cancelUrl: checkout.cancelUrl, saveForOffSession: true,
         idempotencyKey: request.idempotencyKey + ':setup' })).toMatchObject({ customerId: customer.id, mode: 'setup' });
@@ -246,7 +251,7 @@ export function fullPaymentsContract(name: string, create: (card?: Card) => Prom
       await expect(payments.redactCustomer(customer.id)).resolves.toBeUndefined();
       await expect(payments.redactCustomer(customer.id)).resolves.toBeUndefined();
       expect(await payments.findCustomerByEmail(request.email)).not.toContainEqual(expect.objectContaining({ id: customer.id }));
-      expect(await payments.adoptCustomer(customer.id)).toEqual({ id: customer.id, email: null });
+      expect(await payments.adoptCustomer(customer.id)).toEqual({ id: customer.id, email: null, adopted: false });
       await expect(payments.redactCustomer('cus_missing')).resolves.toBeUndefined();
     });
     it.each([['4242', 'succeeded'], ['0341', 'failed'], ['3155', 'succeeded'], ['3184', 'action_required']] as const)(

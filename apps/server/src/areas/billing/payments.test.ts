@@ -360,6 +360,85 @@ describe('staff import of externally attached cards', () => {
     expect(await actions(f, 'billing.customer.adopted')).toHaveLength(0);
     expect(await actions(f, 'billing.card.import_requested')).toHaveLength(1);
   });
+  it('audits the gym tag once when an untagged customer names another household and is refused', async () => {
+    const f = await fixture(), provider = new FakePayments(f.gymId, f.clock);
+    provider.seedCustomer({ id: 'cus_fixture', email: 'payer@example.invalid', gymId: null, householdId: uuidv7() });
+    const service = createPaymentService({ ...f.options, paymentsFor: async () => provider });
+    await expect(service.importCustomerCards(f.context, f.home.id))
+      .rejects.toMatchObject({ code: 'conflict', details: { reason: ['card_import_refused'] } });
+    expect(f.jobs.jobs).toHaveLength(0);
+    expect(await provider.adoptCustomer('cus_fixture')).toEqual({ id: 'cus_fixture', email: 'payer@example.invalid', adopted: false });
+    const adopted = await actions(f, 'billing.customer.adopted');
+    expect(adopted).toHaveLength(1);
+    expect(adopted[0]).toMatchObject({ targetType: 'household', targetId: f.home.id,
+      after: { customerId: 'cus_fixture', source: 'card_import' } });
+  });
+  it('writes one adoption audit across concurrent card imports and none for a customer already tagged by a charge', async () => {
+    const f = await fixture(), provider = new FakePayments(f.gymId, f.clock);
+    provider.seedCustomer({ id: 'cus_fixture', email: 'payer@example.invalid', gymId: null });
+    const realAdopt = provider.adoptCustomer.bind(provider);
+    let waiting = 0, release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(provider, 'adoptCustomer').mockImplementation(async id => {
+      if (++waiting === 2) release();
+      await gate;
+      const result = await realAdopt(id);
+      return { ...result, adopted: true };
+    });
+    const service = createPaymentService({ ...f.options, paymentsFor: async () => provider });
+    await expect(Promise.all([
+      service.importCustomerCards(f.context, f.home.id),
+      service.importCustomerCards(f.context, f.home.id),
+    ])).resolves.toEqual([{ queued: true }, { queued: true }]);
+    expect(await actions(f, 'billing.customer.adopted')).toHaveLength(1);
+
+    // A customer already tagged by a charge writes no adoption audit, whether tagged before or during the check.
+    const fCharge = await fixture(), chargeProvider = new FakePayments(fCharge.gymId, fCharge.clock);
+    chargeProvider.seedCustomer({ id: 'cus_fixture', email: 'payer@example.invalid', gymId: null });
+    chargeProvider.recordPaymentMethod({ id: 'pm_4242', customerId: 'cus_fixture', brand: 'visa', last4: '4242', expiresMonth: 12, expiresYear: 2035 });
+    const chargeRunner = createChargeRunner({ ...fCharge.options, payments: async () => chargeProvider });
+    const chargeService = createPaymentService({ ...fCharge.options, paymentsFor: async () => chargeProvider, runner: chargeRunner });
+    await expect(chargeService.charge(fCharge.context, fCharge.invoice.id)).resolves.toMatchObject({ status: 'succeeded' });
+    await expect(chargeService.importCustomerCards(fCharge.context, fCharge.home.id)).resolves.toEqual({ queued: true });
+    expect(await actions(fCharge, 'billing.customer.adopted')).toHaveLength(0);
+
+    const f2 = await fixture(), provider2 = new FakePayments(f2.gymId, f2.clock);
+    provider2.seedCustomer({ id: 'cus_fixture', email: 'payer@example.invalid', gymId: null });
+    const realList = provider2.listCustomerCards.bind(provider2);
+    vi.spyOn(provider2, 'listCustomerCards').mockImplementationOnce(async (...args) => {
+      try { return await realList(...args); }
+      finally { await provider2.adoptCustomer('cus_fixture'); }
+    });
+    const service2 = createPaymentService({ ...f2.options, paymentsFor: async () => provider2 });
+    await expect(service2.importCustomerCards(f2.context, f2.home.id)).resolves.toEqual({ queued: true });
+    expect(await actions(f2, 'billing.customer.adopted')).toHaveLength(0);
+  });
+  it('keeps the adoption audit when the household customer is unlinked before enqueue', async () => {
+    const f = await fixture(), provider = new FakePayments(f.gymId, f.clock);
+    provider.seedCustomer({ id: 'cus_fixture', email: 'payer@example.invalid', gymId: null });
+    const realAdopt = provider.adoptCustomer.bind(provider);
+    vi.spyOn(provider, 'adoptCustomer').mockImplementationOnce(async id => {
+      const result = await realAdopt(id);
+      await db.forGym(f.gymId, tx => tx.update(households).set({ stripeCustomerId: null }).where(eq(households.id, f.home.id)));
+      return result;
+    });
+    const service = createPaymentService({ ...f.options, paymentsFor: async () => provider });
+    await expect(service.importCustomerCards(f.context, f.home.id))
+      .rejects.toMatchObject({ code: 'conflict', details: { reason: ['card_import_changed'] } });
+    expect(f.jobs.jobs).toHaveLength(0);
+    const adopted = await actions(f, 'billing.customer.adopted');
+    expect(adopted).toHaveLength(1);
+    expect(adopted[0]).toMatchObject({ targetType: 'household', targetId: f.home.id,
+      after: { customerId: 'cus_fixture', source: 'card_import' } });
+  });
+  it('publishes the updated importCustomerCards description in the OpenAPI document', async () => {
+    const f = await fixture();
+    const response = await app(f, staff(f, 'owner')).request('/api/openapi.json');
+    expect(response.status).toBe(200);
+    const document = await response.json() as { paths: Record<string, { post?: { description?: string } }> };
+    expect(document.paths['/api/billing/households/{householdId}/payment-methods/import']?.post?.description).toBe(
+      'Queues a chunked import of cards attached to this household\'s Stripe customer, tagging an untagged one for the gym first. Fills missing details of the household\'s cards and keeps an existing default and revoked cards.');
+  });
   it('fills the details of a card saved by ID only, keeping its row and default, once', async () => {
     const f = await fixture(); await empty(f);
     const saved = await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_csv', type: 'card',

@@ -48,7 +48,7 @@ interface DeliveryOptions {
   notifications: TransitionNotifications;
   detachCard(gymId: string, processorId: string, options?: DetachOptions): Promise<void>;
   /** Adopts the household's stored Stripe customer for this gym (tags an untagged one); rejects one tagged for another gym or deleted. */
-  adoptCustomer?(gymId: string, customerId: string): Promise<unknown>;
+  adoptCustomer?(gymId: string, customerId: string): Promise<{ adopted: boolean }>;
 }
 let configured: DeliveryOptions | undefined;
 export function configurePaymentDelivery(options: DeliveryOptions) { configured = options; }
@@ -96,12 +96,20 @@ export function createPaymentJobs(options?: DeliveryOptions): readonly JobRegist
         // or a deleted customer is refused by adoption, and the first refusal stands; a method on any other customer is
         // refused by the second detach. An outage or a key's missing permission is left to the job's retry.
         if (!options.adoptCustomer || !adoptId || transientFailure(first)) throw first;
-        try { await options.adoptCustomer(ctx.gymId, adoptId); }
+        let result: { adopted: boolean };
+        try { result = await options.adoptCustomer(ctx.gymId, adoptId); }
         catch { throw first; }
+        if (result.adopted) await scope(ctx.gymId, async tx => {
+          await tx.select({ id: households.id }).from(households).where(eq(households.id, row.householdId)).for('update');
+          const existing = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
+            eq(auditEvents.action, 'billing.customer.adopted'), eq(auditEvents.targetType, 'household'),
+            eq(auditEvents.targetId, row.householdId)));
+          if (!existing.some(entry => (entry.after as { customerId?: unknown } | null)?.customerId === adoptId))
+            await writeAudit(tx, { gymId: ctx.gymId, actorKind: 'system', action: 'billing.customer.adopted',
+              targetType: 'household', targetId: row.householdId,
+              after: { customerId: adoptId, paymentMethodId: row.id, source: 'detach' }, occurredAt: ctx.clock.now() });
+        });
         await detach();
-        await scope(ctx.gymId, tx => writeAudit(tx, { gymId: ctx.gymId, actorKind: 'system', action: 'billing.customer.adopted',
-          targetType: 'household', targetId: row.householdId,
-          after: { customerId: adoptId, paymentMethodId: row.id, source: 'detach' }, occurredAt: ctx.clock.now() }));
       }
       await recordCardDetached(scope, { gymId: ctx.gymId, actor: { kind: 'system' } }, ctx.clock, row);
     } },

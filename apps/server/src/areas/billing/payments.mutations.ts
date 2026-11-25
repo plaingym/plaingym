@@ -111,11 +111,21 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
         if (error instanceof CardImportRefused) return false;
         throw error;
       });
-      let adopted = false;
+      const requestId = uuidv7();
+      const recordAdoption = (details: { requestId: string; source: 'card_import' }) => scope(context.gymId, async tx => {
+        await loadHousehold(tx, householdId, true);
+        const existing = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
+          eq(auditEvents.action, 'billing.customer.adopted'), eq(auditEvents.targetType, 'household'),
+          eq(auditEvents.targetId, householdId)));
+        if (existing.some(row => (row.after as { customerId?: unknown } | null)?.customerId === customerId)) return;
+        await catalogAudit(tx, context, clock, 'billing.customer.adopted', 'household', householdId, undefined,
+          { customerId, requestId: details.requestId, source: details.source });
+      });
       if (!await owned()) {
         // A people import links a customer without tagging it. Tag an untagged one for this gym, as charges and Checkout do;
         // a customer of another gym, or a deleted one, stays refused. A customer tagged for another household fails the recheck.
-        try { await provider.adoptCustomer(customerId); }
+        let result: { adopted: boolean };
+        try { result = await provider.adoptCustomer(customerId); }
         catch (error) {
           // Rate limits, outages, lost connections and a rejected or restricted key are not ownership refusals.
           const { statusCode: status, type } = (error ?? {}) as { statusCode?: unknown; type?: unknown };
@@ -123,17 +133,15 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
             || error instanceof TypeError) throw error;
           paymentConflict('card_import_refused', 'Customer is not owned by this gym and household');
         }
+        if (result.adopted) await recordAdoption({ requestId, source: 'card_import' });
         if (!await owned()) paymentConflict('card_import_refused', 'Customer is not owned by this gym and household');
-        adopted = true;
       }
-      const requestId = uuidv7(), gym = await settings.get(context.gymId);
+      const gym = await settings.get(context.gymId);
       await withJobTransaction(scope, context.gymId, async transaction => {
         const { tx } = transaction;
         if (!await stripeWriteCurrent(tx, context.gymId, loaded.switched)) paymentConflict('card_import_changed', 'Stripe configuration changed; request the import again');
         if ((await loadHousehold(tx, householdId, true)).stripeCustomerId !== customerId)
           paymentConflict('card_import_changed', 'Household customer changed; request the import again');
-        if (adopted) await catalogAudit(tx, context, clock, 'billing.customer.adopted', 'household', householdId, undefined,
-          { customerId, requestId, source: 'card_import' });
         await catalogAudit(tx, context, clock, 'billing.card.import_requested', 'household', householdId, undefined, { requestId });
         await jobs.enqueue(customerCardImportJob, { householdId, customerId, requestId, switched: loaded.switched,
           switchedVersion: cardImportSnapshotVersion },

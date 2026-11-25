@@ -141,16 +141,20 @@ account type as skipped. Gyms using other currencies list cards only.
 
 The staff request checks the customer before queueing the job. A customer a
 people import linked but never tagged is adopted first: the request tags it
-with the gym (never the household), checks it again, and records
-`billing.customer.adopted` (`source: card_import`) with the import request
-under the household lock. A customer tagged for another gym or household, or
+with the gym (never the household) and, when this call wrote the tag, records
+`billing.customer.adopted` (`source: card_import`) in its own short transaction
+right after tagging under the household lock, once per household and customer,
+even when a later check refuses the import or the enqueue rolls back. It then
+checks the customer again; a customer tagged for another gym or household, or
 a deleted one, is refused with nothing queued. A gym-tagged customer is not
 adopted again.
 
 The job fills the brand, last four and expiry of the household's own active
-card rows that have none (a card a people import saved by ID only) and records
-`billing.card.import_details_filled`; it leaves their default and removal state
-as they are and never changes a row that already has details or was removed.
+card rows that have none (a card a people import saved by ID only), records
+`billing.card.import_details_filled`, and counts filled cards in
+`billing.card.import_finished` as `filledCards` (omitted when zero); it leaves
+their default and removal state as they are and never changes a row that already
+has details or was removed.
 A listed method whose own Stripe metadata names another gym or household is
 skipped, counted and audited (`billing.card.import_skipped`, reason
 `tagged_elsewhere`), and the import carries on. A change to the customer's own

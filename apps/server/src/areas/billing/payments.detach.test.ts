@@ -131,7 +131,7 @@ describe('detaching a card whose customer is linked by a people CSV', () => {
     expect(await f.audits('billing.card.detached')).toHaveLength(1);
   });
 
-  it('rethrows the second detach refusal without an adoption audit', async () => {
+  it('rethrows the second detach refusal while keeping the adoption audit once the tag was written', async () => {
     const otherGymId = uuidv7();
     const f = await fixture({ methodMetadata: { gym_id: otherGymId } });
     const rejection = await f.run().catch(error => error);
@@ -139,8 +139,27 @@ describe('detaching a card whose customer is linked by a people CSV', () => {
     expect(rejection).toBe(f.detachErrors[1]);
     expect(f.adoptCustomer).toHaveBeenCalledOnce();
     expect(f.stripe.objects.get('cus_csv')!.metadata).toEqual({ gym_id: f.gymId });
-    expect(await f.audits('billing.customer.adopted')).toHaveLength(0);
+    const adopted = await f.audits('billing.customer.adopted');
+    expect(adopted).toHaveLength(1);
+    expect(adopted[0]).toMatchObject({ targetType: 'household', targetId: f.home.id,
+      after: { customerId: 'cus_csv', paymentMethodId: f.card.id, source: 'detach' } });
+    expect(await f.audits('billing.card.detached')).toHaveLength(0);
     expect(f.stripe.objects.get('pm_csv_pad')!.customer).toBe('cus_csv');
+    await expect(f.run()).rejects.toThrow();
+    expect(await f.audits('billing.customer.adopted')).toHaveLength(1);
+  });
+
+  it('detaches without an adoption audit when a 400 refusal triggers adoption on an already-tagged customer', async () => {
+    const f = await fixture({ customerMetadata: 'own' });
+    const refused = Object.assign(new Error('Invalid request'), { statusCode: 400 });
+    f.detachCard.mockRejectedValueOnce(refused);
+    await expect(f.run()).resolves.toBeUndefined();
+    expect(f.adoptCustomer).toHaveBeenCalledOnce();
+    await expect(f.adoptCustomer.mock.results[0]!.value).resolves.toMatchObject({ adopted: false });
+    expect(f.detachCard).toHaveBeenCalledTimes(2);
+    expect(await f.audits('billing.customer.adopted')).toHaveLength(0);
+    expect(await f.audits('billing.card.detached')).toHaveLength(1);
+    expect(f.stripe.objects.get('pm_csv_pad')!.customer).toBeNull();
   });
 
   it('calls neither detach nor adoption for a row that is not revoked', async () => {
@@ -208,7 +227,10 @@ describe('detaching a card after a last-member erasure cleared the household’s
     const rejection = await f.run(erased(f.card.id, 'cus_other')).catch(error => error);
     expect(f.detachErrors).toHaveLength(2);
     expect(rejection).toBe(f.detachErrors[1]);
-    expect(await f.audits('billing.customer.adopted')).toHaveLength(0);
+    const adopted = await f.audits('billing.customer.adopted');
+    expect(adopted).toHaveLength(1);
+    expect(adopted[0]).toMatchObject({ targetType: 'household', targetId: f.home.id,
+      after: { customerId: 'cus_other', paymentMethodId: f.card.id, source: 'detach' } });
     expect(await f.audits('billing.card.detached')).toHaveLength(0);
     expect(f.stripe.objects.get('pm_csv_pad')!.customer).toBe('cus_csv');
     expect(f.stripe.objects.get('cus_csv')!.metadata).toEqual({});
