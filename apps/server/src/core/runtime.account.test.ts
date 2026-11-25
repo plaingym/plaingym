@@ -47,3 +47,20 @@ it('offers the sign-in email change once the runtime wires the account routes to
   expect((await account.json()).data).toMatchObject({ email: 'owner@example.test', emailChange: 'available' });
   expect((await runtime!.app.request(origin + '/api/account', { headers: headers() })).status).toBe(401);
 });
+
+it('changes a login\'s own password once the runtime gives the account routes the account service and auth configuration', async () => {
+  await accounts.createPasswordUser(gymId, 'staff@example.test', 'Staff', 'account-first-password', clock);
+  const signIn = async (password: string) => runtime!.app.request(origin + '/api/auth/sign-in/email', { method: 'POST',
+    headers: headers(), body: JSON.stringify({ email: 'staff@example.test', password }) });
+  const signedIn = await signIn('account-first-password');
+  expect(signedIn.status).toBe(200);
+  const cookie = signedIn.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
+
+  // Unwired, the change answers 503.
+  const changed = await runtime!.app.request(origin + '/api/account/password', { method: 'POST', headers: headers(cookie),
+    body: JSON.stringify({ currentPassword: 'account-first-password', newPassword: 'account-second-password' }) });
+  expect(changed.status).toBe(200);
+  expect((await runtime!.app.request(origin + '/api/account', { headers: headers(cookie) })).status).toBe(200);
+  expect((await signIn('account-first-password')).status).toBe(401);
+  expect((await signIn('account-second-password')).status).toBe(200);
+});

@@ -289,8 +289,9 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   configurePortalBookingRoutes(bookingDelivery);
   const accounts = createAccountService(config);
   configureStaffAuth({ accounts, config, smtpConfigured });
-  // A login changes its own sign-in email through a link sent to the new address, in the gym's own mail and origin.
-  configureAccount({ service: createEmailChangeService({ config }), smtpConfigured, mail: gymMail });
+  // A login changes its own sign-in email through a link sent to the new address, in the gym's own mail and origin,
+  // and its own password where password sign-in is on.
+  configureAccount({ service: createEmailChangeService({ config }), smtpConfigured, mail: gymMail, accounts, config });
   // Webhooks and restore reconciliation publish a recorded dispute's alert through the same service as the hourly scan.
   const alerts = createBillingAlerts({ jobs: queue, settings: createGymSettingsAccessor(), accounts, clock, prepare: gymMail,
     sms: createCardExpirySms({ settings: createGymSettingsAccessor(), resolver: smsResolver, prepare: smsPrepare, clock }) });
