@@ -346,7 +346,9 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
       { timezone: 'UTC', runAt: clock.now(), idempotencyKey: 'snapshot:' + change, maxAttempts: 3 }); } } : {}) });
   configureUpdateRoutes({ env });
   configureHealthStatus({ env, providers: [
-    createStripeHealthProvider({ webhooks: createWebhookHealthQuery(), configured: async gymId => Boolean(await paymentsFor(gymId)) }),
+    // Demo gyms share one test account, and the showcase and waiting copies get no webhooks, so silence there means nothing.
+    createStripeHealthProvider({ webhooks: createWebhookHealthQuery(), configured: async gymId => Boolean(await paymentsFor(gymId)),
+      silenceCheck: demo ? async () => false : undefined }),
     createChargeRunHealthProvider({ settings }),
     createAutoUpdateHealthProvider(),
   ] });
