@@ -56,6 +56,12 @@ it('serves assets with MIME, cache, content-length, and nosniff headers', async 
   expect(await icon.text()).toBe('png-bytes');
 });
 
+it('serves files outside /assets/ with no-cache so plain requests revalidate at the server', async () => {
+  expect((await app.request('/index.html')).headers.get('cache-control')).toBe('no-cache');
+  expect((await app.request('/icon-192.png')).headers.get('cache-control')).toBe('no-cache');
+  expect((await app.request('/assets/app-12345678.js')).headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+});
+
 it.each(['/admin', '/admin/members/123', '/portal', '/portal/household', '/kiosk', '/login', '/setup', '/setup/restore'])('serves the SPA entry for browser navigation to %s', async (path) => {
   const response = await app.request(path, { headers: { accept: 'text/html,application/xhtml+xml' } });
   expect(response.status).toBe(200);

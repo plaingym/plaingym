@@ -307,7 +307,10 @@ copies with the rest of its upload prefix. Once a sandbox holds 64 cached
 receipt copies, a new receipt is served from a fresh copy marked deleted at
 once, and repeat downloads of the same content within five minutes reuse that
 copy; sandbox cleanup removes them. Only digest-named copies count toward the
-64. This path accepts no visitor files.
+64. Each app process keeps that count in memory and lists the sandbox's receipts
+again once it is ten minutes old (sooner after it deletes one), so concurrent
+first downloads or several app processes can store more than 64. This path
+accepts no visitor files.
 
 `gym-app seed <gym-uuid>` and `pnpm seed <gym-uuid>` run the registered seed steps.
 Demo and gym-deletion HTTP contracts live in `@plaingym/shared/contracts`.

@@ -2,7 +2,7 @@
 import { expect, it, vi } from 'vitest';
 import { uuidv7 } from '@plaingym/db';
 import { FakeUploads } from '../infra/storage/index.js';
-import { DemoUploads, demoReceiptReuseLimit, demoReceiptReuseSize } from './uploads.js';
+import { DemoUploads, demoReceiptCountMs, demoReceiptCountSize, demoReceiptReuseLimit, demoReceiptReuseSize } from './uploads.js';
 import { TestClock } from '../core/clock.js';
 
 it('coalesces generated receipts and refuses oversized, non-PDF or misplaced writes', async () => {
@@ -205,4 +205,113 @@ it('recovers a failed immutable reservation with an ephemeral copy and recognize
   spy.mockImplementationOnce(async (...args) => { await put(...args); throw new Error('Storage response lost'); });
   expect(await uploads.receiptPdf(key, render, () => prefix + uuidv7() + '.pdf')).toBe(key);
   expect(await source.list()).toHaveLength(2);
+});
+
+it('lists a sandbox receipts prefix once per ten minutes while counting new durable puts', async () => {
+  const gymId = uuidv7(), clock = new TestClock('2026-01-01T00:00:00.000Z');
+  const source = new FakeUploads(gymId, clock), listSpy = vi.spyOn(source, 'list');
+  const uploads = new DemoUploads(source, () => clock.now().getTime());
+  const invoiceId = uuidv7(), freshKey = () => `${gymId}/receipts/${invoiceId}/${uuidv7()}.pdf`;
+  const render = async () => receiptBytes;
+  for (let index = 0; index < 10; index++) {
+    const key = receiptKey(gymId, invoiceId, index);
+    expect(await uploads.receiptPdf(key, render, freshKey)).toBe(key);
+  }
+  expect(listSpy).toHaveBeenCalledTimes(1);
+  expect(listSpy).toHaveBeenCalledWith(`${gymId}/receipts/`);
+  clock.advance(demoReceiptCountMs - 1);
+  const stillCached = receiptKey(gymId, invoiceId, 10);
+  expect(await uploads.receiptPdf(stillCached, render, freshKey)).toBe(stillCached);
+  expect(listSpy).toHaveBeenCalledTimes(1);
+  clock.advance(1);
+  const refreshed = receiptKey(gymId, invoiceId, 11);
+  expect(await uploads.receiptPdf(refreshed, render, freshKey)).toBe(refreshed);
+  expect(listSpy).toHaveBeenCalledTimes(2);
+});
+
+it('counts seeded digest copies once and serves the 65th as deleted without listing again', async () => {
+  const gymId = uuidv7(), clock = new TestClock('2026-01-01T00:00:00.000Z');
+  const source = new FakeUploads(gymId, clock), uploads = new DemoUploads(source, () => clock.now().getTime());
+  const invoiceId = uuidv7(), freshKey = () => `${gymId}/receipts/${invoiceId}/${uuidv7()}.pdf`;
+  const render = async () => receiptBytes;
+  for (let index = 0; index < receiptLimit - 1; index++)
+    await source.put(receiptKey(gymId, invoiceId, index), receiptBytes, 'application/pdf');
+  const listSpy = vi.spyOn(source, 'list');
+  const lastDurable = receiptKey(gymId, invoiceId, receiptLimit - 1);
+  expect(await uploads.receiptPdf(lastDurable, render, freshKey)).toBe(lastDurable);
+  expect(await source.head(lastDurable)).not.toBeNull();
+  const overflow = receiptKey(gymId, invoiceId, receiptLimit);
+  const ephemeral = await uploads.receiptPdf(overflow, render, freshKey);
+  expect(ephemeral).not.toBe(overflow);
+  expect((await source.head(ephemeral))?.deletedAt).toBeDefined();
+  expect(listSpy).toHaveBeenCalledTimes(1);
+});
+
+it('keeps counting stored copies when a slower listing for the same sandbox finishes last', async () => {
+  const gymId = uuidv7(), source = new FakeUploads(gymId), uploads = new DemoUploads(source);
+  const invoiceId = uuidv7(), freshKey = () => `${gymId}/receipts/${invoiceId}/${uuidv7()}.pdf`;
+  const render = async () => receiptBytes;
+  for (let index = 0; index < receiptLimit - 2; index++)
+    await source.put(receiptKey(gymId, invoiceId, index), receiptBytes, 'application/pdf');
+  const list = source.list.bind(source);
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  vi.spyOn(source, 'list').mockImplementationOnce(list)
+    .mockImplementationOnce(async prefix => { const found = await list(prefix); await held; return found; });
+  const first = uploads.receiptPdf(receiptKey(gymId, invoiceId, receiptLimit - 2), render, freshKey);
+  const second = uploads.receiptPdf(receiptKey(gymId, invoiceId, receiptLimit - 1), render, freshKey);
+  await first;
+  release();
+  await second;
+  const overflow = receiptKey(gymId, invoiceId, receiptLimit);
+  expect(await uploads.receiptPdf(overflow, render, freshKey)).not.toBe(overflow);
+});
+
+it('counts a copy whose put failed after storing it', async () => {
+  const gymId = uuidv7(), source = new FakeUploads(gymId), uploads = new DemoUploads(source);
+  const invoiceId = uuidv7(), freshKey = () => `${gymId}/receipts/${invoiceId}/${uuidv7()}.pdf`;
+  const render = async () => receiptBytes;
+  for (let index = 0; index < receiptLimit - 1; index++)
+    await source.put(receiptKey(gymId, invoiceId, index), receiptBytes, 'application/pdf');
+  const put = source.put.bind(source);
+  vi.spyOn(source, 'put').mockImplementationOnce(async (...args) => { await put(...args); throw new Error('response lost'); });
+  const stored = receiptKey(gymId, invoiceId, receiptLimit - 1);
+  expect(await uploads.receiptPdf(stored, render, freshKey)).toBe(stored);
+  const overflow = receiptKey(gymId, invoiceId, receiptLimit);
+  expect(await uploads.receiptPdf(overflow, render, freshKey)).not.toBe(overflow);
+});
+
+it('keeps separate per-sandbox counts and drops the oldest entry above 1,000 gyms', async () => {
+  const clock = new TestClock('2026-01-01T00:00:00.000Z');
+  const render = async () => receiptBytes;
+  const gymA = uuidv7(), sourceA = new FakeUploads(gymA, clock), uploadsA = new DemoUploads(sourceA, () => clock.now().getTime());
+  const gymB = uuidv7(), sourceB = new FakeUploads(gymB, clock), uploadsB = new DemoUploads(sourceB, () => clock.now().getTime());
+  await fillReceipts(gymA, uploadsA, render);
+  const invA = uuidv7(), invB = uuidv7();
+  const overflowA = receiptKey(gymA, invA, receiptLimit);
+  expect(await uploadsA.receiptPdf(overflowA, render, () => `${gymA}/receipts/${invA}/${uuidv7()}.pdf`)).not.toBe(overflowA);
+  const durableB = receiptKey(gymB, invB, 0);
+  expect(await uploadsB.receiptPdf(durableB, render, () => `${gymB}/receipts/${invB}/${uuidv7()}.pdf`)).toBe(durableB);
+
+  const tracked: Array<{ gymId: string; source: FakeUploads; uploads: DemoUploads; invoiceId: string }> = [];
+  for (let index = 0; index < 1_000; index++) {
+    const gymId = uuidv7(), source = new FakeUploads(gymId, clock), uploads = new DemoUploads(source, () => clock.now().getTime());
+    const invoiceId = uuidv7();
+    await uploads.receiptPdf(receiptKey(gymId, invoiceId, 0), render, () => `${gymId}/receipts/${invoiceId}/${uuidv7()}.pdf`);
+    tracked.push({ gymId, source, uploads, invoiceId });
+  }
+  expect(demoReceiptCountSize()).toBe(1_000);
+  const newestGym = uuidv7(), newestSource = new FakeUploads(newestGym, clock), newestUploads = new DemoUploads(newestSource, () => clock.now().getTime());
+  const newestInvoice = uuidv7();
+  await newestUploads.receiptPdf(receiptKey(newestGym, newestInvoice, 0), render, () => `${newestGym}/receipts/${newestInvoice}/${uuidv7()}.pdf`);
+  expect(demoReceiptCountSize()).toBe(1_000);
+
+  const newestListSpy = vi.spyOn(newestSource, 'list');
+  await newestUploads.receiptPdf(receiptKey(newestGym, newestInvoice, 1), render, () => `${newestGym}/receipts/${newestInvoice}/${uuidv7()}.pdf`);
+  expect(newestListSpy).not.toHaveBeenCalled();
+
+  const oldest = tracked[0]!;
+  const oldestListSpy = vi.spyOn(oldest.source, 'list');
+  await oldest.uploads.receiptPdf(receiptKey(oldest.gymId, oldest.invoiceId, 1), render, () => `${oldest.gymId}/receipts/${oldest.invoiceId}/${uuidv7()}.pdf`);
+  expect(oldestListSpy).toHaveBeenCalledTimes(1);
 });

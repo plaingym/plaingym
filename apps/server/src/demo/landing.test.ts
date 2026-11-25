@@ -426,10 +426,12 @@ it('uses a GitHub fork repository root without losing its release source link', 
   expect(html).toContain('&lt;pitch&gt;');
   expect(html).not.toContain('<pitch>');
 });
-it('uses host-qualified script-src for DNS and IPv4 hosts and falls back to self for IPv6 hosts', async () => {
+it('uses host-qualified script-src for DNS hosts and falls back to self for IPv4 and IPv6 hosts', async () => {
   const file = 'landing-menu-0123456789abcdef.js';
   expect(menuScriptSource('gym.example.com', file)).toBe(`gym.example.com/demo-assets/${file}`);
-  expect(menuScriptSource('192.0.2.1:3000', file)).toBe(`192.0.2.1:3000/demo-assets/${file}`);
+  expect(menuScriptSource('localhost:3000', file)).toBe(`localhost:3000/demo-assets/${file}`);
+  expect(menuScriptSource('192.0.2.1:3000', file)).toBe("'self'");
+  expect(menuScriptSource('127.0.0.1', file)).toBe("'self'");
   expect(menuScriptSource('[::1]:3000', file)).toBe("'self'");
 
   const scriptSrcFor = async (installOrigin: string) => {
@@ -446,6 +448,6 @@ it('uses host-qualified script-src for DNS and IPv4 hosts and falls back to self
   const body = await readLandingAsset('landing-menu.js');
   const scriptFile = `landing-menu-${createHash('sha256').update(body).digest('hex').slice(0, 16)}.js`;
   expect(await scriptSrcFor('https://gym.example.com')).toBe(`script-src gym.example.com/demo-assets/${scriptFile}`);
-  expect(await scriptSrcFor('http://192.0.2.1:3000')).toBe(`script-src 192.0.2.1:3000/demo-assets/${scriptFile}`);
+  expect(await scriptSrcFor('http://192.0.2.1:3000')).toBe("script-src 'self'");
   expect(await scriptSrcFor('http://[::1]:3000')).toBe("script-src 'self'");
 });

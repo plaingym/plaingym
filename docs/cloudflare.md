@@ -31,7 +31,10 @@ a DNS-only record: any other proxy fails the installer's DNS check.
    reading the file, and counts it toward its own flood limit, so a query string can't be
    used to get past Cloudflare's cache to your server. A few pages the app builds itself,
    such as the website's theme stylesheet, take a version query and are answered by their
-   own routes.
+   own routes. Files outside `/assets/` keep their names across updates (today the app's
+   `index.html`, `links.css` and `links.js`), so the app serves them `no-cache`:
+   Cloudflare asks the server for each one, and the rate-limiting rule above counts those
+   requests.
    The current build serves the same HTML for admin, portal and kiosk: each shell loads
    32 declared resources (entry script, preloaded chunks and stylesheet), all under
    `/assets/`. Including the HTML, that is 33 requests, of which this rule counts only

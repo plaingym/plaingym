@@ -11,8 +11,12 @@ const t = createTranslator(locales.en ?? {});
 export const demoReceiptCopyLimit = 64;
 export const demoReceiptReuseMs = 300_000;
 export const demoReceiptReuseLimit = 1_000;
+export const demoReceiptCountMs = 600_000;
 const overLimitCopies = new Map<string, { key: string; until: number }>();
 export function demoReceiptReuseSize(): number { return overLimitCopies.size; }
+const receiptCounts = new Map<string, { count: number; until: number }>();
+export function demoReceiptCountSize(): number { return receiptCounts.size; }
+const digestReceiptPattern = /^[0-9a-f-]{36}\/receipts\/[0-9a-f-]{36}\/[0-9a-f]{64}\.pdf$/;
 
 const pending = new Map<string, Promise<string>>();
 function pdfKey(key: string): string | undefined {
@@ -37,8 +41,9 @@ export class DemoUploads implements Uploads {
   /** Called only after household invoice authorization, with a digest of the server-generated receipt. */
   async receiptPdf(key: string, render: () => Promise<Uint8Array>, freshKey: () => string): Promise<string> {
     assertNoTransaction('storage.put');
-    if (!/^[0-9a-f-]{36}\/receipts\/[0-9a-f-]{36}\/[0-9a-f]{64}\.pdf$/.test(key))
+    if (!digestReceiptPattern.test(key))
       throw new AppError('not_found', 'Resource not found');
+    const gymId = key.slice(0, 36);
     return this.#cachedPdf(key, {
       cached: info => !info.deletedAt && info.contentType === 'application/pdf',
       render: async () => {
@@ -55,7 +60,25 @@ export class DemoUploads implements Uploads {
         return fallback;
       },
       rethrowUnusableWinner: true,
-      full: async () => (await this.source.list(key.slice(0, 36) + '/receipts/')).filter(info => !info.deletedAt && /\/[0-9a-f]{64}\.pdf$/.test(info.key)).length >= demoReceiptCopyLimit,
+      full: async () => {
+        const entry = receiptCounts.get(gymId);
+        if (entry && entry.until > this.now()) return entry.count >= demoReceiptCopyLimit;
+        const count = (await this.source.list(gymId + '/receipts/'))
+          .filter(info => !info.deletedAt && /\/[0-9a-f]{64}\.pdf$/.test(info.key)).length;
+        // Another download may have counted while this one listed; its entry also holds the copies stored since.
+        const newer = receiptCounts.get(gymId);
+        if (newer && newer.until > this.now()) return newer.count >= demoReceiptCopyLimit;
+        if (receiptCounts.size >= 1_000 && !receiptCounts.has(gymId)) {
+          const oldest = receiptCounts.keys().next().value;
+          if (oldest !== undefined) receiptCounts.delete(oldest);
+        }
+        receiptCounts.set(gymId, { count, until: this.now() + demoReceiptCountMs });
+        return count >= demoReceiptCopyLimit;
+      },
+      onStored: () => {
+        const entry = receiptCounts.get(gymId);
+        if (entry) entry.count++;
+      },
     });
   }
   async #cachedPdf(key: string, o: {
@@ -64,6 +87,7 @@ export class DemoUploads implements Uploads {
     fallbackKey(): string;
     rethrowUnusableWinner: boolean;
     full?(): Promise<boolean>;
+    onStored?(): void;
   }): Promise<string> {
     let work = pending.get(key);
     if (!work) {
@@ -96,11 +120,16 @@ export class DemoUploads implements Uploads {
         try { await this.source.put(key, bytes, 'application/pdf'); }
         catch (error) {
           const winner = await this.source.head(key);
-          if (winner && !winner.deletedAt && winner.contentType === 'application/pdf') return key;
+          if (winner && !winner.deletedAt && winner.contentType === 'application/pdf') {
+            // Another writer, or this put before it failed, stored the copy: it counts either way.
+            o.onStored?.();
+            return key;
+          }
           if (winner && o.rethrowUnusableWinner) throw error;
           // A failed durable reservation never releases its key. Serve a swept copy, like waiver PDFs.
           return await this.#ephemeral(o.fallbackKey(), bytes);
         }
+        o.onStored?.();
         return key;
       })();
       pending.set(key, work);
@@ -120,6 +149,7 @@ export class DemoUploads implements Uploads {
   sweep: Uploads['sweep'] = options => this.source.sweep(options);
   async markDeleted(key: string, options?: ReadOptions): Promise<void> {
     await this.source.markDeleted(key, options);
+    if (digestReceiptPattern.test(key)) receiptCounts.delete(key.slice(0, 36));
     // Member erasure already deletes signature images through this wrapper.
     const cached = pdfKey(key);
     // Once the signature is marked, complete its paired erasure even if the caller disconnects.

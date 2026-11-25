@@ -43,6 +43,8 @@ export function staticAssets(directory = './public'): MiddlewareHandler<RequestE
       context.header('Content-Type', types[extname(file)] ?? 'application/octet-stream');
       context.header('Content-Length', String(bytes.byteLength));
       context.header('X-Content-Type-Options', 'nosniff');
+      // Files outside /assets/ keep their names across releases (today index.html, links.css and links.js), so they
+      // are revalidated on every request (no-cache) and reach the server; only hashed /assets/ files are cached for a year.
       context.header('Cache-Control', immutable ? 'public, max-age=31536000, immutable' : 'no-cache');
       return context.req.method === 'HEAD' ? context.body(null) : context.body(new Uint8Array(bytes));
     };

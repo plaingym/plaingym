@@ -12,9 +12,9 @@ import screenshots from './screenshots.json' with { type: 'json' };
 
 const english = { 'demo/product': messages };
 const tEnglish = createTranslator(english);
-/** Host-qualified CSP script source for a DNS or IPv4 host; other hosts such as IPv6 literals fall back to `'self'`. */
+/** Host-qualified CSP script source for a DNS host; IPv4 and IPv6 literals, which CSP host sources don't match, fall back to `'self'`. */
 export function menuScriptSource(host: string, file: string): string {
-  return /^[A-Za-z0-9.-]+(:\d{1,5})?$/.test(host) ? `${host}/demo-assets/${file}` : "'self'";
+  return /^(?=[^:]*[A-Za-z])[A-Za-z0-9.-]+(:\d{1,5})?$/.test(host) ? `${host}/demo-assets/${file}` : "'self'";
 }
 export function demoLandingDirectives(menuScriptSource?: string): readonly string[] {
   return ["default-src 'none'", `script-src ${menuScriptSource ?? "'none'"}`, "style-src 'self'", "img-src 'self'",
