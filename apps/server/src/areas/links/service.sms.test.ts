@@ -259,6 +259,25 @@ describe('signed links by text', () => {
     expect(await f.links.send(f.context, request)).toEqual(sent);
     expect(f.sms.messages).toHaveLength(1);
   });
+  it.each(['paid', 'void'] as const)('answers conflict and revokes without texting when a pay_invoice invoice becomes %s mid-send', async status => {
+    const f = await fixture();
+    let reserved = false;
+    const scope: typeof db.forGym = async (id, fn) => {
+      const result = await db.forGym(id, fn);
+      if (!reserved && (await f.rows()).length > 0) {
+        reserved = true;
+        await db.forGym(id, tx => tx.update(invoices).set({ status }).where(eq(invoices.id, f.invoice.id)));
+      }
+      return result;
+    };
+    const links = createSignedLinksService({ scope, clock: f.clock, smsDelivery: f.smsDelivery });
+    const request = { ...f.request(), purpose: 'pay_invoice' as const, invoiceId: f.invoice.id };
+    await expect(links.send(f.context, request)).rejects.toMatchObject({ code: 'conflict', message: 'Invoice cannot be paid' });
+    expect(f.sms.messages).toHaveLength(0);
+    expect((await f.rows())[0]!.revokedAt).not.toBeNull();
+    await expect(links.send(f.context, request)).rejects.toMatchObject({ code: 'conflict', message: 'Invoice cannot be paid' });
+    expect(f.sms.messages).toHaveLength(0);
+  });
   it.each(['owner', 'admin', 'front_desk', 'coach'] as const)('enforces links.send for %s', async role => {
     const f = await fixture();
     const response = await f.app(role).request('/api/links/send', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(f.request()) });

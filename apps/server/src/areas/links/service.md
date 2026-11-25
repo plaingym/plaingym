@@ -70,6 +70,8 @@ off or has no provider, or the origin config is invalid), or `delivery_failed` (
 delivery or transport failure, including the daily text cap or a changed phone). No reason, message, or log includes an
 email address, phone number, token, or provider error text.
 
+An invoice that is paid, voided or settled to zero after the link was minted, but before anything was sent, refuses with the same 409 `conflict` as an invoice already closed when the send began; the undisclosed link is revoked and the send released first.
+
 `POST /api/links/send` requires `sendGeneration`, a UUID naming one send command: the client keeps it
 while retrying and picks a new one for a deliberate resend. The delivery key is
 `links.send.<purpose>:<household>:<generation>`, and its `email_deliveries` row is reserved and names

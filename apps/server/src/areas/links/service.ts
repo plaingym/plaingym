@@ -383,6 +383,7 @@ export function createSignedLinksService(options: {
           try { await cleanup(); }
           catch (cleanupError) { cause = new AggregateError([error, cleanupError], 'Signed link delivery and cleanup failed'); }
         }
+        if (error instanceof AppError && error.code === 'conflict' && !entered && cause === error) throw error;
         const firstReason = error instanceof AppError ? error.details?.reason?.[0] : undefined;
         const reason = firstReason && sendRefusalReasons.has(firstReason) ? firstReason : 'delivery_failed';
         throw Object.assign(new AppError('unavailable', `Signed link ${channel === 'email' ? 'email' : 'text'} was not delivered`, { reason: [reason] }), { cause });

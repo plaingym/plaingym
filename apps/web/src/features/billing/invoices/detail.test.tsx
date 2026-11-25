@@ -79,3 +79,22 @@ it('shows the specific send refusal reason instead of Stripe is unavailable when
   expect(alert.textContent).toContain("Member email is turned off for this gym, so the link wasn't emailed.");
   expect(alert.textContent).not.toContain('Stripe is unavailable');
 });
+
+it('shows the save error instead of delivery failed when /api/links/send answers 409 conflict', async () => {
+  const sendClient = createInvoiceClient(async (path, init) => {
+    const url = new URL(String(path), 'http://gym.test');
+    if (url.pathname === '/api/links/send' && init?.method === 'POST') {
+      return Response.json({ error: { code: 'conflict', message: 'Invoice cannot be paid' } }, { status: 409 });
+    }
+    return fetcher(path);
+  });
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}>
+    <ShellServicesContext.Provider value={createShellServices(async () => bootstrap)}>
+      <InvoiceDetails gymId={gymId} invoiceId={invoice.id} client={sendClient} access={{ record: true, refund: false, links: true }}/>
+    </ShellServicesContext.Provider></QueryClientProvider>);
+  fireEvent.click(await screen.findByRole('button', { name: 'Send or share pay link' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Confirm' }));
+  const alert = await screen.findByRole('alert');
+  expect(alert.textContent).toContain('Could not save. Reload the invoice and check for a pending payment before trying again.');
+  expect(alert.textContent).not.toContain("The link couldn't be delivered");
+});

@@ -438,6 +438,43 @@ describe('email failure and suppression', () => {
     expect(result.revokedAt).toBe(clock.now().toISOString());
     expect((await service.list(gymId)).data.every(row => row.revokedAt !== null)).toBe(true);
   });
+  it('answers conflict and revokes without emailing when a pay_invoice invoice is paid or zeroed mid-send', async () => {
+    for (const update of [{ status: 'paid' as const }, { amountCents: 0 }] as const) {
+      const gymId = uuidv7(); await factory('gyms', gymId, { currency: 'USD', memberEmailsEnabled: true });
+      const home = await factory('households', gymId, { email: 'payer@example.test' });
+      await factory('members', gymId, { householdId: home.id, email: home.email });
+      const invoice = await factory('invoices', gymId, { householdId: home.id, amountCents: 5000, status: 'open', number: 1 });
+      let transactions = 0;
+      const scope: typeof database.forGym = async (id, fn) => {
+        if (++transactions === 3) await database.forGym(id, tx => tx.update(invoices).set(update).where(eq(invoices.id, invoice.id)));
+        return database.forGym(id, fn);
+      };
+      const racing = createSignedLinksService({ scope, clock, delivery: { async prepare() { return { ...delivery, gymId }; } } });
+      const before = email.messages.length;
+      await expect(racing.send({ ...mutation, gymId }, { sendGeneration: uuidv7(), purpose: 'pay_invoice', householdId: home.id, invoiceId: invoice.id, expiresAt: request().expiresAt }))
+        .rejects.toMatchObject('amountCents' in update ? { code: 'conflict', details: { reason: ['zero_invoice'] } } : { code: 'conflict', message: 'Invoice cannot be paid' });
+      expect(email.messages).toHaveLength(before);
+      expect((await service.list(gymId)).data[0]!.revokedAt).not.toBeNull();
+    }
+  });
+  it('keeps delivery_failed when cleanup fails after a pay_invoice invoice is paid mid-send', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId, { currency: 'USD', memberEmailsEnabled: true });
+    const home = await factory('households', gymId, { email: 'payer@example.test' });
+    await factory('members', gymId, { householdId: home.id, email: home.email });
+    const invoice = await factory('invoices', gymId, { householdId: home.id, amountCents: 5000, status: 'open', number: 1 });
+    let transactions = 0;
+    const scope: typeof database.forGym = async (id, fn) => {
+      const n = ++transactions;
+      if (n === 3) await database.forGym(id, tx => tx.update(invoices).set({ status: 'paid' }).where(eq(invoices.id, invoice.id)));
+      if (n === 4) throw new Error('revoke failed');
+      return database.forGym(id, fn);
+    };
+    const racing = createSignedLinksService({ scope, clock, delivery: { async prepare() { return { ...delivery, gymId }; } } });
+    const before = email.messages.length;
+    await expect(racing.send({ ...mutation, gymId }, { sendGeneration: uuidv7(), purpose: 'pay_invoice', householdId: home.id, invoiceId: invoice.id, expiresAt: request().expiresAt }))
+      .rejects.toMatchObject({ code: 'unavailable', details: { reason: ['delivery_failed'] } });
+    expect(email.messages).toHaveLength(before);
+  });
   it('does not mint or send for a manual invoice or a waiver member outside the requested gym or household', async () => {
     const before = email.messages.length, total = (await service.list(gymA)).pagination.total;
     for (const input of [
