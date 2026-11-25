@@ -244,10 +244,12 @@ the email delivery row records `not_accepted` (without logging an email opt-out)
 while the bookings log has the real reason; switch-off returns stay silent. Each
 accepted channel writes one `booking.cancel_notice_sent` audit with `{ channel }`
 per booking and channel in its own transaction (locking the booking row
-`FOR UPDATE` before checking for an existing audit). A retry that finds a
-channel already accepted records that single audit before any other check and
-logs no skip for it; `occurredAt` on a recovered audit is when it was recorded,
-not when the delivery was accepted. Suppressed, skipped, failed, and uncertain
+`FOR UPDATE` before checking for an existing audit). A booking that no longer
+exists (its member was deleted) gets no notice audit, even when a channel was
+accepted, so the lock always covers the write. While the booking exists, a retry
+that finds a channel already accepted records that single audit before any other
+check and logs no skip for it; `occurredAt` on a recovered audit is when it was
+recorded, not when the delivery was accepted. Suppressed, skipped, failed, and uncertain
 (`unknown`) channels write none. A promotion the
 cancellation frees keeps its own notice.
 

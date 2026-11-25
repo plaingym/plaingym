@@ -662,34 +662,86 @@ it('writes exactly one SMS sent audit when two runs race to recover an accepted 
   await f.cancel(['sms']);
   await f.run();
   await deleteSentAudits(f.booking.id, 'sms');
-  // Synchronize both runs after their delivery-state reads so both enter recordSent together.
-  let recordEntries = 0;
-  const bothReady = Promise.withResolvers<void>();
-  const release = setTimeout(() => bothReady.resolve(), 5_000);
-  const callsByRun = new WeakMap<object, number>();
-  const makeRun = () => {
-    const token = {};
-    const scope: typeof db.forGym = async (gymId, fn) => {
-      const n = (callsByRun.get(token) ?? 0) + 1;
-      callsByRun.set(token, n);
-      if (n === 2) {
-        if (++recordEntries === 2) bothReady.resolve();
-        await bothReady.promise;
-      }
-      return db.forGym(gymId, fn);
-    };
-    const delivery = createBookingDelivery({ scope, clock: f.clock, jobs: f.jobs, mailer: async () => f.email,
-      sms: { resolver: f.resolver, phoneDigest: createSmsPhoneDigest('cancel-notice-test') } });
-    return delivery.sendCancelNotice(f.notices()[0]!.payload, f.gymId);
+  // Hold A's recordSent transaction open after it locks the booking and writes the audit so B blocks on the row lock.
+  const aLocked = Promise.withResolvers<void>();
+  const releaseA = Promise.withResolvers<void>();
+  const lockTimer = setTimeout(() => aLocked.resolve(), 5_000);
+  let releaseTimer: ReturnType<typeof setTimeout> | undefined;
+  const maintenance = openConnection(db.maintenanceUrl, 1);
+  const observer = openConnection(db.appUrl, 1);
+  let callsA = 0;
+  const scopeA: typeof db.forGym = async (gymId, fn) => {
+    callsA += 1;
+    if (callsA === 2) {
+      return db.forGym(gymId, async tx => {
+        const result = await fn(tx);
+        aLocked.resolve();
+        await releaseA.promise;
+        return result;
+      });
+    }
+    return db.forGym(gymId, fn);
   };
+  const deliveryA = createBookingDelivery({ scope: scopeA, clock: f.clock, jobs: f.jobs, mailer: async () => f.email,
+    sms: { resolver: f.resolver, phoneDigest: createSmsPhoneDigest('cancel-notice-test') } });
+  const deliveryB = createBookingDelivery({ scope: db.forGym, clock: f.clock, jobs: f.jobs, mailer: async () => f.email,
+    sms: { resolver: f.resolver, phoneDigest: createSmsPhoneDigest('cancel-notice-test') } });
+  const payload = f.notices()[0]!.payload;
+  const runA = deliveryA.sendCancelNotice(payload, f.gymId);
+  let runB: Promise<void> | undefined;
   try {
-    await Promise.all([makeRun(), makeRun()]);
+    await aLocked.promise;
+    // Starts with the lock-wait poll and outlasts it, so a slow setup can't release A while the poll still waits for B.
+    releaseTimer = setTimeout(() => releaseA.resolve(), 10_000);
+    runB = deliveryB.sendCancelNotice(payload, f.gymId);
+    await expect.poll(async () => {
+      const [row] = await observer.sql`select exists (select 1 from pg_stat_activity
+        where datname = current_database() and wait_event_type = 'Lock') as waiting`;
+      return row!.waiting;
+    }, { interval: 20, timeout: 5_000 }).toBe(true);
+    const [visible] = await maintenance.sql`select count(*)::int as n from audit_events
+      where target_id = ${f.booking.id} and action = 'booking.cancel_notice_sent'`;
+    expect(visible!.n).toBe(0);
+    releaseA.resolve();
+    await Promise.all([runA, runB]);
   } finally {
-    clearTimeout(release);
+    releaseA.resolve();
+    clearTimeout(lockTimer);
+    clearTimeout(releaseTimer);
+    // After a failed assertion too, both runs finish before the connections close and the next test starts.
+    await Promise.allSettled([runA, runB]);
+    await observer.close();
+    await maintenance.close();
   }
-  expect(recordEntries).toBe(2);
   const audits = await db.forGym(f.gymId, tx => tx.select({ after: auditEvents.after })
     .from(auditEvents).where(and(eq(auditEvents.targetId, f.booking.id), eq(auditEvents.action, 'booking.cancel_notice_sent'))));
   expect(audits).toEqual([{ after: { channel: 'sms' } }]);
+  expect(f.sms.messages).toHaveLength(1);
+});
+
+it.each(['email', 'sms'] as const)('writes no recovered %s audit when the booking row is gone', async channel => {
+  const f = await fixture();
+  await f.cancel([channel]);
+  await f.run();
+  await deleteSentAudits(f.booking.id, channel);
+  await db.forGym(f.gymId, tx => tx.delete(classBookings).where(eq(classBookings.id, f.booking.id)));
+  await expect(f.run()).resolves.toBeUndefined();
+  expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents,
+    and(eq(auditEvents.targetId, f.booking.id), eq(auditEvents.action, 'booking.cancel_notice_sent'))))).toBe(0);
+  expect(f.email.messages).toHaveLength(channel === 'email' ? 1 : 0);
+  expect(f.sms.messages).toHaveLength(channel === 'sms' ? 1 : 0);
+});
+
+it('writes no recovered audit when two retries of a deleted booking run together', async () => {
+  const f = await fixture();
+  await f.cancel(['email', 'sms']);
+  await f.run();
+  await deleteSentAudits(f.booking.id, 'email');
+  await deleteSentAudits(f.booking.id, 'sms');
+  await db.forGym(f.gymId, tx => tx.delete(classBookings).where(eq(classBookings.id, f.booking.id)));
+  await expect(Promise.all([f.run(), f.run()])).resolves.toEqual([undefined, undefined]);
+  expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents,
+    and(eq(auditEvents.targetId, f.booking.id), eq(auditEvents.action, 'booking.cancel_notice_sent'))))).toBe(0);
+  expect(f.email.messages).toHaveLength(1);
   expect(f.sms.messages).toHaveLength(1);
 });

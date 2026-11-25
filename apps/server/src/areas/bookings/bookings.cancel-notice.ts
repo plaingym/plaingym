@@ -53,8 +53,9 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
 
   async function recordSent(gymId: string, bookingId: string, channel: 'email' | 'sms') {
     await scope(gymId, async tx => {
-      await tx.select({ id: classBookings.id }).from(classBookings)
+      const [booking] = await tx.select({ id: classBookings.id }).from(classBookings)
         .where(and(eq(classBookings.gymId, gymId), eq(classBookings.id, bookingId))).for('update');
+      if (!booking) return;
       const existing = await tx.select({ after: auditEvents.after }).from(auditEvents)
         .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.action, 'booking.cancel_notice_sent'),
           eq(auditEvents.targetType, 'class_booking'), eq(auditEvents.targetId, bookingId)));
