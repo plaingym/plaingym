@@ -14,7 +14,8 @@ import { detachJob } from './payments.mutations.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 async function fixture(options: { customerMetadata?: Record<string, string> | 'own'; methodMetadata?: Record<string, string>;
-  householdCustomerId?: string | null; revoked?: boolean; billingDetails?: Record<string, string> } = {}) {
+  householdCustomerId?: string | null; revoked?: boolean; billingDetails?: Record<string, string>;
+  scope?: typeof db.forGym } = {}) {
   const gymId = uuidv7(), clock = new TestClock('2026-10-25T12:00:00Z');
   await factory('gyms', gymId, { currency: 'CAD', billingEnabled: true });
   const home = await factory('households', gymId, { stripeCustomerId: options.householdCustomerId === undefined ? 'cus_csv' : options.householdCustomerId });
@@ -39,7 +40,7 @@ async function fixture(options: { customerMetadata?: Record<string, string> | 'o
     assertNoTransaction('adoptCustomer');
     return provider.adoptCustomer(id);
   });
-  const handler = createPaymentJobs({ scope: db.forGym, notifications: {} as never, detachCard, adoptCustomer })
+  const handler = createPaymentJobs({ scope: options.scope ?? db.forGym, notifications: {} as never, detachCard, adoptCustomer })
     .find(job => job.id === detachJob)!.handler;
   const run = (payload: unknown = { paymentMethodId: card.id }) => handler(payload, {
     jobId: 'job_detach', gymId, timezone: 'UTC', attempt: 1, clock });
@@ -171,6 +172,46 @@ describe('detaching a card whose customer is linked by a people CSV', () => {
     const [row] = await db.forGym(f.gymId, tx => tx.select().from(paymentMethods).where(eq(paymentMethods.id, f.card.id)));
     expect(row).toMatchObject({ householdId: f.home.id, revokedAt: null });
     expect(await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, f.home.id)))).toHaveLength(1);
+  });
+
+  it('retries a failed adoption audit once and detaches, and fails without detaching when it fails twice', async () => {
+    const runWithFailures = async (failures: number) => {
+      let remaining = 0;
+      const errors: Error[] = [];
+      const scope: typeof db.forGym = (gymId, fn) => {
+        if (remaining > 0) {
+          remaining--;
+          const error = new Error(`audit write failed (${remaining} remaining)`);
+          errors.push(error);
+          return Promise.reject(error);
+        }
+        return db.forGym(gymId, fn);
+      };
+      const f = await fixture({ scope });
+      const realAdopt = f.adoptCustomer.getMockImplementation()!;
+      f.adoptCustomer.mockImplementationOnce(async (gymId, id) => {
+        const result = await realAdopt(gymId, id);
+        remaining = failures;
+        return result;
+      });
+      return { f, errors };
+    };
+
+    const once = await runWithFailures(1);
+    await expect(once.f.run()).resolves.toBeUndefined();
+    expect(once.errors).toHaveLength(1);
+    expect(once.f.stripe.objects.get('pm_csv_pad')!.customer).toBeNull();
+    expect(await once.f.audits('billing.customer.adopted')).toHaveLength(1);
+    expect(await once.f.audits('billing.card.detached')).toHaveLength(1);
+
+    const twice = await runWithFailures(2);
+    const rejection = await twice.f.run().catch(error => error);
+    expect(twice.errors).toHaveLength(2);
+    expect(rejection).toBe(twice.errors[1]);
+    expect(twice.f.stripe.objects.get('cus_csv')!.metadata).toEqual({ gym_id: twice.f.gymId });
+    expect(twice.f.stripe.objects.get('pm_csv_pad')!.customer).toBe('cus_csv');
+    expect(await twice.f.audits('billing.customer.adopted')).toHaveLength(0);
+    expect(await twice.f.audits('billing.card.detached')).toHaveLength(0);
   });
 });
 

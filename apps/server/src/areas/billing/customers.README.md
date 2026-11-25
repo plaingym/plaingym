@@ -11,8 +11,12 @@ Before Checkout uses a stored ID, signed-link Checkout calls
 adopted, one read per Checkout, including a customer this service created and linked
 or a link campaign matched: the gym can delete it in the Stripe dashboard, and a
 Checkout for a deleted customer fails at Stripe. Adoption writes nothing for a
-customer already tagged with the gym; an untagged imported customer is tagged, as a
-charge does. When the account
+customer already tagged with the gym; an untagged imported customer is tagged and
+audited (`billing.customer.adopted`, `source: checkout`), as a charge does. Every
+adoption audit (Checkout, charge, card import and detach) is written once per
+household and customer in its own short transaction retried once (`customer-adoption.ts`);
+when the audit fails twice, the Checkout, charge, import or detach fails with that error
+and the tag stays unaudited (a later call sees the customer tagged and writes none). When the account
 answers 404 `resource_missing` (an imported ID from another account, or a typo), or
 reports the customer deleted (`CustomerDeleted`),
 it clears the ID only while it is still the stored one, writes a
@@ -144,8 +148,9 @@ The staff request checks the customer before queueing the job. A customer a
 people import linked but never tagged is adopted first: the request tags it
 with the gym (never the household) and, when this call wrote the tag, records
 `billing.customer.adopted` (`source: card_import`) in its own short transaction
-right after tagging under the household lock, once per household and customer,
-even when a later check refuses the import or the enqueue rolls back. It then
+retried once under the household lock, once per household and customer,
+even when a later check refuses the import or the enqueue rolls back (a tag whose
+audit fails twice fails the request and stays unaudited). It then
 checks the customer again; a customer tagged for another gym or household, or
 a deleted one, is refused with nothing queued. A gym-tagged customer is not
 adopted again.

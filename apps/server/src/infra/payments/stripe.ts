@@ -715,8 +715,9 @@ export class StripePayments implements Payments {
     const owner = data(customer.metadata ?? {}).gym_id;
     if (owner !== undefined && owner !== this.gymId) throw new NotForGym('Payment object belongs to another gym');
     // Metadata updates merge, so the customer's other keys stay.
+    // No idempotency key: setting the same tag twice is harmless, and a key would replay a cached reply after the tag is removed in the dashboard.
     const adopted = owner === undefined;
-    if (adopted) await this.#post(path, { metadata: { gym_id: this.gymId } }, 'customer:' + customerId + ':adopt');
+    if (adopted) await this.#post(path, { metadata: { gym_id: this.gymId } });
     return { id: id(customer.id), email: typeof customer.email === 'string' ? customer.email : null, adopted };
   }
   async listCustomerCards(customerId: string, options: CustomerCardQuery = {}): Promise<CustomerCardPage> {

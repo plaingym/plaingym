@@ -83,8 +83,9 @@ PaymentIntent or SetupIntent. Stripe-generated child objects are matched through
 their parent: a card's Customer, or a refund/dispute's Charge and PaymentIntent.
 Customers created elsewhere (imported Stripe customer IDs) carry no `gym_id` and are
 refused until `adoptCustomer(id)` tags them; it is idempotent, returns `{ id, email, adopted }`
-(`adopted` is true only when this call wrote the gym tag), and refuses customers
-tagged for another gym. Call it only on staff-provided IDs. A test key can't see
+(`adopted` is true when the pre-read found no tag and this call wrote one), and refuses customers
+tagged for another gym. The tag write carries no idempotency key, so a re-tag after a dashboard
+removal writes again and concurrent calls don't conflict. Call it only on staff-provided IDs. A test key can't see
 live-mode objects, so a live customer it reads looks missing, as one from another
 account does; `keyMode` (`test` or `live` for `StripePayments`, unset by default
 on `FakePayments`) lets callers tell which key they hold. Email matches are

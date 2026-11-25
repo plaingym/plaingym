@@ -14,6 +14,7 @@ import { createGymSettingsAccessor } from '../settings/settings.js';
 import { createPaymentService } from '../billing/payments.js';
 import { createPaymentJobs } from '../billing/payments.jobs.js';
 import { cardDetachedAction, detachJob } from '../billing/payments.mutations.js';
+import { customerUnlinkedAction } from '../billing/customers.js';
 import { createMembersService } from './members.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
@@ -227,5 +228,38 @@ describe('a detach job queued before a last-member erasure', () => {
     expect(latest.stripe.objects.get('cus_older')!.metadata).toEqual({});
     expect(latest.stripe.objects.get('cus_newer')!.metadata).toEqual({ gym_id: latest.gym });
     expect(latest.stripe.objects.get('pm_csv_pad')!.customer).toBeNull();
+  });
+
+  it('skips the erased customer after a later unlink audit, and still adopts it without one', async () => {
+    const unlinked = await preErasureFixture({ customerId: 'cus_A', methodCustomerId: 'cus_A', revoked: true });
+    await unlinked.membersService.eraseMember({ gymId: unlinked.gym, actor: { kind: 'system' } }, unlinked.person.id, { revision: 1 },
+      { jobs: new FakeJobs(unlinked.testClock), timezone: 'UTC' });
+    // Household is linked again to cus_B and later cleared with billing.customer.unlinked.
+    await database.forGym(unlinked.gym, tx => tx.update(households).set({ stripeCustomerId: 'cus_B' }).where(eq(households.id, unlinked.home.id)));
+    await database.forGym(unlinked.gym, async tx => {
+      await tx.update(households).set({ stripeCustomerId: null }).where(eq(households.id, unlinked.home.id));
+      await writeAudit(tx, {
+        gymId: unlinked.gym, actorKind: 'system', action: customerUnlinkedAction, targetType: 'household', targetId: unlinked.home.id,
+        before: { customerId: 'cus_B' }, after: { customerId: null, reason: 'unreadable' }, occurredAt: unlinked.testClock.now(),
+      });
+    });
+
+    const rejection = await unlinked.runDetach({ paymentMethodId: unlinked.card.id }).catch(error => error);
+    expect(rejection).toBe(unlinked.detachErrors[0]);
+    expect(unlinked.adoptCustomer).not.toHaveBeenCalled();
+    expect(unlinked.stripe.objects.get('cus_A')!.metadata).toEqual({});
+    expect(await unlinked.audits('billing.customer.adopted')).toHaveLength(0);
+    expect(await unlinked.audits(cardDetachedAction)).toHaveLength(0);
+
+    // Without a newer unlink audit, the detach still falls back to the erased customer and detaches.
+    const erasedOnly = await preErasureFixture({ customerId: 'cus_A', methodCustomerId: 'cus_A', revoked: true });
+    await erasedOnly.membersService.eraseMember({ gymId: erasedOnly.gym, actor: { kind: 'system' } }, erasedOnly.person.id, { revision: 1 },
+      { jobs: new FakeJobs(erasedOnly.testClock), timezone: 'UTC' });
+    await expect(erasedOnly.runDetach({ paymentMethodId: erasedOnly.card.id })).resolves.toBeUndefined();
+    expect(erasedOnly.adoptCustomer).toHaveBeenCalledExactlyOnceWith(erasedOnly.gym, 'cus_A');
+    expect(erasedOnly.stripe.objects.get('cus_A')!.metadata).toEqual({ gym_id: erasedOnly.gym });
+    expect(erasedOnly.stripe.objects.get('pm_csv_pad')!.customer).toBeNull();
+    expect(await erasedOnly.audits('billing.customer.adopted')).toHaveLength(1);
+    expect(await erasedOnly.audits(cardDetachedAction)).toHaveLength(1);
   });
 });

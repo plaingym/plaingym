@@ -23,6 +23,7 @@ import { withJobTransaction } from '../../infra/jobs/index.js';
 import { CardImportRefused, isProviderOutage } from '../../infra/payments/index.js';
 import { readGymSettings } from '../settings/settings.js';
 import { bankAccountType, cardImportSnapshotVersion, customerCardImportJob } from './customer-card-import.js';
+import { customerAdoptedAction, recordCustomerAdoption } from './customer-adoption.js';
 
 type Options = PaymentOptions & { scope: typeof forGym; clock: Clock; transitions: InvoiceTransitions; settings: GymSettingsAccessor };
 export const receiptJob = 'billing.payments.receipt';
@@ -114,28 +115,25 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
         throw error;
       });
       const requestId = uuidv7();
-      const recordAdoption = (details: { requestId: string; source: 'card_import' }) => scope(context.gymId, async tx => {
-        await loadHousehold(tx, householdId, true);
-        const existing = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
-          eq(auditEvents.action, 'billing.customer.adopted'), eq(auditEvents.targetType, 'household'),
-          eq(auditEvents.targetId, householdId)));
-        if (existing.some(row => (row.after as { customerId?: unknown } | null)?.customerId === customerId)) return;
-        await catalogAudit(tx, context, clock, 'billing.customer.adopted', 'household', householdId, undefined,
-          { customerId, requestId: details.requestId, source: details.source });
-      });
       if (!await owned()) {
         // A people import links a customer without tagging it. Tag an untagged one for this gym, as charges and Checkout do;
         // a customer of another gym, or a deleted one, stays refused. A customer tagged for another household fails the recheck.
         let result: { adopted: boolean };
         try { result = await provider.adoptCustomer(customerId); }
         catch (error) {
-          // Rate limits, outages, lost connections and a rejected or restricted key are not ownership refusals.
-          const { statusCode: status, type } = (error ?? {}) as { statusCode?: unknown; type?: unknown };
+          // Rate limits, outages, lost connections, in-flight key conflicts and a rejected or restricted key are not ownership refusals.
+          const { statusCode: status, type, code, raw } = (error ?? {}) as {
+            statusCode?: unknown; type?: unknown; code?: unknown; raw?: { code?: unknown };
+          };
+          const errorCode = code ?? raw?.code;
           if (isProviderOutage(error) || status === 401 || status === 403 || type === 'StripePermissionError'
+            || (status === 409 && errorCode === 'idempotency_key_in_use')
             || error instanceof TypeError) throw error;
           paymentConflict('card_import_refused', 'Customer is not owned by this gym and household');
         }
-        if (result.adopted) await recordAdoption({ requestId, source: 'card_import' });
+        if (result.adopted) await recordCustomerAdoption(scope, context.gymId, householdId, customerId,
+          tx => catalogAudit(tx, context, clock, customerAdoptedAction, 'household', householdId, undefined,
+            { customerId, requestId, source: 'card_import' }));
         if (!await owned()) paymentConflict('card_import_refused', 'Customer is not owned by this gym and household');
       }
       const gym = await settings.get(context.gymId);

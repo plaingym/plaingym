@@ -896,4 +896,31 @@ describe('fixed return flows with real PostgreSQL', () => {
     expect(create.mock.calls[0]![0]).toMatchObject({ successUrl: origin + '/join/return', cancelUrl: origin + '/join/cancelled',
       expiresAt: new Date('2026-10-27T13:00:00Z') });
   });
+  it('audits customer adoption once when Checkout tags an untagged customer and writes none for a tagged customer', async () => {
+    const f = await fixture('update_card');
+    f.fake.seedCustomer({ id: 'cus_untagged', email: f.household.email!, gymId: null });
+    await db.forGym(f.gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_untagged' }).where(eq(households.id, f.household.id)));
+    await f.checkout.start(f.gymId, f.linkId);
+    const adopted = await db.forGym(f.gymId, tx => tx.select().from(auditEvents)
+      .where(eq(auditEvents.action, 'billing.customer.adopted')));
+    expect(adopted).toHaveLength(1);
+    expect(adopted[0]).toMatchObject({
+      actorKind: 'system', targetType: 'household', targetId: f.household.id,
+      after: { customerId: 'cus_untagged', source: 'checkout' },
+    });
+
+    const second = await f.links.create(f.context, {
+      purpose: 'update_card', householdId: f.household.id, campaignId: f.campaign.id, expiresAt: '2026-11-27T12:00:00Z',
+    });
+    await f.checkout.start(f.gymId, second.link.id);
+    const afterSecond = await db.forGym(f.gymId, tx => tx.select().from(auditEvents)
+      .where(eq(auditEvents.action, 'billing.customer.adopted')));
+    expect(afterSecond).toHaveLength(1);
+
+    const tagged = await fixture('update_card');
+    await tagged.checkout.start(tagged.gymId, tagged.linkId);
+    const taggedAudits = await db.forGym(tagged.gymId, tx => tx.select().from(auditEvents)
+      .where(eq(auditEvents.action, 'billing.customer.adopted')));
+    expect(taggedAudits).toHaveLength(0);
+  });
 });

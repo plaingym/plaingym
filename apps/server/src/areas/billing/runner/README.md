@@ -180,10 +180,13 @@ the latest matching dispute audit identifies its payment, with the invoice-level
 fallback used only when that audit has no payment ID.
 
 Each charge commits immutable amount, currency, customer and saved-method fields
-before adopting the stored customer or creating an unconfirmed PaymentIntent.
-Keys are `<invoiceId>:<attemptNumber>:create` and `:confirm`. An exit before
-`createCharge`, including failed customer adoption or billing being disabled,
-immediately marks the unstarted attempt `failed` with `create_abandoned`.
+before adopting the stored customer or creating an unconfirmed PaymentIntent. A
+charge that tags an untagged customer audits `billing.customer.adopted` (`source:
+charge`) once per household and customer in its own transaction retried once before
+creating the PaymentIntent. Keys are `<invoiceId>:<attemptNumber>:create` and
+`:confirm`. An exit before `createCharge`, including failed customer adoption, a
+failed adoption audit, or billing being disabled, immediately marks the unstarted
+attempt `failed` with `create_abandoned`.
 Once create starts, an unknown result stays pending for reconciliation.
 The intent ID is saved
 only if the attempt is still pending, unresolved and has no ID. A worker losing

@@ -592,6 +592,25 @@ it('adopts an imported customer once, so charges and email matching accept it, a
   await expect(payments.adoptCustomer('cus_missing')).rejects.toThrow();
   await expect(payments.adoptCustomer('../cus_fixture')).rejects.toThrow('Invalid processor ID');
 });
+it('tags an untagged customer without an idempotency key and re-tags after the gym metadata is removed', async () => {
+  const { payments, transport } = fixture();
+  transport.objects.set('cus_retag', { id: 'cus_retag', object: 'customer', email: 'retag@example.invalid', metadata: { legacy_id: '7' } });
+  const posts = () => transport.requests.filter(request => request.method === 'POST' && request.path === '/v1/customers/cus_retag');
+
+  expect(await payments.adoptCustomer('cus_retag')).toEqual({ id: 'cus_retag', email: 'retag@example.invalid', adopted: true });
+  expect(posts()).toHaveLength(1);
+  expect(posts()[0]).not.toHaveProperty('idempotencyKey');
+  expect(transport.objects.get('cus_retag')!.metadata).toEqual({ legacy_id: '7', gym_id: gymId });
+
+  delete (transport.objects.get('cus_retag')!.metadata as Record<string, unknown>).gym_id;
+  expect(await payments.adoptCustomer('cus_retag')).toEqual({ id: 'cus_retag', email: 'retag@example.invalid', adopted: true });
+  expect(posts()).toHaveLength(2);
+  expect(posts()[1]).not.toHaveProperty('idempotencyKey');
+  expect(transport.objects.get('cus_retag')!.metadata).toEqual({ legacy_id: '7', gym_id: gymId });
+
+  expect(await payments.adoptCustomer('cus_retag')).toEqual({ id: 'cus_retag', email: 'retag@example.invalid', adopted: false });
+  expect(posts()).toHaveLength(2);
+});
 it.each(['concurrent', 'lost_response', 'missing', 'permission', 'failure'] as const)('handles detach %s without hiding a failed removal', async outcome => {
   const { payments, transport } = fixture();
   const request = transport.request.bind(transport);

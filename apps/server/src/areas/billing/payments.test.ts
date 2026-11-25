@@ -373,7 +373,7 @@ describe('staff import of externally attached cards', () => {
     expect(adopted[0]).toMatchObject({ targetType: 'household', targetId: f.home.id,
       after: { customerId: 'cus_fixture', source: 'card_import' } });
   });
-  it('writes one adoption audit across concurrent card imports and none for a customer already tagged by a charge', async () => {
+  it('writes one adoption audit across concurrent card imports and adds none for a customer already tagged by a charge', async () => {
     const f = await fixture(), provider = new FakePayments(f.gymId, f.clock);
     provider.seedCustomer({ id: 'cus_fixture', email: 'payer@example.invalid', gymId: null });
     const realAdopt = provider.adoptCustomer.bind(provider);
@@ -392,15 +392,19 @@ describe('staff import of externally attached cards', () => {
     ])).resolves.toEqual([{ queued: true }, { queued: true }]);
     expect(await actions(f, 'billing.customer.adopted')).toHaveLength(1);
 
-    // A customer already tagged by a charge writes no adoption audit, whether tagged before or during the check.
+    // A customer already tagged by a charge keeps the charge's one adoption audit and the card import adds none.
     const fCharge = await fixture(), chargeProvider = new FakePayments(fCharge.gymId, fCharge.clock);
     chargeProvider.seedCustomer({ id: 'cus_fixture', email: 'payer@example.invalid', gymId: null });
     chargeProvider.recordPaymentMethod({ id: 'pm_4242', customerId: 'cus_fixture', brand: 'visa', last4: '4242', expiresMonth: 12, expiresYear: 2035 });
     const chargeRunner = createChargeRunner({ ...fCharge.options, payments: async () => chargeProvider });
     const chargeService = createPaymentService({ ...fCharge.options, paymentsFor: async () => chargeProvider, runner: chargeRunner });
     await expect(chargeService.charge(fCharge.context, fCharge.invoice.id)).resolves.toMatchObject({ status: 'succeeded' });
+    const chargeAdopted = await actions(fCharge, 'billing.customer.adopted');
+    expect(chargeAdopted).toHaveLength(1);
+    expect(chargeAdopted[0]).toMatchObject({ targetType: 'household', targetId: fCharge.home.id,
+      after: { customerId: 'cus_fixture', invoiceId: fCharge.invoice.id, source: 'charge' } });
     await expect(chargeService.importCustomerCards(fCharge.context, fCharge.home.id)).resolves.toEqual({ queued: true });
-    expect(await actions(fCharge, 'billing.customer.adopted')).toHaveLength(0);
+    expect(await actions(fCharge, 'billing.customer.adopted')).toHaveLength(1);
 
     const f2 = await fixture(), provider2 = new FakePayments(f2.gymId, f2.clock);
     provider2.seedCustomer({ id: 'cus_fixture', email: 'payer@example.invalid', gymId: null });
@@ -412,6 +416,125 @@ describe('staff import of externally attached cards', () => {
     const service2 = createPaymentService({ ...f2.options, paymentsFor: async () => provider2 });
     await expect(service2.importCustomerCards(f2.context, f2.home.id)).resolves.toEqual({ queued: true });
     expect(await actions(f2, 'billing.customer.adopted')).toHaveLength(0);
+  });
+  it('audits a charge customer adoption once per household and customer, and abandons the attempt if the audit fails twice', async () => {
+    const f = await fixture(), provider = new FakePayments(f.gymId, f.clock);
+    provider.seedCustomer({ id: 'cus_fixture', email: 'payer@example.invalid', gymId: null });
+    provider.recordPaymentMethod({ id: 'pm_4242', customerId: 'cus_fixture', brand: 'visa', last4: '4242', expiresMonth: 12, expiresYear: 2035 });
+    const runner = createChargeRunner({ ...f.options, payments: async () => provider });
+    await expect(runner.charge(f.gymId, f.invoice.id, { mode: 'staff', context: f.context })).resolves.toMatchObject({ status: 'succeeded' });
+    const [attempt] = await db.forGym(f.gymId, tx => tx.select().from(paymentAttempts).where(eq(paymentAttempts.invoiceId, f.invoice.id)));
+    const adopted = await actions(f, 'billing.customer.adopted');
+    expect(adopted).toHaveLength(1);
+    expect(adopted[0]).toMatchObject({ actorKind: 'user', actorUserId: f.user.id, targetType: 'household', targetId: f.home.id,
+      after: { customerId: 'cus_fixture', invoiceId: f.invoice.id, attemptId: attempt!.id, source: 'charge' } });
+    // Charging another invoice of the same household writes no second adoption audit.
+    const secondInvoice = await f.create();
+    await expect(runner.charge(f.gymId, secondInvoice.id, { mode: 'staff', context: f.context })).resolves.toMatchObject({ status: 'succeeded' });
+    expect(await actions(f, 'billing.customer.adopted')).toHaveLength(1);
+
+    // If the adoption audit fails twice, no PaymentIntent is created and the attempt is abandoned.
+    const fFail = await fixture(), failProvider = new FakePayments(fFail.gymId, fFail.clock);
+    failProvider.seedCustomer({ id: 'cus_fixture', email: 'payer@example.invalid', gymId: null });
+    failProvider.recordPaymentMethod({ id: 'pm_4242', customerId: 'cus_fixture', brand: 'visa', last4: '4242', expiresMonth: 12, expiresYear: 2035 });
+    let failNext = 0;
+    const errors: Error[] = [];
+    const wrappedScope: typeof db.forGym = (gymId, fn) => {
+      if (failNext > 0) {
+        failNext--;
+        const error = new Error(`charge adoption audit failed (${failNext} left)`);
+        errors.push(error);
+        return Promise.reject(error);
+      }
+      return db.forGym(gymId, fn);
+    };
+    const realAdopt = failProvider.adoptCustomer.bind(failProvider);
+    vi.spyOn(failProvider, 'adoptCustomer').mockImplementationOnce(async id => {
+      const result = await realAdopt(id);
+      failNext = 2;
+      return result;
+    });
+    const createCharge = vi.spyOn(failProvider, 'createCharge');
+    const failRunner = createChargeRunner({ ...fFail.options, scope: wrappedScope, payments: async () => failProvider });
+    const rejection = await failRunner.charge(fFail.gymId, fFail.invoice.id, { mode: 'staff', context: fFail.context }).catch(error => error);
+    expect(errors).toHaveLength(2);
+    expect(rejection).toBe(errors[1]);
+    expect(createCharge).not.toHaveBeenCalled();
+    const [abandoned] = await db.forGym(fFail.gymId, tx => tx.select().from(paymentAttempts).where(eq(paymentAttempts.invoiceId, fFail.invoice.id)));
+    expect(abandoned).toMatchObject({ status: 'failed', declineCode: 'create_abandoned', paymentIntentId: null });
+    expect(await actions(fFail, 'billing.customer.adopted')).toHaveLength(0);
+  });
+  it('retries a failed card-import adoption audit once, and fails without queueing when it fails twice', async () => {
+    const setup = async (failures: number) => {
+      const f = await fixture(), provider = new FakePayments(f.gymId, f.clock);
+      provider.seedCustomer({ id: 'cus_fixture', email: 'payer@example.invalid', gymId: null });
+      let failNext = 0;
+      const errors: Error[] = [];
+      const wrappedScope: typeof db.forGym = (gymId, fn) => {
+        if (failNext > 0) {
+          failNext--;
+          const error = new Error(`import adoption audit failed (${failNext} left)`);
+          errors.push(error);
+          return Promise.reject(error);
+        }
+        return db.forGym(gymId, fn);
+      };
+      const realAdopt = provider.adoptCustomer.bind(provider);
+      vi.spyOn(provider, 'adoptCustomer').mockImplementationOnce(async id => {
+        const result = await realAdopt(id);
+        failNext = failures;
+        return result;
+      });
+      const service = createPaymentService({ ...f.options, scope: wrappedScope, paymentsFor: async () => provider });
+      return { f, provider, service, errors };
+    };
+
+    const once = await setup(1);
+    await expect(once.service.importCustomerCards(once.f.context, once.f.home.id)).resolves.toEqual({ queued: true });
+    expect(once.errors).toHaveLength(1);
+    expect(once.f.jobs.jobs).toHaveLength(1);
+    expect(await actions(once.f, 'billing.customer.adopted')).toHaveLength(1);
+
+    const twice = await setup(2);
+    const rejection = await twice.service.importCustomerCards(twice.f.context, twice.f.home.id).catch(error => error);
+    expect(twice.errors).toHaveLength(2);
+    expect(rejection).toBe(twice.errors[1]);
+    expect(twice.f.jobs.jobs).toHaveLength(0);
+    expect(await twice.provider.adoptCustomer('cus_fixture')).toMatchObject({ adopted: false });
+    expect(await actions(twice.f, 'billing.customer.adopted')).toHaveLength(0);
+  });
+  it('rethrows a 409 idempotency_key_in_use from adoptCustomer and adopts cleanly across concurrent Stripe imports', async () => {
+    const fConflict = await fixture(), conflictProvider = new FakePayments(fConflict.gymId, fConflict.clock);
+    conflictProvider.seedCustomer({ id: 'cus_fixture', email: 'payer@example.invalid', gymId: null });
+    const inUse = Object.assign(new Error('in use'), { statusCode: 409, code: 'idempotency_key_in_use' });
+    vi.spyOn(conflictProvider, 'adoptCustomer').mockRejectedValueOnce(inUse);
+    const conflictService = createPaymentService({ ...fConflict.options, paymentsFor: async () => conflictProvider });
+    await expect(conflictService.importCustomerCards(fConflict.context, fConflict.home.id)).rejects.toBe(inUse);
+    expect(fConflict.jobs.jobs).toHaveLength(0);
+    expect(await actions(fConflict, 'billing.customer.adopted')).toHaveLength(0);
+
+    const f = await fixture();
+    const { stripe, provider } = stripeCustomer(f, {});
+    const send = stripe.request.bind(stripe);
+    let posts = 0, release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(stripe, 'request').mockImplementation(async input => {
+      if (input.method === 'POST' && input.path === '/v1/customers/cus_fixture') {
+        if (++posts === 2) release();
+        await gate;
+      }
+      return send(input);
+    });
+    const service = createPaymentService({ ...f.options, paymentsFor: async () => provider });
+    await expect(Promise.all([
+      service.importCustomerCards(f.context, f.home.id),
+      service.importCustomerCards(f.context, f.home.id),
+    ])).resolves.toEqual([{ queued: true }, { queued: true }]);
+    expect(posts).toBe(2);
+    const adoptPosts = stripe.requests.filter(request => request.method === 'POST' && request.path === '/v1/customers/cus_fixture');
+    expect(adoptPosts).toHaveLength(2);
+    expect(adoptPosts.every(request => request.idempotencyKey === undefined)).toBe(true);
+    expect(await actions(f, 'billing.customer.adopted')).toHaveLength(1);
   });
   it('keeps the adoption audit when the household customer is unlinked before enqueue', async () => {
     const f = await fixture(), provider = new FakePayments(f.gymId, f.clock);

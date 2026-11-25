@@ -7,6 +7,7 @@ import { AppError, type Clock } from '@plaingym/shared';
 import { clock as defaultClock } from '../../core/clock.js';
 import { CustomerCreationInProgress, CustomerDeleted, type Payments } from '../../infra/payments/index.js';
 import { stripeSwitchSnapshot, stripeTestClearedAction, stripeWriteCurrent } from './stripe-writes.js';
+import { customerAdoptedAction, recordCustomerAdoption } from './customer-adoption.js';
 
 export type CustomerUnavailableReason = 'stripe_not_configured' | 'missing_details' | 'creation_expired' | 'details_changed' | 'customer_unreadable';
 export class CustomerUnavailable extends AppError {
@@ -149,11 +150,17 @@ export function createCustomersService(options: CustomersOptions) {
    */
   async function readableCustomer(gymId: string, householdId: string, customerId: string, provider: Payments): Promise<string> {
     let reason = 'unreadable';
-    try { await provider.adoptCustomer(customerId); return customerId; }
+    let result: { adopted: boolean } | undefined;
+    try { result = await provider.adoptCustomer(customerId); }
     catch (error) {
       if (error instanceof CustomerDeleted) reason = 'deleted';
       else if (!unreadable(error)) throw error;
       if (provider.keyMode === 'test') throw new CustomerUnavailable('customer_unreadable', error);
+    }
+    if (result) {
+      if (result.adopted) await recordCustomerAdoption(scope, gymId, householdId, customerId,
+        tx => audit(tx, gymId, householdId, customerAdoptedAction, { customerId, source: 'checkout' }));
+      return customerId;
     }
     await scope(gymId, async tx => {
       const [cleared] = await tx.update(households).set({ stripeCustomerId: null })

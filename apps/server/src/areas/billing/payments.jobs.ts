@@ -10,6 +10,8 @@ import { snapshot } from './transitions/store.js';
 import type { DetachOptions, Payments } from '../../infra/payments/index.js';
 import type { InvoiceTransitions } from '../../core/interfaces/invoice-transitions.js';
 import { cardDetachedAction, detachJob, receiptJob, recordCardDetached, transientFailure } from './payments.mutations.js';
+import { customerUnlinkedAction } from './customers.js';
+import { customerAdoptedAction, recordCustomerAdoption } from './customer-adoption.js';
 import { refundRetryWindowMs, refundSettleSkewMs, settleLapsed } from './transitions/lapsed-refunds.js';
 
 export const lapsedRefundJob = 'billing.payments.settle_lapsed';
@@ -78,11 +80,13 @@ export function createPaymentJobs(options?: DeliveryOptions): readonly JobRegist
         const done = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
           eq(auditEvents.action, cardDetachedAction), eq(auditEvents.targetType, 'payment_method'),
           eq(auditEvents.targetId, paymentMethodId))).limit(1);
-        const anonymized = found.stripeCustomerId === null ? (await tx.select({ before: auditEvents.before }).from(auditEvents).where(and(
-          eq(auditEvents.action, 'household.anonymized'), eq(auditEvents.targetType, 'household'),
+        const latestLinkAudit = found.stripeCustomerId === null ? (await tx.select({ action: auditEvents.action, before: auditEvents.before }).from(auditEvents).where(and(
+          inArray(auditEvents.action, ['household.anonymized', customerUnlinkedAction]), eq(auditEvents.targetType, 'household'),
           eq(auditEvents.targetId, found.row.householdId))).orderBy(desc(auditEvents.createdAt), desc(auditEvents.id)).limit(1))[0] : undefined;
         return { row: found.row, stripeCustomerId: found.stripeCustomerId,
-          anonymizedCustomerId: (anonymized?.before as { stripeCustomerId?: unknown } | null | undefined)?.stripeCustomerId,
+          anonymizedCustomerId: latestLinkAudit?.action === 'household.anonymized'
+            ? (latestLinkAudit.before as { stripeCustomerId?: unknown } | null | undefined)?.stripeCustomerId
+            : undefined,
           detached: done.length > 0 };
       });
       // Only an erasure asks for the card's billing details to be cleared; a staff removal queues the job without the flag.
@@ -92,7 +96,8 @@ export function createPaymentJobs(options?: DeliveryOptions): readonly JobRegist
         : options.detachCard(ctx.gymId, row.processorId);
       // An erasure clears the household's customer link in the transaction that queues this job, so its payload carries
       // the customer ID it read from that household's row; a detach queued before the erasure falls back to the latest
-      // household.anonymized audit's cleared ID. The stored link wins, then the payload's, then the audit's.
+      // household.anonymized audit's cleared ID only when no unlink came after the erasure. The stored link wins, then
+      // the payload's, then the audit's.
       const validCustomerId = (value: unknown) => typeof value === 'string' && /^cus_[A-Za-z0-9]+$/.test(value) ? value : null;
       const erasedCustomerId = validCustomerId(customerId);
       const adoptId = stripeCustomerId ?? erasedCustomerId ?? validCustomerId(anonymizedCustomerId);
@@ -106,16 +111,11 @@ export function createPaymentJobs(options?: DeliveryOptions): readonly JobRegist
         let result: { adopted: boolean };
         try { result = await options.adoptCustomer(ctx.gymId, adoptId); }
         catch { throw first; }
-        if (result.adopted) await scope(ctx.gymId, async tx => {
-          await tx.select({ id: households.id }).from(households).where(eq(households.id, row.householdId)).for('update');
-          const existing = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
-            eq(auditEvents.action, 'billing.customer.adopted'), eq(auditEvents.targetType, 'household'),
-            eq(auditEvents.targetId, row.householdId)));
-          if (!existing.some(entry => (entry.after as { customerId?: unknown } | null)?.customerId === adoptId))
-            await writeAudit(tx, { gymId: ctx.gymId, actorKind: 'system', action: 'billing.customer.adopted',
-              targetType: 'household', targetId: row.householdId,
-              after: { customerId: adoptId, paymentMethodId: row.id, source: 'detach' }, occurredAt: ctx.clock.now() });
-        });
+        if (result.adopted) await recordCustomerAdoption(scope, ctx.gymId, row.householdId, adoptId, tx => writeAudit(tx, {
+          gymId: ctx.gymId, actorKind: 'system', action: customerAdoptedAction,
+          targetType: 'household', targetId: row.householdId,
+          after: { customerId: adoptId, paymentMethodId: row.id, source: 'detach' }, occurredAt: ctx.clock.now(),
+        }));
         await detach();
       }
       await recordCardDetached(scope, { gymId: ctx.gymId, actor: { kind: 'system' } }, ctx.clock, row);

@@ -12,6 +12,7 @@ import type { MutationContext } from '../../../core/interfaces/common.js';
 import { logError, logInfo } from '../../../core/log.js';
 import { assignmentInvoices, audit, generateCycle, latestAttempt, system } from './store.js';
 import { stripeSwitchSnapshot, stripeWriteCurrent, stripeWriteScope, StripeTestModeSwitched, withProviderWrites } from '../stripe-writes.js';
+import { customerAdoptedAction, recordCustomerAdoption } from '../customer-adoption.js';
 import { createReconciliation } from './reconciliation.js';
 import type { DisputeRefundOptions } from '../disputes-refunds.js';
 import { assignmentInvoiceCondition, eligibility, isAssignmentInvoice, retryAt, retryDeadlines, skipped, type ChargeMode,
@@ -131,7 +132,10 @@ export function createChargeRunner(options: RunnerOptions) {
       let createStarted = false;
       try {
         // Adoption is idempotent and refuses a stored customer belonging to another gym.
-        await provider.adoptCustomer(attempt.stripeCustomerId);
+        const adoption = await provider.adoptCustomer(attempt.stripeCustomerId);
+        if (adoption.adopted) await recordCustomerAdoption(scope, gymId, invoice.householdId, attempt.stripeCustomerId,
+          tx => audit(tx, context, clock, customerAdoptedAction, 'household', invoice.householdId,
+            { customerId: attempt.stripeCustomerId, invoiceId, attemptId: attempt.id, source: 'charge' }));
         if (!(await options.settings.get(gymId)).billingEnabled) return skipped('billing_disabled');
         createStarted = true;
       } finally {
