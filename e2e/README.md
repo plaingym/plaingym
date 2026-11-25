@@ -416,3 +416,8 @@ the fresh-setup spec completes untouched. It retains layout screenshots.
 360 px and 1280 px. It checks that a pending email change stays visible beside the
 local invalid-address message and a refused request, and that a new request's
 success notice replaces it. It retains layout screenshots.
+
+`account-password.spec.ts` uses API fixtures the same way on the account page's
+password change at 360 px and 1280 px. It checks that the button is at least 44 px
+tall, that a wrong current password shows its alert, and that a change shows its
+status and empties the fields. It retains layout screenshots.

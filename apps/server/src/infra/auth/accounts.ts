@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray, ne } from 'drizzle-orm';
 import { authUser, authSession, authAccount, staffRoles, writeAudit, uuidv7, type Transaction } from '@plaingym/db';
 import { systemDatabase, scopedDatabase } from '@plaingym/db/client';
 import { AppError, type Clock, type StaffRole } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { passwordAdapter } from './password.js';
+import { releaseAccountAttempt, reserveAccountAttempt, signInLimits } from './account-limit.js';
 import type { AuthConfig } from './config.js';
 
 export interface PasswordReset {
@@ -15,6 +16,15 @@ export interface PasswordReset {
   readonly clock: Clock;
   /** Runs inside the same transaction as the password, revocations and audit. */
   authorize(tx: Transaction): Promise<void>;
+}
+export interface OwnPasswordChange {
+  readonly gymId: string;
+  readonly userId: string;
+  readonly currentPassword: string;
+  readonly newPassword: string;
+  /** The session that asked; it stays signed in. */
+  readonly keepSessionId: string | null;
+  readonly clock: Clock;
 }
 /** Runs with the identity write in its gym-scoped transaction. No delivery here. */
 export type ProvisionAccount = (tx: Transaction, userId: string) => Promise<void>;
@@ -78,6 +88,51 @@ export function createAccountService(config: AuthConfig, database = systemDataba
         await writeAudit(tx, { gymId: input.gymId, actorKind: input.actorUserId ? 'user' : 'system', actorUserId: input.actorUserId,
           action: 'auth.password_reset', targetType: 'user', targetId: user.id, occurredAt: input.clock.now() });
       });
+    },
+    /**
+     * The signed-in login changes its own password with the current one. Wrong guesses spend the password sign-in
+     * account budget; the update applies only while the stored hash is still the one verified. The asking session stays;
+     * the login's other sessions in this gym end in the same transaction.
+     */
+    async changeOwnPassword(input: OwnPasswordChange) {
+      assertNoTransaction('auth.changeOwnPassword');
+      if (!config.passwordEnabled || config.tenancy !== 'single') throw new AppError('forbidden', 'Password login is disabled');
+      if (input.newPassword.length < 12 || input.newPassword.length > 128)
+        throw new AppError('invalid_request', 'Password must contain 12 to 128 characters', { newPassword: ['length'] });
+      const found = await forGym(input.gymId, async (tx) => {
+        const [user] = await tx.select({ email: authUser.email }).from(authUser).where(eq(authUser.id, input.userId));
+        if (!user) return null;
+        const [credential] = await tx.select({ password: authAccount.password }).from(authAccount)
+          .where(and(eq(authAccount.userId, input.userId), eq(authAccount.providerId, 'credential')));
+        return { email: user.email, hash: credential?.password ?? null };
+      });
+      if (!found) throw new AppError('unauthenticated', 'Sign in again');
+      const verified = found.hash;
+      if (!verified) throw new AppError('invalid_request', 'This login has no password', { currentPassword: ['no_password'] });
+      // Single mode only, so no gym scope: the owner CLI's recovery clears this window too.
+      const attempt = await reserveAccountAttempt(database(), '/sign-in/email', found.email, signInLimits.account, input.clock.now().getTime());
+      if (!attempt.reservation) throw new AppError('rate_limited', 'Too many attempts. Try again later.');
+      if (!await passwordAdapter.verify({ hash: verified, password: input.currentPassword }))
+        throw new AppError('invalid_request', 'The current password is wrong', { currentPassword: ['wrong_password'] });
+      try {
+        const hash = await passwordAdapter.hash(input.newPassword);
+        await forGym(input.gymId, async (tx) => {
+          const [user] = await tx.select({ id: authUser.id }).from(authUser).where(eq(authUser.id, input.userId)).for('update');
+          if (!user) throw new AppError('unauthenticated', 'Sign in again');
+          const updated = await tx.update(authAccount).set({ password: hash, updatedAt: input.clock.now() })
+            .where(and(eq(authAccount.userId, user.id), eq(authAccount.providerId, 'credential'), eq(authAccount.password, verified)))
+            .returning({ id: authAccount.id });
+          if (updated.length === 0) throw new AppError('conflict', 'The password changed meanwhile. Try again.');
+          await tx.delete(authSession).where(and(eq(authSession.gymId, input.gymId), eq(authSession.userId, user.id),
+            ...input.keepSessionId ? [ne(authSession.id, input.keepSessionId)] : []));
+          await writeAudit(tx, { gymId: input.gymId, actorKind: 'user', actorUserId: user.id,
+            action: 'auth.password_changed', targetType: 'user', targetId: user.id, occurredAt: input.clock.now() });
+        });
+      } finally {
+        // The current password was right, so its slot goes back whatever happens next, as after a password sign-in.
+        // Best effort: a failed release only leaves it counted like a wrong guess.
+        await releaseAccountAttempt(database(), attempt.reservation).catch(() => undefined);
+      }
     },
     async revokeAllSessions(gymId: string, userId: string, clock: Clock) {
       await forGym(gymId, async (tx) => {

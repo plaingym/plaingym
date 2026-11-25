@@ -13,6 +13,8 @@ import { cspNonce } from '../../core/csp.js';
 import { buildLabel, buildLabelItem } from '../health/build-label.js';
 import { requestSession } from '../../infra/auth/middleware.js';
 import { createEmailChangeService, emailChangePagePath, type EmailChangeMail, type EmailChangeService } from '../../infra/auth/email-change.js';
+import type { AccountService } from '../../infra/auth/accounts.js';
+import { passwordLogin, type AuthConfig } from '../../infra/auth/config.js';
 
 export interface AccountRouteOptions {
   readonly service: EmailChangeService;
@@ -21,6 +23,9 @@ export interface AccountRouteOptions {
   /** The gym's mail and canonical origin, as for signed links. */
   readonly mail: EmailChangeMail;
   readonly scope?: typeof forGym;
+  /** Changes the login's own password; without it (or `config`) the change is unavailable. */
+  readonly accounts?: AccountService;
+  readonly config?: AuthConfig;
 }
 let configured: AccountRouteOptions | undefined;
 /** Runtime wiring supplies delivery; without it the page still shows the account, and changing the email is unavailable. */
@@ -64,7 +69,7 @@ export function createAccountRoutes(options?: AccountRouteOptions) {
   let fallback: EmailChangeService | undefined;
   // Unwired, the account still shows; the install's tenancy decides whether a change could apply (demo mode is `multi`).
   const service = () => dependencies()?.service ?? (fallback ??= createEmailChangeService({ config: { tenancy: process.env.TENANCY === 'multi' ? 'multi' : 'single' } }));
-  const { get, requestEmailChange, confirmEmailChange } = accountContracts;
+  const { get, requestEmailChange, confirmEmailChange, changePassword } = accountContracts;
   return [route({
     method: get.method, path: get.path, permission: get.permission, description: get.description,
     responses: { 200: { description: 'The signed-in login\'s account', content: { 'application/json': { schema: get.response } } } },
@@ -106,6 +111,21 @@ export function createAccountRoutes(options?: AccountRouteOptions) {
     const deps = dependencies();
     const applied = await service().confirm({ gymId: gym.gymId, token: context.req.valid('json').token, sessionUserId, clock, ...deps ? { mail: deps.mail } : {} });
     return context.json({ data: { email: applied.to } }, 200);
+  }), route({
+    method: changePassword.method, path: changePassword.path, permission: changePassword.permission, description: changePassword.description,
+    request: { body: { required: true, content: { 'application/json': { schema: changePassword.body } } } },
+    responses: { 200: { description: 'Password changed', content: { 'application/json': { schema: changePassword.response } } } },
+  }, async (context) => {
+    const userId = login(context), { gym, clock } = context.get('context');
+    context.header('Cache-Control', 'no-store');
+    const deps = dependencies();
+    if (!deps?.accounts || !deps.config) throw new AppError('unavailable', 'Password change is not configured');
+    if (deps.config.tenancy !== 'single' || !passwordLogin(deps.config, await deps.smtpConfigured(gym.gymId)))
+      throw new AppError('forbidden', 'Password login is off for this gym');
+    const { currentPassword, newPassword } = context.req.valid('json');
+    await deps.accounts.changeOwnPassword({ gymId: gym.gymId, userId, currentPassword, newPassword,
+      keepSessionId: requestSession(context.req.raw)?.sessionId ?? null, clock });
+    return context.json({ data: null }, 200);
   }),
   // The page the emailed link opens is server-rendered HTML, outside the JSON contracts, like the staff invitation page.
   route({ method: 'get', path: emailChangePagePath, permission: { kind: 'public' },

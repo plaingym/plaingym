@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { accountContracts, requestEmailChangeSchema, type AccountSummary } from '@plaingym/shared/contracts';
+import { accountContracts, changePasswordSchema, requestEmailChangeSchema, type AccountSummary } from '@plaingym/shared/contracts';
 import { parseResponse } from '../../lib/response.js';
 import { readRefusal } from '../../lib/api.js';
 
@@ -24,6 +24,12 @@ export function createAccountClient(fetcher: typeof fetch = (...args) => fetch(.
         headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(requestEmailChangeSchema.parse({ newEmail })) });
       if (!response.ok) throw await failure(response);
       return parseResponse(accountContracts.requestEmailChange.response, await response.json()).data;
+    },
+    async changePassword(currentPassword: string, newPassword: string) {
+      const response = await fetcher(accountContracts.changePassword.path, { method: 'POST', credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(changePasswordSchema.parse({ currentPassword, newPassword })) });
+      if (!response.ok) throw await failure(response);
+      parseResponse(accountContracts.changePassword.response, await response.json());
     },
   };
 }

@@ -32,6 +32,7 @@ export const accountSummarySchema = z.strictObject({
 });
 export const requestEmailChangeSchema = z.strictObject({ newEmail: accountEmailSchema });
 export const confirmEmailChangeSchema = z.strictObject({ token: emailChangeTokenSchema });
+export const changePasswordSchema = z.strictObject({ currentPassword: z.string().min(1).max(128), newPassword: z.string().min(12).max(128) });
 const signedIn = { kind: 'public' } as const;
 export const accountContracts = {
   get: { method: 'get', path: '/api/account', permission: signedIn,
@@ -45,6 +46,10 @@ export const accountContracts = {
     description: 'Applies a sign-in email change from the link sent to the new address. The token is the authority; a session of another login is refused.',
     body: confirmEmailChangeSchema,
     response: z.strictObject({ data: z.strictObject({ email: z.string().min(1) }) }) },
+  changePassword: { method: 'post', path: '/api/account/password', permission: signedIn,
+    description: 'Changes the signed-in login\'s own password after checking the current one. Ends the login\'s other sessions in this gym. Answers 401 without a staff or portal session, 403 where password sign-in is off.',
+    body: changePasswordSchema,
+    response: z.strictObject({ data: z.null() }) },
 } as const satisfies Record<string, EndpointContract>;
 export type AccountSummary = z.infer<typeof accountSummarySchema>;
 export type EmailChangeAvailability = z.infer<typeof emailChangeAvailabilitySchema>;

@@ -58,5 +58,17 @@
   "invalidEmail": "Enter a valid email address.",
   "errorSame": "This is already your sign-in email.",
   "errorRateLimited": "Too many requests. Try again later.",
-  "errorGeneric": "The link could not be sent. Try again."
+  "errorGeneric": "The link could not be sent. Try again.",
+  "passwordTitle": "Change password",
+  "passwordHelp": "Enter your current password, then the new one twice. Your other sessions here end when it changes.",
+  "currentPassword": "Current password",
+  "newPassword": "New password",
+  "confirmPassword": "New password again",
+  "passwordSubmit": "Change password",
+  "passwordChanged": "Password changed. Your other sessions have ended.",
+  "passwordWrong": "The current password is wrong.",
+  "passwordLength": "Use 12 to 128 characters.",
+  "passwordMismatch": "The new passwords don't match.",
+  "passwordRateLimited": "Too many attempts. Try again in a few minutes.",
+  "passwordError": "The password could not be changed. Try again."
 }

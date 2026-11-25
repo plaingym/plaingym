@@ -373,9 +373,19 @@ by setup, the gym CLI, staff and portal invitations, and the join flow.
   own password with `gym-app auth reset-password <email>` on the server. A reset
   deletes all of the user's sessions. The owner's CLI reset also clears that
   account's password and magic-link request limits; address limits still apply.
+  A signed-in login that has a password, owners included, can instead change it
+  on its account page by giving the current one, where password sign-in is on
+  for the gym in `single` mode. This is not a reset, so the role rules above
+  don't apply. Each attempt spends a slot of the password sign-in account window
+  (a right current password gets it back, as a successful sign-in does), so wrong
+  guesses here count against the same budget as wrong sign-ins. The new password
+  applies only if the stored hash is still the one verified; the session that
+  asked stays signed in, the login's other sessions in the gym end in the same
+  transaction, and an audit event without the password or its hash is written.
 * **Sign-in email changes.** Every staff and portal login has an account page
   (`/admin/account`, `/portal/account`) showing its sign-in email, sign-in methods
-  and access in the gym, where it may change its email. The routes act only for
+  and access in the gym, where it may change its email and, when it has a
+  password and the gym has password sign-in on, its password (see **Resets**). The routes act only for
   the session's own login; no request names another. The app sends a link to the
   new address, stored hashed under the issuing gym for one hour and one use, and
   the change applies only when that link is opened, on that gym's hostname; a link

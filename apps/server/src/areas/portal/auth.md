@@ -177,7 +177,8 @@ the gym SMTP resolver. Tests exercise these exports with real PostgreSQL and the
 real registrations.
 
 A portal login sees and changes its own sign-in email on its account page
-(`/portal/account`), served by the staff area's account routes
+(`/portal/account`), and its password when it has one and the gym has password
+sign-in on, served by the staff area's account routes
 (`areas/staff/auth.account.ts`, described in `areas/staff/profiles.md`). They act
 only for the session's own login, never take a household or login from the
 request, and refuse a change link opened while another household's login is

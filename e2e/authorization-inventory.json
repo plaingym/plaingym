@@ -1061,6 +1061,13 @@
     }
   },
   {
+    "method": "POST",
+    "path": "/api/account/password",
+    "permission": {
+      "kind": "public"
+    }
+  },
+  {
     "method": "GET",
     "path": "/account-email",
     "permission": {

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { eq } from 'drizzle-orm';
-// eslint-disable-next-line database/system-tables -- The route test checks the login's address and the gym's audit in real PostgreSQL.
-import { authUser, auditEvents, uuidv7 } from '@plaingym/db';
+import { and, eq } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- The route test checks the login's address, password and the gym's audit in real PostgreSQL.
+import { authAccount, authUser, auditEvents, uuidv7 } from '@plaingym/db';
 // eslint-disable-next-line no-restricted-imports -- Initialize the real database pools for this isolated composition test.
 import { closeDatabase, initializeDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -18,6 +18,7 @@ import { authConfig } from '../../infra/auth/config.js';
 import { sessionMiddleware } from '../../infra/auth/middleware.js';
 import { passwordAdapter } from '../../infra/auth/password.js';
 import { createEmailChangeService, type EmailChangeMail } from '../../infra/auth/email-change.js';
+import { createAccountService } from '../../infra/auth/accounts.js';
 import { FakeEmail } from '../../infra/email/index.js';
 import { createPortalPrincipalLoader } from '../members/household-users.context.js';
 import { authorize } from './auth.permissions.js';
@@ -60,7 +61,7 @@ async function fixture() {
   return { gymId, otherGymId, origins, auth, signIn, owner, payerA, payerB, householdA, email, mail };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
-function routeApp(f: Fixture, options: { tenancy?: 'single' | 'multi'; smtp?: boolean } = {}) {
+function routeApp(f: Fixture, options: { tenancy?: 'single' | 'multi'; smtp?: boolean; passwordLogin?: 'auto' | 'on'; accounts?: boolean } = {}) {
   const app = new OpenAPIHono<RequestEnvironment>();
   app.onError((error, context) => context.json(errorResponse(error, 'test'), error instanceof AppError ? error.status : 500));
   const gymOf = (url: string) => Object.entries(f.origins).find(([, origin]) => new URL(url).origin === origin)![0];
@@ -71,7 +72,10 @@ function routeApp(f: Fixture, options: { tenancy?: 'single' | 'multi'; smtp?: bo
   app.use('*', sessionMiddleware({ auth: f.auth, resolve: context => ({ gymId: gymOf(context.req.url), origin: f.origins[gymOf(context.req.url)]!, clientIp: '192.0.2.1' }),
     principal: (userId, context, bound) => createPortalPrincipalLoader()(context.get('context').gym.gymId, userId, bound) }));
   const service = createEmailChangeService({ config: { tenancy: options.tenancy ?? 'single' }, database: () => database.system.db });
-  for (const route of createAccountRoutes({ service, mail: f.mail, smtpConfigured: async () => options.smtp ?? true })) route.mount(app, authorize);
+  // The install has no SMTP of its own; the gym's (options.smtp) decides `auto`.
+  const routeConfig = authConfig({ AUTH_SECRET: secret, NODE_ENV: 'production', AUTH_PASSWORD_LOGIN: options.passwordLogin ?? 'on' }, false);
+  const password = options.accounts === false ? {} : { accounts: createAccountService(routeConfig, () => database.system.db), config: routeConfig };
+  for (const route of createAccountRoutes({ service, mail: f.mail, smtpConfigured: async () => options.smtp ?? true, ...password })) route.mount(app, authorize);
   return app;
 }
 const request = (app: ReturnType<typeof routeApp>, f: Fixture, gymId: string, path: string, cookie = '', body?: unknown) =>
@@ -83,6 +87,11 @@ const summary = async (app: ReturnType<typeof routeApp>, f: Fixture, cookie: str
 };
 const tokenOf = (message: { text: string }) => new URL(/https?:\/\/\S+/.exec(message.text)![0]).hash.slice(1);
 const emailOf = async (userId: string) => (await database.system.db.select({ email: authUser.email }).from(authUser).where(eq(authUser.id, userId)))[0]!.email;
+const verifies = async (userId: string, candidate: string) => {
+  const [row] = await database.system.db.select({ password: authAccount.password }).from(authAccount)
+    .where(and(eq(authAccount.userId, userId), eq(authAccount.providerId, 'credential')));
+  return passwordAdapter.verify({ hash: row!.password!, password: candidate });
+};
 
 describe('your account routes', () => {
   it('refuses requests without a staff or portal session', async () => {
@@ -197,6 +206,39 @@ describe('your account routes', () => {
     expect((await summary(multi, f, cookie)).body).toMatchObject({ emailChange: 'several_gyms' });
     expect((await request(multi, f, f.gymId, '/api/account/email', cookie, { newEmail: 'multi@example.test' })).status).toBe(403);
     expect(f.email.messages).toEqual([]);
+  });
+
+  it('lets a staff login and a portal login change their own password, keeping the session that asked', async () => {
+    const f = await fixture(), app = routeApp(f);
+    for (const login of [f.owner, f.payerA]) {
+      const current = await f.signIn(f.gymId, login.email), other = await f.signIn(f.gymId, login.email);
+      const changed = await request(app, f, f.gymId, '/api/account/password', current, { currentPassword: password, newPassword: 'changed-password-456' });
+      expect(changed.status).toBe(200);
+      expect(changed.headers.get('cache-control')).toBe('no-store');
+      expect(await changed.json()).toEqual({ data: null });
+      expect(await verifies(login.id, 'changed-password-456')).toBe(true);
+      expect(await verifies(login.id, password)).toBe(false);
+      expect((await summary(app, f, current)).status).toBe(200);
+      expect((await summary(app, f, other)).status).toBe(401);
+    }
+    // The other household's login is untouched.
+    expect(await verifies(f.payerB.id, password)).toBe(true);
+  });
+
+  it('refuses a password change without a session, where password sign-in is off, unwired, across gyms, or naming a login', async () => {
+    const f = await fixture(), cookie = await f.signIn(f.gymId, f.owner.email);
+    const body = { currentPassword: password, newPassword: 'changed-password-456' };
+    expect((await request(routeApp(f), f, f.gymId, '/api/account/password', '', body)).status).toBe(401);
+    // `auto` with email for the gym: password sign-in is off.
+    expect((await request(routeApp(f, { passwordLogin: 'auto', smtp: true }), f, f.gymId, '/api/account/password', cookie, body)).status).toBe(403);
+    expect((await request(routeApp(f, { accounts: false }), f, f.gymId, '/api/account/password', cookie, body)).status).toBe(503);
+    // The same login is staff at gym B too; gym A's session at gym B's origin is refused.
+    await factory('staffRoles', f.otherGymId, { userId: f.owner.id, role: 'owner' });
+    expect((await request(routeApp(f), f, f.otherGymId, '/api/account/password', cookie, body)).status).toBe(403);
+    expect((await request(routeApp(f), f, f.gymId, '/api/account/password', cookie, { ...body, userId: f.payerA.id })).status).toBe(400);
+    expect(await verifies(f.owner.id, password)).toBe(true);
+    expect(await verifies(f.payerA.id, password)).toBe(true);
+    expect((await summary(routeApp(f), f, cookie)).status).toBe(200);
   });
 
   it('serves the confirmation page without the token in its markup', async () => {

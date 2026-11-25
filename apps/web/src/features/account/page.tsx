@@ -75,7 +75,54 @@ function ChangeEmail({ account, client, userId }: { account: AccountSummary; cli
   </div>;
 }
 
-/** The signed-in login's own account: its sign-in email, methods and access, and the verified email change. */
+function passwordErrorText(error: unknown) {
+  if (error instanceof AccountRequestError) {
+    if (error.details?.currentPassword?.includes('wrong_password')) return text('passwordWrong');
+    if (error.status === 429) return text('passwordRateLimited');
+    if (error.status === 403) return text('passwordOff');
+  }
+  return text('passwordError');
+}
+
+function PasswordField({ id, label, value, onChange, autoComplete }: { id: string; label: string; value: string; onChange: (value: string) => void; autoComplete: string }) {
+  return <div className="min-w-0 space-y-1">
+    <Label htmlFor={id}>{label}</Label>
+    <Input id={id} type="password" autoComplete={autoComplete} maxLength={128} required value={value} onChange={(event) => onChange(event.target.value)} />
+  </div>;
+}
+
+/** The login changes its own password with the current one; its other sessions here end. */
+function ChangePassword({ client }: { client: AccountClient }) {
+  const [current, setCurrent] = useState(''), [next, setNext] = useState(''), [confirm, setConfirm] = useState('');
+  const [message, setMessage] = useState<{ kind: 'status' | 'alert'; text: string } | null>(null);
+  const change = useMutation({
+    mutationFn: (input: { current: string; next: string }) => client.changePassword(input.current, input.next),
+    onSuccess: () => {
+      setCurrent(''); setNext(''); setConfirm('');
+      setMessage({ kind: 'status', text: text('passwordChanged') });
+    },
+    onError: (error) => setMessage({ kind: 'alert', text: passwordErrorText(error) }),
+  });
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (next.length < 12) { setMessage({ kind: 'alert', text: text('passwordLength') }); return; }
+    if (next !== confirm) { setMessage({ kind: 'alert', text: text('passwordMismatch') }); return; }
+    setMessage(null);
+    change.mutate({ current, next });
+  };
+  return <div className="space-y-3">
+    <p className="text-sm text-muted-foreground">{text('passwordHelp')}</p>
+    <FormMessage message={message} className="wrap-anywhere" />
+    <form className="flex flex-col gap-3 sm:max-w-sm" onSubmit={submit} noValidate>
+      <PasswordField id="account-current-password" label={text('currentPassword')} value={current} onChange={setCurrent} autoComplete="current-password" />
+      <PasswordField id="account-new-password" label={text('newPassword')} value={next} onChange={setNext} autoComplete="new-password" />
+      <PasswordField id="account-confirm-password" label={text('confirmPassword')} value={confirm} onChange={setConfirm} autoComplete="new-password" />
+      <Button type="submit" className="min-h-11 sm:self-start" disabled={change.isPending || !current || !next || !confirm}>{text('passwordSubmit')}</Button>
+    </form>
+  </div>;
+}
+
+/** The signed-in login's own account: its sign-in email, methods and access, its password change and the verified email change. */
 export function AccountPage({ login, userId, client = defaultClient }: { login: ShellBootstrap['login']; userId: string; client?: AccountClient }) {
   const account = useQuery({ queryKey: accountKey(userId), queryFn: () => client.summary() });
   if (account.isPending) return <Page><LoadingState label={text('loading')} /></Page>;
@@ -97,6 +144,9 @@ export function AccountPage({ login, userId, client = defaultClient }: { login: 
         {(login.google || data.googleLinked) && <Row label={text('methodGoogle')}>{text(data.googleLinked ? 'googleLinked' : 'googleNotLinked')}</Row>}
       </dl>
     </PageSection>
+    {data.password && login.password && <PageSection title={text('passwordTitle')}>
+      <ChangePassword client={client} />
+    </PageSection>}
     <PageSection title={text('accessTitle')}>
       {data.roles.length === 0 && data.households.length === 0 ? <p className="text-sm text-muted-foreground">{text('noAccess')}</p> : <dl>
         {data.roles.length > 0 && <Row label={text('rolesLabel')}>{roles}</Row>}

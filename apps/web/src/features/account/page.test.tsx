@@ -14,7 +14,8 @@ import { AccountPage } from './page.js';
 const userId = '019ab4f0-0000-7000-8000-000000000001';
 const base: AccountSummary = { email: 'owner@example.test', password: true, googleLinked: true, roles: ['owner'], households: [],
   pendingEmail: null, emailChange: 'available' };
-function start(account: Partial<AccountSummary> = {}, login: ShellBootstrap['login'] = { password: false, magicLink: true, google: true }, request?: AccountClient['requestEmailChange']) {
+function start(account: Partial<AccountSummary> = {}, login: ShellBootstrap['login'] = { password: false, magicLink: true, google: true }, request?: AccountClient['requestEmailChange'],
+  changePassword: AccountClient['changePassword'] = async () => undefined) {
   let current: AccountSummary = { ...base, ...account };
   const client: AccountClient = {
     summary: vi.fn(async () => current),
@@ -22,6 +23,7 @@ function start(account: Partial<AccountSummary> = {}, login: ShellBootstrap['log
       current = { ...current, pendingEmail: { email: newEmail, expiresAt: '2026-11-12T11:00:00.000Z' } };
       return { email: newEmail, expiresAt: '2026-11-12T11:00:00.000Z' };
     })),
+    changePassword: vi.fn(changePassword),
   };
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
     <AccountPage login={login} userId={userId} client={client} /></QueryClientProvider>);
@@ -122,6 +124,64 @@ describe('your account page', () => {
     expect(await screen.findByText(/can't send email yet/)).toBeTruthy();
     expect(screen.getByText('Not set')).toBeTruthy();
     expect(screen.getByText('Off: this gym can\'t send email')).toBeTruthy();
+  });
+
+  describe('password change', () => {
+    const passwordOn: ShellBootstrap['login'] = { password: true, magicLink: false, google: false };
+    const fields = () => ['Current password', 'New password', 'New password again'].map(label => screen.getByLabelText(label) as HTMLInputElement);
+    async function fill(current: string, next: string, confirm: string) {
+      await screen.findByText('owner@example.test');
+      const [currentField, nextField, confirmField] = fields();
+      await userEvent.type(currentField!, current); await userEvent.type(nextField!, next); await userEvent.type(confirmField!, confirm);
+      await userEvent.click(screen.getByRole('button', { name: 'Change password' }));
+    }
+
+    it('shows the form only for a login with a password on a gym with password sign-in', async () => {
+      start({}, passwordOn);
+      await screen.findByText('owner@example.test');
+      expect(screen.getByRole('heading', { name: 'Change password' })).toBeTruthy();
+      expect(fields().map(field => field.autocomplete)).toEqual(['current-password', 'new-password', 'new-password']);
+      expect(fields().map(field => field.type)).toEqual(['password', 'password', 'password']);
+      expect((screen.getByRole('button', { name: 'Change password' }) as HTMLButtonElement).disabled).toBe(true);
+      for (const [account, login] of [[{ password: false }, passwordOn], [{}, { ...passwordOn, password: false }], [{ password: false }, { ...passwordOn, password: false }]] as const) {
+        cleanup();
+        start(account, login);
+        await screen.findByText('owner@example.test');
+        expect(screen.queryByLabelText('Current password')).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Change password' })).toBeNull();
+      }
+    });
+
+    it('checks the length and the confirmation before sending anything', async () => {
+      const client = start({}, passwordOn);
+      await fill('current-password-1', 'new-password-1', 'new-password-2');
+      expect((await screen.findByRole('alert')).textContent).toContain('The new passwords don\'t match.');
+      cleanup();
+      const short = start({}, passwordOn);
+      await fill('current-password-1', 'x'.repeat(11), 'x'.repeat(11));
+      expect((await screen.findByRole('alert')).textContent).toContain('Use 12 to 128 characters.');
+      expect(client.changePassword).not.toHaveBeenCalled();
+      expect(short.changePassword).not.toHaveBeenCalled();
+    });
+
+    it('changes the password, then empties the fields and says so', async () => {
+      const client = start({}, passwordOn);
+      await fill('current-password-1', 'new-password-12', 'new-password-12');
+      await waitFor(() => expect(client.changePassword).toHaveBeenCalledWith('current-password-1', 'new-password-12'));
+      expect((await screen.findByRole('status')).textContent).toContain('Password changed. Your other sessions have ended.');
+      expect(fields().map(field => field.value)).toEqual(['', '', '']);
+    });
+
+    it.each([
+      [new AccountRequestError(400, 'invalid_request', { currentPassword: ['wrong_password'] }), 'The current password is wrong.'],
+      [new AccountRequestError(429, 'rate_limited'), 'Too many attempts. Try again in a few minutes.'],
+      [new AccountRequestError(403, 'forbidden'), 'Password sign-in is off for this gym'],
+      [new AccountRequestError(500, 'internal'), 'The password could not be changed. Try again.'],
+    ])('explains a refusal (%s)', async (error, message) => {
+      start({}, passwordOn, undefined, async () => { throw error; });
+      await fill('current-password-1', 'new-password-12', 'new-password-12');
+      expect((await screen.findByRole('alert')).textContent).toContain(message);
+    });
   });
 
   it('reads account refusal bodies once, preserving validation details and notifying once on 403', async () => {
