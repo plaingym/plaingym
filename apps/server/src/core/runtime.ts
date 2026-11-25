@@ -431,7 +431,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   configureMembers({ pinSecret: gymKey, billingEmailSecret: config.secret, uploadsFor: uploads.forGym, clock, detachCard, jobs: queue,
     redactCustomer: guardRedaction(async (gymId, customerId) => (await requirePayments(gymId)).redactCustomer(customerId), { clock }),
     clearBillingEmail: async (gymId, customerId, options) => (await requirePayments(gymId)).clearCustomerEmail(customerId, options) });
-  const payments = createPaymentService({ settings, clock, jobs: queue, paymentsFor,
+  const payments = createPaymentService({ settings, clock, jobs: queue, recovery: queue, paymentsFor,
     transitions: billing.transitions, runner, detachCard });
   configurePayments(payments);
   // A zero-total pack sale settles at once through the publishing transitions, so its credits are granted without waiting for the hourly sweep.

@@ -202,6 +202,43 @@ it('adopts a household’s untagged customer when the runtime detaches its card'
   }
 }, 60_000);
 
+it('resets an exhausted detach job when staff retry a card removal through the runtime', async () => {
+  const sandbox = app.sandbox, transport = new StripeFixtures(sandbox.gymId);
+  const provider = vi.spyOn(stripeAdapter, 'stripeTransport').mockReturnValue(transport);
+  const [gym] = await database.forGym(sandbox.gymId, tx => tx.select().from(gyms).where(eq(gyms.id, sandbox.gymId)));
+  try {
+    await app.restart(demoStripeEnv);
+    await database.forGym(sandbox.gymId, tx => tx.update(gyms).set({ billingEnabled: true }).where(eq(gyms.id, sandbox.gymId)));
+    const cookie = await app.login('owner');
+    const home = await factory('households', sandbox.gymId, { stripeCustomerId: 'cus_foreign_runtime' });
+    const card = await factory('paymentMethods', sandbox.gymId, { householdId: home.id, processorId: 'pm_foreign_runtime', type: 'card',
+      isDefault: false });
+    // A customer tagged for another gym is refused every time, so neither the request nor the job can finish the removal.
+    transport.objects.set('cus_foreign_runtime', { id: 'cus_foreign_runtime', object: 'customer', email: 'foreign.payer@example.invalid',
+      metadata: { gym_id: uuidv7() } });
+    transport.objects.set('pm_foreign_runtime', { id: 'pm_foreign_runtime', object: 'payment_method', created: transport.now, type: 'card',
+      customer: 'cus_foreign_runtime', metadata: {}, billing_details: { name: null, email: null, phone: null, address: null },
+      card: { brand: 'visa', last4: '4242', exp_month: 12, exp_year: 2035 } });
+    const remove = async () => {
+      const response = await app.post(`/api/billing/households/${home.id}/payment-methods/${card.id}/revoke`, {}, sandbox.origin, { cookie });
+      expect(response.status, await response.clone().text()).toBe(200);
+      return (await response.json()).data;
+    };
+    const detachJobs = async () => (await database.forGym(sandbox.gymId, tx => tx.select().from(jobs).where(eq(jobs.name, 'billing.payments.detach'))))
+      .filter(job => (job.payload as { value: { paymentMethodId: string } }).value.paymentMethodId === card.id);
+    expect(await remove()).toMatchObject({ id: card.id, removal: 'pending' });
+    const [queued] = await detachJobs();
+    await database.forGym(sandbox.gymId, tx => tx.update(jobs).set({ status: 'failed', attempts: 12 }).where(eq(jobs.id, queued!.id)));
+    // Without the runtime's job recovery the retry would answer with the provider's refusal.
+    expect(await remove()).toMatchObject({ id: card.id, removal: 'pending' });
+    expect(await detachJobs()).toMatchObject([{ id: queued!.id, status: 'pending', attempts: 0 }]);
+  } finally {
+    await database.forGym(sandbox.gymId, tx => tx.update(gyms).set({ billingEnabled: gym!.billingEnabled }).where(eq(gyms.id, sandbox.gymId)));
+    provider.mockRestore();
+    await app.restart();
+  }
+}, 60_000);
+
 it('lists and dismisses charge failure reports through the runtime charge runner', async () => {
   const sandbox = app.sandbox, cookie = await app.login('owner'), headers = app.headers(sandbox, cookie), runId = uuidv7();
   const home = await factory('households', sandbox.gymId);

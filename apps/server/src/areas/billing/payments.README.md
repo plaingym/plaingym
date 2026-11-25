@@ -263,9 +263,9 @@ transition notifications, honoring the gym's email switch and member preferences
 ## Composition
 
 Runtime composition supplies `configurePayments(createPaymentService({ settings,
-clock, jobs, paymentsFor, transitions, detachCard, runner }))`, constructed after the
-runner and sharing the payments resolver
-and invoice transitions with the webhook composition. It also supplies
+clock, jobs, recovery, paymentsFor, transitions, detachCard, runner }))`, constructed after the
+runner and sharing the payments resolver, invoice transitions and job queue (`recovery` is
+its `JobRecovery`) with the webhook composition. It also supplies
 `configurePaymentDelivery({ notifications, detachCard, adoptCustomer })` before starting
 jobs, where `adoptCustomer(gymId, customerId)` resolves the gym's payments provider and
 calls its `adoptCustomer(customerId)`, so the detach job can adopt a CSV-linked customer
