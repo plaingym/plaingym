@@ -240,6 +240,17 @@ function Roster({ sessionId }: { sessionId: string }) {
     try {
       const attendance = await attendanceClient.record({ memberId: member.id, sessionId, programId: null });
       checkedInAt.current = readsStarted.current;
+      // Show a row check-in at once: a failed reload below keeps these rows, so the row must not offer Check in again.
+      setShown(current => {
+        if (!current) return current;
+        const index = current.page.data.findIndex(
+          entry => (entry.booking?.memberId ?? entry.attendance?.memberId) === member.id && entry.attendance === null,
+        );
+        if (index < 0) return current;
+        const data = current.page.data.slice();
+        data[index] = { ...data[index]!, attendance };
+        return { ...current, page: { ...current.page, data, counts: { ...current.page.counts, checkedIn: current.page.counts.checkedIn + 1 } } };
+      });
       const credits = attendance.needsCredits === true;
       if (credits) setNeedsCredits(previous => new Set(previous).add(attendance.id));
       if (walkIn || credits) setRecorded({ attendanceId: attendance.id, memberId: member.id, name: member.name, at: attendance.occurredAt, walkIn,

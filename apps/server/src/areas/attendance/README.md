@@ -114,10 +114,15 @@ badge for their current place in line, then walk-ins already checked in, and
 erased or Cancelled members only when they are already checked in at the session,
 so their visit can still be undone. When a booked row's check-in is undone, its
 **Check in** action stays disabled until a successful roster read confirms the
-member is still eligible. A failed or refused check-in reloads the roster;
-if that reload fails, the rows already on screen stay and the alert asks for a
-manual refresh. A failed walk-in searches again, so a refused member drops out of
-the picker. Checking in a waitlisted member records attendance only; their booking
+member is still eligible. A successful row check-in shows the member as checked
+in on their row and raises the checked-in count at once, so a failed reload
+afterwards keeps the row checked in (with its **Undo**) under the load alert; its
+credit warning, if any, starts in the notice above the roster and moves to the row
+once a later read lists the visit or the coach refreshes. A walk-in who isn't on
+the page changes no row or count until a read succeeds. A failed or refused
+check-in reloads the roster; if that reload fails, the rows already on screen stay
+and the alert asks for a manual refresh. A failed walk-in searches again, so a
+refused member drops out of the picker. Checking in a waitlisted member records attendance only; their booking
 and place stay as they are. **Check in someone else** is one member autocomplete over
 the eligible member list (`checkInEligible=true` on `GET /api/members`), reading
 up to 4 pages of matches and omitting members already shown on the current roster

@@ -1245,12 +1245,93 @@ describe('coach roster recheck, undo read ordering, and busy walk-in notice', ()
     expect(screen.queryByText('Bo Two')).toBeNull();
     expect(screen.queryByText(/out of date/)).toBeNull();
     expect(screen.queryByRole('alert')).toBeNull();
-    expect((screen.getByRole('button', { name: 'Check in River Lee' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'River Lee is checked in' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('1 checked in')).toBeDefined();
     await act(async () => {
       pendingRefresh.resolve(page());
     });
     const checkedBtn = await screen.findByRole('button', { name: 'River Lee is checked in' }) as HTMLButtonElement;
     expect(checkedBtn.disabled).toBe(true);
     expect(screen.getByText('1 checked in')).toBeDefined();
+  });
+
+  it('shows a row check-in and updated count at once when the follow-up reload fails, and allows undo', async () => {
+    rows = [booked(memberId, 'River Lee')];
+    const user = userEvent.setup();
+    render(<AttendanceRosterPanel sessionId={sessionId}/>);
+    await screen.findByRole('button', { name: 'Check in River Lee' });
+    expect(screen.getByText('0 checked in')).toBeDefined();
+
+    client.roster.mockRejectedValueOnce(new Error('offline'));
+    await user.click(screen.getByRole('button', { name: 'Check in River Lee' }));
+
+    expect((await screen.findByRole('alert')).textContent).toContain('The roster could not be loaded. Refresh attendance to try again.');
+    const checkedBtn = screen.getByRole('button', { name: 'River Lee is checked in' }) as HTMLButtonElement;
+    expect(checkedBtn.disabled).toBe(true);
+    expect(screen.getByRole('button', { name: 'Undo check-in for River Lee' })).toBeDefined();
+    expect(screen.getByText('1 checked in')).toBeDefined();
+
+    await user.click(screen.getByRole('button', { name: 'Undo check-in for River Lee' }));
+    await user.click(screen.getByRole('button', { name: 'Undo check-in' }));
+    expect(client.undo).toHaveBeenCalledWith('visit-' + memberId);
+  });
+
+  it('leaves a row and count unchanged when a replayed check-in resolves for a member already shown checked in', async () => {
+    rows = [booked(memberId, 'River Lee')];
+    const pendingFollowUp = deferred<ReturnType<typeof page>>();
+    const pendingRecord = deferred<Awaited<ReturnType<typeof recordVisit>>>();
+    const Session = ({ counts }: { counts: SessionCounts | null }) => (
+      <SessionCountsProvider publish={vi.fn()} counts={counts} changed={0} notify={vi.fn()}>
+        <AttendanceRosterPanel sessionId={sessionId}/>
+      </SessionCountsProvider>
+    );
+    const view = render(<Session counts={{ booked: 1, waitlisted: 0, checkedIn: 0 }}/>);
+    await screen.findByRole('button', { name: 'Check in River Lee' });
+    await waitFor(() => expect(client.roster).toHaveBeenCalledTimes(1));
+
+    client.roster.mockReturnValueOnce(pendingFollowUp.promise);
+    view.rerender(<Session counts={{ booked: 1, waitlisted: 0, checkedIn: 0 }}/>);
+    await waitFor(() => expect(client.roster).toHaveBeenCalledTimes(2));
+
+    client.record.mockReturnValueOnce(pendingRecord.promise);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Check in River Lee' }));
+
+    // A concurrent read before record resolves already shows River Lee checked in.
+    rows[0]!.attendance = { id: 'visit-kiosk', source: 'kiosk' };
+    await act(async () => {
+      pendingFollowUp.resolve(page());
+      await Promise.resolve();
+    });
+    expect(screen.getByText('1 checked in')).toBeDefined();
+
+    client.roster.mockRejectedValueOnce(new Error('offline'));
+    await act(async () => {
+      pendingRecord.resolve({ id: 'visit-kiosk', source: 'kiosk', occurredAt: '2026-11-20T23:05:00.000Z', memberId });
+    });
+
+    expect((await screen.findByRole('alert')).textContent).toContain('The roster could not be loaded. Refresh attendance to try again.');
+    expect(screen.getByText('1 checked in')).toBeDefined();
+    expect((screen.getByRole('button', { name: 'River Lee is checked in' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('leaves listed rows and count unchanged for a walk-in when the follow-up reload fails, keeping the walk-in banner', async () => {
+    rows = [booked(memberId, 'River Lee')];
+    const user = userEvent.setup();
+    render(<AttendanceRosterPanel sessionId={sessionId}/>);
+    await screen.findByRole('button', { name: 'Check in River Lee' });
+    expect(screen.getByText('0 checked in')).toBeDefined();
+
+    const picker = screen.getByRole('combobox', { name: 'Check in someone else' });
+    await user.type(picker, 'Sam');
+    await screen.findByRole('option', { name: 'Sam Ng' });
+    client.roster.mockRejectedValueOnce(new Error('offline'));
+    await user.click(screen.getByRole('option', { name: 'Sam Ng' }));
+
+    expect((await screen.findByRole('alert')).textContent).toContain('The roster could not be loaded. Refresh attendance to try again.');
+    expect(screen.getByText('Sam Ng is checked in.')).toBeDefined();
+    expect(listed()).toEqual([expect.stringContaining('River Lee')]);
+    expect((screen.getByRole('button', { name: 'Check in River Lee' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByText('0 checked in')).toBeDefined();
   });
 });
