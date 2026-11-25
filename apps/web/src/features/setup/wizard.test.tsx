@@ -1043,6 +1043,42 @@ describe('setup wizard restore progress', () => {
     expect(screen.queryByText(restoring)).toBeNull();
     expect(sessionStorage.getItem('setup.restore')).toBeNull();
   });
+  it('keeps polling at the slower interval when restore status returns 429', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    sessionStorage.setItem('setup.restore', restoreJob);
+    restorePolls = [
+      () => Response.json({ error: { code: 'rate_limited', message: 'Too many requests' } }, { status: 429 }),
+      running('database'),
+    ];
+    const { fetcher } = start(0);
+    expect(await screen.findByText(restoring)).toBeDefined();
+    expect(screen.queryByText('Could not read restore progress. Reload this page to retry.')).toBeNull();
+    expect(screen.queryByText("The server isn't answering. This page keeps checking.")).toBeNull();
+    expect(sessionStorage.getItem('setup.restore')).toBe(restoreJob);
+    const polls = () => fetcher.mock.calls.filter(([path]) => String(path).startsWith('/api/setup/restore/')).length;
+    await tick(4000);
+    expect(polls()).toBe(1);
+    await tick(1000);
+    expect(polls()).toBe(2);
+    expect(await screen.findByText(restoring)).toBeDefined();
+    expect(screen.queryByText("The server isn't answering. This page keeps checking.")).toBeNull();
+    expect(sessionStorage.getItem('setup.restore')).toBe(restoreJob);
+  });
+  it('keeps saying the server is not answering when a rate-limited poll follows', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    sessionStorage.setItem('setup.restore', restoreJob);
+    restorePolls = [
+      () => { throw new TypeError('Failed to fetch'); },
+      () => Response.json({ error: { code: 'rate_limited', message: 'Too many requests' } }, { status: 429 }),
+    ];
+    const { fetcher } = start(0);
+    expect(await screen.findByText("The server isn't answering. This page keeps checking.")).toBeDefined();
+    await tick(5000);
+    expect(fetcher.mock.calls.filter(([path]) => String(path).startsWith('/api/setup/restore/')).length).toBe(2);
+    expect(screen.getByText("The server isn't answering. This page keeps checking.")).toBeDefined();
+    expect(screen.queryByText(restoring)).toBeNull();
+    expect(sessionStorage.getItem('setup.restore')).toBe(restoreJob);
+  });
   it('shows the email-unavailable message when sending the owner sign-in link fails with 503 EMAIL_UNAVAILABLE', async () => {
     const emailUnavailable = "The gym's email isn't working right now, so no sign-in link was sent. Check the server's email (SMTP) settings, then try again.";
     const genericFailed = 'Could not save this step. Check the details and try again.';
@@ -1121,6 +1157,7 @@ describe('setup wizard restore progress', () => {
     expect(countByPath('/api/auth/sign-in/magic-link')).toBe(2);
   });
   it('moves to the sign-in step at step 1 when the magic link fails with a network error and retries only the link', async () => {
+    const ownerSavedSignInFailed = "Your owner account was saved, but signing in didn't finish. Sign in as the owner to continue setup.";
     vi.mocked(services.loadBootstrap).mockResolvedValue({
       gym: { id: 'gym', name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] },
       session: null,
@@ -1141,7 +1178,8 @@ describe('setup wizard restore progress', () => {
     await userEvent.type(screen.getByLabelText('Password (12–128 characters)'), 'owner-password-123');
     await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Save and continue' }));
 
-    expect(await screen.findByText('Could not save this step. Check the details and try again.')).toBeDefined();
+    expect(await screen.findByText(ownerSavedSignInFailed)).toBeDefined();
+    expect(screen.queryByText('Could not save this step. Check the details and try again.')).toBeNull();
     expect(await screen.findByText('Sign in as the owner to continue setup.')).toBeDefined();
     const countByPath = (target: string) => fetcher.mock.calls.filter(([path]) => String(path) === target).length;
     expect(countByPath('/api/setup/owner')).toBe(1);
@@ -1152,7 +1190,8 @@ describe('setup wizard restore progress', () => {
     expect(countByPath('/api/setup/owner')).toBe(1);
     expect(countByPath('/api/auth/sign-in/magic-link')).toBe(2);
   });
-  it('leaves the owner form at step 1 when owner creation succeeds and password sign-in throws', async () => {
+  it('moves to the sign-in step at step 1 and says the owner was saved when password sign-in throws or rejects with 403', async () => {
+    const ownerSavedSignInFailed = "Your owner account was saved, but signing in didn't finish. Sign in as the owner to continue setup.";
     vi.mocked(services.loadBootstrap).mockResolvedValue({
       gym: { id: 'gym', name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] },
       session: null,
@@ -1166,10 +1205,115 @@ describe('setup wizard restore progress', () => {
     await userEvent.type(screen.getByLabelText('Password (12–128 characters)'), 'owner-password-123');
     await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Save and continue' }));
 
-    expect(await screen.findByText('Could not save this step. Check the details and try again.')).toBeDefined();
+    expect(await screen.findByText(ownerSavedSignInFailed)).toBeDefined();
+    expect(screen.queryByText('Could not save this step. Check the details and try again.')).toBeNull();
     expect(await screen.findByText('Sign in as the owner to continue setup.')).toBeDefined();
     expect(screen.queryByLabelText('Your name')).toBeNull();
     expect(fetcher.mock.calls.filter(([path]) => String(path) === '/api/setup').length).toBe(2);
+
+    cleanup();
+    vi.mocked(services.signInWithPassword).mockRejectedValueOnce(new ApiError(403, 'forbidden'));
+    start(1);
+    await userEvent.type(await screen.findByLabelText('Your name'), 'Gym Owner');
+    await userEvent.type(screen.getByLabelText('Email address'), 'owner@example.org');
+    await userEvent.type(screen.getByLabelText('Password (12–128 characters)'), 'owner-password-123');
+    await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Save and continue' }));
+
+    expect(await screen.findByText(ownerSavedSignInFailed)).toBeDefined();
+    expect(screen.queryByText(/Open the private setup link/)).toBeNull();
+  });
+  it('shows the rate-limited message at step 1 when owner creation succeeds and magic link returns 429', async () => {
+    vi.mocked(services.loadBootstrap).mockResolvedValue({
+      gym: { id: 'gym', name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] },
+      session: null,
+      login: { password: false, magicLink: true },
+    });
+    const { fetcher } = start(1);
+    const base = fetcher.getMockImplementation()!;
+    fetcher.mockImplementation((path, options) => String(path) === '/api/auth/sign-in/magic-link'
+      ? Promise.resolve(Response.json({ code: 'rate_limited', message: 'Too many requests' }, { status: 429 }))
+      : base(path, options));
+
+    await userEvent.type(await screen.findByLabelText('Your name'), 'Gym Owner');
+    await userEvent.type(screen.getByLabelText('Email address'), 'owner@example.org');
+    await userEvent.type(screen.getByLabelText('Password (12–128 characters)'), 'owner-password-123');
+    await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Save and continue' }));
+
+    expect(await screen.findByText('Too many attempts. Please wait before trying again.')).toBeDefined();
+    expect(await screen.findByText('Sign in as the owner to continue setup.')).toBeDefined();
+  });
+  /** Saves the owner after "Start fresh" (so the cached status still says step 0) while every later status reload fails. */
+  async function saveOwnerWithoutReload(linkFails: boolean) {
+    vi.mocked(services.loadBootstrap).mockResolvedValue({
+      gym: { id: 'gym', name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] },
+      session: null,
+      login: { password: false, magicLink: true },
+    });
+    const { fetcher } = start(0);
+    const base = fetcher.getMockImplementation()!;
+    let failStatus = false;
+    fetcher.mockImplementation((path, options) => {
+      if (String(path) === '/api/setup' && failStatus) return Promise.reject(new TypeError('Failed to fetch'));
+      if (String(path) === '/api/auth/sign-in/magic-link') {
+        return linkFails ? Promise.reject(new TypeError('Failed to fetch')) : Promise.resolve(Response.json({ status: true }));
+      }
+      return base(path, options);
+    });
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Start fresh' }));
+    await userEvent.type(await screen.findByLabelText('Your name'), 'Gym Owner');
+    await userEvent.type(screen.getByLabelText('Email address'), 'owner@example.org');
+    await userEvent.type(screen.getByLabelText('Password (12–128 characters)'), 'owner-password-123');
+    failStatus = true;
+    await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Save and continue' }));
+    return fetcher;
+  }
+  function expectSignInStepOnly(fetcher: ReturnType<typeof start>['fetcher']) {
+    expect(screen.getByRole('heading', { name: 'Gym details' })).toBeDefined();
+    expect(screen.queryByLabelText('Your name')).toBeNull();
+    expect(screen.queryByLabelText(/Password/)).toBeNull();
+    expect(screen.queryByText('Setup is unavailable for this install. Sign in to manage your gym.')).toBeNull();
+    expect(fetcher.mock.calls.filter(([path]) => String(path) === '/api/setup/owner').length).toBe(1);
+  }
+  it('shows the sign-in step and alert when status reload fails after earlier status data, and shows unavailable only with no status data', async () => {
+    const fetcher = await saveOwnerWithoutReload(true);
+
+    expect(await screen.findByText("Your owner account was saved, but signing in didn't finish. Sign in as the owner to continue setup.")).toBeDefined();
+    expect(await screen.findByText('Sign in as the owner to continue setup.')).toBeDefined();
+    expectSignInStepOnly(fetcher);
+
+    cleanup();
+    const failClient = createSetupClient(vi.fn(async () => { throw new TypeError('Failed to fetch'); }) as typeof fetch);
+    const query = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={query}><ShellServicesContext.Provider value={services}><SetupWizard client={failClient} /></ShellServicesContext.Provider></QueryClientProvider>);
+    expect(await screen.findByText('Setup is unavailable for this install. Sign in to manage your gym.')).toBeDefined();
+  });
+  it('does not bring the owner form back when the link is sent but the status reload fails', async () => {
+    const fetcher = await saveOwnerWithoutReload(false);
+
+    expect(await screen.findByText('Check your inbox for a sign-in link, then return here to continue setup.')).toBeDefined();
+    expectSignInStepOnly(fetcher);
+  });
+  it('shows an error with Try again when the session read fails at step 2, then loads the magic-link sign-in form on retry', async () => {
+    vi.mocked(services.loadBootstrap)
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce({
+        gym: { id: 'gym', name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] },
+        session: null,
+        login: { password: false, magicLink: true },
+      });
+    start(2);
+
+    expect(await screen.findByText('Could not check who is signed in. Check your connection, then try again.')).toBeDefined();
+    const retry = screen.getByRole('button', { name: 'Try again' });
+    expect(retry).toBeDefined();
+    expect(screen.queryByLabelText(/Password/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Sign in' })).toBeNull();
+
+    await userEvent.click(retry);
+    expect(await screen.findByLabelText('Email address')).toBeDefined();
+    expect(screen.queryByLabelText(/Password/)).toBeNull();
+    expect(services.loadBootstrap).toHaveBeenCalledTimes(2);
   });
   it('shows the rate-limited message at the sign-in step on 429 and clears it on a following 200', async () => {
     vi.mocked(services.loadBootstrap).mockResolvedValue({

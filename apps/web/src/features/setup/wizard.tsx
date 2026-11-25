@@ -25,6 +25,13 @@ import { GoogleClientFields, GoogleRedirect } from '../settings/auth.js';
 
 type Client = ReturnType<typeof createSetupClient>;
 const key = ['setup', 'status'];
+/** Sign-in or magic-link failure after the owner account was already saved on step 1. */
+class OwnerSavedSignInError extends Error {
+  constructor(options?: ErrorOptions) {
+    super('Owner saved; sign-in failed', options);
+    this.name = 'OwnerSavedSignInError';
+  }
+}
 const text = (data: FormData, name: string) => String(data.get(name) ?? '');
 /** A message key in the wizard's own locale file, or a full `namespace:key`. */
 const say = (message: string, values?: Record<string, string>) => t(message.includes(':') ? message : 'setup/setup:' + message, values);
@@ -116,7 +123,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   const [restoreState, setRestoreState] = useState<'running' | 'failed' | 'restored' | null>(null);
   const [restoreFailure, setRestoreFailure] = useState<{ reason: SetupRestoreFailureReason; staged: boolean } | null>(null);
   // The last `running` answer's phase; null until one arrives (after a reload, say), so an unreachable server isn't guessed at.
-  const [phase, setPhase] = useState<string | null>(null), [unreachable, setUnreachable] = useState(false);
+  const [phase, setPhase] = useState<string | null>(null), [unreachable, setUnreachable] = useState(false), [throttled, setThrottled] = useState(false);
   const restoreAnswer = useCallback((state: SetupRestoreResponse['data']) => {
     setRestoreState(state.status);
     if (state.status === 'failed') setRestoreFailure({ reason: state.reason, staged: state.staged });
@@ -153,7 +160,8 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
       const emailUnavailable = failure instanceof ApiError && failure.status === 503 && failure.code === 'EMAIL_UNAVAILABLE';
       // No link went out this time, so an earlier "check your inbox" note would contradict the alert.
       if (emailUnavailable) setSent(false);
-      setError(emailUnavailable ? 'emailUnavailable'
+      setError(failure instanceof OwnerSavedSignInError ? 'ownerSavedSignInFailed'
+        : emailUnavailable ? 'emailUnavailable'
         : failure instanceof ApiError && failure.status === 429 ? 'rateLimited'
         : failure instanceof ApiError && failure.status === 403 ? 'setupLink' : failure instanceof ApiError && failure.status === 409 ? 'changed'
         : reasons.includes('unreachable') ? 'unreachable' : reasons.includes('google_rejected') ? 'googleRejected' : 'failed');
@@ -169,22 +177,25 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
         if (!alive) return;
         polledJob.current = jobId;
         setUnreachable(false);
+        setThrottled(false);
         restoreAnswer(state);
         if (state.status !== 'running') { sessionStorage.removeItem('setup.restore'); setJobId(null); }
       } catch (failure) {
         if (!alive) return;
         polledJob.current = jobId;
+        // Rate limited: not an answer about the restore, so the view stays as it is and the checks slow down.
+        if (failure instanceof ApiError && failure.status === 429) { setThrottled(true); return; }
         // No answer, the proxy's answer for an app that is down, or a server error: the restore may still be running, so keep checking.
         if (failure instanceof TypeError || (failure instanceof ApiError && failure.status >= 500)) { setUnreachable(true); return; }
-        setError('pollFailed'); setJobId(null); setRestoreState(null); setUnreachable(false); sessionStorage.removeItem('setup.restore');
+        setError('pollFailed'); setJobId(null); setRestoreState(null); setUnreachable(false); setThrottled(false); sessionStorage.removeItem('setup.restore');
       }
     };
     if (polledJob.current !== jobId) void poll();
-    const timer = setInterval(() => { void poll(); }, unreachable ? 5000 : 1000);
+    const timer = setInterval(() => { void poll(); }, unreachable || throttled ? 5000 : 1000);
     return () => { alive = false; clearInterval(timer); };
-  }, [client, jobId, unreachable, restoreAnswer]);
+  }, [client, jobId, unreachable, throttled, restoreAnswer]);
   const complete = done || restoreState === 'restored';
-  const unavailable = status.isError && !jobId && !restoreState && !done;
+  const unavailable = status.isError && !status.data && !jobId && !restoreState && !done;
   useEffect(() => { heading.current?.focus(); }, [step, restore, googlePage, held]);
   const deferBackups = <Button type="button" disabled={busy} variant="outline" onClick={() => void run(async () => {
     await client.call('decide', { revision, decision: 'backups_later' }); setBackupKey(null); draft.clear(); await refresh();
@@ -213,27 +224,36 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
         : restoreState === 'failed' && <Alert variant="error">{t('setup/setup:restoreFailed')}</Alert>)}
       {step === 0 && (restore ? <Form action={async (data) => {
         const result = await client.call('restore', { choice: 'restore', source: destination(data), snapshotPrefix: text(data, 'snapshotPrefix'), privateKey: text(data, 'privateKey') });
-        setRestoreFailure(null); setUnreachable(false); setPhase(null);
+        setRestoreFailure(null); setUnreachable(false); setThrottled(false); setPhase(null);
         restoreAnswer(result); setJobId(result.jobId); sessionStorage.setItem('setup.restore', result.jobId);
       }} submit="restore" secondary={<Button type="button" variant="outline" disabled={busy} onClick={() => setRestore(false)}>{t('setup/setup:back')}</Button>}>
         <p>{t('setup/setup:restoreHint')}</p><Destination /><Field name="snapshotPrefix" /><Field name="privateKey" type="password" />
       </Form> : <SetupActions><Button disabled={busy} onClick={() => void run(async () => { await client.call('start', { choice: 'fresh' }); setOverride(1); })}>{t('setup/setup:fresh')}</Button>
-        <Button variant="outline" onClick={() => { setRestore(true); setRestoreState(null); setRestoreFailure(null); setUnreachable(false); }}>{t('setup/setup:restore')}</Button></SetupActions>)}
+        <Button variant="outline" onClick={() => { setRestore(true); setRestoreState(null); setRestoreFailure(null); setUnreachable(false); setThrottled(false); }}>{t('setup/setup:restore')}</Button></SetupActions>)}
       {step === 1 && <Form action={async (data) => {
         const email = text(data, 'email'), password = text(data, 'password');
         await client.call('owner', { name: text(data, 'ownerName'), email, password });
+        const reload = async () => {
+          await queries.invalidateQueries({ queryKey: bootstrapKey }); await refresh();
+          // A failed status reload keeps the old answer, which would bring the owner form back. The owner is saved, so show at
+          // least the next step, and leave the answer stale so a later reload replaces it.
+          queries.setQueryData<NonNullable<typeof status.data>>(key, (current) => current && { ...current, currentStep: Math.max(current.currentStep, 2) }, { updatedAt: 0 });
+        };
         // Once the owner is saved, move to the sign-in step even if signing in or sending the link fails, so a retry doesn't re-post owner.
         try {
           const bootstrap = await services.loadBootstrap();
           if (bootstrap.login.password) await services.signInWithPassword(email, password);
           else { await client.magicLink(email); setSent(true); }
         } catch (failure) {
-          await queries.invalidateQueries({ queryKey: bootstrapKey }); await refresh();
-          throw failure;
+          await reload();
+          throw failure instanceof ApiError && (failure.status === 429 || (failure.status === 503 && failure.code === 'EMAIL_UNAVAILABLE'))
+            ? failure : new OwnerSavedSignInError({ cause: failure });
         }
-        await queries.invalidateQueries({ queryKey: bootstrapKey }); await refresh();
+        await reload();
       }}><Field name="ownerName" /><Field name="email" type="email" /><Field name="password" type="password" minLength={12} maxLength={128} /></Form>}
       {step >= 2 && session.isPending ? <LoadingState label={t('setup/setup:loading')} />
+      : step >= 2 && session.isError && !session.data ? <><Alert variant="error">{t('setup/setup:sessionFailed')}</Alert>
+        <SetupActions><Button type="button" disabled={session.isFetching} onClick={() => void session.refetch()}>{t('setup/setup:retry')}</Button></SetupActions></>
       : step >= 2 && !session.data?.session?.roles.includes('owner') ? <>
         <p>{t('setup/setup:ownerRequired')}</p>{sent && <p role="status">{t('setup/setup:sent')}</p>}
         <Form submit="signIn" action={async (data) => {
