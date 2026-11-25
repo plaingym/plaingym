@@ -15,7 +15,7 @@ import { createWebhookInboxRecovery, webhookDispatchRecoveryExhausted, webhookDi
 const db = useTestDatabase(), factory = createFactories(db);
 beforeEach(async () => { await db.forSystem(tx => tx.delete(jobs)); });
 
-/** `count` unprocessed events, each with `resets` earlier dispatch resets and an original dispatch that fails at the clock's start. */
+/** `count` unprocessed events, each with `resets` earlier dispatch resets, a `failed_at` 5 ms before the clock's start (as dispatch writes before the queue records the job's failure), and an original dispatch that fails at the clock's start. */
 async function fixture(count: number, options: { error?: 'handler_failed' | null; resets?: number } = {}) {
   const gymId = uuidv7(); await factory('gyms', gymId);
   const clock = new TestClock('2028-03-01T09:00:00Z'), queue = new PostgresJobs({ database: db, clock });
@@ -23,7 +23,7 @@ async function fixture(count: number, options: { error?: 'handler_failed' | null
   const error = options.error === undefined ? 'handler_failed' : options.error;
   await db.forGym(gymId, async tx => {
     await tx.insert(stripeEvents).values(ids.map(id => ({ id, gymId, eventId: 'evt_' + id, type: 'payment_intent.succeeded',
-      payload: {}, receivedAt: earlier, error, failedAt: error ? clock.now() : null })));
+      payload: {}, receivedAt: earlier, error, failedAt: error ? new Date(clock.now().getTime() - 5) : null })));
     const resets = ids.flatMap(id => Array.from({ length: options.resets ?? 1 }, () => ({ gymId, actorKind: 'system',
       action: webhookDispatchRetried, targetType: 'stripe_event', targetId: id, after: {}, occurredAt: earlier })));
     if (resets.length) await tx.insert(auditEvents).values(resets);
@@ -48,6 +48,7 @@ async function fixture(count: number, options: { error?: 'handler_failed' | null
 
 it('skips failed events still in their cooldown without a transaction per event', async () => {
   const f = await fixture(50);
+  const initialFailedAt = new Date(f.clock.now().getTime() - 5);
   expect(await f.failed()).toHaveLength(50);
   f.clock.advance(60_000);
   const lookup = vi.spyOn(f.queue, 'failedJobs'), reset = vi.spyOn(f.queue, 'retryFailed');
@@ -57,6 +58,25 @@ it('skips failed events still in their cooldown without a transaction per event'
   // The page, the unlocked pre-check and the empty next page.
   expect(f.scopes()).toBe(3);
   expect(await f.audits(webhookDispatchRetried)).toHaveLength(50);
+  const rows = await db.forGym(f.gymId, tx => tx.select({ failedAt: stripeEvents.failedAt }).from(stripeEvents));
+  expect(rows).toHaveLength(50);
+  for (const row of rows) expect(row.failedAt).toEqual(initialFailedAt);
+});
+
+it('skips fresh handler failures with no prior resets during their cooldown without a transaction per event', async () => {
+  const f = await fixture(50, { resets: 0 });
+  const initialFailedAt = new Date(f.clock.now().getTime() - 5);
+  expect(await f.failed()).toHaveLength(50);
+  f.clock.advance(60_000);
+  const lookup = vi.spyOn(f.queue, 'failedJobs'), reset = vi.spyOn(f.queue, 'retryFailed');
+  expect(await f.sweep()).toEqual({ recovered: 0, exhausted: 0 });
+  expect(lookup).toHaveBeenCalledTimes(1);
+  expect(reset).not.toHaveBeenCalled();
+  expect(f.scopes()).toBe(3);
+  expect(await f.audits(webhookDispatchRetried)).toEqual([]);
+  const rows = await db.forGym(f.gymId, tx => tx.select({ failedAt: stripeEvents.failedAt }).from(stripeEvents));
+  expect(rows).toHaveLength(50);
+  for (const row of rows) expect(row.failedAt).toEqual(initialFailedAt);
 });
 
 it('locks and resets each due event once', async () => {

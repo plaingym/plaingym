@@ -248,6 +248,61 @@ it('leaves a handler_failed row unchanged when its failure time is later than it
   expect(await f.stored()).toMatchObject({ error: 'handler_failed', failedAt: laterFailedAt, processedAt: null });
 });
 
+it('moves a handler_failed row’s failure time only when it predates the latest reset audit', async () => {
+  const f = await fixture();
+  const queue = new PostgresJobs({ database: db, clock: f.clock });
+  const id = uuidv7(), resetAt = new Date(f.clock.now().getTime() - 60_000);
+  const afterReset = new Date(f.clock.now().getTime() - 3);
+  await db.forGym(f.gymId, async tx => {
+    await tx.insert(stripeEvents).values({
+      id, gymId: f.gymId, eventId: 'evt_' + id, type: 'payment_intent.succeeded',
+      payload: {}, receivedAt: resetAt, error: 'handler_failed', failedAt: afterReset,
+    });
+    await tx.insert(auditEvents).values({
+      gymId: f.gymId, actorKind: 'system', action: webhookDispatchRetried,
+      targetType: 'stripe_event', targetId: id, after: {}, occurredAt: resetAt,
+    });
+  });
+  queue.handle(webhookDispatchJob, async () => { throw new Error('Unavailable'); });
+  await queue.enqueue(webhookDispatchJob, { eventId: 'evt_' + id }, { gymId: f.gymId, timezone: 'UTC', idempotencyKey: id, maxAttempts: 1 });
+  expect(await queue.runNext()).toBe(true);
+  const [failed] = await queue.failedJobs(webhookDispatchJob, [id], { gymId: f.gymId });
+  expect(failed!.failedAt.getTime() - afterReset.getTime()).toBe(3);
+  f.clock.advance(60_000);
+  let scopes = 0;
+  const scope: typeof db.forGym = (gymId, fn) => { scopes++; return db.forGym(gymId, fn); };
+  const recover = () => createWebhookInbox({ ...f.options, scope, jobs: queue, recovery: queue }).recoverFailed(f.gymId);
+  // Failure recorded 3 ms before the job failed and after the reset: no locked transaction, row unchanged.
+  expect(await recover()).toEqual({ recovered: 0, exhausted: 0 });
+  expect(scopes).toBe(3);
+  expect(await f.stored()).toMatchObject({ error: 'handler_failed', failedAt: afterReset, processedAt: null });
+  // Failure recorded 1 ms before the reset audit: sweep locks and advances failed_at to the job's failure.
+  const beforeReset = new Date(resetAt.getTime() - 1);
+  await db.forGym(f.gymId, tx => tx.update(stripeEvents).set({ failedAt: beforeReset }).where(eq(stripeEvents.id, id)));
+  scopes = 0;
+  expect(await recover()).toEqual({ recovered: 0, exhausted: 0 });
+  expect(scopes).toBe(4);
+  expect(await f.stored()).toMatchObject({ error: 'handler_failed', failedAt: failed!.failedAt, processedAt: null });
+});
+
+it('fills a missing failure time on a handler_failed row from its failed job without changing the marker', async () => {
+  const f = await fixture();
+  const queue = new PostgresJobs({ database: db, clock: f.clock });
+  const id = uuidv7();
+  await db.forGym(f.gymId, tx => tx.insert(stripeEvents).values({
+    id, gymId: f.gymId, eventId: 'evt_' + id, type: 'payment_intent.succeeded',
+    payload: {}, receivedAt: f.clock.now(), error: 'handler_failed', failedAt: null,
+  }));
+  queue.handle(webhookDispatchJob, async () => { throw new Error('Unavailable'); });
+  await queue.enqueue(webhookDispatchJob, { eventId: 'evt_' + id }, { gymId: f.gymId, timezone: 'UTC', idempotencyKey: id, maxAttempts: 1 });
+  expect(await queue.runNext()).toBe(true);
+  const [failed] = await queue.failedJobs(webhookDispatchJob, [id], { gymId: f.gymId });
+  f.clock.advance(60_000);
+  expect(await createWebhookInbox({ ...f.options, jobs: queue, recovery: queue }).recoverFailed(f.gymId))
+    .toEqual({ recovered: 0, exhausted: 0 });
+  expect(await f.stored()).toMatchObject({ error: 'handler_failed', failedAt: failed!.failedAt, processedAt: null });
+});
+
 it('reopens recovery when a redelivery reset ties the exhaustion time and keeps an earlier reset closed', async () => {
   const f = await fixture(), queue = new FakeJobs(f.clock);
   const id = uuidv7(), exhaustedAt = f.clock.now();

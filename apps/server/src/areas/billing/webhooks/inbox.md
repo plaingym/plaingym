@@ -44,9 +44,13 @@ The queue looks up failed original jobs by the stored event row ID. If a failed
 dispatch left no marker, the sweep records `dispatch_failed`, with the failed
 job's time as `failed_at`, so Health counts it as failed even during the cooldown.
 When a reset dispatch fails again, the next sweep moves `failed_at` to the
-job's latest failure on both `dispatch_failed` and `handler_failed` rows, keeping
-the existing marker. It waits 15 minutes after an exhausted batch, then
-30, 60, 120 and 240 minutes after subsequent batches. The same
+job's latest failure on `dispatch_failed` rows. On `handler_failed` rows it
+moves it only when `failed_at` is missing, or older than both the job's failure
+and the latest reset counted since the last exhaustion (the reset dispatch
+failed before its handler recorded a time); either way the marker stays. A
+fresh handler failure keeps the time `dispatch` wrote. It waits 15 minutes
+after an exhausted batch, then 30, 60, 120 and 240 minutes after subsequent
+batches. The same
 `billing.webhook.dispatch_retried` audits count resets across restarts, including
 those triggered by redelivery. The next terminal failure after five audited resets
 records one `billing.webhook.dispatch_recovery_exhausted` audit. Later sweeps
@@ -107,9 +111,9 @@ clears both `error` and `failed_at`. Health and the go-live webhook check count
 only failures still unprocessed, so a failed replay of a processed event shows
 only as a failed job. Health counts a failure as recent when its
 `failed_at` is within the last 7 days; a row that failed before failure times were
-recorded counts by its received time instead. Even if the marker write fails, dispatch logs the
-original failure as `billing.webhooks.handler_failed`
-with fields `handlerFailureFields` builds itself, none taken from message text:
+recorded counts by its received time instead. Even if the marker write fails,
+dispatch keeps the handler's error as the job's error and logs the original
+failure as `billing.webhooks.handler_failed` with fields `handlerFailureFields` builds itself, none taken from message text:
 `gymId`, `eventId` and `type`; `errorName` (the error's name when it is an
 identifier, otherwise its JavaScript type) and `errorCode` (a short code of
 letters, digits and underscores); `errorFrames`, the first 15 stack frames, read

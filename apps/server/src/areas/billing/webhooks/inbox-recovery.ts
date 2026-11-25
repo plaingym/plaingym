@@ -53,9 +53,12 @@ export function webhookRecoveryPage(tx: Transaction, gymId: string, cursor?: str
     .orderBy(asc(candidates.id)).limit(100);
 }
 
-/** Unlocked read of the open, unprocessed events among `eventIds`: their marker and the resets since exhaustion. */
+/** Unlocked read of the open, unprocessed events among `eventIds`: their marker, reset count and latest reset since exhaustion. */
 function openEvents(tx: Transaction, gymId: string, eventIds: string[]) {
-  return tx.select({ id: stripeEvents.id, error: stripeEvents.error, failedAt: stripeEvents.failedAt, resets: count(auditEvents.id) })
+  return tx.select({
+    id: stripeEvents.id, error: stripeEvents.error, failedAt: stripeEvents.failedAt,
+    resets: count(auditEvents.id), lastReset: max(auditEvents.occurredAt),
+  })
     .from(stripeEvents)
     .leftJoin(auditEvents, and(eq(auditEvents.gymId, gymId), eq(auditEvents.action, webhookDispatchRetried),
       eq(auditEvents.targetId, stripeEvents.id), sinceExhaustion(tx, gymId, stripeEvents.id)))
@@ -64,14 +67,21 @@ function openEvents(tx: Transaction, gymId: string, eventIds: string[]) {
     .groupBy(stripeEvents.id, stripeEvents.error, stripeEvents.failedAt);
 }
 
+function toDate(value: Date | string | null | undefined): Date | null {
+  return value == null ? null : value instanceof Date ? value : new Date(value);
+}
+
 // Health can count a failed dispatch whose attempts never recorded a handler error, from when its job failed;
-// an existing marker's failure time also follows the job's latest failure after a reset, keeping its marker kind.
-function markerUpdate(row: { error: string | null; failedAt: Date | null }, failedAt: Date): 'dispatch_failed' | 'failed_at' | null {
+// a dispatch_failed marker's failure time follows the job's latest failure, while a handler_failed marker moves
+// only when it has no time or predates the latest reset — a handler failure that dispatch recorded after the
+// latest reset keeps its own time.
+function markerUpdate(
+  row: { error: string | null; failedAt: Date | null; lastReset: Date | null }, failedAt: Date,
+): 'dispatch_failed' | 'failed_at' | null {
   if (row.error === null) return 'dispatch_failed';
-  if (!row.failedAt || row.failedAt < failedAt) {
-    if (row.error === 'dispatch_failed') return 'dispatch_failed';
-    if (row.error === 'handler_failed') return 'failed_at';
-  }
+  if (row.error === 'dispatch_failed' && (!row.failedAt || row.failedAt < failedAt)) return 'dispatch_failed';
+  if (row.error === 'handler_failed' && (!row.failedAt || (row.lastReset !== null && row.failedAt < row.lastReset && row.failedAt < failedAt)))
+    return 'failed_at';
   return null;
 }
 
@@ -102,7 +112,7 @@ export function createWebhookInboxRecovery(options: { job: string; scope?: typeo
         const eventId = job.idempotencyKey, seen = open.get(eventId);
         if (!seen) continue;
         const resets = Math.min(seen.resets, webhookRecoveryLimit);
-        if (!markerUpdate(seen, job.failedAt) && resets < webhookRecoveryLimit
+        if (!markerUpdate({ ...seen, lastReset: toDate(seen.lastReset) }, job.failedAt) && resets < webhookRecoveryLimit
           && checkedAt - job.failedAt.getTime() < webhookRecoveryDelayMs * 2 ** resets) continue;
         try {
           const outcome = await withJobTransaction(scope, gymId, async transaction => {
@@ -118,7 +128,10 @@ export function createWebhookInboxRecovery(options: { job: string; scope?: typeo
             const now = clock.now();
             const [current] = await recovery.failedJobs(options.job, [eventId], { gymId }, transaction);
             if (!current) return;
-            const update = markerUpdate(row, current.failedAt);
+            const [reset] = await tx.select({ at: max(auditEvents.occurredAt) }).from(auditEvents).where(and(
+              eq(auditEvents.gymId, gymId), eq(auditEvents.action, webhookDispatchRetried),
+              eq(auditEvents.targetId, eventId), sinceExhaustion(tx, gymId, eventId)));
+            const update = markerUpdate({ ...row, lastReset: toDate(reset?.at) }, current.failedAt);
             if (update === 'dispatch_failed')
               await tx.update(stripeEvents).set({ error: 'dispatch_failed', failedAt: current.failedAt }).where(event);
             else if (update === 'failed_at')

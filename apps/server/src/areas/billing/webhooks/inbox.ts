@@ -192,10 +192,8 @@ export function createWebhookInbox(options: {
         try {
           await scope(context.gymId, (tx) => tx.update(stripeEvents).set({ error: 'handler_failed', failedAt: clock.now() })
             .where(match(context.gymId, input.eventId)));
-        } finally {
-          // Keep the original diagnostic even when the database cannot record the failure marker.
-          logFailure(error, row.type);
-        }
+        } catch { /* Best effort: keep and rethrow the handler's error. */ }
+        logFailure(error, row.type);
         throw error; // The job queue owns retry/backoff and the attempt limit.
       }
     },

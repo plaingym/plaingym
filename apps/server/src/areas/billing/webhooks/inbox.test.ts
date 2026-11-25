@@ -208,22 +208,25 @@ it('takes the same stack frames as the shared logger', () => {
   expect(empty.core).toEqual(expected);
   expect(empty.webhook).toEqual(expected);
 });
-it('logs the original handler failure even when the inbox cannot save its marker', async () => {
+it('rethrows and logs the original handler failure even when the inbox cannot save its marker', async () => {
   await deliver();
+  const handlerError = new Error('Saved card household is unresolved');
   const writeError = new Error('marker write unavailable');
-  let rejectWrites = false;
+  let rejectWrites = false, markerAttempts = 0;
   const service = createWebhookInbox({ paymentsFor: async () => fake, jobs, gymSettings, clock,
     scope: (gymId, run) => {
-      if (rejectWrites) throw writeError;
+      if (rejectWrites) { markerAttempts++; throw writeError; }
       return database.forGym(gymId, run);
     } });
   service.register('payment_intent.succeeded', async () => {
     rejectWrites = true;
-    throw new Error('Saved card household is unresolved');
+    throw handlerError;
   });
   const lines: string[] = [], previous = setLogSink(line => lines.push(line));
-  try { await expect(service.dispatch({ eventId: 'evt_test' }, context())).rejects.toBe(writeError); }
+  try { await expect(service.dispatch({ eventId: 'evt_test' }, context())).rejects.toBe(handlerError); }
   finally { setLogSink(previous); }
+  expect(markerAttempts).toBe(1);
+  expect(lines).toHaveLength(1);
   expect(lines.map(line => JSON.parse(line))).toMatchObject([{ event: 'billing.webhooks.handler_failed',
     gymId: gymA, eventId: 'evt_test', type: 'payment_intent.succeeded', reason: 'Saved card household is unresolved' }]);
 });
