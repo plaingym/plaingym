@@ -579,4 +579,110 @@ describe('last-backup inventory cache', () => {
     await runAgeCheck(10_000, 10_000, 1_000);
     await runAgeCheck(undefined, 30_000, 1_000);
   });
+  it('measures listing and cache age from the start of the read before scope()', async () => {
+    await snapshot();
+    const realList = store.listObjects.bind(store);
+    vi.useFakeTimers({ now: new Date(start), toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const liveClock = { now: () => new Date() };
+      const liveContext = { ...context, clock: liveClock };
+      let openCalls = 0;
+      let entered = 0;
+      let notifyEntered: (() => void) | undefined;
+      const waitEntered = (target: number) => entered >= target ? Promise.resolve() : new Promise<void>((resolve) => { notifyEntered = resolve; });
+      vi.spyOn(store, 'listObjects').mockImplementation(() => {
+        entered++;
+        notifyEntered?.();
+        return new Promise(() => undefined);
+      });
+      let hungScopeCalls = 0;
+      const hung = createBackupHealthProvider({
+        scope: async (fn) => {
+          // Only the first read is slow, so its listing starts 2 s into the read and the second read's does not.
+          if (++hungScopeCalls === 1) await new Promise<void>((resolve) => { setTimeout(resolve, 2000); });
+          return database.forSystem(fn);
+        },
+        config: async () => settings,
+        store: () => { openCalls++; return { store, close }; },
+      });
+      void hung.read(liveContext);
+      await vi.advanceTimersByTimeAsync(2000);
+      await waitEntered(1);
+      expect(openCalls).toBe(1);
+      await vi.advanceTimersByTimeAsync(29_000); // 31 s from the first read's start, 29 s from its listing's
+      void hung.read(liveContext);
+      await waitEntered(2);
+      expect(openCalls).toBe(2);
+
+      invalidateBackupHealth();
+      vi.setSystemTime(new Date(start));
+      vi.spyOn(store, 'listObjects').mockImplementation((prefix) => realList(prefix));
+      let answerOpenCalls = 0;
+      let scopeCalls = 0;
+      const answering = createBackupHealthProvider({
+        scope: async (fn) => {
+          scopeCalls++;
+          if (scopeCalls === 1) await new Promise<void>((resolve) => { setTimeout(resolve, 2000); });
+          return database.forSystem(fn);
+        },
+        config: async () => settings,
+        store: () => { answerOpenCalls++; return { store, close }; },
+      });
+      const first = answering.read(liveContext);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(await first).toMatchObject({ status: 'healthy' });
+      expect(answerOpenCalls).toBe(1);
+      await vi.advanceTimersByTimeAsync(57_000); // 59 s from first read's start
+      expect(await answering.read(liveContext)).toMatchObject({ status: 'healthy' });
+      expect(answerOpenCalls).toBe(1);
+      await vi.advanceTimersByTimeAsync(2000); // 61 s from first read's start
+      expect(await answering.read(liveContext)).toMatchObject({ status: 'healthy' });
+      expect(answerOpenCalls).toBe(2);
+    } finally { vi.useRealTimers(); }
+  });
+  it('joins an in-flight listing started by a faster read instead of replacing it', async () => {
+    await snapshot();
+    const realList = store.listObjects.bind(store);
+    vi.useFakeTimers({ now: new Date(start), toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const liveClock = { now: () => new Date() };
+      const liveContext = { ...context, clock: liveClock };
+      let openCalls = 0;
+      let scopeCalls = 0;
+      let firstScopeDone!: () => void;
+      const waitFirstScope = new Promise<void>((resolve) => { firstScopeDone = resolve; });
+      let entered!: () => void;
+      const waitEntered = new Promise<void>((resolve) => { entered = resolve; });
+      let release!: () => void;
+      vi.spyOn(store, 'listObjects').mockImplementation(async (prefix) => {
+        if (prefix === 'snapshots/') {
+          entered();
+          await new Promise<void>((resolve) => { release = resolve; });
+        }
+        return realList(prefix);
+      });
+      const health = createBackupHealthProvider({
+        scope: async (fn) => {
+          scopeCalls++;
+          const slow = scopeCalls === 1;
+          if (slow) await new Promise<void>((resolve) => { setTimeout(resolve, 5000); });
+          try { return await database.forSystem(fn); } finally { if (slow) firstScopeDone(); }
+        },
+        config: async () => settings,
+        store: () => { openCalls++; return { store, close }; },
+      });
+      const first = health.read(liveContext);
+      await vi.advanceTimersByTimeAsync(1000);
+      const second = health.read(liveContext);
+      await waitEntered;
+      expect(openCalls).toBe(1);
+      await vi.advanceTimersByTimeAsync(4000); // 5 s: first read's scope finishes and joins second's listing
+      await waitFirstScope;
+      await Promise.resolve();
+      expect(openCalls).toBe(1);
+      release();
+      expect(await Promise.all([first, second])).toMatchObject([{ status: 'healthy' }, { status: 'healthy' }]);
+      expect(openCalls).toBe(1);
+    } finally { vi.useRealTimers(); }
+  });
 });

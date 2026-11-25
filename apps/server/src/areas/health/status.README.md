@@ -8,15 +8,20 @@ tile without exposing exception messages. Each tile has 5 seconds to answer; aft
 it reads "Still checking" and the other tiles render (the slow check keeps running and
 its late result is discarded; a refresh while it runs waits on that same check, one per
 gym and tile, instead of starting another until the running read is 30 seconds old, when
-a new one replaces it, keeping at most one replaced read running per gym and tile and
-waiting for the newest read while it does). A read slower than 2 seconds logs `health.tile_slow` once, with its
+a new one replaces it, keeping at most one replaced read tracked per gym and tile and
+waiting for the newest read while it does; once the newest read is two minutes old, a
+refresh starts another even while the replaced one is pending (the older read keeps
+running, no longer tracked), so a check that hangs twice is retried at most every two
+minutes). A read slower than 2 seconds logs `health.tile_slow` once, with its
 tile ID and duration from the read's start; each request that reaches the 5-second limit logs
 its own line with `timedOut: true`. The Last backup tile reuses its bucket inventory
-for up to one minute from when its listing started (it is released from memory after that;
-a listing running over 30 seconds is replaced by a new one, a third listing closes the
-oldest one's storage connection, a listing under an old cache key is closed once it is
-30 seconds old, a clock stepped back counts a cached inventory or a running listing as
-stale, and a replaced listing that finishes still fills the cache unless a later one
+for up to one minute from the start of the read that listed it (it is released from memory
+after that; a running listing whose read started over 30 seconds ago is replaced by a new
+one, so the service's replacement read lists again; a third listing, which a hung check
+reaches only through the two-minute retry, closes the oldest one's storage connection; a
+listing under an old cache key is closed by a later read once its own read started over
+30 seconds ago; a clock stepped back counts a cached inventory or a running listing as
+stale; and a replaced listing that finishes still fills the cache unless a later one
 already has), dropped sooner when a backup or prune finishes or the destination or
 the backup runs change; pruning always reads the bucket itself.
 

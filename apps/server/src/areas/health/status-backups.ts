@@ -45,10 +45,10 @@ export function createBackupHealthProvider(options: {
   type LoadingEntry = { startedAt: number; load: Promise<BackupInventory>; close: () => void };
   const loading = new Map<string, LoadingEntry>();
   const replacedLoads = new Map<string, LoadingEntry>();
-  const cachedInventory = (settings: InstallBackupConfig, key: string, now: () => number): Promise<BackupInventory> => {
-    const loadStart = now();
+  const cachedInventory = (settings: InstallBackupConfig, key: string, now: () => number, readStart: number): Promise<BackupInventory> => {
+    const at = now();
     const isStale = (startedAt: number) => {
-      const age = loadStart - startedAt;
+      const age = at - startedAt;
       return age > maxLoadingAgeMs || age < 0;
     };
     const evictOtherKeys = (map: Map<string, LoadingEntry>) => {
@@ -62,7 +62,7 @@ export function createBackupHealthProvider(options: {
     // Evict stale loads under superseded keys even on a cache hit so a fast listing under the new key does not keep them open.
     evictOtherKeys(loading);
     evictOtherKeys(replacedLoads);
-    if (cached && cached.key === key && loadStart - cached.storedAt >= 0 && loadStart - cached.storedAt < 60_000) {
+    if (cached && cached.key === key && at - cached.storedAt >= 0 && at - cached.storedAt < 60_000) {
       return Promise.resolve(cached.state);
     }
     const inFlight = loading.get(key);
@@ -84,17 +84,17 @@ export function createBackupHealthProvider(options: {
       finally { close(); }
     })();
     const seq = ++nextSeq;
-    const entry: LoadingEntry = { startedAt: loadStart, load, close };
+    const entry: LoadingEntry = { startedAt: readStart, load, close };
     loading.set(key, entry);
     // A failed load is never cached; a load the page gave up on, or one a fresh load replaced, still serves the
     // next refresh unless a load that started later has already been stored.
     load.then((state) => {
       if (cached && cached.seq > seq) return;
-      cached = { key, storedAt: loadStart, seq, state };
+      cached = { key, storedAt: readStart, seq, state };
       // Drop the inventory once it is stale instead of holding the listings until the next read.
       if (expiry) clearTimeout(expiry);
       const stored = cached;
-      expiry = setTimeout(() => { if (cached === stored) cached = null; expiry = undefined; }, Math.min(60_000, Math.max(0, 60_000 - (now() - loadStart))));
+      expiry = setTimeout(() => { if (cached === stored) cached = null; expiry = undefined; }, Math.min(60_000, Math.max(0, 60_000 - (now() - readStart))));
       expiry.unref();
     }, () => undefined)
       .finally(() => {
@@ -104,6 +104,7 @@ export function createBackupHealthProvider(options: {
     return load;
   };
   return healthProvider('last_backup', async (context) => {
+    const readStart = context.clock.now().getTime();
     const settings = await config(), checkedAt = context.clock.now().toISOString();
     // Install-wide snapshot history is never disclosed to another tenant.
     if (!settings || settings.gymId !== context.gymId) return { id: 'last_backup', status: 'not_configured', checkedAt, details: null, message: statusMessage('backupMissing') };
@@ -120,7 +121,7 @@ export function createBackupHealthProvider(options: {
     let damagedGuardSnapshot: string | null = null;
     let missingGuardSnapshot: string | null = null;
     try {
-      const state = await cachedInventory(settings, key, () => context.clock.now().getTime());
+      const state = await cachedInventory(settings, key, () => context.clock.now().getTime(), readStart);
       // An abandoned run is cleaned up by the next prune; only what stops pruning is reported.
       const floorSnapshot = guardSnapshot(env);
       damagedGuardSnapshot = state.damaged.find(snapshot => snapshot.id === floorSnapshot)?.id ?? null;

@@ -20,8 +20,8 @@ export const healthReadAgeMs = 30_000;
  * late result is discarded. Slow tiles log their ID and duration only.
  */
 export function createHealthService(providers: readonly HealthTileProvider<HealthTile>[],
-  options: { tileTimeoutMs?: number; slowTileMs?: number; maxReadAgeMs?: number; now?: () => number } = {}) {
-  const { tileTimeoutMs = 5000, slowTileMs = 2000, maxReadAgeMs = healthReadAgeMs, now = () => performance.now() } = options;
+  options: { tileTimeoutMs?: number; slowTileMs?: number; maxReadAgeMs?: number; maxReplacedAgeMs?: number; now?: () => number } = {}) {
+  const { tileTimeoutMs = 5000, slowTileMs = 2000, maxReadAgeMs = healthReadAgeMs, maxReplacedAgeMs = 4 * maxReadAgeMs, now = () => performance.now() } = options;
   const registry = new Map(providers.map((provider) => [provider.id, provider]));
   if (registry.size !== providers.length) throw new Error('Duplicate health provider');
   type Entry = { read: Promise<HealthTile>; startedAt: number; loggedSlow: boolean };
@@ -34,15 +34,17 @@ export function createHealthService(providers: readonly HealthTileProvider<Healt
       if (!provider) return { id, status: 'not_configured', checkedAt: null, details: null, message: statusMessage('notSetUp') };
       const failed = (): HealthTile => ({ id, status: 'unavailable', checkedAt: context.clock.now().toISOString(), details: null, message: statusMessage('checkFailed') });
       // Never rejects: every error becomes the failed-check tile. A request that finds a read in flight for the
-      // same gym and tile waits for it instead of starting another unless it is older than maxReadAgeMs and no
-      // replaced read is still pending; the permission is still checked per request.
+      // same gym and tile waits for it instead of starting another unless it is older than maxReadAgeMs and either
+      // no replaced read is still pending or the running read has reached maxReplacedAgeMs (replacing the tracked
+      // replaced read with the running one); the permission is still checked per request.
       let entry: Entry;
       if (!canStaff(context.roles, provider.permission)) {
         entry = { read: Promise.resolve(failed()), startedAt: now(), loggedSlow: false };
       } else {
         const key = context.gymId + ':' + id;
         const running = inFlight.get(key);
-        if (running && (now() - running.startedAt <= maxReadAgeMs || replaced.has(key))) entry = running;
+        const age = running ? now() - running.startedAt : 0;
+        if (running && (age <= maxReadAgeMs || (replaced.has(key) && age < maxReplacedAgeMs))) entry = running;
         else {
           if (running) {
             replaced.set(key, running);

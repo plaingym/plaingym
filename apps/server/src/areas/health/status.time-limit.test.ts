@@ -149,7 +149,7 @@ describe('health tile time limit', () => {
       { time: expect.any(String), level: 'warn', event: 'health.tile_slow', tile: c, ms: 5000, timedOut: true },
     ]);
   });
-  it('keeps at most two pending reads per gym and tile when a provider never settles', async () => {
+  it('retries a provider that never settles only once the newest read reaches two minutes', async () => {
     let calls = 0;
     const never = healthProvider(b, () => { calls++; return new Promise<HealthTile>(() => undefined); });
     const service = createHealthService([never], options);
@@ -168,6 +168,27 @@ describe('health tile time limit', () => {
       expect((await response).data.tiles.find((tile) => tile.id === b)).toMatchObject({ message: 'Still checking. Refresh in a moment.' });
     }
     expect(calls).toBe(2);
+    // At 155 s (the second read is 124 s old, past the 120 s ceiling), a third read starts.
+    await vi.advanceTimersByTimeAsync(26_000);
+    expect(Date.now()).toBe(155_000);
+    const r155 = service.get(context);
+    expect(calls).toBe(3);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect((await r155).data.tiles.find((tile) => tile.id === b)).toMatchObject({ message: 'Still checking. Refresh in a moment.' });
+    // At 186 s (the third read is 31 s old), the second read is still pending, so calls stay 3.
+    await vi.advanceTimersByTimeAsync(26_000);
+    expect(Date.now()).toBe(186_000);
+    const r186 = service.get(context);
+    expect(calls).toBe(3);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect((await r186).data.tiles.find((tile) => tile.id === b)).toMatchObject({ message: 'Still checking. Refresh in a moment.' });
+    // At 275 s (the third read is 120 s old), a fourth read starts.
+    await vi.advanceTimersByTimeAsync(84_000);
+    expect(Date.now()).toBe(275_000);
+    const r275 = service.get(context);
+    expect(calls).toBe(4);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect((await r275).data.tiles.find((tile) => tile.id === b)).toMatchObject({ message: 'Still checking. Refresh in a moment.' });
   });
   it('starts a new read once the replaced read settles while keeping at most two pending', async () => {
     let calls = 0;
@@ -202,5 +223,63 @@ describe('health tile time limit', () => {
     expect(calls).toBe(3);
     await vi.advanceTimersByTimeAsync(5000);
     await Promise.all([r93, r94, r125]);
+  });
+  it('scales maxReplacedAgeMs from maxReadAgeMs when two reads hang', async () => {
+    let calls = 0;
+    const never = healthProvider(b, () => { calls++; return new Promise<HealthTile>(() => undefined); });
+    const service = createHealthService([never], { ...options, maxReadAgeMs: 10_000 });
+    const r0 = service.get(context);
+    await vi.advanceTimersByTimeAsync(5000);
+    await r0;
+    await vi.advanceTimersByTimeAsync(6000); // 11 s: > 10 s, starts second read
+    expect(Date.now()).toBe(11_000);
+    const r11 = service.get(context);
+    expect(calls).toBe(2);
+    await vi.advanceTimersByTimeAsync(5000);
+    await r11;
+    await vi.advanceTimersByTimeAsync(34_000); // 50 s: second read is 39 s old (< 40 s)
+    expect(Date.now()).toBe(50_000);
+    const r50 = service.get(context);
+    expect(calls).toBe(2);
+    await vi.advanceTimersByTimeAsync(1000); // 51 s: ceiling 40 s from the second read at 11 s
+    expect(Date.now()).toBe(51_000);
+    const r51 = service.get(context);
+    expect(calls).toBe(3);
+    await vi.advanceTimersByTimeAsync(5000);
+    await Promise.all([r50, r51]);
+  });
+  it('ignores an older replaced read settling after a third read moved it out of tracking', async () => {
+    let calls = 0;
+    const resolvers: Array<(tile: HealthTile) => void> = [];
+    const provider = healthProvider(b, () => {
+      calls++;
+      return new Promise<HealthTile>((resolve) => { resolvers.push(resolve); });
+    });
+    const service = createHealthService([provider], options);
+    const r0 = service.get(context);
+    await vi.advanceTimersByTimeAsync(5000);
+    await r0;
+    await vi.advanceTimersByTimeAsync(26_000); // 31 s: starts read 2, tracks read 1 as replaced
+    const r31 = service.get(context);
+    expect(calls).toBe(2);
+    await vi.advanceTimersByTimeAsync(5000);
+    await r31;
+    await vi.advanceTimersByTimeAsync(119_000); // 155 s: starts read 3, tracks read 2 as replaced
+    const r155 = service.get(context);
+    expect(calls).toBe(3);
+    await vi.advanceTimersByTimeAsync(5000);
+    await r155;
+    // Read 1 settles late at 160 s: must not clear read 2 from replaced tracking.
+    resolvers[0]!(tileOf(b));
+    await vi.advanceTimersByTimeAsync(26_000); // 186 s: read 3 is 31 s old, read 2 is still tracked
+    const r186 = service.get(context);
+    expect(calls).toBe(3);
+    // Read 2 settles at 186 s: clears replaced tracking so the next refresh starts read 4.
+    resolvers[1]!(tileOf(b));
+    await vi.advanceTimersByTimeAsync(5000); // 191 s
+    const r191 = service.get(context);
+    expect(calls).toBe(4);
+    await vi.advanceTimersByTimeAsync(5000);
+    await Promise.all([r186, r191]);
   });
 });
