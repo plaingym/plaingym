@@ -228,11 +228,12 @@ job queue (required) through `configureMembers`; without a queue the erasure rou
 refuses with `unavailable` before changing anything. After commit the route
 detaches each card, redacts the customer and marks the files deleted, each attempt
 logged on failure (identifiers and safe error classifications, never message text)
-and left to its job. An immediate detach that fails for any reason other than an outage,
-a rejected key or a missing key permission (such as Stripe's ownership refusal for a
-customer a people CSV saved the card on) is instead logged at info as
-`members.erasure.detach_deferred` (identifiers only) and left to its job, which adopts
-the customer or fails with the job's error.
+and left to its job. An immediate detach that Stripe refuses because the customer has no
+gym tag (a people CSV linked it; a deleted customer reads the same) is instead logged at
+info as `members.erasure.detach_deferred` (identifiers only) and left to its job, which
+adopts the customer or fails with the job's error. Any other immediate detach failure is
+logged as `members.erasure.detach_failed` at error with its safe classification, and is
+also left to its job.
 A card whose immediate detach succeeds gets its one
 `billing.card.detached` audit (system actor) at once, so the card list shows it removed
 from Stripe before the job runs; a failure to write that audit is logged as

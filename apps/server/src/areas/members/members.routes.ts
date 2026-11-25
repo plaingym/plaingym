@@ -17,7 +17,7 @@ import type { DetachOptions } from '../../infra/payments/index.js';
 import { releaseFiles } from '../../infra/storage/release.js';
 import { clearBillingEmailJob, clearErasedBillingEmail, type ClearBillingEmail, queueEarlierRedactions, redactCustomerJob, redactEarlierJob, releaseErasedFiles, releaseErasedFilesJob } from './erasure-redaction.js';
 import { createPortalInvitationStore } from '../../infra/auth/portal-invitations.js';
-import { recordErasureDetach, transientFailure } from '../billing/payments.mutations.js';
+import { recordErasureDetach } from '../billing/payments.mutations.js';
 
 function mutation(context: RequestContext) {
   if (context.principal.kind !== 'staff' || context.principal.gymId !== context.gym.gymId) throw new AppError('not_found', 'Resource not found');
@@ -50,6 +50,9 @@ type ErasureOptions = { clock?: Clock; scope?: typeof forGym; detachCard?: (gymI
   jobs?: Pick<Jobs, 'enqueue'> & Partial<JobRecovery> };
 export { redactCustomerJob, releaseErasedFilesJob };
 const redactPayload = z.object({ customerId: z.string().regex(/^cus_[A-Za-z0-9_]+$/) });
+/** StripePayments' refusal for a customer or method with no gym tag: a people CSV linked it untagged, and the detach job adopts it. */
+const untaggedRefusal = (error: unknown) =>
+  [error, (error as { cause?: unknown } | null)?.cause].some(value => value instanceof Error && value.message === 'Payment object has no gym metadata');
 type Composition = ErasureOptions & { service: MembersService; photos: ReturnType<typeof createMemberPhotoService> | undefined; uploadsFor?: MemberUploads };
 let configured: Composition | undefined;
 /** Runtime supplies the gym key for household PINs, file storage for photos and the job queue for erasure before serving requests. */
@@ -131,7 +134,7 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
         ...(detachCard ? revokedCards : []).map(async card => {
           try { await detachCard!(gymId, card.processorId, { redactBillingDetails: true }); }
           catch (error) {
-            if (!transientFailure(error)) logInfo('members.erasure.detach_deferred', { gymId, memberId, paymentMethodId: card.id });
+            if (untaggedRefusal(error)) logInfo('members.erasure.detach_deferred', { gymId, memberId, paymentMethodId: card.id });
             else logError('members.erasure.detach_failed', { gymId, memberId, paymentMethodId: card.id }, error);
             return;
           }
