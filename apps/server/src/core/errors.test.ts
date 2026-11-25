@@ -74,7 +74,7 @@ it('preserves explicitly public error details', () => {
   expect(normalizeError(error)).toBe(error);
 });
 
-it.each(['javascript:alert(1)', 'file:///private/key', 'https://user:password@example.org', 'invalid'])('rejects unsafe source links: %s', (value) => {
+it.each(['javascript:alert(1)', 'file:///private/key', 'https://user:password@example.org', 'invalid', ' '])('rejects unsafe source links: %s', (value) => {
   expect(() => sourceUrl(value)).toThrow();
 });
 
@@ -83,8 +83,12 @@ it('reads the source override at factory creation', () => {
   try {
     process.env.SOURCE_URL = 'https://example.org/modified/tag';
     expect(sourceUrl()).toBe('https://example.org/modified/tag');
+    expect(sourceUrl('')).toBe('https://example.org/modified/tag');
+    process.env.SOURCE_URL = '';
+    expect(sourceUrl()).toBe('https://github.com/plaingym/plaingym');
     delete process.env.SOURCE_URL;
     expect(sourceUrl()).toBe('https://github.com/plaingym/plaingym');
+    expect(sourceUrl('')).toBe('https://github.com/plaingym/plaingym');
   } finally {
     if (previous === undefined) delete process.env.SOURCE_URL;
     else process.env.SOURCE_URL = previous;

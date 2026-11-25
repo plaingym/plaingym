@@ -55,5 +55,5 @@ export function dryRunVersion(info) {
 
 /** Archives have no commit to link to; callers can supply their exact public source URL. */
 export function imageSourceUrl(info, source = process.env.SOURCE_URL) {
-  return source ?? `https://github.com/plaingym/plaingym${info.commit === 'unknown' ? '' : `/tree/${info.commit}`}`;
+  return source || `https://github.com/plaingym/plaingym${info.commit === 'unknown' ? '' : `/tree/${info.commit}`}`;
 }

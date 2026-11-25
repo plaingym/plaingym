@@ -40,6 +40,8 @@ test('source archives have an unknown development identity', () => {
 test('archive image source links never invent an unknown Git reference', () => {
   assert.equal(imageSourceUrl({ commit: 'unknown' }, null), 'https://github.com/plaingym/plaingym');
   assert.equal(imageSourceUrl({ commit: 'a'.repeat(40) }, null), 'https://github.com/plaingym/plaingym/tree/' + 'a'.repeat(40));
+  assert.equal(imageSourceUrl({ commit: 'unknown' }, ''), 'https://github.com/plaingym/plaingym');
+  assert.equal(imageSourceUrl({ commit: 'a'.repeat(40) }, ''), 'https://github.com/plaingym/plaingym/tree/' + 'a'.repeat(40));
   assert.equal(imageSourceUrl({ commit: 'unknown' }, 'https://example.org/exact-source'), 'https://example.org/exact-source');
 });
 

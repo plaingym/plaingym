@@ -27,8 +27,10 @@ settings, `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, `SOURCE_URL`, `APP_ENCR
 `MAINTENANCE_DATABASE_URL`, `UPLOADS_DIR` and `BACKUP_STAGING_DIR` itself; and it
 reads the Compose and Caddy variables at the end of this page. Empty values for
 `AUTH_PASSWORD_LOGIN`, `RATE_LIMIT_PER_MINUTE`, `DATABASE_POOL_MAX`, `PUBLIC_ORIGIN`,
-`PACKS_DIR` and `UPLOADS_S3_*` count as unset: the server uses the defaults listed
-below. Compose passes these values through without choosing a second default.
+`PACKS_DIR`, `SOURCE_URL` and `UPLOADS_S3_*` count as unset: the server uses the defaults listed
+below. Compose passes these values through without choosing a second default,
+except `SOURCE_URL`, which it sets to the project repository when `.env` leaves it
+unset or empty.
 `PACKS_DIR` must name a directory inside the container; using custom packs requires
 mounting that directory with a Compose override. With no overrides, a single-gym
 install is served at `https://GYM_HOSTNAME` and keeps uploads on its data volume.

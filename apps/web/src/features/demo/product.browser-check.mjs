@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
-import { demoLandingPage, demoLandingDirectives } from '../../../../server/src/demo/landing.page.js';
+import { demoLandingPage, demoLandingDirectives, menuScriptSource } from '../../../../server/src/demo/landing.page.js';
 import { createLandingAssets } from '../../../../server/src/demo/landing.assets.js';
 import { buildLinkStyles } from '../../../../server/src/public/links/styles.build.mjs';
 
@@ -26,7 +26,7 @@ const server = createServer(async (req, res) => {
   try {
     const path = new URL(req.url, 'http://localhost').pathname;
     if (path === '/') {
-      res.setHeader('Content-Security-Policy', demoLandingDirectives(menuScriptSource).join('; '));
+      res.setHeader('Content-Security-Policy', demoLandingDirectives(scriptSource).join('; '));
       res.setHeader('Content-Type', 'text/html');
       res.end(html);
     }
@@ -38,7 +38,8 @@ const server = createServer(async (req, res) => {
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const origin = 'http://127.0.0.1:' + server.address().port, results = [];
-const menuScriptSource = `${new URL(origin).host}/demo-assets/${menuScript.file}`;
+const scriptSource = menuScriptSource(new URL(origin).host, menuScript.file);
+expect(scriptSource).toBe("'self'");
 const timer = setTimeout(() => { console.error('Product browser check timed out'); process.exit(1); }, 180_000);
 try {
   for (const [name, engine] of Object.entries({ chromium, firefox, webkit })) {
@@ -47,7 +48,7 @@ try {
     try {
       for (const width of [360, 1280]) for (const theme of ['light', 'dark']) {
         // Firefox's automation evaluation can stall with context-wide scripting disabled.
-        // The response allows the menu script by its content-hashed path. Chromium disables page scripts to check native controls.
+        // The response sends the app's script source for this origin ('self' for 127.0.0.1), and Chromium disables page scripts to check native controls.
         const context = await browser.newContext({ viewport: { width, height: 900 }, colorScheme: theme, reducedMotion: 'reduce', javaScriptEnabled: name !== 'chromium' });
         const page = await context.newPage(), failures = [], requests = [];
         page.setDefaultTimeout(12_000);
