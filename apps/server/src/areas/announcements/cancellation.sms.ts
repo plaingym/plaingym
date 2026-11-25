@@ -2,9 +2,11 @@
 import { and, eq, isNotNull, isNull, like, ne, or } from 'drizzle-orm';
 import { classSessions, members, smsDeliveries } from '@plaingym/db';
 import { AppError, createTranslator } from '@plaingym/shared';
-import { createSmsDeliveries, type Sms } from '../../infra/sms/index.js';
+import { createSmsDeliveries, type MemberSmsOptions, type Sms } from '../../infra/sms/index.js';
 import { smsInFlightMs } from '../../infra/sms/deliveries.js';
-import { noticeSender, noticeWhen, readNoticePhones, type ClassNoticeDeliveryOptions } from '../bookings/bookings.sms.js';
+import { holdGymSettings, readGymSettings } from '../settings/settings.js';
+import { memberNoticePhones } from '../members/sms-recipients.js';
+import { noticeCapSettings, noticeSender, noticeWhen, readNoticePhones, shareNoticeRecipients, type ClassNoticeDeliveryOptions } from '../bookings/bookings.sms.js';
 import messages from '../../../../../locales/en/announcements/cancellation.json' with { type: 'json' };
 
 interface Cancellation { sessionId: string; memberIds: string[]; round?: number | undefined }
@@ -87,8 +89,27 @@ export function createCancellationSms(options: ClassNoticeDeliveryOptions) {
               // phone is marked by its consent household, and always lists who it covers.
               const self = current.memberIds.length === 1 && !current.consentHouseholdIds.length
                 && current.consentMemberIds.length === 1 && current.consentMemberIds[0] === current.memberIds[0];
-              // Format all texts in the job's timezone. MemberSms still reloads the send settings.
-              return noticeSender(options, gymId, current).sendSms({ to: current.phoneE164,
+              const sameMembers = (a: readonly string[], b: readonly string[]) =>
+                a.length === b.length && a.every((id, index) => id === b[index]);
+              // Lock order matches promotion and staff cancellation texts: settings key share, session FOR SHARE,
+              // then reserved members and their households FOR SHARE NOWAIT so a busy row rolls back and retries.
+              const lastCheck: NonNullable<MemberSmsOptions['recheck']> = async tx => {
+                await holdGymSettings(tx, gymId);
+                const gym = await readGymSettings(tx, gymId);
+                const [session] = await tx.select({ status: classSessions.status, restoreCount: classSessions.restoreCount })
+                  .from(classSessions).where(and(eq(classSessions.gymId, gymId), eq(classSessions.id, notice.sessionId))).for('share');
+                if (!isCurrent(session)) return 'no_consent';
+                if (!(await shareNoticeRecipients(tx, gymId, reservation.memberIds))) return 'no_consent';
+                const currentGroups = await memberNoticePhones(tx, gymId, reservation.memberIds);
+                const now = currentGroups.find(row => row.phoneE164 === group.phoneE164);
+                if (!now || !sameMembers(now.memberIds, current.memberIds)) {
+                  return currentGroups.some(row => row.phoneE164 !== group.phoneE164 && row.memberIds.some(id => current.memberIds.includes(id)))
+                    ? 'phone_changed' : 'no_consent';
+                }
+                return { ...noticeCapSettings(gym), memberIds: now.memberIds, householdIds: now.consentHouseholdIds };
+              };
+              // Format all texts in the job's timezone. The last check locks the send settings and recipient.
+              return noticeSender(options, gymId, current, lastCheck).sendSms({ to: current.phoneE164,
                 body: t(self ? 'announcements/cancellation:sms_self' : 'announcements/cancellation:sms', { name: reservation.session.name,
                   ...noticeWhen(reservation.session.startsAt, timezone), names: current.memberNames.join(', ') }) });
             },

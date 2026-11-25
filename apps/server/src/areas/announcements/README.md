@@ -248,8 +248,18 @@ including the class's date and time in the timezone read at the start of the tex
 pass. When the phone is one member's own consented phone covering only them, the
 text (`sms_self`) leaves the names out; a household billing phone (its group's
 `consentHouseholdIds`) always lists who it covers. Announcement consent
-alone never authorizes these texts. `MemberSms` rechecks notices consent, current
-phones and household membership, the independent member-SMS switch and daily cap.
+alone never authorizes these texts. After provider credentials resolve, the
+cancellation text's last check runs first in `MemberSms`'s cap transaction: it
+locks and reads gym settings, locks the class session (`FOR SHARE`) to confirm
+the cancellation is still current (not restored), then locks the reserved
+members and their households (`FOR SHARE NOWAIT`, rolling back and retrying
+through `SmsRecheckBusy` if a row is busy) and rereads `memberNoticePhones` for
+the reserved members, suppressing with `phone_changed` if any covered member
+moved to another phone (or `no_consent` if consent was lost or membership
+changed). Otherwise it returns the locked settings (SMS switch, daily cap,
+usage-day timezone and phone country) and the locked recipient group's consent
+holders to `MemberSms` for the final consent, phone and cap checks, while the
+message body keeps the job's timezone.
 
 `sms_deliveries` keys are `schedule-cancel-sms:<scope>:<firstMemberId>`.
 A scope-prefixed keyed phone digest also prevents another text to the same

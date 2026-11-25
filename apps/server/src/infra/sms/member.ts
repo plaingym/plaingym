@@ -63,10 +63,12 @@ export interface SmsSuppression {
 }
 /**
  * The gym settings a sender's last check read in the cap transaction: the switch, the daily cap, the timezone that picks
- * the usage day and the country that normalizes stored phones.
+ * the usage day and the country that normalizes stored phones. Optional `memberIds`, `householdIds` and `body` are the
+ * consent holders and message body chosen under the recheck's locks; when set they replace the sender's own for this check.
  */
 export interface SmsRecheckSettings {
   readonly memberSmsEnabled: boolean; readonly smsDailyCap: number; readonly timezone: string; readonly country: string | null;
+  readonly memberIds?: readonly string[]; readonly householdIds?: readonly string[]; readonly body?: string;
 }
 /**
  * Thrown by a sender's `recheck` when a row it must lock is busy (for example a `NOWAIT` lock refused while staff
@@ -86,8 +88,9 @@ export interface MemberSmsOptions {
    * and the slot, inside the preparation deadline). It locks and reads the rows its recipient decision uses in `tx`,
    * with no nested transaction or network call, and returns a suppression reason or the gym settings read in `tx`.
    * Those replace the earlier settings snapshot for every later step: the switch, phone normalization, the usage day and
-   * the cap, including a late usage correction. Throwing `SmsRecheckBusy` gives way: the transaction rolls back and the
-   * whole check, recheck first, runs again in a fresh transaction.
+   * the cap, including a late usage correction. Optional consent holders and body in that result replace the sender's
+   * own for this check. Throwing `SmsRecheckBusy` gives way: the transaction rolls back and the whole check, recheck
+   * first, runs again in a fresh transaction.
    */
   readonly recheck?: (tx: Transaction) => Promise<SuppressionReason | SmsRecheckSettings>;
 }
@@ -131,21 +134,28 @@ export class MemberSms implements Sms {
       const check = () => scope(gymId, async tx => {
         await setPreparationTimeouts(tx, Math.max(1, requireTime() - preparationTimeoutMarginMs));
         let current: Pick<SmsRecheckSettings, 'smsDailyCap' | 'timezone' | 'country'> = gym;
+        let checkMemberIds = memberIds, checkHouseholdIds = householdIds, finalOutgoing = outgoing;
         if (this.#options.recheck) {
           const locked = await this.#options.recheck(tx);
           requireTime();
           if (typeof locked === 'string') return locked;
           if (!locked.memberSmsEnabled) return 'disabled';
           current = locked;
+          if (locked.memberIds !== undefined) checkMemberIds = [...new Set(locked.memberIds)];
+          if (locked.householdIds !== undefined) checkHouseholdIds = [...new Set(locked.householdIds)];
+          if (locked.body !== undefined) {
+            finalOutgoing = { ...message, body: `${resolved.name}: ${locked.body}` };
+            validateSms(finalOutgoing);
+          }
         }
         const { smsDailyCap: cap, timezone, country } = current;
-        if ((!memberIds.length && !householdIds.length) || (kind === 'announcements' && householdIds.length)) return 'no_consent';
-        const homes = householdIds.length ? await tx.select({ phone: households.phone, phoneE164: households.phoneE164,
-          smsNoticesConsentAt: households.smsNoticesConsentAt }).from(households).where(inArray(households.id, [...householdIds])) : [];
-        const people = memberIds.length ? await tx.select({ householdId: members.householdId, anonymizedAt: members.anonymizedAt, phone: members.phone,
+        if ((!checkMemberIds.length && !checkHouseholdIds.length) || (kind === 'announcements' && checkHouseholdIds.length)) return 'no_consent';
+        const homes = checkHouseholdIds.length ? await tx.select({ phone: households.phone, phoneE164: households.phoneE164,
+          smsNoticesConsentAt: households.smsNoticesConsentAt }).from(households).where(inArray(households.id, [...checkHouseholdIds])) : [];
+        const people = checkMemberIds.length ? await tx.select({ householdId: members.householdId, anonymizedAt: members.anonymizedAt, phone: members.phone,
           phoneE164: members.phoneE164, smsNoticesConsentAt: members.smsNoticesConsentAt,
-          smsAnnouncementsConsentAt: members.smsAnnouncementsConsentAt }).from(members).where(inArray(members.id, [...memberIds])) : [];
-        if (homes.length !== householdIds.length || people.length !== memberIds.length) return 'no_consent';
+          smsAnnouncementsConsentAt: members.smsAnnouncementsConsentAt }).from(members).where(inArray(members.id, [...checkMemberIds])) : [];
+        if (homes.length !== checkHouseholdIds.length || people.length !== checkMemberIds.length) return 'no_consent';
         for (const home of homes) {
           if (!home.smsNoticesConsentAt) return 'no_consent';
           if (home.phoneE164 !== message.to || normalizePhone(home.phone, country) !== message.to) return 'phone_changed';
@@ -153,7 +163,7 @@ export class MemberSms implements Sms {
         for (const member of people) {
           if (member.anonymizedAt) return 'no_consent';
           // A child reached on the billing phone is authorized by that household's checked notices consent.
-          if (householdIds.includes(member.householdId)) continue;
+          if (checkHouseholdIds.includes(member.householdId)) continue;
           if (!(kind === 'notices' ? member.smsNoticesConsentAt : member.smsAnnouncementsConsentAt)) return 'no_consent';
           if (member.phoneE164 !== message.to || normalizePhone(member.phone, country) !== message.to) return 'phone_changed';
         }
@@ -164,7 +174,7 @@ export class MemberSms implements Sms {
         const day = localDate(now, timezone);
         requireTime();
         usageMayCommit = true;
-        return { day, counter: allowed ? 'sent' : 'refused' } as const;
+        return { day, counter: allowed ? 'sent' : 'refused', outgoing: finalOutgoing } as const;
       });
       let checked: Awaited<ReturnType<typeof check>>;
       for (;;) {
@@ -183,7 +193,7 @@ export class MemberSms implements Sms {
       }
       if (typeof checked === 'string') return this.#suppressed(checked);
       if (checked.counter === 'refused') return this.#suppressed('cap_reached');
-      return { resolved, outgoing };
+      return { resolved, outgoing: checked.outgoing };
     };
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => { expired = true; reject(timedOut()); }, remaining());

@@ -186,6 +186,7 @@ it('bounds cancellation text rechecks to the members at each of 250 phones', asy
   // Only roster reads of the members return many rows, wherever they fall among the SELECTs.
   expect(rosterReads.every(read => read.sql.includes('from "members"'))).toBe(true);
   const total = reads.reduce((rows, read) => rows + read.rows, 0);
-  expect(total).toBeLessThan(size * 15);
+  // Bounded per phone across reservation, pre-resolution read, and the cap transaction's locked last check.
+  expect(total).toBeLessThan(size * 22);
   console.info(`Cancellation text scale: ${reads.length} SELECTs, ${total} returned rows`);
 }, 90_000);

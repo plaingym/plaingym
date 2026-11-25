@@ -60,14 +60,19 @@ credentials resolve. It runs first in the cap transaction, within the
 preparation deadline and before the consent reads and cap slot, and may lock
 the rows its decision reads (no nested transaction or network call). It returns
 a suppression reason, or the gym's SMS switch, daily cap, timezone and phone
-country read in that transaction. Those replace the earlier settings snapshot
-for every later step: the switch check, phone normalization, the usage day and
-the slot (and so any late usage correction). A failure or lock timeout is a
-definite non-send. A recheck that finds a row busy throws `SmsRecheckBusy`: the
-transaction rolls back with no slot, and the whole check runs again in a fresh
-transaction after a short pause while the preparation deadline leaves time for
-another try. One still busy after that is a `no_consent` suppression. The
-waitlist promotion text uses it.
+country read in that transaction, plus optional consent holders (`memberIds`,
+`householdIds`) and a message `body` chosen under its locks. The returned
+settings replace the earlier snapshot for every later step: the switch check,
+phone normalization, the usage day and the slot (and so any late usage
+correction). Returned consent holders replace the sender's own for the final
+consent checks, and a returned `body` replaces the message text (prefixed with
+the gym name and re-validated against the 1,600-character limit before taking a
+slot). A failure or lock timeout is a definite non-send. A recheck that finds a
+row busy throws `SmsRecheckBusy`: the transaction rolls back with no slot, and
+the whole check runs again in a fresh transaction after a short pause while the
+preparation deadline leaves time for another try. One still busy after that is
+a `no_consent` suppression. The waitlist promotion, staff booking cancellation
+and class cancellation texts use it.
 
 Suppression reasons are `disabled`, `no_provider`, `no_consent`, `phone_changed`
 and `cap_reached`; logs hold event, gym ID, member IDs and reason only. A 21610

@@ -104,14 +104,17 @@ export function createBookingSms(options: ClassNoticeDeliveryOptions & {
     const reserved = await options.scope(gymId, tx => deliveries.reserve(tx, gymId, `booking-promotion-sms:${bookingId}`));
     if (!reserved) return;
     // The current promotion and its preferred consented phone, which must still be the reserved destination.
-    const recipientCheck = async (tx: Transaction) => {
-      const latest = await options.load(tx, gymId, bookingId);
+    const recipientCheck = async (tx: Transaction, loaded?: PromotionNotice) => {
+      const latest = loaded ?? await options.load(tx, gymId, bookingId);
       if (!latest) return { reason: 'no_consent' } as const;
       const [current] = await readNoticePhones(tx, gymId, [latest.memberId]);
       if (!current) return { reason: 'no_consent' } as const;
       if (current.phoneE164 !== group.phoneE164) return { reason: 'phone_changed' } as const;
       return { latest, current };
     };
+    const promotionBody = (latest: PromotionNotice, current: typeof group, timezone: string) =>
+      t('bookings/bookings:promotionSms', { name: latest.session.name, ...noticeWhen(latest.session.startsAt, timezone),
+        names: current.memberNames.join(', ') });
     // Staff cancellation takes the session lock before changing the booking. Holding it through the cap reservation
     // keeps cancellation from overtaking the eligibility check. The member and household locks protect the recipient choice.
     // Member erasure and deletion lock the household and member before the session, so those two locks never wait: when
@@ -119,20 +122,26 @@ export function createBookingSms(options: ClassNoticeDeliveryOptions & {
     const lastCheck: NonNullable<MemberSmsOptions['recheck']> = async (tx: Transaction) => {
       const locked = await lockBookingNotice(tx, gymId, bookingId, async tx => (await options.load(tx, gymId, bookingId)) ?? 'no_consent');
       if (typeof locked === 'string') return locked === 'no_booking' ? 'no_consent' : locked;
-      const checked = await recipientCheck(tx);
+      const checked = await recipientCheck(tx, locked.loaded);
       if ('reason' in checked) return checked.reason;
-      return noticeCapSettings(locked.gym);
+      return {
+        ...noticeCapSettings(locked.gym),
+        memberIds: checked.current.memberIds,
+        householdIds: checked.current.consentHouseholdIds,
+        body: promotionBody(checked.latest, checked.current, locked.gym.timezone),
+      };
     };
     const guarded: Sms = {
       verifyAccount: () => noticeSender(options, gymId, group).verifyAccount(),
       async sendSms() {
-        const checked = await options.scope(gymId, recipientCheck);
+        const checked = await options.scope(gymId, tx => recipientCheck(tx));
         if ('reason' in checked) return { status: 'suppressed', reason: checked.reason };
         const { latest, current } = checked;
         const gym = await options.settings.get(gymId);
-        return noticeSender(options, gymId, current, lastCheck).sendSms({ to: current.phoneE164,
-          body: t('bookings/bookings:promotionSms', { name: latest.session.name, ...noticeWhen(latest.session.startsAt, gym.timezone),
-            names: current.memberNames.join(', ') }) });
+        return noticeSender(options, gymId, current, lastCheck).sendSms({
+          to: current.phoneE164,
+          body: promotionBody(latest, current, gym.timezone),
+        });
       },
     };
     await deliveries.attempt(reserved, guarded, { to: group.phoneE164, body: '' });

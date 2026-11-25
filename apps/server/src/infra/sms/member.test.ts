@@ -163,6 +163,42 @@ it('suppresses a last check still busy when the preparation time is used up, wit
   } finally { clock.mockRestore(); }
   expect(f.sms.messages).toEqual([]); expect(await f.usage()).toEqual([]);
 });
+it('uses consent holders returned by the last check instead of the sender own', async () => {
+  const f = await fixture(), other = await fixture();
+  // Member consent revoked; recheck switches to the household billing consent at the same number.
+  await scope(f.gymId, tx => tx.update(members).set({ smsNoticesConsentAt: null, smsNoticesConsentSource: null }).where(eq(members.id, f.person.id)));
+  expect(await f.sender({ recheck: async () => locked }).sendSms(message)).toEqual({ status: 'suppressed', reason: 'no_consent' });
+  expect(await f.sender({ recheck: async () => ({ ...locked, memberIds: [f.person.id], householdIds: [f.home.id] }) }).sendSms(message))
+    .toMatchObject({ status: 'sent' });
+  expect(f.sms.messages).toHaveLength(1);
+  // Reverse: household consent revoked; recheck switches back to the member's own consent.
+  await scope(f.gymId, async tx => {
+    await tx.update(members).set({ smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'portal' }).where(eq(members.id, f.person.id));
+    await tx.update(households).set({ smsNoticesConsentAt: null, smsNoticesConsentSource: null }).where(eq(households.id, f.home.id));
+  });
+  expect(await f.sender({ householdIds: [f.home.id], recheck: async () => locked }).sendSms(message)).toEqual({ status: 'suppressed', reason: 'no_consent' });
+  expect(await f.sender({ householdIds: [f.home.id], recheck: async () => ({ ...locked, memberIds: [f.person.id], householdIds: [] }) }).sendSms(message))
+    .toMatchObject({ status: 'sent' });
+  expect(f.sms.messages).toHaveLength(2);
+  // Foreign holders or household holders on an announcement still suppress with no slot.
+  expect(await f.sender({ recheck: async () => ({ ...locked, memberIds: [other.person.id], householdIds: [] }) }).sendSms(message))
+    .toEqual({ status: 'suppressed', reason: 'no_consent' });
+  expect(await f.sender({ kind: 'announcements', recheck: async () => ({ ...locked, memberIds: [f.person.id], householdIds: [f.home.id] }) }).sendSms(message))
+    .toEqual({ status: 'suppressed', reason: 'no_consent' });
+  expect(await f.usage()).toEqual([expect.objectContaining({ sent: 2, refused: 0 })]);
+});
+it('uses a body returned by the last check and refuses one over the length limit without taking a slot', async () => {
+  const f = await fixture();
+  expect(await f.sender({ recheck: async () => ({ ...locked, body: 'Locked body' }) }).sendSms(message)).toMatchObject({ status: 'sent' });
+  expect(f.sms.messages).toEqual([{ to: phone, body: 'Test Gym: Locked body' }]);
+  await expect(f.sender({ recheck: async () => ({ ...locked, body: 'x'.repeat(1600) }) }).sendSms(message))
+    .rejects.toMatchObject({ acceptance: 'not_accepted' });
+  expect(f.sms.messages).toHaveLength(1);
+  expect(await f.usage()).toEqual([expect.objectContaining({ sent: 1, refused: 0 })]);
+  // Returning only settings keeps the original body and sender holders.
+  expect(await f.sender({ recheck: async () => locked }).sendSms(message)).toMatchObject({ status: 'sent' });
+  expect(f.sms.messages[1]).toEqual({ to: phone, body: 'Test Gym: ' + message.body });
+});
 it('serializes concurrent cap reservations and counts every refused attempt', async () => {
   const f = await fixture({ cap: 2 });
   const results = await Promise.all(Array.from({ length: 6 }, () => f.sender().sendSms(message)));

@@ -11,6 +11,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { isInTransaction } from '@plaingym/shared/transaction';
 import { TestClock } from '../../core/clock.js';
+import { setLogSink } from '../../core/log.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { createServerRegistry } from '../../core/registry.js';
@@ -146,15 +147,71 @@ function changeDuringResolution(f: Awaited<ReturnType<typeof fixture>>, change: 
 
 it('suppresses a household text when the member gains their own consented phone during resolution, then texts that phone once', async () => {
   const f = await fixture(), own = '+12025550199', key = `booking-promotion-sms:${f.queued.id}`;
-  changeDuringResolution(f, tx => tx.update(members).set({ phone: own, phoneE164: own,
-    smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }).where(eq(members.id, f.child.id)));
+  const log = vi.fn(), previousSink = setLogSink(log);
+  try {
+    changeDuringResolution(f, tx => tx.update(members).set({ phone: own, phoneE164: own,
+      smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }).where(eq(members.id, f.child.id)));
+    await f.run();
+    expect(f.resolver.resolve).toHaveBeenCalledTimes(1); expect(f.sms.messages).toHaveLength(0); expect(await usage(f.gymId)).toEqual([]);
+    expect(await promotionTexts(f.gymId)).toMatchObject([{ key, state: 'not_accepted' }]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"reason":"phone_changed"'));
+    await f.run(); await f.run();
+    expect(f.sms.messages.map(message => message.to)).toEqual([own]);
+    expect(await promotionTexts(f.gymId)).toMatchObject([{ key, state: 'accepted' }]);
+    expect(await usage(f.gymId)).toEqual([expect.objectContaining({ sent: 1, refused: 0 })]);
+  } finally { setLogSink(previousSink); }
+});
+
+it.each(['member_to_household', 'household_to_member'] as const)('accepts one text and one slot when consent switches %s at the same number during resolution', async direction => {
+  const f = await fixture(), key = `booking-promotion-sms:${f.queued.id}`;
+  if (direction === 'member_to_household') {
+    await db.forGym(f.gymId, tx => tx.update(members).set({ phone, phoneE164: phone,
+      smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }).where(eq(members.id, f.child.id)));
+    changeDuringResolution(f, tx => tx.update(members).set({ smsNoticesConsentAt: null, smsNoticesConsentSource: null })
+      .where(eq(members.id, f.child.id)));
+  } else {
+    changeDuringResolution(f, async tx => {
+      await tx.update(members).set({ phone, phoneE164: phone, smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' })
+        .where(eq(members.id, f.child.id));
+      await tx.update(households).set({ smsNoticesConsentAt: null, smsNoticesConsentSource: null }).where(eq(households.id, f.home.id));
+    });
+  }
   await f.run();
-  expect(f.resolver.resolve).toHaveBeenCalledTimes(1); expect(f.sms.messages).toHaveLength(0); expect(await usage(f.gymId)).toEqual([]);
-  expect(await promotionTexts(f.gymId)).toMatchObject([{ key, state: 'not_accepted' }]);
-  await f.run(); await f.run();
-  expect(f.sms.messages.map(message => message.to)).toEqual([own]);
+  expect(f.sms.messages.map(message => message.to)).toEqual([phone]);
   expect(await promotionTexts(f.gymId)).toMatchObject([{ key, state: 'accepted' }]);
   expect(await usage(f.gymId)).toEqual([expect.objectContaining({ sent: 1, refused: 0 })]);
+});
+
+it('builds the promotion body from the locked reschedule and timezone and loads the promotion once in the cap transaction', async () => {
+  const f = await fixture();
+  let resolved = false, loadsInCapTx = 0;
+  f.resolver.resolve.mockImplementationOnce(async id => {
+    expect(isInTransaction()).toBe(false);
+    await db.forGym(id, async tx => {
+      await tx.update(classSessions).set({ name: 'Late practice',
+        startsAt: new Date('2026-11-11T02:00:00Z'), endsAt: new Date('2026-11-11T03:00:00Z') }).where(eq(classSessions.id, f.session.id));
+      await tx.update(gyms).set({ timezone: 'America/Los_Angeles' }).where(eq(gyms.id, id));
+    });
+    resolved = true;
+    return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+  });
+  const load = vi.fn(async (tx: Transaction, gymId: string, bookingId: string) => {
+    if (resolved) { expect(isInTransaction()).toBe(true); loadsInCapTx++; }
+    const [row] = await tx.select({ memberId: classBookings.memberId, name: classSessions.name, startsAt: classSessions.startsAt })
+      .from(classBookings).innerJoin(classSessions, eq(classSessions.id, classBookings.sessionId))
+      .innerJoin(members, eq(members.id, classBookings.memberId))
+      .where(and(eq(classBookings.gymId, gymId), eq(classBookings.id, bookingId), eq(classBookings.status, 'booked'), isNull(members.anonymizedAt)));
+    return row && { memberId: row.memberId, session: { name: row.name, startsAt: row.startsAt } };
+  });
+  const send = createBookingSms({ scope: db.forGym, clock: f.clock, settings: createGymSettingsAccessor({ scope: db.forGym }), sms: f.options.sms, load });
+  await send(f.gymId, f.queued.id);
+  expect(loadsInCapTx).toBe(1);
+  expect(f.sms.messages).toHaveLength(1);
+  expect(f.sms.messages[0]!.to).toBe(phone);
+  for (const value of ['Late practice', '2026-11-10', '6:00 PM PST']) expect(f.sms.messages[0]!.body).toContain(value);
+  expect(f.sms.messages[0]!.body).not.toContain('Evening practice');
+  expect(f.sms.messages[0]!.body).not.toContain('7:30 PM EST');
+  expect(await usage(f.gymId)).toEqual([expect.objectContaining({ day: '2026-11-10', sent: 1, refused: 0 })]);
 });
 
 it.each(['cancelled', 'consent', 'unchanged'] as const)('rechecks the promotion and recipient after a %s change during resolution', async change => {
