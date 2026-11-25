@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, count, eq, gte, isNotNull, isNull, max, min, or } from 'drizzle-orm';
-import { forGym, forSystem, paymentAttempts, stripeEvents, uuidv7, writeAudit } from '@plaingym/db';
+import { and, count, eq, gte, inArray, isNotNull, isNull, max, min, or } from 'drizzle-orm';
+import { auditEvents, forGym, forSystem, paymentAttempts, stripeEvents, uuidv7, writeAudit } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { z } from 'zod';
 import { clock as systemClock } from '../../../core/clock.js';
@@ -224,8 +224,14 @@ export function createWebhookHealthQuery(scope: typeof forGym = forGym, clock: C
         .where(and(eq(stripeEvents.gymId, gymId), isNull(stripeEvents.processedAt), isNotNull(stripeEvents.error),
           // A row that failed before failure times were recorded counts by when it was received.
           or(gte(stripeEvents.failedAt, since), and(isNull(stripeEvents.failedAt), gte(stripeEvents.receivedAt, since)))));
+      // A save or a new endpoint starts the wait again: earlier charges say nothing about whether webhooks arrive now.
+      // occurredAt comes from the service clock that also dates charge attempts; createdAt is the database's own clock.
+      const [saved] = await tx.select({ at: max(auditEvents.occurredAt) }).from(auditEvents)
+        .where(and(eq(auditEvents.gymId, gymId), inArray(auditEvents.action, ['integrations.stripe_saved',
+          'setup.stripe_configured', 'payments.webhook_endpoint_replaced', 'payments.webhook_endpoint_recreated'])));
       const [first] = await tx.select({ at: min(paymentAttempts.createdAt) }).from(paymentAttempts)
-        .where(and(eq(paymentAttempts.gymId, gymId), isNotNull(paymentAttempts.paymentIntentId)));
+        .where(and(eq(paymentAttempts.gymId, gymId), isNotNull(paymentAttempts.paymentIntentId),
+          saved?.at ? gte(paymentAttempts.createdAt, saved.at) : undefined));
       return {
         lastReceivedAt: times?.received?.toISOString() ?? null, lastProcessedAt: times?.processed?.toISOString() ?? null,
         pendingCount: pending?.total ?? 0, failedCount: failed?.total ?? 0, recentFailedCount: recent?.total ?? 0,

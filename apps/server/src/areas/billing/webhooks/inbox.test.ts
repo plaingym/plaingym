@@ -557,3 +557,44 @@ it('health reports the earliest Stripe payment attempt per gym, ignoring attempt
   expect((await health.get(gym1)).firstChargeAttemptAt).toBe(t.toISOString());
   expect((await health.get(gymEmpty)).firstChargeAttemptAt).toBeNull();
 });
+const savedAt = new Date('2026-10-20T12:00:00Z'), threeDaysBefore = new Date('2026-10-17T12:00:00Z'),
+  hourAfter = new Date('2026-10-20T13:00:00Z');
+async function chargeGym(...attemptTimes: Date[]) {
+  const gymId = uuidv7(); await factory('gyms', gymId);
+  for (const [index, createdAt] of attemptTimes.entries())
+    await factory('paymentAttempts', gymId, { paymentIntentId: `pi_${gymId}_${index}`, createdAt });
+  return gymId;
+}
+// Save paths date audits by the service clock (occurredAt); createdAt stays the database's now, after every attempt here.
+const stripeAudit = (gymId: string, action: string, at = savedAt) =>
+  factory('auditEvents', gymId, { action, targetType: 'gym', targetId: gymId, occurredAt: at });
+const firstAttempt = async (gymId: string) =>
+  (await createWebhookHealthQuery(database.forGym, clock).get(gymId)).firstChargeAttemptAt;
+it.each(['integrations.stripe_saved', 'setup.stripe_configured', 'payments.webhook_endpoint_replaced',
+  'payments.webhook_endpoint_recreated'])('health counts charge attempts from the %s audit', async (action) => {
+  const gymId = await chargeGym(threeDaysBefore, hourAfter);
+  await stripeAudit(gymId, action);
+  expect(await firstAttempt(gymId)).toBe(hourAfter.toISOString());
+});
+it('health counts a charge attempt made at the moment of the Stripe save', async () => {
+  const gymId = await chargeGym(threeDaysBefore, savedAt, hourAfter);
+  await stripeAudit(gymId, 'integrations.stripe_saved');
+  expect(await firstAttempt(gymId)).toBe(savedAt.toISOString());
+});
+it('health counts from the latest of several Stripe saves and ignores other audits', async () => {
+  const gymId = await chargeGym(threeDaysBefore, hourAfter);
+  await stripeAudit(gymId, 'setup.stripe_configured', new Date('2026-10-16T12:00:00Z'));
+  await stripeAudit(gymId, 'payments.webhook_endpoint_replaced');
+  await stripeAudit(gymId, 'integrations.email_tested', new Date('2026-10-21T12:00:00Z'));
+  expect(await firstAttempt(gymId)).toBe(hourAfter.toISOString());
+});
+it('health reports no charge attempt when every one predates the latest Stripe save', async () => {
+  const gymId = await chargeGym(threeDaysBefore);
+  await stripeAudit(gymId, 'integrations.stripe_saved');
+  expect(await firstAttempt(gymId)).toBeNull();
+});
+it('health ignores another gym\'s Stripe save', async () => {
+  const gymId = await chargeGym(threeDaysBefore, hourAfter), other = await chargeGym();
+  await stripeAudit(other, 'integrations.stripe_saved');
+  expect(await firstAttempt(gymId)).toBe(threeDaysBefore.toISOString());
+});

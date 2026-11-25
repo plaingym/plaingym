@@ -17,7 +17,10 @@ export interface WebhookHealth {
   readonly failedCount: number;
   /** The part of `failedCount` that last failed within `recentWebhookFailureMs`; the rest are older and still unresolved. */
   readonly recentFailedCount: number;
-  /** The earliest Stripe charge attempt's creation time; absent or null when none. */
+  /**
+   * The earliest Stripe charge attempt created at or after the gym's latest Stripe save or webhook endpoint
+   * registration (any attempt when there is none); absent or null when none.
+   */
   readonly firstChargeAttemptAt?: IsoInstant | null;
 }
 /** Implemented by the webhook inbox; no payloads, secrets or errors escape. */

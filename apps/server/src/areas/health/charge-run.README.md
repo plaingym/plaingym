@@ -4,15 +4,19 @@
 The runtime supplies both providers to the generic health route through
 `configureHealthStatus({ providers: [...] })` after building its payment resolver.
 
-`createStripeHealthProvider({ configured, webhooks })` uses the inbox's
-`WebhookHealthQuery` and a boolean configuration resolver, such as
+`createStripeHealthProvider({ configured, webhooks, silenceCheck })` uses the
+inbox's `WebhookHealthQuery` and a boolean configuration resolver, such as
 `async gymId => Boolean(await paymentsFor(gymId))`. It never reads inbox rows,
 credentials or payloads. Failed counts include only events still unprocessed
 (recent failures are errors; older unresolved failures and pending processing
 are warnings). Configured Stripe with no received event yet is healthy (the
-tile says no webhook has arrived) until the gym's first Stripe charge attempt is
-a day old, when it becomes a warning. Silence after an event is not a failure:
-an idle gym may receive no new events.
+tile says no webhook has arrived) until 24 hours after the first Stripe charge
+attempt made since the gym's latest Stripe save or webhook endpoint
+registration (its first attempt ever when there is neither), when it becomes a
+warning. The optional `silenceCheck(gymId)` is asked only then; when it returns
+`false`, as the runtime's does in demo mode, the warning is off and the tile
+stays healthy. Silence after an event is not a failure: an idle gym may receive
+no new events.
 
 `monitorChargeRunner(runner, { scope, clock, settings })` returns a runner whose
 `daily` method records start and completion in append-only `audit_events`, with

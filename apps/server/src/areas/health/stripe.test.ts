@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -102,6 +102,54 @@ describe('Stripe health', () => {
 
     const received = await read([{ gymId, receivedAt: hoursAgo(1), processedAt: hoursAgo(1), failed: false }], hoursAgo(25));
     expect(received).toMatchObject({ status: 'healthy', message: 'Stripe webhooks are processing normally.' });
+  });
+  it('asks silenceCheck, with the gym of the read, before warning that no webhook has arrived', async () => {
+    const gymId = uuidv7();
+    const hoursAgo = (hours: number) => new Date(clock.now().getTime() - hours * 3_600_000).toISOString();
+    const read = (silenceCheck?: (gymId: string) => Promise<boolean>) => createStripeHealthProvider({
+      webhooks: new FakeWebhookHealthQuery([], clock, { firstChargeAttemptAt: hoursAgo(25) }),
+      configured: async () => true, silenceCheck,
+    }).read({ gymId, roles: ['owner'], clock });
+
+    const off = vi.fn(async () => false);
+    const quiet = await read(off);
+    expect(quiet).toMatchObject({ status: 'healthy' });
+    expect(quiet.message).toContain('No webhook has arrived yet');
+    expect(off.mock.calls).toEqual([[gymId]]);
+
+    const on = vi.fn(async () => true);
+    for (const tile of [await read(on), await read()]) {
+      expect(tile).toMatchObject({ status: 'warning', message: expect.stringContaining('no Stripe webhook has arrived') });
+    }
+    expect(on.mock.calls).toEqual([[gymId]]);
+  });
+  it('still reports a failed event when silenceCheck turns the silence warning off', async () => {
+    const gymId = uuidv7();
+    const hoursAgo = (hours: number) => new Date(clock.now().getTime() - hours * 3_600_000).toISOString();
+    const tile = await createStripeHealthProvider({
+      webhooks: new FakeWebhookHealthQuery([{ gymId, receivedAt: hoursAgo(1), processedAt: null, failed: true }], clock,
+        { firstChargeAttemptAt: hoursAgo(25) }),
+      configured: async () => true, silenceCheck: async () => false,
+    }).read({ gymId, roles: ['owner'], clock });
+    expect(tile).toMatchObject({ status: 'error', details: { failed: 1 },
+      message: expect.stringContaining('1 Stripe webhook events failed to process') });
+  });
+  it('does not ask silenceCheck when there is no silence to warn about', async () => {
+    const gymId = uuidv7();
+    const hoursAgo = (hours: number) => new Date(clock.now().getTime() - hours * 3_600_000).toISOString();
+    const silenceCheck = vi.fn(async () => true);
+    for (const [events, firstChargeAttemptAt] of [
+      [[], null],
+      [[], hoursAgo(23)],
+      [[{ gymId, receivedAt: hoursAgo(1), processedAt: hoursAgo(1), failed: false }], hoursAgo(25)],
+    ] as const) {
+      const tile = await createStripeHealthProvider({
+        webhooks: new FakeWebhookHealthQuery(events, clock, { firstChargeAttemptAt }),
+        configured: async () => true, silenceCheck,
+      }).read({ gymId, roles: ['owner'], clock });
+      expect(tile).toMatchObject({ status: 'healthy' });
+    }
+    expect(silenceCheck).not.toHaveBeenCalled();
   });
   it('counts only unprocessed failures when computing status and failed counts', async () => {
     const gymId = uuidv7();

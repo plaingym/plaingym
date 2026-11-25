@@ -128,9 +128,11 @@ keeps that list in step with the handlers), and the message is letters and
 spaces only, at most 100 characters. Any other message, a provider's, one
 holding an ID or a name, or a fixed text with punctuation, is never logged.
 Dispatch jobs allow ten attempts with the queue's backoff.
-`createWebhookHealthQuery` exposes only per-gym webhook timestamps, the first
-Stripe charge attempt time, and unprocessed pending/failed counts; it never
-returns payloads or provider errors.
+`createWebhookHealthQuery` exposes only per-gym webhook timestamps, the time of
+the first Stripe charge attempt since the gym's latest Stripe save or webhook
+endpoint registration (its first ever when there is neither), and unprocessed
+pending/failed counts; it never returns payloads, audit contents or provider
+errors.
 
 In demo mode pass `demoGyms` to the route factory and supply a resolver constructing
 gym-scoped providers from the shared Stripe **test** account and endpoint secret.
