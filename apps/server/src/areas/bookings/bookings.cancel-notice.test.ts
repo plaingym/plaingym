@@ -611,3 +611,85 @@ it('logs bookings.cancel_notice_skipped with channel for missing mailer, missing
     expect.objectContaining({ gymId: missingAtLastCheck.gymId, bookingId: missingAtLastCheck.booking.id, channel: 'sms', reason: 'not_current' }),
   ]);
 });
+
+it.each(['no_recipient', 'class_started', 'disabled', 'no_mailer'] as const)('recovers an accepted email audit before the %s guard without logging a skip', async guard => {
+  const f = await fixture();
+  await f.cancel(['email']);
+  await f.run();
+  await deleteSentAudits(f.booking.id, 'email');
+  f.clock.advance(60_000);
+  let retry = f.run;
+  if (guard === 'no_recipient') {
+    await db.forGym(f.gymId, tx => tx.update(households).set({ email: null }).where(eq(households.id, f.home.id)));
+  } else if (guard === 'class_started') {
+    f.clock.set(f.session.startsAt);
+  } else if (guard === 'disabled') {
+    await db.forGym(f.gymId, tx => tx.update(gyms).set({ memberEmailsEnabled: false }).where(eq(gyms.id, f.gymId)));
+  } else {
+    const noMailer = createBookingDelivery({ scope: db.forGym, clock: f.clock, jobs: f.jobs, mailer: async () => null });
+    retry = () => noMailer.sendCancelNotice(f.notices()[0]!.payload, f.gymId);
+  }
+  const logs = await captureLogs(() => retry());
+  const audits = await db.forGym(f.gymId, tx => tx.select({ after: auditEvents.after, occurredAt: auditEvents.occurredAt })
+    .from(auditEvents).where(and(eq(auditEvents.targetId, f.booking.id), eq(auditEvents.action, 'booking.cancel_notice_sent'))));
+  expect(audits).toEqual([{ after: { channel: 'email' }, occurredAt: f.clock.now() }]);
+  expect(logs.filter(line => line.event === 'bookings.cancel_notice_skipped' && line.channel === 'email')).toEqual([]);
+  expect(f.email.messages).toHaveLength(1);
+});
+
+it('recovers an accepted SMS audit when the phone is cleared, memberSmsEnabled is off, class started, or sms option is absent without logging a skip', async () => {
+  const f = await fixture();
+  await f.cancel(['sms']);
+  await f.run();
+  await deleteSentAudits(f.booking.id, 'sms');
+  await db.forGym(f.gymId, async tx => {
+    await tx.update(households).set({ phone: null, phoneE164: null, smsNoticesConsentAt: null, smsNoticesConsentSource: null })
+      .where(eq(households.id, f.home.id));
+    await tx.update(gyms).set({ memberSmsEnabled: false }).where(eq(gyms.id, f.gymId));
+  });
+  f.clock.set(f.session.startsAt);
+  const noSms = createBookingDelivery({ scope: db.forGym, clock: f.clock, jobs: f.jobs, mailer: async () => f.email });
+  const logs = await captureLogs(() => noSms.sendCancelNotice(f.notices()[0]!.payload, f.gymId));
+  const audits = await db.forGym(f.gymId, tx => tx.select({ after: auditEvents.after, occurredAt: auditEvents.occurredAt })
+    .from(auditEvents).where(and(eq(auditEvents.targetId, f.booking.id), eq(auditEvents.action, 'booking.cancel_notice_sent'))));
+  expect(audits).toEqual([{ after: { channel: 'sms' }, occurredAt: f.clock.now() }]);
+  expect(logs.filter(line => line.event === 'bookings.cancel_notice_skipped' && line.channel === 'sms')).toEqual([]);
+  expect(f.sms.messages).toHaveLength(1);
+});
+
+it('writes exactly one SMS sent audit when two runs race to recover an accepted SMS', async () => {
+  const f = await fixture();
+  await f.cancel(['sms']);
+  await f.run();
+  await deleteSentAudits(f.booking.id, 'sms');
+  // Synchronize both runs after their delivery-state reads so both enter recordSent together.
+  let recordEntries = 0;
+  const bothReady = Promise.withResolvers<void>();
+  const release = setTimeout(() => bothReady.resolve(), 5_000);
+  const callsByRun = new WeakMap<object, number>();
+  const makeRun = () => {
+    const token = {};
+    const scope: typeof db.forGym = async (gymId, fn) => {
+      const n = (callsByRun.get(token) ?? 0) + 1;
+      callsByRun.set(token, n);
+      if (n === 2) {
+        if (++recordEntries === 2) bothReady.resolve();
+        await bothReady.promise;
+      }
+      return db.forGym(gymId, fn);
+    };
+    const delivery = createBookingDelivery({ scope, clock: f.clock, jobs: f.jobs, mailer: async () => f.email,
+      sms: { resolver: f.resolver, phoneDigest: createSmsPhoneDigest('cancel-notice-test') } });
+    return delivery.sendCancelNotice(f.notices()[0]!.payload, f.gymId);
+  };
+  try {
+    await Promise.all([makeRun(), makeRun()]);
+  } finally {
+    clearTimeout(release);
+  }
+  expect(recordEntries).toBe(2);
+  const audits = await db.forGym(f.gymId, tx => tx.select({ after: auditEvents.after })
+    .from(auditEvents).where(and(eq(auditEvents.targetId, f.booking.id), eq(auditEvents.action, 'booking.cancel_notice_sent'))));
+  expect(audits).toEqual([{ after: { channel: 'sms' } }]);
+  expect(f.sms.messages).toHaveLength(1);
+});

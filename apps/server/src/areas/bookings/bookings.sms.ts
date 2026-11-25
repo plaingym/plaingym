@@ -4,11 +4,14 @@ import { classBookings, classSessions, databaseCode, forGym, households, members
 import { createTranslator, type Clock } from '@plaingym/shared';
 import { localDate } from '@plaingym/shared/time';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
-import { createSmsDeliveries, MemberSms, SmsRecheckBusy, type MemberSmsOptions, type Sms } from '../../infra/sms/index.js';
+import { createSmsDeliveries, MemberSms, SmsRecheckBusy, type MemberSmsOptions, type Sms, type SmsRecheckSettings, type SmsSuppression } from '../../infra/sms/index.js';
 import type { SmsResolver } from '../settings/sms.js';
 import { holdGymSettings, readGymSettings } from '../settings/settings.js';
 import { memberNoticePhones } from '../members/sms-recipients.js';
 import messages from '../../../../../locales/en/bookings/bookings.json' with { type: 'json' };
+
+type GymSettings = Awaited<ReturnType<typeof readGymSettings>>;
+type SmsSuppressionReason = SmsSuppression['reason'];
 
 export interface ClassNoticeSmsOptions {
   resolver: SmsResolver;
@@ -17,6 +20,53 @@ export interface ClassNoticeSmsOptions {
 }
 export interface ClassNoticeDeliveryOptions {
   scope: typeof forGym; clock: Clock; settings: GymSettingsAccessor; sms?: ClassNoticeSmsOptions;
+}
+/** Maps a `readGymSettings` result into the settings snapshot `MemberSms`'s cap transaction uses. */
+export function noticeCapSettings(gym: GymSettings): SmsRecheckSettings {
+  return { memberSmsEnabled: gym.memberSmsEnabled, smsDailyCap: gym.smsDailyCap, timezone: gym.timezone, country: gym.address.country ?? null };
+}
+async function share<T>(read: () => Promise<T>): Promise<T> {
+  try { return await read(); }
+  catch (error) { throw databaseCode(error) === '55P03' ? new SmsRecheckBusy() : error; }
+}
+/**
+ * Locks each member and then each distinct household `FOR SHARE NOWAIT`, in sorted ID order. Member erasure and
+ * deletion lock the household and member before the session, so a busy row throws `SmsRecheckBusy` to roll back the
+ * cap transaction and let `MemberSms` retry. Returns `false` when any member row is missing.
+ */
+export async function shareNoticeRecipients(tx: Transaction, gymId: string, memberIds: readonly string[]): Promise<boolean> {
+  const householdIds = new Set<string>();
+  for (const memberId of [...new Set(memberIds)].sort()) {
+    const [person] = await share(() => tx.select({ householdId: members.householdId }).from(members)
+      .where(and(eq(members.gymId, gymId), eq(members.id, memberId))).for('share', { noWait: true }));
+    if (!person) return false;
+    householdIds.add(person.householdId);
+  }
+  for (const householdId of [...householdIds].sort()) {
+    await share(() => tx.select({ id: households.id }).from(households)
+      .where(and(eq(households.gymId, gymId), eq(households.id, householdId))).for('share', { noWait: true }));
+  }
+  return true;
+}
+/**
+ * Shared lock sequence for a booking text's last check in the cap transaction: settings key share and read, booking's
+ * session `FOR SHARE`, caller `reload`, then member and household `FOR SHARE NOWAIT`.
+ */
+export async function lockBookingNotice<T extends { memberId: string }>(
+  tx: Transaction, gymId: string, bookingId: string,
+  reload: (tx: Transaction) => Promise<T | SmsSuppressionReason>,
+): Promise<'no_booking' | SmsSuppressionReason | { gym: GymSettings; loaded: T }> {
+  await holdGymSettings(tx, gymId);
+  const gym = await readGymSettings(tx, gymId);
+  const [booking] = await tx.select({ sessionId: classBookings.sessionId }).from(classBookings)
+    .where(and(eq(classBookings.gymId, gymId), eq(classBookings.id, bookingId)));
+  if (!booking) return 'no_booking';
+  await tx.select({ id: classSessions.id }).from(classSessions)
+    .where(and(eq(classSessions.gymId, gymId), eq(classSessions.id, booking.sessionId))).for('share');
+  const loaded = await reload(tx);
+  if (typeof loaded === 'string') return loaded;
+  if (!(await shareNoticeRecipients(tx, gymId, [loaded.memberId]))) return 'no_consent';
+  return { gym, loaded };
 }
 /** Only members in the notice's snapshot can contribute a name or authorize a destination. */
 export async function readNoticePhones(tx: Transaction, gymId: string, memberIds: readonly string[]) {
@@ -66,28 +116,12 @@ export function createBookingSms(options: ClassNoticeDeliveryOptions & {
     // keeps cancellation from overtaking the eligibility check. The member and household locks protect the recipient choice.
     // Member erasure and deletion lock the household and member before the session, so those two locks never wait: when
     // either is busy the whole check rolls back, releasing the session, and MemberSms retries it from the booking reread.
-    const lastCheck = async (tx: Transaction) => {
-      await holdGymSettings(tx, gymId);
-      const gym = await readGymSettings(tx, gymId);
-      const [booking] = await tx.select({ sessionId: classBookings.sessionId }).from(classBookings)
-        .where(and(eq(classBookings.gymId, gymId), eq(classBookings.id, bookingId)));
-      if (!booking) return 'no_consent';
-      await tx.select({ id: classSessions.id }).from(classSessions)
-        .where(and(eq(classSessions.gymId, gymId), eq(classSessions.id, booking.sessionId))).for('share');
-      const latest = await options.load(tx, gymId, bookingId);
-      if (!latest) return 'no_consent';
-      const share = async <T>(read: () => Promise<T>) => {
-        try { return await read(); }
-        catch (error) { throw databaseCode(error) === '55P03' ? new SmsRecheckBusy() : error; }
-      };
-      const [person] = await share(() => tx.select({ householdId: members.householdId }).from(members)
-        .where(and(eq(members.gymId, gymId), eq(members.id, latest.memberId))).for('share', { noWait: true }));
-      if (!person) return 'no_consent';
-      await share(() => tx.select({ id: households.id }).from(households)
-        .where(and(eq(households.gymId, gymId), eq(households.id, person.householdId))).for('share', { noWait: true }));
+    const lastCheck: NonNullable<MemberSmsOptions['recheck']> = async (tx: Transaction) => {
+      const locked = await lockBookingNotice(tx, gymId, bookingId, async tx => (await options.load(tx, gymId, bookingId)) ?? 'no_consent');
+      if (typeof locked === 'string') return locked === 'no_booking' ? 'no_consent' : locked;
       const checked = await recipientCheck(tx);
       if ('reason' in checked) return checked.reason;
-      return { memberSmsEnabled: gym.memberSmsEnabled, smsDailyCap: gym.smsDailyCap, timezone: gym.timezone, country: gym.address.country ?? null };
+      return noticeCapSettings(locked.gym);
     };
     const guarded: Sms = {
       verifyAccount: () => noticeSender(options, gymId, group).verifyAccount(),

@@ -19,6 +19,7 @@ const isDocsTest = (file) => /\.docs\.test\.ts$/.test(file);
 // These tests inspect source/configuration files outside Vitest's import graph (sync and async reads).
 const sourceScanningTests = [
   'apps/server/src/areas/billing/webhooks/inbox.reasons.test.ts',
+  'apps/server/src/areas/bookings/bookings.notice-lock.test.ts',
   'apps/server/src/areas/bookings/bookings.retention.test.ts',
   'apps/web/src/features/portal/household/keys.test.ts',
   'apps/server/src/areas/imports/export.catalog.test.ts',

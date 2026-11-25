@@ -109,7 +109,8 @@ back to a current consented billing phone. `MemberSms` enforces
 notices consent, current phone and household membership, the independent SMS
 switch and daily cap. Announcement consent alone is insufficient. After the
 provider credentials resolve, the text's last check runs first in the
-transaction that takes the cap slot. It locks and reads the gym settings, locks
+transaction that takes the cap slot, through `lockBookingNotice` in
+`bookings.sms.ts`. It locks and reads the gym settings, locks
 the class session before checking the promotion, then locks the member and
 their household before rechecking the preferred consented phone. Staff
 cancellation takes the same session lock before changing the booking. A promotion
@@ -217,7 +218,8 @@ cancellation's notice and note can go out; creation time orders the rows and the
 time-ordered booking ID breaks a tie), the member isn't erased, the channel's
 switch is on and the address or consented phone is still the one reserved. For a text, as for the promotion text, the
 recipient is checked again after provider credentials resolve, first in the
-transaction that takes the cap slot, since `MemberSms` accepts a household phone
+transaction that takes the cap slot, through `lockBookingNotice` in
+`bookings.sms.ts`, since `MemberSms` accepts a household phone
 for any member of that household. That check locks and reads the gym settings,
 locks the class session, rechecks that the booking is still cancelled, its class hasn't started and it is still
 the member's latest for the class, then locks the member and their household
@@ -238,9 +240,12 @@ logging an email opt-out. On an email guard skip, the guard returns `opt_out` so
 the email delivery row records `not_accepted` (without logging an email opt-out)
 while the bookings log has the real reason; switch-off returns stay silent. Each
 accepted channel writes one `booking.cancel_notice_sent` audit with `{ channel }`
-per booking and channel in its own transaction, including on a retry if an
-earlier try was accepted without recording the audit; suppressed, skipped,
-failed, and uncertain (`unknown`) channels write none. A promotion the
+per booking and channel in its own transaction (locking the booking row
+`FOR UPDATE` before checking for an existing audit). A retry that finds a
+channel already accepted records that single audit before any other check and
+logs no skip for it; `occurredAt` on a recovered audit is when it was recorded,
+not when the delivery was accepted. Suppressed, skipped, failed, and uncertain
+(`unknown`) channels write none. A promotion the
 cancellation frees keeps its own notice.
 
 The email follows the same address rules as other individual booking notices:

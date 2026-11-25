@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, gt, isNull, ne, or } from 'drizzle-orm';
-import { auditEvents, classBookings, classSessions, databaseCode, forGym, households, members, writeAudit, type Transaction } from '@plaingym/db';
+import { auditEvents, classBookings, classSessions, forGym, members, writeAudit, type Transaction } from '@plaingym/db';
 import { createTranslator, type Clock } from '@plaingym/shared';
 import { cancellationNoticeChannelsSchema, idSchema } from '@plaingym/shared/contracts';
 import { z } from 'zod';
@@ -10,11 +10,11 @@ import { logInfo } from '../../core/log.js';
 import { createEmailDeliveries, DeliveryError, type Email } from '../../infra/email/index.js';
 import { logEmailSuppression, type SuppressionReason } from '../../infra/email/member.js';
 import type { JobTransaction, Jobs } from '../../infra/jobs/index.js';
-import { createSmsDeliveries, SmsRecheckBusy, type MemberSmsOptions, type Sms, type SmsMessage } from '../../infra/sms/index.js';
+import { createSmsDeliveries, type MemberSmsOptions, type Sms, type SmsMessage } from '../../infra/sms/index.js';
 import { renderBookingCancellation } from '../../emails/bookings/bookings.js';
-import { createGymSettingsAccessor, createSettingsService, holdGymSettings, readGymSettings } from '../settings/settings.js';
+import { createGymSettingsAccessor, createSettingsService } from '../settings/settings.js';
 import { readMemberNoticeEmails } from './bookings.recipients.js';
-import { noticeSender, noticeWhen, readNoticePhones, type ClassNoticeSmsOptions } from './bookings.sms.js';
+import { lockBookingNotice, noticeCapSettings, noticeSender, noticeWhen, readNoticePhones, type ClassNoticeSmsOptions } from './bookings.sms.js';
 import messages from '../../../../../locales/en/bookings/bookings.json' with { type: 'json' };
 
 export const cancelNoticeJob = 'bookings.cancel_notice';
@@ -53,6 +53,8 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
 
   async function recordSent(gymId: string, bookingId: string, channel: 'email' | 'sms') {
     await scope(gymId, async tx => {
+      await tx.select({ id: classBookings.id }).from(classBookings)
+        .where(and(eq(classBookings.gymId, gymId), eq(classBookings.id, bookingId))).for('update');
       const existing = await tx.select({ after: auditEvents.after }).from(auditEvents)
         .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.action, 'booking.cancel_notice_sent'),
           eq(auditEvents.targetType, 'class_booking'), eq(auditEvents.targetId, bookingId)));
@@ -88,6 +90,10 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
     && (['memberIds', 'consentMemberIds', 'consentHouseholdIds'] as const).every(key => [...a[key]].sort().join() === [...b[key]].sort().join());
 
   async function sendEmail(gymId: string, notice: CancelNotice) {
+    if (await emails.state(gymId, cancelNoticeEmailKey(notice.bookingId)) === 'accepted') {
+      await recordSent(gymId, notice.bookingId, 'email');
+      return;
+    }
     const gym = await settings.get(gymId);
     if (!gym.memberEmailsEnabled) return;
     const row = await load(gymId, notice.bookingId);
@@ -129,6 +135,10 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
   }
 
   async function sendSms(gymId: string, notice: CancelNotice) {
+    if (await texts.state(gymId, cancelNoticeSmsKey(notice.bookingId)) === 'accepted') {
+      await recordSent(gymId, notice.bookingId, 'sms');
+      return;
+    }
     const sms = options.sms;
     if (!sms || !(await settings.get(gymId)).memberSmsEnabled) return;
     const row = await load(gymId, notice.bookingId);
@@ -165,31 +175,22 @@ export function createBookingCancelNotice(options: BookingCancelNoticeOptions) {
           // before the session, so those two locks never wait: when either is busy the whole check rolls back, releasing
           // the session, and MemberSms retries it.
           const lastCheck: NonNullable<MemberSmsOptions['recheck']> = async (tx: Transaction) => {
-            await holdGymSettings(tx, gymId);
-            const gym = await readGymSettings(tx, gymId);
-            const [booking] = await tx.select({ sessionId: classBookings.sessionId }).from(classBookings)
-              .where(and(eq(classBookings.gymId, gymId), eq(classBookings.id, notice.bookingId)));
-            if (!booking) { skipped(gymId, notice.bookingId, 'sms', 'not_current'); return 'no_consent'; }
-            await tx.select({ id: classSessions.id }).from(classSessions)
-              .where(and(eq(classSessions.gymId, gymId), eq(classSessions.id, booking.sessionId))).for('share');
-            const again = await loadIn(tx, gymId, notice.bookingId);
-            if (typeof again === 'string' || again.memberId !== row.memberId) {
-              skipped(gymId, notice.bookingId, 'sms', typeof again === 'string' ? again : 'not_current');
-              return 'no_consent';
+            const locked = await lockBookingNotice(tx, gymId, notice.bookingId, async tx => {
+              const again = await loadIn(tx, gymId, notice.bookingId);
+              if (typeof again === 'string' || again.memberId !== row.memberId) {
+                skipped(gymId, notice.bookingId, 'sms', typeof again === 'string' ? again : 'not_current');
+                return 'no_consent';
+              }
+              return again;
+            });
+            if (typeof locked === 'string') {
+              if (locked === 'no_booking') { skipped(gymId, notice.bookingId, 'sms', 'not_current'); return 'no_consent'; }
+              return locked;
             }
-            const share = async <T>(read: () => Promise<T>) => {
-              try { return await read(); }
-              catch (error) { throw databaseCode(error) === '55P03' ? new SmsRecheckBusy() : error; }
-            };
-            const [person] = await share(() => tx.select({ householdId: members.householdId }).from(members)
-              .where(and(eq(members.gymId, gymId), eq(members.id, again.memberId))).for('share', { noWait: true }));
-            if (!person) return 'no_consent';
-            await share(() => tx.select({ id: households.id }).from(households)
-              .where(and(eq(households.gymId, gymId), eq(households.id, person.householdId))).for('share', { noWait: true }));
-            const [now] = await readNoticePhones(tx, gymId, [again.memberId]);
+            const [now] = await readNoticePhones(tx, gymId, [locked.loaded.memberId]);
             if (!now) return 'no_consent';
             if (!sameGroup(now, current)) return 'phone_changed';
-            return { memberSmsEnabled: gym.memberSmsEnabled, smsDailyCap: gym.smsDailyCap, timezone: gym.timezone, country: gym.address.country ?? null };
+            return noticeCapSettings(locked.gym);
           };
           sender = noticeSender(delivery, gymId, current, lastCheck);
           message = { to: current.phoneE164,

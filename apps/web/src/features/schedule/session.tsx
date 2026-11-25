@@ -59,11 +59,10 @@ export function Field({ label, children }: { label: string; children: ReactNode 
  * manage it. Renders nothing once the gym has a coach. The link opens a new tab, so a half-filled form survives.
  */
 export function CoachHint({ id, coaches }: { id: string; coaches: readonly unknown[] }) {
-  const bootstrap = useBootstrap();
-  const roles = bootstrap.data?.session?.roles;
+  const roles = useBootstrap().data?.session?.roles;
   if (coaches.length) return null;
   if (!roles) {
-    return <div id={id} className="text-sm text-muted-foreground"><p>{text(bootstrap.isPending ? 'coachesHelpPending' : 'coachesHelpAsk')}</p></div>;
+    return <div id={id} className="text-sm text-muted-foreground"><p>{text('coachesHelpPending')}</p></div>;
   }
   const canManageStaff = canStaff(roles, 'staff.manage');
   return <div id={id} className="text-sm text-muted-foreground">

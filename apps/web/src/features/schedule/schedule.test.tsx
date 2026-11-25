@@ -677,9 +677,9 @@ describe('weekly class capacity and the coach hint', () => {
     cleanup();
     vi.mocked(useBootstrap).mockReturnValue({ data: undefined, isPending: false, isError: true } as ReturnType<typeof useBootstrap>);
     render(view([], ['owner']));
-    const failedHint = screen.getByText(coachesHelpAsk);
+    const failedHint = screen.getByText(coachesHelpPending);
     expect(screen.getAllByLabelText('Coach').find(element => element.tagName === 'SELECT')!.getAttribute('aria-describedby')).toBe(failedHint.parentElement!.id);
-    expect(screen.queryByText(coachesHelpPending)).toBeNull();
+    expect(screen.queryByText(coachesHelpAsk)).toBeNull();
     expect(screen.queryByText(coachesHelp)).toBeNull();
     expect(screen.queryByRole('link', { name: 'Open Staff' })).toBeNull();
     cleanup();
