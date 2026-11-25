@@ -103,9 +103,11 @@ The ticket stops when the time since it started reaches
 by default). First lease and ticket metadata writes share a 20-second allowance
 (two lease intervals): if they have not finished after 20 seconds, a timer stops
 the ticket so even a lone Preview fails with the timeout message and frees its
-budget reservation. A new Preview also stops and replaces a lapsed ticket,
-including one whose first lease or ticket metadata write is still pending after
-20 seconds. Stopping a ticket removes queued work from the memory queue and
+budget reservation. A ticket whose first lease or metadata write fails stops at
+once and clears that timer, so a repeat Preview starts a new ticket immediately
+instead of joining the failed one. A new Preview also stops and replaces a lapsed
+ticket, including one whose first lease or ticket metadata write is still pending
+after 20 seconds. Stopping a ticket removes queued work from the memory queue and
 cancels running work at its next deadline check.
 When a result is saved, the process stops renewing and marks only the newest
 eight lease keys deleted in parallel with a shared ten-second timeout. Older

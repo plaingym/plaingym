@@ -340,7 +340,7 @@ export function createImportPipeline(options: PipelineOptions) {
       void computation.catch(() => undefined);
       const ceilingTimer = setTimeout(stop, leaseCeiling);
       // The storage write itself cannot be cancelled. Stopping the ticket rejects saved independently.
-      void renew(true).then(() => { clearTimeout(firstWrites); saved.resolve(); }, saved.reject);
+      void renew(true).then(() => { clearTimeout(firstWrites); saved.resolve(); }, error => { clearTimeout(firstWrites); saved.reject(error); stop(); });
       const firstWrites = setTimeout(() => { if (current.leaseUntil === 0) stop(); }, 2 * PREVIEW_LEASE_INTERVAL_MS);
       // Every background failure is observed, and only safe application explanations are persisted.
       void (async () => {

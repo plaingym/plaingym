@@ -369,6 +369,97 @@ it('joins a slow healthy ticket whose first lease and meta writes take 6 s each'
   }
 });
 
+it('stops a ticket immediately when its first lease write rejects so a repeat preview starts a new ticket', async () => {
+  const budget = new PreviewBudget(1, 1), f = await fixture(budget);
+  const gate = analysisGate();
+  const analyze = vi.fn<CsvMapper['analyze']>(async (_tx, rows) => {
+    gate.entered.resolve();
+    await gate.release.promise;
+    return rows.map(row => ({ rowNumber: row.rowNumber, values: { name: 'Pat' }, action: 'create', duplicateIds: [], issues: [] }));
+  });
+  const mapper: CsvMapper = { id: 'people', available: true, analyze, async commit() { return 0; } };
+  const writer = createImportPipeline({
+    uploadsFor: async () => f.storage, jobs: new FakeJobs(f.clock), scope: database.forGym, clock: f.clock,
+    previewBudget: budget, previewTimeoutMs: PREVIEW_TIMEOUT_MS, mappers: new MapperRegistry([mapper]),
+  });
+  const heartbeat = watchHeartbeats(f.clock);
+  const clear = vi.spyOn(globalThis, 'clearTimeout');
+  const storageError = new Error('storage offline');
+  heartbeat.renewals.mockRejectedValueOnce(storageError);
+  try {
+    await expect(writer.requestPreview(f.actor, f.plan, page, 'UTC')).rejects.toBe(storageError);
+    expect(budget.pending.size).toBe(0);
+    const firstPrefix = heartbeat.renewals.mock.calls[0]?.[1];
+    expect(firstPrefix).toBeDefined();
+    const firstId = firstPrefix!.split('/').at(-1)!;
+    const firstTimer = heartbeat.scheduled(2 * PREVIEW_LEASE_INTERVAL_MS)[0];
+    expect(firstTimer).toBeDefined();
+    expect(clear).toHaveBeenCalledWith(firstTimer!.timer);
+
+    const secondId = pendingId(await writer.requestPreview(f.actor, f.plan, page, 'UTC'));
+    expect(secondId).not.toBe(firstId);
+    expect(heartbeat.renewals).toHaveBeenCalledTimes(2);
+    await gate.entered.promise;
+    expect(analyze).toHaveBeenCalledTimes(1);
+
+    const [secondEntry] = budget.pending.values();
+    expect(secondEntry?.id).toBe(secondId);
+    // The first-write timer is a real timer: advance the clock past it and run its callback, as if it still fired.
+    f.clock.advance(2 * PREVIEW_LEASE_INTERVAL_MS);
+    firstTimer!.callback();
+    expect(secondEntry?.stopped).toBe(false);
+    expect([...budget.pending.values()].map(entry => entry.id)).toEqual([secondId]);
+    expect(await poll(f, secondId, f.reader())).toEqual({ status: 'computing', id: secondId, uploadId: f.upload.id });
+
+    gate.release.resolve();
+    await expect.poll(() => poll(f, secondId, f.reader())).toMatchObject({ status: 'ready' });
+    await expect.poll(() => budget.pending.size).toBe(0);
+    expect(analyze).toHaveBeenCalledTimes(1);
+  } finally {
+    gate.release.resolve();
+    await expect.poll(() => budget.pending.size).toBe(0);
+  }
+});
+
+it('drops a queued ticket from the budget queue when its first lease write rejects', async () => {
+  const budget = new PreviewBudget(1, 1), f = await fixture(budget);
+  const blockerWriter = f.writer();
+  const analyze = vi.fn<CsvMapper['analyze']>(async (_tx, rows) =>
+    rows.map(row => ({ rowNumber: row.rowNumber, values: { name: 'Pat' }, action: 'create', duplicateIds: [], issues: [] })));
+  const queuedWriter = createImportPipeline({
+    uploadsFor: async () => f.storage, jobs: new FakeJobs(f.clock), scope: database.forGym, clock: f.clock,
+    previewBudget: budget, previewTimeoutMs: PREVIEW_TIMEOUT_MS,
+    mappers: new MapperRegistry([{ id: 'people', available: true, analyze, async commit() { return 0; } }]),
+  });
+  const queuedPlan: ImportPlanRequest = { ...f.plan, mapping: [{ sourceColumn: 'Name', targetField: 'lastName' }] };
+  const renewals = vi.spyOn(PipelineStore.prototype, 'renewLease');
+  const storageError = new Error('storage offline');
+  try {
+    const blockerId = pendingId(await blockerWriter.requestPreview(f.actor, f.plan, page, 'UTC'));
+    await f.entered.promise;
+
+    renewals.mockRejectedValueOnce(storageError);
+    await expect(queuedWriter.requestPreview(f.actor, queuedPlan, page, 'UTC')).rejects.toBe(storageError);
+    const failedId = renewals.mock.calls[1]![1].split('/').at(-1)!;
+    expect([...budget.pending.values()].map(entry => entry.id)).toEqual([blockerId]);
+
+    const retry = await queuedWriter.requestPreview(f.actor, queuedPlan, page, 'UTC');
+    expect(retry.status).toBe('queued');
+    const retryId = pendingId(retry);
+    expect(retryId).not.toBe(failedId);
+    expect(renewals).toHaveBeenCalledTimes(3);
+
+    f.release.resolve();
+    await expect.poll(() => poll(f, blockerId, f.reader())).toMatchObject({ status: 'ready' });
+    await expect.poll(() => poll(f, retryId, f.reader())).toMatchObject({ status: 'ready' });
+    await expect.poll(() => budget.pending.size).toBe(0);
+    expect(analyze).toHaveBeenCalledTimes(1);
+  } finally {
+    f.release.resolve();
+    await expect.poll(() => budget.pending.size).toBe(0);
+  }
+});
+
 it('answers queued when one look-ahead read throws and the other finds a lease, and throws when none does', async () => {
   const f = await fixture();
   const { gymId } = f.actor;
