@@ -16,6 +16,19 @@ export const cancellationSmsKeyPrefix = 'schedule-cancel-sms:';
  * notices use `<session ID>.<N>`, so they never collide with an earlier cancellation's deliveries.
  */
 export const noticeScope = (sessionId: string, round?: number) => round ? `${sessionId}.${round}` : sessionId;
+/**
+ * A member's own consented phone covering only them isn't told their own name. A household billing
+ * phone is marked by its consent household, and always lists who it covers.
+ */
+export function selfNotice(group: {
+  memberIds: readonly string[]; consentMemberIds: readonly string[]; consentHouseholdIds: readonly string[];
+}): boolean {
+  return group.memberIds.length === 1 && !group.consentHouseholdIds.length
+    && group.consentMemberIds.length === 1 && group.consentMemberIds[0] === group.memberIds[0];
+}
+export function sameMembers(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((id, index) => id === b[index]);
+}
 
 /** A separate keyed send after email; neither channel's suppression nor outcome decides the other. */
 export function createCancellationSms(options: ClassNoticeDeliveryOptions) {
@@ -85,12 +98,9 @@ export function createCancellationSms(options: ClassNoticeDeliveryOptions) {
                   ? (await readNoticePhones(tx, gymId, reservation.memberIds)).find(row => row.phoneE164 === group.phoneE164) : undefined;
               });
               if (!current) return { status: 'suppressed', reason: 'no_consent' };
-              // A member's own consented phone covering only them isn't told their own name. A household billing
-              // phone is marked by its consent household, and always lists who it covers.
-              const self = current.memberIds.length === 1 && !current.consentHouseholdIds.length
-                && current.consentMemberIds.length === 1 && current.consentMemberIds[0] === current.memberIds[0];
-              const sameMembers = (a: readonly string[], b: readonly string[]) =>
-                a.length === b.length && a.every((id, index) => id === b[index]);
+              const bodyFor = (self: boolean) => t(self ? 'announcements/cancellation:sms_self' : 'announcements/cancellation:sms', {
+                name: reservation.session.name, ...noticeWhen(reservation.session.startsAt, timezone), names: current.memberNames.join(', '),
+              });
               // Lock order matches promotion and staff cancellation texts: settings key share, session FOR SHARE,
               // then reserved members and their households FOR SHARE NOWAIT so a busy row rolls back and retries.
               const lastCheck: NonNullable<MemberSmsOptions['recheck']> = async tx => {
@@ -106,12 +116,10 @@ export function createCancellationSms(options: ClassNoticeDeliveryOptions) {
                   return currentGroups.some(row => row.phoneE164 !== group.phoneE164 && row.memberIds.some(id => current.memberIds.includes(id)))
                     ? 'phone_changed' : 'no_consent';
                 }
-                return { ...noticeCapSettings(gym), memberIds: now.memberIds, householdIds: now.consentHouseholdIds };
+                return { ...noticeCapSettings(gym), memberIds: now.memberIds, householdIds: now.consentHouseholdIds, body: bodyFor(selfNotice(now)) };
               };
               // Format all texts in the job's timezone. The last check locks the send settings and recipient.
-              return noticeSender(options, gymId, current, lastCheck).sendSms({ to: current.phoneE164,
-                body: t(self ? 'announcements/cancellation:sms_self' : 'announcements/cancellation:sms', { name: reservation.session.name,
-                  ...noticeWhen(reservation.session.startsAt, timezone), names: current.memberNames.join(', ') }) });
+              return noticeSender(options, gymId, current, lastCheck).sendSms({ to: current.phoneE164, body: bodyFor(selfNotice(current)) });
             },
           };
           await deliveries.attempt(reservation.reserved, guarded, { to: group.phoneE164, body: '' });

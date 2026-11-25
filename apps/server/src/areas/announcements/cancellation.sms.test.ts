@@ -414,6 +414,40 @@ it.each(['member_to_household', 'household_to_member'] as const)('accepts one te
   expect(await usage(f.gymId)).toEqual([expect.objectContaining({ sent: 1, refused: 0 })]);
 });
 
+it.each(['member_to_household', 'household_to_member'] as const)('words the cancellation text for the locked consent holder when consent switches %s at the same number', async direction => {
+  const f = await fixture(), mia = f.children[0]!;
+  const notice = { ...f.payload, memberIds: [mia.id], channels: ['sms'] as const };
+  if (direction === 'member_to_household') {
+    await db.forGym(f.gymId, async tx => {
+      await tx.update(members).set({ phone, phoneE164: phone,
+        smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }).where(eq(members.id, mia.id));
+      await tx.update(households).set({ smsNoticesConsentAt: null, smsNoticesConsentSource: null }).where(eq(households.id, f.home.id));
+    });
+    f.resolver.resolve.mockImplementationOnce(async id => {
+      await db.forGym(id, async tx => {
+        await tx.update(members).set({ smsNoticesConsentAt: null, smsNoticesConsentSource: null }).where(eq(members.id, mia.id));
+        await tx.update(households).set({ smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }).where(eq(households.id, f.home.id));
+      });
+      return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+    });
+  } else {
+    f.resolver.resolve.mockImplementationOnce(async id => {
+      await db.forGym(id, async tx => {
+        await tx.update(members).set({ phone, phoneE164: phone,
+          smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }).where(eq(members.id, mia.id));
+        await tx.update(households).set({ smsNoticesConsentAt: null, smsNoticesConsentSource: null }).where(eq(households.id, f.home.id));
+      });
+      return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+    });
+  }
+  await f.notice.run(notice, f.gymId);
+  expect(f.sms.messages).toHaveLength(1);
+  expect(f.sms.messages[0]!.to).toBe(phone);
+  expect(f.sms.messages[0]!.body).toBe(direction === 'member_to_household'
+    ? `${selfText} Members: ${mia.firstName} ${mia.lastName}.` : selfText);
+  expect(await usage(f.gymId)).toEqual([expect.objectContaining({ sent: 1, refused: 0 })]);
+});
+
 it('charges the usage day of the locked timezone when timezone changes during resolution while keeping the job timezone in the body', async () => {
   // 12:00 UTC is 2026-11-10 in New York, but already 2026-11-11 in Kiritimati.
   const f = await fixture();

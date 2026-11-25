@@ -71,8 +71,8 @@ slot). A failure or lock timeout is a definite non-send. A recheck that finds a
 row busy throws `SmsRecheckBusy`: the transaction rolls back with no slot, and
 the whole check runs again in a fresh transaction after a short pause while the
 preparation deadline leaves time for another try. One still busy after that is
-a `no_consent` suppression. The waitlist promotion, staff booking cancellation
-and class cancellation texts use it.
+a `no_consent` suppression. The waitlist promotion, staff booking cancellation,
+class cancellation and class restore texts use it.
 
 Suppression reasons are `disabled`, `no_provider`, `no_consent`, `phone_changed`
 and `cap_reached`; logs hold event, gym ID, member IDs and reason only. A 21610

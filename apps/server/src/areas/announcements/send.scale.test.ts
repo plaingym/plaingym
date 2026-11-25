@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it } from 'vitest';
-import { auditEvents, emailDeliveries, households, memberRanks, members, uuidv7 } from '@plaingym/db';
+import { auditEvents, classBookings, emailDeliveries, households, memberRanks, members, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { announcementDraftSchema } from '@plaingym/shared/contracts';
@@ -12,6 +12,7 @@ import { FakeJobs } from '../../infra/jobs/index.js';
 import { createSmsPhoneDigest, FakeSms } from '../../infra/sms/index.js';
 import { createAnnouncementsService } from './send.js';
 import { createCancellationNotice } from './cancellation.js';
+import { createRestoreNotice } from './restored.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 interface Read { sql: string; rows: number }
@@ -34,7 +35,8 @@ function recording(reads: Read[]): typeof db.forGym {
   } });
   return (gymId, fn) => db.forGym(gymId, tx => fn(new Proxy(tx, { get(target, key) {
     const value = Reflect.get(target, key) as unknown;
-    if (key === 'select' && typeof value === 'function') return (...args: unknown[]) => watch((value as (...a: unknown[]) => object).apply(target, args));
+    if ((key === 'select' || key === 'selectDistinct') && typeof value === 'function')
+      return (...args: unknown[]) => watch((value as (...a: unknown[]) => object).apply(target, args));
     return typeof value === 'function' ? value.bind(target) : value;
   } })));
 }
@@ -189,4 +191,39 @@ it('bounds cancellation text rechecks to the members at each of 250 phones', asy
   // Bounded per phone across reservation, pre-resolution read, and the cap transaction's locked last check.
   expect(total).toBeLessThan(size * 22);
   console.info(`Cancellation text scale: ${reads.length} SELECTs, ${total} returned rows`);
+}, 90_000);
+
+it('bounds restore text rechecks to the members at each of 250 phones', async () => {
+  const gymId = uuidv7(), clock = new TestClock('2026-11-10T12:00:00Z'), size = 250;
+  await factory('gyms', gymId, { name: 'Cedar Gym', memberEmailsEnabled: false, memberSmsEnabled: true,
+    settings: { address: { country: 'US' } } });
+  const user = await factory('authUser', gymId), home = await factory('households', gymId);
+  const session = await factory('classSessions', gymId, { status: 'scheduled', restoreCount: 1,
+    startsAt: new Date('2026-11-11T00:30:00Z'), endsAt: new Date('2026-11-11T01:30:00Z') });
+  const phones = Array.from({ length: size }, (_, i) => `+1202555${1000 + i}`);
+  const people = await db.forGym(gymId, tx => tx.insert(members).values(phones.map((phone, i) => ({
+    gymId, householdId: home.id, firstName: 'Bulk', lastName: String(i), phone, phoneE164: phone,
+    smsNoticesConsentAt: clock.now(), smsNoticesConsentSource: 'staff',
+  }))).returning({ id: members.id }));
+  await db.forGym(gymId, tx => tx.insert(classBookings).values(people.map(person => ({
+    gymId, sessionId: session.id, memberId: person.id, bookedBy: user.id, bookedByKind: 'staff', status: 'booked',
+  }))));
+  const reads: Read[] = [], sms = new FakeSms();
+  const resolver = {
+    resolve: async (id: string) => { expect(isInTransaction()).toBe(false); return { gymId: id, name: 'Cedar Gym', sms }; },
+    status: async () => ({ source: 'gym' as const, unreadable: false }), configured: async () => true,
+  };
+  const service = createRestoreNotice({ scope: recording(reads), clock, jobs: new FakeJobs(clock), demoMode: false,
+    mailer: async () => null, origin: async () => 'https://gym.example.test',
+    sms: { resolver, phoneDigest: createSmsPhoneDigest('restore-notice-test') } });
+  await service.run({ sessionId: session.id, memberIds: people.map(person => person.id), round: 1, channels: ['sms'] }, gymId);
+
+  expect(sms.messages.map(message => message.to).sort()).toEqual(phones);
+  const rosterReads = reads.filter(read => read.rows > 10);
+  expect(rosterReads.length).toBeGreaterThan(0);
+  expect(rosterReads.length).toBeLessThanOrEqual(4);
+  expect(rosterReads.every(read => read.sql.includes('from "members"') || read.sql.includes('from "class_bookings"'))).toBe(true);
+  const total = reads.reduce((rows, read) => rows + read.rows, 0);
+  expect(total).toBeLessThan(size * 26);
+  console.info(`Restore text scale: ${reads.length} SELECTs, ${total} returned rows, ${rosterReads.length} reads > 10 rows`);
 }, 90_000);

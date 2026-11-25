@@ -2,15 +2,18 @@
 import { expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Isolated fixtures exercise the persisted member email and SMS switches.
-import { auditEvents, classBookings, classSessions, emailDeliveries, gyms, members, smsDeliveries, uuidv7 } from '@plaingym/db';
+import { auditEvents, classBookings, classSessions, emailDeliveries, gyms, households, members, smsDailyUsage, smsDeliveries, uuidv7 } from '@plaingym/db';
+// eslint-disable-next-line no-restricted-imports, database/system-tables -- One extra app-role connection holds the row lock in this disposable test database.
+import { openConnection, scopedDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { isInTransaction } from '@plaingym/shared/transaction';
 import { TestClock } from '../../core/clock.js';
+import { setLogSink } from '../../core/log.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { FakeEmail } from '../../infra/email/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
-import { createSmsPhoneDigest, FakeSms } from '../../infra/sms/index.js';
+import { createSmsPhoneDigest, FakeSms, SmsRecheckBusy } from '../../infra/sms/index.js';
 import { createScheduleService } from '../schedule/schedule.js';
 import { createCancellationNotice } from './cancellation.js';
 import { forgetErasedAddressDigests } from './erasure.js';
@@ -59,7 +62,7 @@ async function fixture(scope: typeof db.forGym = db.forGym) {
     db.forGym(gymId, tx => tx.update(gyms).set(values).where(eq(gyms.id, gymId)));
   const cancelPlace = (memberId: string) => db.forGym(gymId, tx => tx.update(classBookings).set({ status: 'cancelled', waitlistPosition: null, cancelledAt: clock.now() })
     .where(and(eq(classBookings.sessionId, session.id), eq(classBookings.memberId, memberId))));
-  return { gymId, clock, session, mia, noa, ari, email, sms, jobs, notice, service, cancel, restore, restoreJobs, run, switches, cancelPlace };
+  return { gymId, clock, session, home, mia, noa, ari, email, sms, jobs, resolver, options, notice, service, cancel, restore, restoreJobs, run, switches, cancelPlace };
 }
 
 it('queues the notice in the restore transaction, so a rollback leaves neither the restore nor its job', async () => {
@@ -181,4 +184,158 @@ it('clears restore notice digests when a member is erased', async () => {
   await db.forGym(f.gymId, tx => forgetErasedAddressDigests(tx, f.gymId, f.ari.id));
   after = await digests();
   expect(after.email[f.ari.id]).toBeNull(); expect(after.sms[f.ari.id]).toBeNull(); expect(after.sms[f.mia.id]).toBeTruthy();
+});
+
+const usage = (gymId: string) => db.forGym(gymId, tx => tx.select().from(smsDailyUsage));
+
+it.each(['solo', 'household'] as const)('suppresses a restore text with phone_changed and no slot when a %s member gains their own consented phone during resolution', async mode => {
+  const f = await fixture(), newOwn = '+12025550188';
+  await f.cancel(); await f.restore(['sms']);
+  const payload = { sessionId: f.session.id, memberIds: mode === 'solo' ? [f.mia.id] : [f.mia.id, f.noa.id], round: 1, channels: ['sms'] as const };
+  const log = vi.fn(), previousSink = setLogSink(log);
+  try {
+    f.resolver.resolve.mockImplementationOnce(async id => {
+      expect(isInTransaction()).toBe(false);
+      await db.forGym(id, tx => tx.update(members).set({ phone: newOwn, phoneE164: newOwn,
+        smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }).where(eq(members.id, f.mia.id)));
+      return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+    });
+    await f.notice.run(payload, f.gymId);
+    expect(f.sms.messages).toHaveLength(0);
+    expect(await usage(f.gymId)).toEqual([]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"reason":"phone_changed"'));
+    // A retry sends each member's text to the right phone without naming Mia on the household phone.
+    await f.notice.run(payload, f.gymId);
+    if (mode === 'solo') {
+      expect(f.sms.messages).toEqual([{ to: newOwn, body: ownText }]);
+      expect(await usage(f.gymId)).toEqual([expect.objectContaining({ sent: 1, refused: 0 })]);
+    } else {
+      expect(f.sms.messages.map(message => message.to).sort()).toEqual([phone, newOwn].sort());
+      expect(f.sms.messages.find(message => message.to === newOwn)!.body).toBe(ownText);
+      expect(f.sms.messages.find(message => message.to === phone)!.body).toContain('Noa Second');
+      expect(f.sms.messages.find(message => message.to === phone)!.body).not.toContain('Mia');
+      expect(await usage(f.gymId)).toEqual([expect.objectContaining({ sent: 2, refused: 0 })]);
+    }
+  } finally { setLogSink(previousSink); }
+});
+
+it('charges the usage day of the locked timezone on a restore text when timezone changes during resolution while keeping the job timezone in the body', async () => {
+  // 12:00 UTC is 2026-11-10 in New York, but already 2026-11-11 in Kiritimati.
+  const f = await fixture();
+  await f.cancel(); await f.restore(['sms']);
+  f.resolver.resolve.mockImplementationOnce(async id => {
+    await db.forGym(id, tx => tx.update(gyms).set({ timezone: 'Pacific/Kiritimati' }).where(eq(gyms.id, id)));
+    return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+  });
+  await f.notice.run({ sessionId: f.session.id, memberIds: [f.mia.id, f.noa.id], round: 1, channels: ['sms'] }, f.gymId);
+  expect(f.sms.messages).toHaveLength(1);
+  for (const value of ['2026-11-10', '7:30 PM EST']) expect(f.sms.messages[0]!.body).toContain(value);
+  expect(await usage(f.gymId)).toEqual([expect.objectContaining({ day: '2026-11-11', sent: 1, refused: 0 })]);
+});
+
+it('gives way on a busy member lock during the restore text last check (no slot taken) until released, then sends once', async () => {
+  const f = await fixture();
+  await f.cancel(); await f.restore(['sms']);
+  let busyCalls = 0;
+  const held = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), gaveWay = Promise.withResolvers<void>();
+  const unblock = setTimeout(() => release.resolve(), 15_000);
+  const holderConnection = openConnection(db.appUrl, 1);
+  let holder: Promise<void> | undefined, sending: Promise<unknown> | undefined;
+  const scope: typeof db.forGym = (id, fn) => db.forGym(id, async tx => {
+    try { return await fn(tx); }
+    catch (error) {
+      if (error instanceof SmsRecheckBusy) { busyCalls++; gaveWay.resolve(); }
+      throw error;
+    }
+  });
+  f.resolver.resolve.mockImplementationOnce(async id => {
+    holder = scopedDatabase(holderConnection.db).forGym(id, async tx => {
+      await tx.select({ id: members.id }).from(members).where(eq(members.id, f.mia.id)).for('update');
+      held.resolve();
+      await release.promise;
+    });
+    await Promise.race([held.promise, holder]);
+    return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+  });
+  try {
+    sending = createRestoreNotice({ ...f.options, scope }).run(
+      { sessionId: f.session.id, memberIds: [f.mia.id, f.noa.id], round: 1, channels: ['sms'] }, f.gymId);
+    sending.catch(() => undefined);
+    await Promise.race([gaveWay.promise, sending]);
+    expect(busyCalls).toBeGreaterThanOrEqual(1);
+    expect(f.sms.messages).toHaveLength(0);
+    expect(await usage(f.gymId)).toEqual([]);
+  } finally {
+    clearTimeout(unblock);
+    release.resolve();
+    await Promise.allSettled([holder, sending]);
+    await holderConnection.close();
+  }
+  await Promise.all([holder, sending]);
+  expect(f.sms.messages.map(message => message.to)).toEqual([phone]);
+  expect(await usage(f.gymId)).toEqual([expect.objectContaining({ sent: 1, refused: 0 })]);
+});
+
+it('sends nothing and takes no slot when the restored session is cancelled again during resolution', async () => {
+  const f = await fixture();
+  await f.cancel(); await f.restore(['sms']);
+  f.resolver.resolve.mockImplementationOnce(async id => {
+    await f.cancel();
+    return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+  });
+  await f.notice.run({ sessionId: f.session.id, memberIds: [f.mia.id, f.noa.id], round: 1, channels: ['sms'] }, f.gymId);
+  expect(f.sms.messages).toHaveLength(0);
+  expect(await usage(f.gymId)).toEqual([]);
+  expect(await db.forGym(f.gymId, tx => tx.select({ state: smsDeliveries.state }).from(smsDeliveries)))
+    .toEqual([{ state: 'not_accepted' }]);
+});
+
+it('sends no restore text and takes no slot when the member booking is cancelled during resolution', async () => {
+  const f = await fixture();
+  await f.cancel(); await f.restore(['sms']);
+  f.resolver.resolve.mockImplementationOnce(async id => {
+    await f.cancelPlace(f.ari.id);
+    return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+  });
+  await f.notice.run({ sessionId: f.session.id, memberIds: [f.ari.id], round: 1, channels: ['sms'] }, f.gymId);
+  expect(f.sms.messages).toHaveLength(0);
+  expect(await usage(f.gymId)).toEqual([]);
+  expect(await db.forGym(f.gymId, tx => tx.select({ state: smsDeliveries.state }).from(smsDeliveries)))
+    .toEqual([{ state: 'not_accepted' }]);
+});
+
+it.each(['member_to_household', 'household_to_member'] as const)('words the restore text for the locked consent holder when consent switches %s at the same number', async direction => {
+  const f = await fixture();
+  await f.cancel(); await f.restore(['sms']);
+  const payload = { sessionId: f.session.id, memberIds: [f.mia.id], round: 1, channels: ['sms'] as const };
+  if (direction === 'member_to_household') {
+    await db.forGym(f.gymId, async tx => {
+      await tx.update(members).set({ phone, phoneE164: phone,
+        smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }).where(eq(members.id, f.mia.id));
+      await tx.update(households).set({ smsNoticesConsentAt: null, smsNoticesConsentSource: null }).where(eq(households.id, f.home.id));
+    });
+    f.resolver.resolve.mockImplementationOnce(async id => {
+      await db.forGym(id, async tx => {
+        await tx.update(members).set({ smsNoticesConsentAt: null, smsNoticesConsentSource: null }).where(eq(members.id, f.mia.id));
+        await tx.update(households).set({ smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }).where(eq(households.id, f.home.id));
+      });
+      return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+    });
+  } else {
+    f.resolver.resolve.mockImplementationOnce(async id => {
+      await db.forGym(id, async tx => {
+        await tx.update(members).set({ phone, phoneE164: phone,
+          smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }).where(eq(members.id, f.mia.id));
+        await tx.update(households).set({ smsNoticesConsentAt: null, smsNoticesConsentSource: null }).where(eq(households.id, f.home.id));
+      });
+      return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+    });
+  }
+  await f.notice.run(payload, f.gymId);
+  expect(f.sms.messages).toHaveLength(1);
+  expect(f.sms.messages[0]!.to).toBe(phone);
+  expect(f.sms.messages[0]!.body).toBe(direction === 'member_to_household'
+    ? 'Cedar Gym: Evening practice on 2026-11-10 at 7:30 PM EST is back on. Places restored for: Mia First. Check the schedule for each place.'
+    : ownText);
+  expect(await usage(f.gymId)).toEqual([expect.objectContaining({ sent: 1, refused: 0 })]);
 });
