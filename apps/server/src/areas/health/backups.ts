@@ -14,7 +14,7 @@ import type { BackupKind, Manifest, Snapshot, UploadReference } from './backups.
 import { guardSnapshot, inventory, pruneUnlocked, UnverifiedInventory, type RunStatuses } from './backups.retention.js';
 import { PostgresMaintenance } from './backups.database.js';
 import { SnapshotContentError } from './backups.content.js';
-import { backupFailureCause, markedStore } from './backups.failure.js';
+import { backupFailureCause, fromUploads, markedStore } from './backups.failure.js';
 import { logError } from '../../core/log.js';
 import { invalidateBackupHealth } from './backups.health-cache.js';
 
@@ -79,13 +79,13 @@ export class BackupService {
         const plainDump = { sha256: dumpHash.digest('hex'), size: dumpBytes };
         const references: UploadReference[] = [], pending: { key: string; path: string; size: number }[] = [];
         for (const [gymId, source] of sources) {
-          for (const upload of await source.list()) {
+          for (const upload of await fromUploads(() => source.list())) {
             // Include deletions since the backup started, even when the tombstone appears during pg_dump.
             if (upload.deletedAt && upload.deletedAt < startedAt) continue;
-            const input = await source.get(upload.key);
+            const input = await fromUploads(() => source.get(upload.key));
             if (!input) throw new Error('Upload disappeared during backup');
             const raw = join(staging, 'upload.raw');
-            const plaintext = await saveStream(raw, input);
+            const plaintext = await fromUploads(() => saveStream(raw, input));
             const blob = blobName(o.blobKey, gymId, upload.key, plaintext.sha256, o.recipient);
             const known = reusable.get(blob);
             let encrypted: UploadReference['encrypted'];

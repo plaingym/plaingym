@@ -20,6 +20,18 @@ export function markStorageFailure(error: unknown): void {
   if (record(error)) storageFailures.add(error);
 }
 
+/** Errors raised while reading or sweeping the uploads source during a backup run or prune. */
+const uploadsFailures = new WeakSet<object>();
+/** Marks an error as raised by the uploads source, so S3 metadata on it never blames the backup destination. */
+export function markUploadsFailure(error: unknown): void {
+  if (record(error)) uploadsFailures.add(error);
+}
+/** Runs an uploads source call during a backup or prune, marking any failure as an uploads error before rethrowing. */
+export async function fromUploads<T>(action: () => Promise<T>): Promise<T> {
+  try { return await action(); }
+  catch (error) { markUploadsFailure(error); throw error; }
+}
+
 /** Whether this error or one of its causes is an S3 client's: the SDK puts `$metadata` on every error it raises. */
 export function fromStorage(error: unknown): boolean {
   let current = error;
@@ -83,6 +95,7 @@ function networkFailure(error: unknown): boolean {
 export function backupFailureCause(error: unknown): BackupFailureCause {
   let current = error, storage = fromStorage(error);
   for (let depth = 0; depth < 5 && record(current); depth++, current = inner(current)) {
+    if (uploadsFailures.has(current)) return 'other';
     if (storageFailures.has(current)) storage = true;
     const metadata = current.$metadata;
     if (record(metadata)) {

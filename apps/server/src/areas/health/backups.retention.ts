@@ -4,7 +4,7 @@ import { idSchema } from '@plaingym/shared/contracts';
 import type { BackupObjectStore, Uploads } from '../../infra/storage/index.js';
 import { protectedName, readReferences, snapshotPrefix, verifyReferences } from './backups.format.js';
 import type { Snapshot } from './backups.format.js';
-import { markedStore } from './backups.failure.js';
+import { fromUploads, markedStore } from './backups.failure.js';
 
 /** Only an active schema guard protects its named rollback restore point. The updater writes `-` when it has none. */
 export function guardSnapshot(env: NodeJS.ProcessEnv): string | undefined {
@@ -135,8 +135,8 @@ export async function pruneUnlocked(store: BackupObjectStore, blobKey: Buffer, u
   for (const blob of allBlobs) if (!blobs.has(blob.key)) await store.deleteObject(blob.key);
   const protectedHashes = new Set(retained.flatMap((s) => s.uploads.map((u) => u.protectedHash)));
   const protectedKeys = new Set<string>();
-  for (const source of uploads.values()) for (const upload of await source.list())
+  for (const source of uploads.values()) for (const upload of await fromUploads(() => source.list()))
     if (protectedHashes.has(protectedName(blobKey, upload.key))) protectedKeys.add(upload.key);
-  for (const source of uploads.values()) await source.sweep({ before: sweepBefore, protectedKeys });
+  for (const source of uploads.values()) await fromUploads(() => source.sweep({ before: sweepBefore, protectedKeys }));
   return { retainedBytes: required, protectedKeys };
 }

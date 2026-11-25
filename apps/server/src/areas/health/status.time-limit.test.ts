@@ -182,13 +182,82 @@ describe('health tile time limit', () => {
     expect(calls).toBe(3);
     await vi.advanceTimersByTimeAsync(5000);
     expect((await r186).data.tiles.find((tile) => tile.id === b)).toMatchObject({ message: 'Still checking. Refresh in a moment.' });
-    // At 275 s (the third read is 120 s old), a fourth read starts.
+    // At 275 s (the third read is 120 s old), three reads are already unsettled, so calls stay 3.
     await vi.advanceTimersByTimeAsync(84_000);
     expect(Date.now()).toBe(275_000);
     const r275 = service.get(context);
-    expect(calls).toBe(4);
+    expect(calls).toBe(3);
     await vi.advanceTimersByTimeAsync(5000);
     expect((await r275).data.tiles.find((tile) => tile.id === b)).toMatchObject({ message: 'Still checking. Refresh in a moment.' });
+    // Continuing with a refresh every 31 s up to 3,600 s never exceeds three unsettled calls.
+    for (let next = 306_000; next <= 3_600_000; next += 31_000) {
+      await vi.advanceTimersByTimeAsync(next - Date.now());
+      const response = service.get(context);
+      expect(calls).toBe(3);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect((await response).data.tiles.find((tile) => tile.id === b)).toMatchObject({ message: 'Still checking. Refresh in a moment.' });
+    }
+  });
+  it('starts a fourth read past two minutes once one of three unsettled reads settles, and shares it for 30 s', async () => {
+    let calls = 0;
+    let resolveFirst!: (tile: HealthTile) => void;
+    const provider = healthProvider(b, () => {
+      calls++;
+      return new Promise<HealthTile>((resolve) => {
+        if (calls === 1) resolveFirst = resolve;
+      });
+    });
+    const service = createHealthService([provider], options);
+    const r0 = service.get(context);
+    await vi.advanceTimersByTimeAsync(5000);
+    await r0;
+    await vi.advanceTimersByTimeAsync(26_000); // 31 s: starts read 2
+    const r31 = service.get(context);
+    expect(calls).toBe(2);
+    await vi.advanceTimersByTimeAsync(5000);
+    await r31;
+    await vi.advanceTimersByTimeAsync(119_000); // 155 s: starts read 3
+    const r155 = service.get(context);
+    expect(calls).toBe(3);
+    await vi.advanceTimersByTimeAsync(5000); // 160 s
+    await r155;
+    // Read 1 settles, dropping unsettled from 3 to 2; the next get past 120 s from read 3 starts read 4.
+    resolveFirst(tileOf(b));
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(116_000); // 276 s (read 3 is 121 s old)
+    const r276 = service.get(context);
+    expect(calls).toBe(4);
+    await vi.advanceTimersByTimeAsync(5000); // 281 s
+    await r276;
+    await vi.advanceTimersByTimeAsync(10_000); // 291 s (read 4 is 15 s old, within 30 s)
+    const r291 = service.get(context);
+    expect(calls).toBe(4);
+    await vi.advanceTimersByTimeAsync(5000);
+    await r291;
+  });
+  it('honors a lower maxUnsettledReads cap when a provider never settles', async () => {
+    let calls = 0;
+    const never = healthProvider(b, () => { calls++; return new Promise<HealthTile>(() => undefined); });
+    const service = createHealthService([never], { ...options, maxUnsettledReads: 1 });
+    const r0 = service.get(context);
+    expect(calls).toBe(1);
+    await vi.advanceTimersByTimeAsync(5000);
+    await r0;
+    await vi.advanceTimersByTimeAsync(26_000); // 31 s
+    const r31 = service.get(context);
+    expect(calls).toBe(1);
+    await vi.advanceTimersByTimeAsync(5000);
+    await r31;
+    await vi.advanceTimersByTimeAsync(119_000); // 155 s
+    const r155 = service.get(context);
+    expect(calls).toBe(1);
+    await vi.advanceTimersByTimeAsync(5000);
+    await r155;
+    await vi.advanceTimersByTimeAsync(440_000); // 600 s
+    const r600 = service.get(context);
+    expect(calls).toBe(1);
+    await vi.advanceTimersByTimeAsync(5000);
+    await r600;
   });
   it('starts a new read once the replaced read settles while keeping at most two pending', async () => {
     let calls = 0;

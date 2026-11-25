@@ -20,13 +20,14 @@ export const healthReadAgeMs = 30_000;
  * late result is discarded. Slow tiles log their ID and duration only.
  */
 export function createHealthService(providers: readonly HealthTileProvider<HealthTile>[],
-  options: { tileTimeoutMs?: number; slowTileMs?: number; maxReadAgeMs?: number; maxReplacedAgeMs?: number; now?: () => number } = {}) {
-  const { tileTimeoutMs = 5000, slowTileMs = 2000, maxReadAgeMs = healthReadAgeMs, maxReplacedAgeMs = 4 * maxReadAgeMs, now = () => performance.now() } = options;
+  options: { tileTimeoutMs?: number; slowTileMs?: number; maxReadAgeMs?: number; maxReplacedAgeMs?: number; maxUnsettledReads?: number; now?: () => number } = {}) {
+  const { tileTimeoutMs = 5000, slowTileMs = 2000, maxReadAgeMs = healthReadAgeMs, maxReplacedAgeMs = 4 * maxReadAgeMs, maxUnsettledReads = 3, now = () => performance.now() } = options;
   const registry = new Map(providers.map((provider) => [provider.id, provider]));
   if (registry.size !== providers.length) throw new Error('Duplicate health provider');
   type Entry = { read: Promise<HealthTile>; startedAt: number; loggedSlow: boolean };
   const inFlight = new Map<string, Entry>();
   const replaced = new Map<string, Entry>();
+  const unsettled = new Map<string, number>();
   return { async get(context: StaffProviderContext) {
     if (!canStaff(context.roles, 'settings.manage')) throw new AppError('forbidden', 'Access denied');
     const tiles = await Promise.all(healthTileIds.map(async (id): Promise<HealthTile> => {
@@ -34,9 +35,10 @@ export function createHealthService(providers: readonly HealthTileProvider<Healt
       if (!provider) return { id, status: 'not_configured', checkedAt: null, details: null, message: statusMessage('notSetUp') };
       const failed = (): HealthTile => ({ id, status: 'unavailable', checkedAt: context.clock.now().toISOString(), details: null, message: statusMessage('checkFailed') });
       // Never rejects: every error becomes the failed-check tile. A request that finds a read in flight for the
-      // same gym and tile waits for it instead of starting another unless it is older than maxReadAgeMs and either
+      // same gym and tile waits for it instead of starting another unless it is older than maxReadAgeMs, either
       // no replaced read is still pending or the running read has reached maxReplacedAgeMs (replacing the tracked
-      // replaced read with the running one); the permission is still checked per request.
+      // replaced read with the running one), and fewer than maxUnsettledReads reads are still unsettled for it;
+      // the permission is still checked per request.
       let entry: Entry;
       if (!canStaff(context.roles, provider.permission)) {
         entry = { read: Promise.resolve(failed()), startedAt: now(), loggedSlow: false };
@@ -44,13 +46,14 @@ export function createHealthService(providers: readonly HealthTileProvider<Healt
         const key = context.gymId + ':' + id;
         const running = inFlight.get(key);
         const age = running ? now() - running.startedAt : 0;
-        if (running && (age <= maxReadAgeMs || (replaced.has(key) && age < maxReplacedAgeMs))) entry = running;
+        if (running && (age <= maxReadAgeMs || (replaced.has(key) && age < maxReplacedAgeMs) || (unsettled.get(key) ?? 0) >= maxUnsettledReads)) entry = running;
         else {
           if (running) {
             replaced.set(key, running);
             void running.read.finally(() => { if (replaced.get(key) === running) replaced.delete(key); });
           }
           const startedAt = now();
+          unsettled.set(key, (unsettled.get(key) ?? 0) + 1);
           const fresh: Entry = {
             read: (async (): Promise<HealthTile> => {
               try {
@@ -65,7 +68,12 @@ export function createHealthService(providers: readonly HealthTileProvider<Healt
             loggedSlow: false,
           };
           inFlight.set(key, fresh);
-          void fresh.read.finally(() => { if (inFlight.get(key) === fresh) inFlight.delete(key); });
+          void fresh.read.finally(() => {
+            const remaining = (unsettled.get(key) ?? 0) - 1;
+            if (remaining <= 0) unsettled.delete(key);
+            else unsettled.set(key, remaining);
+            if (inFlight.get(key) === fresh) inFlight.delete(key);
+          });
           entry = fresh;
         }
       }

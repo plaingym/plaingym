@@ -11,8 +11,9 @@ gym and tile, instead of starting another until the running read is 30 seconds o
 a new one replaces it, keeping at most one replaced read tracked per gym and tile and
 waiting for the newest read while it does; once the newest read is two minutes old, a
 refresh starts another even while the replaced one is pending (the older read keeps
-running, no longer tracked), so a check that hangs twice is retried at most every two
-minutes). A read slower than 2 seconds logs `health.tile_slow` once, with its
+running, no longer tracked), up to at most three unsettled reads per gym and tile at once:
+while three are unsettled a refresh waits on the newest, and one settling lets the next
+refresh start another). A read slower than 2 seconds logs `health.tile_slow` once, with its
 tile ID and duration from the read's start; each request that reaches the 5-second limit logs
 its own line with `timedOut: true`. The Last backup tile reuses its bucket inventory
 for up to one minute from the start of the read that listed it (it is released from memory

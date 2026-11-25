@@ -92,7 +92,9 @@ before anything is uploaded. A run that fails is marked `failed` with its cause
 class in `error` (`credentials_rejected`, `bucket_missing`, `endpoint_unreachable`
 or `other`, from the error's HTTP status and code, never its text; a bare network
 code names `endpoint_unreachable` only when a backup destination call raised it,
-and other connection failures such as the database are `other`), even when
+other connection failures such as the database are `other`, and an error from
+reading or sweeping the uploads storage during a run or prune is `other`, even
+when that storage is an S3 bucket), even when
 the cleanup of its uncommitted objects fails too. That cleanup deletes the reference
 list first and stops at the first refused delete, so a list that may have been
 published never outlives the objects it names. Runs hold the backup lock, so a prefix with no

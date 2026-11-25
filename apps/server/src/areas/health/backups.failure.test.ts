@@ -8,11 +8,12 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { TestClock } from '../../core/clock.js';
 import { setLogSink } from '../../core/log.js';
 import { generateIdentity, identityToRecipient } from '../../infra/age/index.js';
-import { FakeBackupObjectStore } from '../../infra/storage/index.js';
-import { BackupService } from './backups.js';
+import { FakeBackupObjectStore, FakeUploads } from '../../infra/storage/index.js';
+import { BackupService, type BackupOptions } from './backups.js';
 import type { PostgresMaintenance } from './backups.database.js';
 import { bytesStream } from './backups.files.js';
-import { backupFailureCause, markedStore, markStorageFailure } from './backups.failure.js';
+import { backupFailureCause, markedStore, markStorageFailure, markUploadsFailure } from './backups.failure.js';
+import { pruneUnlocked } from './backups.retention.js';
 
 const unauthorized = { name: 'Unauthorized', $metadata: { httpStatusCode: 401 } };
 const reset = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
@@ -88,6 +89,17 @@ describe('backup failure causes', () => {
     for (let level = 0; level < 5; level++) error = new Error('wrapped', { cause: error });
     expect(backupFailureCause(error)).toBe('other');
   });
+  it('classifies errors marked from uploads as other even with S3 metadata', () => {
+    const accessDenied = { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } };
+    expect(backupFailureCause(accessDenied)).toBe('credentials_rejected');
+    markUploadsFailure(accessDenied);
+    expect(backupFailureCause(accessDenied)).toBe('other');
+    expect(backupFailureCause(new Error('Snapshot failed', { cause: accessDenied }))).toBe('other');
+
+    const resetFromUploads = { code: 'ECONNRESET', $metadata: {} };
+    markUploadsFailure(resetFromUploads);
+    expect(backupFailureCause(resetFromUploads)).toBe('other');
+  });
 });
 
 const db = useTestDatabase(), clock = new TestClock('2026-11-22T12:00:00Z');
@@ -95,15 +107,17 @@ let root: string, recipient: string;
 beforeAll(async () => { root = await mkdtemp(join(tmpdir(), 'backup-failure-')); recipient = await identityToRecipient(await generateIdentity()); });
 afterAll(async () => { await rm(root, { recursive: true, force: true }); });
 beforeEach(async () => { await db.forSystem((tx) => tx.delete(backupRuns)); });
-function service(store: FakeBackupObjectStore, dump: () => Promise<ReadableStream<Uint8Array>> = async () => bytesStream('database dump')) {
+function service(store: FakeBackupObjectStore, dump: () => Promise<ReadableStream<Uint8Array>> = async () => bytesStream('database dump'),
+  uploads: BackupOptions['uploads'] = async () => new Map()) {
   const database = { locked: <T>(action: () => Promise<T>) => action(), newId: () => uuidv7(), pruningHeld: async () => false,
     dump } as unknown as PostgresMaintenance;
-  return new BackupService({ database, store, uploads: async () => new Map(), clock, recipient, appEncryptionKey: Buffer.alloc(32, 1),
+  return new BackupService({ database, store, uploads, clock, recipient, appEncryptionKey: Buffer.alloc(32, 1),
     blobKey: Buffer.alloc(32, 2), stagingDirectory: join(root, 'staging'), scope: db });
 }
-async function failedSnapshot(store: FakeBackupObjectStore, dump?: () => Promise<ReadableStream<Uint8Array>>) {
+async function failedSnapshot(store: FakeBackupObjectStore, dump?: () => Promise<ReadableStream<Uint8Array>>,
+  uploads?: BackupOptions['uploads']) {
   const logs: string[] = [], previous = setLogSink((line) => logs.push(line));
-  try { await expect(service(store, dump).snapshot('manual')).rejects.toThrow('Snapshot failed'); }
+  try { await expect(service(store, dump, uploads).snapshot('manual')).rejects.toThrow('Snapshot failed'); }
   finally { setLogSink(previous); }
   const runs = await db.forSystem((tx) => tx.select().from(backupRuns));
   return { runs, logs: logs.filter((line) => (JSON.parse(line) as { event: string }).event === 'backup.snapshot_failed') };
@@ -150,5 +164,41 @@ describe('a failed snapshot', () => {
     expect(logs).toHaveLength(1);
     const prefix = runs[0]!.objectPrefix;
     expect(deletes.mock.calls.map(([key]) => key)).toEqual(['references.json', 'manifest.age', 'database.age'].map((name) => prefix + name));
+  });
+  it('records other when reading an uploads object rejects with an S3 403', async () => {
+    const gymId = uuidv7(), uploadsSource = new FakeUploads(gymId, clock);
+    await uploadsSource.put(`${gymId}/doc.pdf`, new Uint8Array([1, 2, 3]), 'application/pdf');
+    vi.spyOn(uploadsSource, 'get').mockRejectedValueOnce({ name: 'AccessDenied', $metadata: { httpStatusCode: 403 } });
+    const { runs, logs } = await failedSnapshot(new FakeBackupObjectStore(clock), undefined, async () => new Map([[gymId, uploadsSource]]));
+    expect(runs[0]).toMatchObject({ status: 'failed', error: 'other' });
+    expect(JSON.parse(logs[0]!)).toMatchObject({ cause: 'other' });
+  });
+  // A run lists the uploads twice: first to prune, then to copy them into the snapshot.
+  it.each([['pruning', 0], ['copying', 1]] as const)('records other when listing uploads for %s rejects with an S3 connection reset', async (_step, earlier) => {
+    const gymId = uuidv7(), uploadsSource = new FakeUploads(gymId, clock);
+    const list = vi.spyOn(uploadsSource, 'list');
+    for (let call = 0; call < earlier; call++) list.mockResolvedValueOnce([]);
+    list.mockRejectedValueOnce({ code: 'ECONNRESET', $metadata: {} });
+    const { runs } = await failedSnapshot(new FakeBackupObjectStore(clock), undefined, async () => new Map([[gymId, uploadsSource]]));
+    expect(list).toHaveBeenCalledTimes(earlier + 1);
+    expect(runs[0]).toMatchObject({ status: 'failed', error: 'other' });
+  });
+  it('records other when reading an uploads body stream rejects with an S3 error', async () => {
+    const gymId = uuidv7(), uploadsSource = new FakeUploads(gymId, clock);
+    await uploadsSource.put(`${gymId}/doc.pdf`, new Uint8Array([1, 2, 3]), 'application/pdf');
+    vi.spyOn(uploadsSource, 'get').mockResolvedValueOnce(new ReadableStream<Uint8Array>({
+      pull(controller) { controller.error({ code: 'ECONNRESET', $metadata: {} }); },
+    }));
+    const { runs } = await failedSnapshot(new FakeBackupObjectStore(clock), undefined, async () => new Map([[gymId, uploadsSource]]));
+    expect(runs[0]).toMatchObject({ status: 'failed', error: 'other' });
+  });
+  it('classifies a pruneUnlocked uploads sweep S3 403 rejection as other', async () => {
+    const gymId = uuidv7(), uploadsSource = new FakeUploads(gymId, clock);
+    vi.spyOn(uploadsSource, 'sweep').mockRejectedValueOnce({ name: 'AccessDenied', $metadata: { httpStatusCode: 403 } });
+    const error = await pruneUnlocked(new FakeBackupObjectStore(clock), Buffer.alloc(32, 2), new Map([[gymId, uploadsSource]]), clock.now())
+      .then(() => null, (err: unknown) => err);
+    // The sweep's own rejection, so an earlier failure (also `other`) can't pass this.
+    expect(error).toMatchObject({ name: 'AccessDenied' });
+    expect(backupFailureCause(error)).toBe('other');
   });
 });
