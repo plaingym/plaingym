@@ -22,11 +22,13 @@ domain data; dry runs write operational progress and safe issues to the run
 tables, without changing domain data or writing import audits.
 
 A preview is stored once per upload, plan (mapper, columns, duplicate policy),
-timezone, import revision and the gym's settings revision, under the upload's
-own prefix (`<gym>/imports/uploads/<id>/preview/<key>/`, the key a hash of all
-five). The gym's settings revision changes when Stripe is connected or removed,
-the currency changes or any other gym setting is saved, so a preview computed
-before such a save is never served after it. The
+timezone, import revision and a digest of the settings previews depend on
+(currency, address country, bank debits, whether Stripe settings are stored, and
+the Stripe switch snapshot, not `gyms.revision`), under the upload's own prefix
+(`<gym>/imports/uploads/<id>/preview/<key>/`, the key a hash of all of them).
+Connecting or removing Stripe, switching Stripe mode, or changing currency,
+address country or bank debits invalidates stored previews, while unrelated
+settings saves and demo activity touches keep them intact. The
 first computation parses the CSV once and analyzes it chunk by chunk, writing the
 preview rows (issues are not stored: the response doesn't return them) to
 5,000-row files under a new `pages/<generation>/`, about 20 files for 100,000
@@ -92,13 +94,18 @@ Pending work renews a 60-second lease every ten seconds while queued,
 computing, cleaning up, or saving its terminal result. Each renewal writes an
 immutable `lease/<ten-second-bucket>.json` key valid from the bucket's start.
 Readers check their current and five preceding buckets newest first and stop
-at the first hit. After a miss they check the two buckets ahead in parallel to
-allow for a reader clock that is behind the writer's.
+at the first hit. After a miss they check the two buckets ahead in parallel
+(`Promise.allSettled`) to allow for a reader clock that is behind the writer's:
+the ticket is alive if either read finds a lease, a rejection is rethrown only
+when neither read finds one, and two misses treat the lease as lapsed.
 The ticket stops when the time since it started reaches
 `(queueLimit + 1) × (previewTimeoutMs + PREVIEW_CLEANUP_MS)` (about 37 minutes
-by default). A new Preview also stops and replaces a lapsed ticket, including
-one whose first lease or ticket metadata write is still pending after ten
-seconds. Stopping a ticket removes queued work from the memory queue and
+by default). First lease and ticket metadata writes share a 20-second allowance
+(two lease intervals): if they have not finished after 20 seconds, a timer stops
+the ticket so even a lone Preview fails with the timeout message and frees its
+budget reservation. A new Preview also stops and replaces a lapsed ticket,
+including one whose first lease or ticket metadata write is still pending after
+20 seconds. Stopping a ticket removes queued work from the memory queue and
 cancels running work at its next deadline check.
 When a result is saved, the process stops renewing and marks only the newest
 eight lease keys deleted in parallel with a shared ten-second timeout. Older
@@ -124,9 +131,12 @@ columns update automatically with the source fields and are omitted from exports
 
 The import revision changes whenever a real (not dry-run) import run of the gym
 is created or completes, or retention removes runs: one aggregate over the gym's
-`import_runs`, bounded by `import_runs_retention_idx`. It also changes whenever
-the gym's settings are saved (`gyms.revision`, read in the same transaction).
-A preview computed before any of those is never found again, and a ready ticket
+`import_runs`, bounded by `import_runs_retention_idx`. It also carries a digest
+of the settings previews depend on (currency, address country, bank debits,
+whether Stripe settings are stored, and the Stripe switch snapshot), read in the
+same transaction without checking `gyms.revision`, so unrelated settings saves
+and demo activity touches leave stored previews and ready tickets intact.
+A preview computed before any of those changes is never found again, and a ready ticket
 computed before one answers that the preview changed. That covers previews of every upload (people
 before memberships) and runs that start or finish while a preview is computing;
 `start` itself does no storage work after the run is committed and queued. Edits

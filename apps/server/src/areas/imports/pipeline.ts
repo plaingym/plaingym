@@ -15,7 +15,9 @@ import { parseCsv, autoMatch, MAX_CSV_BYTES, type CsvDocument } from './pipeline
 import { PipelineStore, type UploadsFor } from './pipeline.store.js';
 import { ImportPreparationChanged, MapperRegistry, type MapperContext, type PlannedRow } from './mappers/registry.js';
 import { createPeopleMapper } from './mappers/people.js';
-import { readGymSettings } from '../settings/settings.js';
+import { readPreviewSettings } from '../settings/settings.js';
+import { stripeConfigStored } from '../settings/go-live.restore.js';
+import { stripeSwitchSnapshot } from '../billing/stripe-writes.js';
 import { matMapper } from './mappers/mat.js';
 import { membershipsMapper } from './mappers/memberships.js';
 import { previewBudget, previewDeadline, PREVIEW_CLEANUP_MS, PREVIEW_TIMEOUT_MS, PREVIEW_LEASE_INTERVAL_MS,
@@ -134,16 +136,20 @@ export function createImportPipeline(options: PipelineOptions) {
   const fileKey = (prefix: string, generation: string, index: number) => `${prefix}/pages/${generation}/rows-${String(index).padStart(4, '0')}.json`;
   /**
    * Changes whenever a real (not dry-run) import run of the gym is created or completes, or runs are removed by retention, and
-   * whenever the gym's settings are saved (`gyms.revision`), which covers connecting or removing Stripe and changing the currency.
-   * It is in the stored key, so a preview computed before any of these is never found again: that covers every upload's previews
-   * (people before memberships) and runs that start or finish while a preview is computing. One aggregate over the gym's runs,
-   * which `import_runs_retention_idx` (`gym_id` first) bounds to that gym's few runs.
+   * whenever the settings previews depend on change (currency, address country, bank debits, whether Stripe settings are stored,
+   * or a Stripe mode switch). It is in the stored key, so a preview computed before any of these is never found again: that covers
+   * every upload's previews (people before memberships) and runs that start or finish while a preview is computing, while unrelated
+   * settings saves and demo activity touches keep stored previews intact. One aggregate over the gym's runs, which
+   * `import_runs_retention_idx` (`gym_id` first) bounds to that gym's few runs.
    */
   const importRevision = (gymId: string) => scope(gymId, async (tx) => {
     const [row] = await tx.select({ runs: count(), completed: count(importRuns.completedAt), created: max(importRuns.createdAt),
       finished: max(importRuns.completedAt) }).from(importRuns).where(and(eq(importRuns.gymId, gymId), eq(importRuns.dryRun, false)));
-    const { revision: settingsRevision } = await readGymSettings(tx, gymId);
-    return [row?.runs ?? 0, row?.completed ?? 0, row?.created?.getTime() ?? 0, row?.finished?.getTime() ?? 0, settingsRevision].join('.');
+    const { currency, country, bankDebitsEnabled } = await readPreviewSettings(tx, gymId);
+    const stripeStored = await stripeConfigStored(tx, gymId);
+    const switched = await stripeSwitchSnapshot(tx, gymId);
+    const hash = createHash('sha256').update(JSON.stringify([currency, country, bankDebitsEnabled, stripeStored, switched])).digest('hex').slice(0, 16);
+    return [row?.runs ?? 0, row?.completed ?? 0, row?.created?.getTime() ?? 0, row?.finished?.getTime() ?? 0, hash].join('.');
   });
   /**
    * Preview files are read with `get` alone, once `loadMeta` has found the upload live. `get` still serves a key marked deleted
@@ -270,7 +276,7 @@ export function createImportPipeline(options: PipelineOptions) {
     const startedAt = clock.now().getTime();
     let entry = pending.get(prefix);
     if (entry && (entry.stopped || (entry.leaseUntil === 0
-      ? startedAt - entry.startedAt >= PREVIEW_LEASE_INTERVAL_MS
+      ? startedAt - entry.startedAt >= 2 * PREVIEW_LEASE_INTERVAL_MS
       : entry.leaseUntil <= startedAt))) {
       entry.stop();
       entry = undefined;
@@ -307,7 +313,7 @@ export function createImportPipeline(options: PipelineOptions) {
           const leaseUntil = await write;
           if (stopped) return;
           if (first) await store.put(context.gymId, ticketKey(context.gymId, plan.uploadId, id, 'meta'), ticket);
-          // Until both writes finish, a later Preview can replace this ticket after one interval.
+          // Until both writes finish, a later Preview can replace this ticket after two intervals.
           if (!stopped) current.leaseUntil = leaseUntil;
         } finally {
           if (!stopped && current.leaseUntil !== 0 && clock.now().getTime() - startedAt + PREVIEW_LEASE_INTERVAL_MS < leaseCeiling) heartbeat = setTimeout(() => {
@@ -334,7 +340,8 @@ export function createImportPipeline(options: PipelineOptions) {
       void computation.catch(() => undefined);
       const ceilingTimer = setTimeout(stop, leaseCeiling);
       // The storage write itself cannot be cancelled. Stopping the ticket rejects saved independently.
-      void renew(true).then(saved.resolve, saved.reject);
+      void renew(true).then(() => { clearTimeout(firstWrites); saved.resolve(); }, saved.reject);
+      const firstWrites = setTimeout(() => { if (current.leaseUntil === 0) stop(); }, 2 * PREVIEW_LEASE_INTERVAL_MS);
       // Every background failure is observed, and only safe application explanations are persisted.
       void (async () => {
         try {
@@ -353,6 +360,7 @@ export function createImportPipeline(options: PipelineOptions) {
           stopped = true;
           clearTimeout(heartbeat);
           clearTimeout(ceilingTimer);
+          clearTimeout(firstWrites);
           if (pending.get(prefix) === current) pending.delete(prefix);
         }
         // A saved result ends the lease. Even readers whose clocks lag can only reach the eight newest buckets.
@@ -415,12 +423,19 @@ export function createImportPipeline(options: PipelineOptions) {
     if (result) return respondToResult(result);
     // Older releases used a fixed expiry; new tickets stay alive only while their owning process renews the lease.
     const now = clock.now().getTime();
-    const alive = ticket.leased
-      ? await store.hasLease(gymId, requestPrefix, now)
-        // A reader up to 20 seconds behind can miss the first renewal in its own buckets.
-        || (await Promise.all([2, 1].map(ahead =>
-          store.exists(gymId, store.leaseKey(requestPrefix, now + ahead * PREVIEW_LEASE_INTERVAL_MS))))).some(Boolean)
-      : !!ticket.expiresAt && Date.parse(ticket.expiresAt) > now;
+    let alive = false;
+    if (!ticket.leased) alive = !!ticket.expiresAt && Date.parse(ticket.expiresAt) > now;
+    else if (await store.hasLease(gymId, requestPrefix, now)) alive = true;
+    else {
+      // A reader up to 20 seconds behind can miss the first renewal in its own buckets.
+      const ahead = await Promise.allSettled([2, 1].map(offset =>
+        store.exists(gymId, store.leaseKey(requestPrefix, now + offset * PREVIEW_LEASE_INTERVAL_MS))));
+      if (ahead.some(result => result.status === 'fulfilled' && result.value)) alive = true;
+      else {
+        const failed = ahead.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+        if (failed) throw failed.reason;
+      }
+    }
     if (!alive) {
       const saved = ticket.leased ? await readJson<PreviewResult>(uploads, resultKey) : undefined;
       if (saved) return respondToResult(saved);

@@ -52,7 +52,10 @@ its shared values, last names and lookup keys; a family of one is read from
 the row itself, preserving whether its household key or customer key won. Each
 chunk maps its own rows again, with the date order the file decided.
 
-Updates lock the current member or household and check its revision. Created
+Member updates read the member's household ID unlocked, lock the household, then
+lock the member and check that the member is still in that household and not
+anonymized before checking revisions and writing; household updates take the
+same household lock and check its revision. Created
 members and households store their phone normalized with the gym's country,
 without SMS consent. A changed member phone is normalized the same way. If its
 normalized number changes, the update clears the member's notices and

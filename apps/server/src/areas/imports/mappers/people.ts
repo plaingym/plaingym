@@ -274,12 +274,15 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
     let memberId: string, householdId: string;
     if (row.action === 'update') {
       memberId = row.duplicateIds[0]!;
+      const [owner] = await tx.select({ householdId: members.householdId }).from(members).where(eq(members.id, memberId));
+      if (!owner) throw new Error('Import target member is unavailable');
+      await tx.select({ id: households.id }).from(households).where(eq(households.id, owner.householdId)).for('update');
       const [current] = await tx.select({ householdId: members.householdId, firstName: members.firstName, lastName: members.lastName,
         email: members.email, phone: members.phone, dateOfBirth: members.dateOfBirth, status: members.status, emailOptOut: members.emailOptOut,
         phoneE164: members.phoneE164, smsNoticesConsentAt: members.smsNoticesConsentAt, smsNoticesConsentSource: members.smsNoticesConsentSource,
         smsAnnouncementsConsentAt: members.smsAnnouncementsConsentAt, smsAnnouncementsConsentSource: members.smsAnnouncementsConsentSource,
         anonymizedAt: members.anonymizedAt, revision: members.revision }).from(members).where(eq(members.id, memberId)).for('update');
-      if (!current || current.anonymizedAt) throw new Error('Import target member is unavailable');
+      if (!current || current.anonymizedAt || current.householdId !== owner.householdId) throw new Error('Import target member is unavailable');
       householdId = current.householdId;
       const changes = Object.fromEntries(Object.entries({ firstName: value.firstName, lastName: value.lastName, email: value.email,
         phone: value.phone, dateOfBirth: value.dateOfBirth, status: value.status, emailOptOut: value.emailOptOut })

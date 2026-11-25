@@ -598,4 +598,84 @@ describe('people mapper through the real import pipeline', () => {
     expect((await orphan.run()).issues).toEqual([expect.objectContaining({ code: 'missing_required' })]);
     const data = await snapshot(); expect(data.methods).toHaveLength(0); expect(data.households[0]!.stripeCustomerId).toBe('cus_Original');
   });
+
+  async function waitingOnLock(table: string) {
+    await expect.poll(async () => {
+      const [row] = await database.system.sql`select exists (select 1 from pg_stat_activity
+        where datname = current_database() and wait_event_type = 'Lock' and query ilike ${`%"${table}"%`}) as waiting`;
+      return row!.waiting;
+    }, { timeout: 5000 }).toBe(true);
+  }
+
+  it('locks the household before its member on update so it never deadlocks with a household-first writer', async () => {
+    const home = await factory('households', gymA, { billingDay: 5 });
+    const member = await factory('members', gymA, { householdId: home.id, firstName: 'Jo', lastName: 'Fields',
+      email: 'jo@example.test', phone: '+447700900111' });
+    const source = await services().load('First Name,Last Name,Email,Phone,Billing Day\nJo,Fields,jo@example.test,+447700900222,12\n',
+      { duplicatePolicy: 'update' });
+    const homeLocked = Promise.withResolvers<void>(), lockMember = Promise.withResolvers<void>();
+    const holder = database.forGym(gymA, async tx => {
+      await tx.select({ id: households.id }).from(households).where(eq(households.id, home.id)).for('no key update');
+      homeLocked.resolve();
+      await lockMember.promise;
+      await tx.select({ id: members.id }).from(members).where(eq(members.id, member.id)).for('update');
+    });
+    try {
+      await homeLocked.promise;
+      const importing = source.run();
+      await waitingOnLock('households');
+      lockMember.resolve();
+      await holder;
+      const result = await importing;
+      expect(result.job).toMatchObject({ status: 'succeeded', committedRows: 1, errorCount: 0 });
+      expect(result.issues).toEqual([]);
+      const [updatedMember] = await database.forGym(gymA, tx => tx.select().from(members).where(eq(members.id, member.id)));
+      const [updatedHome] = await database.forGym(gymA, tx => tx.select().from(households).where(eq(households.id, home.id)));
+      expect(updatedMember?.phone).toBe('+447700900222');
+      expect(updatedHome?.billingDay).toBe(12);
+    } finally {
+      lockMember.resolve();
+      await holder.catch(() => undefined);
+    }
+  });
+
+  it('fails an update row when the member moves to another household before the lock', async () => {
+    const homeA = await factory('households', gymA, { billingDay: 5 });
+    const homeB = await factory('households', gymA, { billingDay: 6 });
+    const member = await factory('members', gymA, { householdId: homeA.id, firstName: 'Jo', lastName: 'Fields',
+      email: 'jo@example.test', phone: '+447700900111' });
+    const rows = parseCsv('First Name,Last Name,Email,Phone,Billing Day\nJo,Fields,jo@example.test,+447700900222,12\n').rows;
+    const plan: ImportPlanRequest = { uploadId: uuidv7(), mapper: 'people', duplicatePolicy: 'update',
+      mapping: autoMatch(Object.keys(rows[0]!.values)) };
+    const context: MapperContext = { gymId: gymA, actor: { kind: 'system' }, runId: uuidv7(), clock, timezone: 'UTC', sourceRows: rows };
+    const analyzed = await database.forGym(gymA, tx => peopleMapper.analyze(tx, rows, plan, context));
+    expect(analyzed[0]?.duplicateIds).toEqual([member.id]);
+    const planned = analyzed.map(row => ({ ...row, action: 'update' as const }));
+
+    const homeLocked = Promise.withResolvers<void>(), moveMember = Promise.withResolvers<void>();
+    const holder = database.forGym(gymA, async tx => {
+      await tx.select({ id: households.id }).from(households).where(eq(households.id, homeA.id)).for('update');
+      homeLocked.resolve();
+      await moveMember.promise;
+      await tx.update(members).set({ householdId: homeB.id }).where(eq(members.id, member.id));
+    });
+    try {
+      await homeLocked.promise;
+      const committing = database.forGym(gymA, tx => peopleMapper.commit(tx, planned, context));
+      void committing.catch(() => undefined);
+      await waitingOnLock('households');
+      moveMember.resolve();
+      await holder;
+      await expect(committing).rejects.toThrow('Import target member is unavailable');
+      const [afterMember] = await database.forGym(gymA, tx => tx.select().from(members).where(eq(members.id, member.id)));
+      const [afterHomeA] = await database.forGym(gymA, tx => tx.select().from(households).where(eq(households.id, homeA.id)));
+      const [afterHomeB] = await database.forGym(gymA, tx => tx.select().from(households).where(eq(households.id, homeB.id)));
+      expect(afterMember).toMatchObject({ householdId: homeB.id, phone: '+447700900111' });
+      expect(afterHomeA?.billingDay).toBe(5);
+      expect(afterHomeB?.billingDay).toBe(6);
+    } finally {
+      moveMember.resolve();
+      await holder.catch(() => undefined);
+    }
+  });
 });

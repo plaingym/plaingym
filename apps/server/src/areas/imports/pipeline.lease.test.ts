@@ -241,7 +241,7 @@ it('times out the ticket when its summary write finishes after the ceiling', asy
   }
 });
 
-it.each(['lease', 'meta'])('replaces a ticket whose first %s write hangs for one interval', async file => {
+it.each(['lease', 'meta'])('replaces a ticket whose first %s write hangs for two intervals', async file => {
   const budget = new PreviewBudget(1, 1), f = await fixture(budget), writer = f.writer();
   const stalled = new Promise<never>(() => {}), entered = Promise.withResolvers<void>();
   const put = f.storage.put.bind(f.storage);
@@ -260,13 +260,13 @@ it.each(['lease', 'meta'])('replaces a ticket whose first %s write hangs for one
   try {
     await entered.promise;
     const [original] = budget.pending.values();
-    f.clock.advance(5_000);
+    f.clock.advance(10_000);
     const joined = writer.requestPreview(f.actor, f.plan, page, 'UTC');
     void joined.catch(() => undefined);
     await expect.poll(() => get.mock.calls.filter(([key]) => key.endsWith('/summary.json')).length).toBe(4);
     expect([...budget.pending.values()].map(entry => entry.id)).toEqual([original!.id]);
 
-    f.clock.advance(5_000);
+    f.clock.advance(10_000);
     const replacement = pendingId(await writer.requestPreview(f.actor, f.plan, page, 'UTC'));
     expect(replacement).not.toBe(original!.id);
     for (const admission of [original!.admitted, first, joined]) {
@@ -280,6 +280,145 @@ it.each(['lease', 'meta'])('replaces a ticket whose first %s write hangs for one
     f.release.resolve();
     await expect.poll(() => budget.pending.size).toBe(0);
   }
+});
+
+it('times out a lone preview whose first lease write hangs after two intervals and frees its reservation', async () => {
+  const budget = new PreviewBudget(1, 0, 0), f = await fixture(budget), writer = f.writer();
+  const heartbeat = watchHeartbeats(f.clock);
+  const stalled = new Promise<never>(() => {}), entered = Promise.withResolvers<void>();
+  const put = f.storage.put.bind(f.storage);
+  let hung = false;
+  vi.spyOn(f.storage, 'put').mockImplementation((key, body, contentType) => {
+    if (!hung && key.includes('/preview/requests/') && key.includes('/lease/')) {
+      hung = true;
+      entered.resolve();
+      return stalled;
+    }
+    return put(key, body, contentType);
+  });
+  const anotherPlan: ImportPlanRequest = { ...f.plan, mapping: [{ sourceColumn: 'Name', targetField: 'lastName' }] };
+  const nextGate = analysisGate(), nextWriter = f.writer(false, nextGate);
+  const first = writer.requestPreview(f.actor, f.plan, page, 'UTC');
+  void first.catch(() => undefined);
+  try {
+    await entered.promise;
+    await expect(nextWriter.requestPreview(f.actor, anotherPlan, page, 'UTC')).rejects.toThrow('queue is full');
+
+    f.clock.advance(2 * PREVIEW_LEASE_INTERVAL_MS);
+    const firstWrites = heartbeat.scheduled(2 * PREVIEW_LEASE_INTERVAL_MS)[0];
+    expect(firstWrites).toBeDefined();
+    clearTimeout(firstWrites!.timer);
+    firstWrites!.callback();
+
+    await expect(first).rejects.toMatchObject({ code: 'unavailable', message: timedOut });
+    await expect.poll(() => budget.pending.size).toBe(0);
+
+    const next = pendingId(await nextWriter.requestPreview(f.actor, anotherPlan, page, 'UTC'));
+    await nextGate.entered.promise;
+    nextGate.release.resolve();
+    await expect.poll(() => poll(f, next, f.reader())).toMatchObject({ status: 'ready' });
+  } finally {
+    for (const entry of budget.pending.values()) entry.stop();
+    f.release.resolve();
+    nextGate.release.resolve();
+    await expect.poll(() => budget.pending.size).toBe(0);
+  }
+});
+
+it('joins a slow healthy ticket whose first lease and meta writes take 6 s each', async () => {
+  const budget = new PreviewBudget(1, 1), f = await fixture(budget), writer = f.writer();
+  const leaseGate = analysisGate(), metaGate = analysisGate();
+  const put = f.storage.put.bind(f.storage);
+  let gatedLease = false, gatedMeta = false;
+  vi.spyOn(f.storage, 'put').mockImplementation(async (key, body, contentType) => {
+    if (!gatedLease && key.includes('/preview/requests/') && key.includes('/lease/')) {
+      gatedLease = true;
+      leaseGate.entered.resolve();
+      await leaseGate.release.promise;
+    } else if (!gatedMeta && key.includes('/preview/requests/') && key.endsWith('/meta.json')) {
+      gatedMeta = true;
+      metaGate.entered.resolve();
+      await metaGate.release.promise;
+    }
+    return put(key, body, contentType);
+  });
+  const get = vi.spyOn(f.storage, 'get');
+  const first = writer.requestPreview(f.actor, f.plan, page, 'UTC');
+  try {
+    await leaseGate.entered.promise;
+    const [original] = budget.pending.values();
+    f.clock.advance(6_000);
+    leaseGate.release.resolve();
+
+    await metaGate.entered.promise;
+    f.clock.advance(6_000);
+    const repeat = writer.requestPreview(f.actor, f.plan, page, 'UTC');
+    await expect.poll(() => get.mock.calls.filter(([key]) => key.endsWith('/summary.json')).length).toBe(4);
+    expect([...budget.pending.values()].map(entry => entry.id)).toEqual([original!.id]);
+
+    metaGate.release.resolve();
+    expect(pendingId(await first)).toBe(original!.id);
+    expect(pendingId(await repeat)).toBe(original!.id);
+    f.release.resolve();
+    await expect.poll(() => budget.pending.size).toBe(0);
+  } finally {
+    leaseGate.release.resolve();
+    metaGate.release.resolve();
+    f.release.resolve();
+    await expect.poll(() => budget.pending.size).toBe(0);
+  }
+});
+
+it('answers queued when one look-ahead read throws and the other finds a lease, and throws when none does', async () => {
+  const f = await fixture();
+  const { gymId } = f.actor;
+  const now = f.clock.now().getTime();
+  const aheadKey = (prefix: string, offset: number) => f.store.leaseKey(prefix, now + offset * PREVIEW_LEASE_INTERVAL_MS);
+
+  async function seedQueuedAt(offset: number | null) {
+    const id = uuidv7(), prefix = ticketPrefix(f, id);
+    await f.store.put(gymId, `${prefix}/meta.json`, { prefix: 'unused', revision: '0.0.0.0', leased: true });
+    if (offset !== null) await f.store.renewLease(gymId, prefix, now + offset * PREVIEW_LEASE_INTERVAL_MS);
+    return { id, prefix };
+  }
+
+  const head = f.storage.head.bind(f.storage);
+
+  // +2 throws, +1 returns true -> queued
+  const first = await seedQueuedAt(1);
+  vi.spyOn(f.storage, 'head').mockImplementation((key, options) => {
+    if (key === aheadKey(first.prefix, 2)) return Promise.reject(new Error('ahead2 failed'));
+    return head(key, options);
+  });
+  expect(await poll(f, first.id, f.reader())).toEqual({ status: 'queued', id: first.id, uploadId: f.upload.id });
+  vi.restoreAllMocks();
+
+  // +1 throws, +2 returns true -> queued
+  const second = await seedQueuedAt(2);
+  vi.spyOn(f.storage, 'head').mockImplementation((key, options) => {
+    if (key === aheadKey(second.prefix, 1)) return Promise.reject(new Error('ahead1 failed'));
+    return head(key, options);
+  });
+  expect(await poll(f, second.id, f.reader())).toEqual({ status: 'queued', id: second.id, uploadId: f.upload.id });
+  vi.restoreAllMocks();
+
+  // both throw -> poll throws first rejection
+  const both = await seedQueuedAt(null);
+  vi.spyOn(f.storage, 'head').mockImplementation((key, options) => {
+    if (key === aheadKey(both.prefix, 2)) return Promise.reject(new Error('first ahead error'));
+    if (key === aheadKey(both.prefix, 1)) return Promise.reject(new Error('second ahead error'));
+    return head(key, options);
+  });
+  await expect(poll(f, both.id, f.reader())).rejects.toThrow('first ahead error');
+  vi.restoreAllMocks();
+
+  // one returns false and the other throws -> poll throws
+  const partial = await seedQueuedAt(null);
+  vi.spyOn(f.storage, 'head').mockImplementation((key, options) => {
+    if (key === aheadKey(partial.prefix, 1)) return Promise.reject(new Error('only ahead error'));
+    return head(key, options);
+  });
+  await expect(poll(f, partial.id, f.reader())).rejects.toThrow('only ahead error');
 });
 
 it('accepts a 60-second lease and tolerates readers 20 seconds ahead or behind', async () => {

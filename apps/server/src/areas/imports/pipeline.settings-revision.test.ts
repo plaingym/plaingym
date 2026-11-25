@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-// eslint-disable-next-line database/system-tables -- The stored preview key follows the gym's settings revision, which these tests save directly.
-import { gyms, uuidv7 } from '@plaingym/db';
+// eslint-disable-next-line database/system-tables -- The stored preview key follows specific gym settings columns, which these tests update directly.
+import { gyms, uuidv7, writeAudit } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import type { ImportPlanRequest } from '@plaingym/shared/contracts';
@@ -17,9 +17,15 @@ import { MapperRegistry } from './mappers/registry.js';
 import { createPeopleMapper } from './mappers/people.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
-const clock = new TestClock('2099-11-22T12:00:00Z'), gymA = uuidv7(), gymB = uuidv7();
-const actorA = { gymId: gymA, actor: { kind: 'system' } } as const;
-beforeAll(async () => { await factory('gyms', gymA); await factory('gyms', gymB); });
+const clock = new TestClock('2099-11-22T12:00:00Z');
+let gymA: string, gymB: string;
+let actorA: { readonly gymId: string; readonly actor: { readonly kind: 'system' } };
+beforeEach(async () => {
+  gymA = uuidv7(); gymB = uuidv7();
+  actorA = { gymId: gymA, actor: { kind: 'system' } };
+  await factory('gyms', gymA, { currency: 'USD', address: { country: 'US' }, bankDebitsEnabled: false });
+  await factory('gyms', gymB, { currency: 'USD', address: { country: 'US' }, bankDebitsEnabled: false });
+});
 
 const source = 'First Name,Last Name,Stripe Customer ID,Stripe Payment Method ID\nAnn,Lee,cus_A1,pm_A1\n';
 const planFor = (uploadId: string): ImportPlanRequest => ({ uploadId, mapper: 'people',
@@ -40,7 +46,7 @@ function setup() {
   return { pipeline, prepare, analyze, setProvider(value: FakePayments | null) { provider = value; } };
 }
 
-/** Saves any gym setting, which advances `gyms.revision` as every settings save and both Stripe save paths do. */
+/** Raises only `gyms.revision`, as an activity touch or unrelated setting save does. */
 async function saveSetting(gymId: string) {
   await database.forGym(gymId, async (tx) => {
     const [gym] = await tx.select({ revision: gyms.revision }).from(gyms).where(eq(gyms.id, gymId));
@@ -48,8 +54,67 @@ async function saveSetting(gymId: string) {
   });
 }
 
-describe('stored import previews follow the gym settings revision', () => {
-  it('previews a payment method again after Stripe is connected and a setting is saved', async () => {
+async function saveBranding(gymId: string) {
+  await database.forGym(gymId, async (tx) => {
+    const [gym] = await tx.select({ revision: gyms.revision }).from(gyms).where(eq(gyms.id, gymId));
+    await tx.update(gyms).set({ branding: { primaryColor: '#123456' }, revision: gym!.revision + 1 }).where(eq(gyms.id, gymId));
+  });
+}
+
+async function setStripeStored(gymId: string, stored: boolean) {
+  await database.forGym(gymId, async (tx) => {
+    await tx.update(gyms).set({ stripeConfig: stored ? 'encrypted-config' : '' }).where(eq(gyms.id, gymId));
+  });
+}
+
+async function setCurrency(gymId: string, currency: 'USD' | 'CAD') {
+  await database.forGym(gymId, async (tx) => {
+    await tx.update(gyms).set({ currency }).where(eq(gyms.id, gymId));
+  });
+}
+
+async function setCountry(gymId: string, country: string | null) {
+  await database.forGym(gymId, async (tx) => {
+    await tx.update(gyms).set({ address: country ? { country } : {} }).where(eq(gyms.id, gymId));
+  });
+}
+
+async function setBankDebits(gymId: string, bankDebitsEnabled: boolean) {
+  await database.forGym(gymId, async (tx) => {
+    await tx.update(gyms).set({ bankDebitsEnabled }).where(eq(gyms.id, gymId));
+  });
+}
+
+async function writeStripeSaved(gymId: string, beforeMode: 'test' | 'live', afterMode: 'test' | 'live') {
+  await database.forGym(gymId, async (tx) => {
+    await writeAudit(tx, { gymId, actorKind: 'system', action: 'integrations.stripe_saved', targetType: 'gym', targetId: gymId,
+      before: { mode: beforeMode }, after: { mode: afterMode }, occurredAt: clock.now() });
+  });
+}
+
+describe('stored import previews follow preview-relevant gym settings', () => {
+  it('keeps serving a stored preview and ready ticket after raising gyms.revision or changing branding', async () => {
+    const { pipeline, analyze, setProvider } = setup();
+    const upload = await pipeline.upload(actorA, new File([source], 'people.csv')), plan = planFor(upload.id);
+    const page = { limit: 10, offset: 0 };
+    setProvider(new FakePayments(gymA, clock));
+    const ticket = await pipeline.requestPreview(actorA, plan, page, 'UTC');
+    if (!('id' in ticket)) throw new Error('A new upload should start a new preview');
+    await expect.poll(() => pipeline.getPreview(gymA, upload.id, ticket.id, page)).toMatchObject({ status: 'ready' });
+    expect(analyze).toHaveBeenCalledTimes(1);
+
+    await saveSetting(gymA);
+    expect((await pipeline.preview(actorA, plan, page, 'UTC')).summary.errors).toBe(0);
+    expect(analyze).toHaveBeenCalledTimes(1);
+    expect(await pipeline.getPreview(gymA, upload.id, ticket.id, page)).toMatchObject({ status: 'ready' });
+
+    await saveBranding(gymA);
+    expect((await pipeline.preview(actorA, plan, page, 'UTC')).summary.errors).toBe(0);
+    expect(analyze).toHaveBeenCalledTimes(1);
+    expect(await pipeline.getPreview(gymA, upload.id, ticket.id, page)).toMatchObject({ status: 'ready' });
+  });
+
+  it('previews a payment method again after storing Stripe settings', async () => {
     const { pipeline, prepare, setProvider } = setup();
     const upload = await pipeline.upload(actorA, new File([source], 'people.csv')), plan = planFor(upload.id);
     const page = { limit: 10, offset: 0 };
@@ -58,14 +123,14 @@ describe('stored import previews follow the gym settings revision', () => {
     expect(before.data[0]).toMatchObject({ action: 'error' });
     expect(prepare).toHaveBeenCalledTimes(1);
     setProvider(new FakePayments(gymA, clock));
-    await saveSetting(gymA);
+    await setStripeStored(gymA, true);
     const after = await pipeline.preview(actorA, plan, page, 'UTC');
     expect(after.summary.errors).toBe(0);
     expect(after.data[0]).toMatchObject({ action: 'create' });
     expect(prepare).toHaveBeenCalledTimes(2);
   });
 
-  it('serves a second preview of the same plan from storage when no setting is saved', async () => {
+  it('serves a second preview of the same plan from storage when no preview-relevant setting changes', async () => {
     const { pipeline, analyze, setProvider } = setup();
     const upload = await pipeline.upload(actorA, new File([source], 'people.csv')), plan = planFor(upload.id);
     const page = { limit: 10, offset: 0 };
@@ -78,38 +143,69 @@ describe('stored import previews follow the gym settings revision', () => {
     expect(analyze).toHaveBeenCalledTimes(1);
   });
 
-  it('previews a payment method again after Stripe is removed and a setting is saved', async () => {
+  it('previews a payment method again after clearing Stripe settings', async () => {
     const { pipeline, setProvider } = setup();
     const upload = await pipeline.upload(actorA, new File([source], 'people.csv')), plan = planFor(upload.id);
     const page = { limit: 10, offset: 0 };
     setProvider(new FakePayments(gymA, clock));
+    await setStripeStored(gymA, true);
     expect((await pipeline.preview(actorA, plan, page, 'UTC')).summary.errors).toBe(0);
     setProvider(null);
-    await saveSetting(gymA);
+    await setStripeStored(gymA, false);
     expect((await pipeline.preview(actorA, plan, page, 'UTC')).summary.errors).toBe(1);
   });
 
-  it('fails a stored ticket with previewChanged after a setting is saved', async () => {
-    const { pipeline, setProvider } = setup();
+  it.each([
+    ['storing Stripe settings', async () => {}, () => setStripeStored(gymA, true)],
+    ['clearing Stripe settings', () => setStripeStored(gymA, true), () => setStripeStored(gymA, false)],
+    ['changing currency', async () => {}, () => setCurrency(gymA, 'CAD')],
+    ['changing address country', async () => {}, () => setCountry(gymA, 'CA')],
+    ['changing bankDebitsEnabled', async () => {}, () => setBankDebits(gymA, true)],
+    ['switching Stripe mode', async () => {}, () => writeStripeSaved(gymA, 'test', 'live')],
+  ] as const)('computes again and fails a ready ticket with previewChanged after %s', async (_label, seed, mutate) => {
+    await seed();
+    const { pipeline, analyze, setProvider } = setup();
     const upload = await pipeline.upload(actorA, new File([source], 'people.csv')), plan = planFor(upload.id);
     const page = { limit: 10, offset: 0 };
     setProvider(new FakePayments(gymA, clock));
     const ticket = await pipeline.requestPreview(actorA, plan, page, 'UTC');
     if (!('id' in ticket)) throw new Error('A new upload should start a new preview');
     await expect.poll(() => pipeline.getPreview(gymA, upload.id, ticket.id, page)).toMatchObject({ status: 'ready' });
-    await saveSetting(gymA);
+    expect(analyze).toHaveBeenCalledTimes(1);
+
+    await mutate();
     expect(await pipeline.getPreview(gymA, upload.id, ticket.id, page))
       .toEqual({ status: 'failed', message: t('imports/pipeline:previewChanged') });
+    await pipeline.preview(actorA, plan, page, 'UTC');
+    expect(analyze).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps serving gym A stored preview after gym B saves a setting', async () => {
+  it('keeps serving a stored preview and ready ticket when a Stripe save stays in the same mode', async () => {
+    const { pipeline, analyze, setProvider } = setup();
+    const upload = await pipeline.upload(actorA, new File([source], 'people.csv')), plan = planFor(upload.id);
+    const page = { limit: 10, offset: 0 };
+    setProvider(new FakePayments(gymA, clock));
+    await setStripeStored(gymA, true);
+    const ticket = await pipeline.requestPreview(actorA, plan, page, 'UTC');
+    if (!('id' in ticket)) throw new Error('A new upload should start a new preview');
+    await expect.poll(() => pipeline.getPreview(gymA, upload.id, ticket.id, page)).toMatchObject({ status: 'ready' });
+    expect(analyze).toHaveBeenCalledTimes(1);
+
+    await writeStripeSaved(gymA, 'test', 'test');
+    expect(await pipeline.getPreview(gymA, upload.id, ticket.id, page)).toMatchObject({ status: 'ready' });
+    await pipeline.preview(actorA, plan, page, 'UTC');
+    expect(analyze).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps serving gym A stored preview after gym B changes preview-relevant settings', async () => {
     const { pipeline, analyze, setProvider } = setup();
     const upload = await pipeline.upload(actorA, new File([source], 'people.csv')), plan = planFor(upload.id);
     const page = { limit: 10, offset: 0 };
     setProvider(new FakePayments(gymA, clock));
     expect((await pipeline.preview(actorA, plan, page, 'UTC')).summary.errors).toBe(0);
     expect(analyze).toHaveBeenCalledTimes(1);
-    await saveSetting(gymB);
+    await setStripeStored(gymB, true);
+    await setCurrency(gymB, 'CAD');
     expect((await pipeline.preview(actorA, plan, page, 'UTC')).summary.errors).toBe(0);
     expect(analyze).toHaveBeenCalledTimes(1);
   });
