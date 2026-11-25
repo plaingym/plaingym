@@ -907,9 +907,9 @@ it('also warns for an open-mat credit override in the member tab', async () => {
 });
 
 function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>(done => { resolve = done; });
-  return { promise, resolve };
+  let resolve!: (value: T) => void, reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 describe('coach roster recheck, undo read ordering, and busy walk-in notice', () => {
@@ -1074,7 +1074,7 @@ describe('coach roster recheck, undo read ordering, and busy walk-in notice', ()
     expect(screen.getByText('0 checked in')).toBeDefined();
   });
 
-  it('shows a busy notice when a walk-in is chosen during another save, keeps the query, and clears on typing or saving', async () => {
+  it('shows a busy notice when a walk-in is chosen during another save, keeps the query, and clears when the save ends', async () => {
     rows = [booked(memberId, 'River Lee'), booked('b2', 'Bo Two')];
     const user = userEvent.setup(); render(<AttendanceRosterPanel sessionId={sessionId}/>);
     await screen.findByText('River Lee');
@@ -1088,7 +1088,7 @@ describe('coach roster recheck, undo read ordering, and busy walk-in notice', ()
       screen.getByRole('button', { name: 'Check in River Lee' }).click();
       option.click();
     });
-    const busyNotice = 'Another check-in is still saving. Choose the member again once it finishes.';
+    const busyNotice = 'Another change is still saving. Choose the member again once it finishes.';
     expect((await screen.findByText(busyNotice)).getAttribute('role')).toBe('status');
     expect(picker.value).toBe('Sam Ng');
     expect(client.members).toHaveBeenCalledTimes(1);
@@ -1098,14 +1098,13 @@ describe('coach roster recheck, undo read ordering, and busy walk-in notice', ()
       firstSave.resolve({ id: 'visit-' + memberId, source: 'coach', occurredAt: '2026-11-20T23:05:00.000Z', memberId });
     });
     await screen.findByRole('button', { name: 'River Lee is checked in' });
-
-    // Typing a new query hides the notice.
-    await user.type(picker, '{Backspace}');
+    await waitFor(() => expect(picker.disabled).toBe(false));
     expect(screen.queryByText(busyNotice)).toBeNull();
-    await user.type(picker, 'g');
-    const optionAgain = await screen.findByRole('option', { name: 'Sam Ng' });
 
     // Choosing while another save runs shows it again; a later successful choice clears the query and shows no notice.
+    await user.click(picker);
+    await user.keyboard('{ArrowDown}');
+    const optionAgain = await screen.findByRole('option', { name: 'Sam Ng' });
     const secondSave = deferred<Awaited<ReturnType<typeof recordVisit>>>();
     client.record.mockReturnValueOnce(secondSave.promise);
     act(() => {
@@ -1118,11 +1117,140 @@ describe('coach roster recheck, undo read ordering, and busy walk-in notice', ()
       secondSave.resolve({ id: 'visit-b2', source: 'coach', occurredAt: '2026-11-20T23:05:00.000Z', memberId: 'b2' });
     });
     await screen.findByRole('button', { name: 'Bo Two is checked in' });
+    await waitFor(() => expect(picker.disabled).toBe(false));
+    expect(screen.queryByText(busyNotice)).toBeNull();
     await user.click(picker);
     await user.keyboard('{ArrowDown}');
     await user.click(screen.getByRole('option', { name: 'Sam Ng' }));
     await screen.findByRole('button', { name: 'Sam Ng is checked in' });
     expect(picker.value).toBe('');
     expect(screen.queryByText(busyNotice)).toBeNull();
+  });
+
+  it('shows the busy notice when a walk-in is chosen during an undo and clears when the undo ends', async () => {
+    rows = [{ ...booked(memberId, 'River Lee'), attendance: { id: 'visit', source: 'coach' } }];
+    const user = userEvent.setup(); render(<AttendanceRosterPanel sessionId={sessionId}/>);
+    await screen.findByRole('button', { name: 'Undo check-in for River Lee' });
+    const picker = screen.getByRole<HTMLInputElement>('combobox', { name: 'Check in someone else' });
+    await user.type(picker, 'Sam Ng');
+    const option = await screen.findByRole('option', { name: 'Sam Ng' });
+
+    const pendingUndo = deferred<{ id: string; memberId: string; source: string }>();
+    client.undo.mockReturnValueOnce(pendingUndo.promise);
+    act(() => { screen.getByRole('button', { name: 'Undo check-in for River Lee' }).click(); });
+    const confirmUndo = await screen.findByRole('button', { name: 'Undo check-in' });
+    act(() => {
+      confirmUndo.click();
+      option.click();
+    });
+
+    const busyNotice = 'Another change is still saving. Choose the member again once it finishes.';
+    expect((await screen.findByText(busyNotice)).getAttribute('role')).toBe('status');
+    expect(picker.value).toBe('Sam Ng');
+
+    rows[0]!.attendance = null;
+    await act(async () => {
+      pendingUndo.resolve({ id: 'visit', memberId, source: 'coach' });
+    });
+    await screen.findByRole('button', { name: 'Check in River Lee' });
+    await waitFor(() => expect(picker.disabled).toBe(false));
+    expect(screen.queryByText(busyNotice)).toBeNull();
+  });
+
+  it('ignores a failed quiet follow-up read started before an undo resolved', async () => {
+    rows = [{ ...booked(memberId, 'River Lee'), attendance: { id: 'visit', source: 'coach' } }];
+    const pendingFollowUp = deferred<ReturnType<typeof page>>();
+    const pendingRefresh = deferred<ReturnType<typeof page>>();
+    const pendingUndo = deferred<{ id: string; memberId: string; source: string }>();
+    const Session = ({ counts }: { counts: SessionCounts | null }) => (
+      <SessionCountsProvider publish={vi.fn()} counts={counts} changed={0} notify={vi.fn()}>
+        <AttendanceRosterPanel sessionId={sessionId}/>
+      </SessionCountsProvider>
+    );
+    const view = render(<Session counts={{ booked: 1, waitlisted: 0, checkedIn: 1 }}/>);
+    await screen.findByRole('button', { name: 'Undo check-in for River Lee' });
+    await waitFor(() => expect(client.roster).toHaveBeenCalledTimes(1));
+
+    client.roster.mockReturnValueOnce(pendingFollowUp.promise);
+    view.rerender(<Session counts={{ booked: 1, waitlisted: 0, checkedIn: 1 }}/>);
+    await waitFor(() => expect(client.roster).toHaveBeenCalledTimes(2));
+
+    client.undo.mockReturnValueOnce(pendingUndo.promise);
+    client.roster.mockReturnValueOnce(pendingRefresh.promise);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Undo check-in for River Lee' }));
+    await user.click(screen.getByRole('button', { name: 'Undo check-in' }));
+
+    rows[0]!.attendance = null;
+    await act(async () => {
+      pendingUndo.resolve({ id: 'visit', memberId, source: 'coach' });
+      await Promise.resolve();
+      pendingFollowUp.reject(new Error('offline'));
+      // A rejection reaches the old read's handler two ticks later; it must run before React replaces the read effect.
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The refresh read is still pending, so nothing has had a chance to clear an error the old read raised.
+    expect(client.roster).toHaveBeenCalledTimes(3);
+    expect(screen.queryByText(/out of date/)).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    await act(async () => {
+      pendingRefresh.resolve(page());
+    });
+    expect((screen.getByRole('button', { name: 'Check in River Lee' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText(/out of date/)).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByText('0 checked in')).toBeDefined();
+  });
+
+  it.each(['succeeds', 'fails'])('ignores a quiet follow-up read that %s after a check-in resolved and applies the refresh read', async outcome => {
+    // The old read also lists a member the screen doesn't, so applying it would show.
+    rows = [booked(memberId, 'River Lee'), booked('b2', 'Bo Two')];
+    const staleRoster = page();
+    rows = [booked(memberId, 'River Lee')];
+    const pendingFollowUp = deferred<ReturnType<typeof page>>();
+    const pendingRecord = deferred<Awaited<ReturnType<typeof recordVisit>>>();
+    const pendingRefresh = deferred<ReturnType<typeof page>>();
+    const Session = ({ counts }: { counts: SessionCounts | null }) => (
+      <SessionCountsProvider publish={vi.fn()} counts={counts} changed={0} notify={vi.fn()}>
+        <AttendanceRosterPanel sessionId={sessionId}/>
+      </SessionCountsProvider>
+    );
+    const view = render(<Session counts={{ booked: 1, waitlisted: 0, checkedIn: 0 }}/>);
+    await screen.findByRole('button', { name: 'Check in River Lee' });
+    await waitFor(() => expect(client.roster).toHaveBeenCalledTimes(1));
+
+    client.roster.mockReturnValueOnce(pendingFollowUp.promise);
+    view.rerender(<Session counts={{ booked: 1, waitlisted: 0, checkedIn: 0 }}/>);
+    await waitFor(() => expect(client.roster).toHaveBeenCalledTimes(2));
+
+    client.record.mockReturnValueOnce(pendingRecord.promise);
+    client.roster.mockReturnValueOnce(pendingRefresh.promise);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Check in River Lee' }));
+
+    rows[0]!.attendance = { id: 'visit-' + memberId, source: 'coach' };
+    await act(async () => {
+      pendingRecord.resolve({ id: 'visit-' + memberId, source: 'coach', occurredAt: '2026-11-20T23:05:00.000Z', memberId });
+      await Promise.resolve();
+      if (outcome === 'succeeds') pendingFollowUp.resolve(staleRoster);
+      else pendingFollowUp.reject(new Error('offline'));
+      // The old read's handler (two ticks later for a rejection) must run before React replaces the read effect.
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(client.roster).toHaveBeenCalledTimes(3);
+    expect(screen.queryByText('Bo Two')).toBeNull();
+    expect(screen.queryByText(/out of date/)).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect((screen.getByRole('button', { name: 'Check in River Lee' }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => {
+      pendingRefresh.resolve(page());
+    });
+    const checkedBtn = await screen.findByRole('button', { name: 'River Lee is checked in' }) as HTMLButtonElement;
+    expect(checkedBtn.disabled).toBe(true);
+    expect(screen.getByText('1 checked in')).toBeDefined();
   });
 });

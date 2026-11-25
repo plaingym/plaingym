@@ -27,6 +27,7 @@ function WalkIn({ disabled, listedIds, onChoose }: { disabled: boolean; listedId
   const [query, setQuery] = useState(''), [lookup, setLookup] = useState<{ query: string; members: Member[]; failed?: boolean } | null>(null);
   const [searching, setSearching] = useState(false), [busyNotice, setBusyNotice] = useState(false), lookupSeq = useRef(0), listedIdsRef = useRef(listedIds);
   listedIdsRef.current = listedIds;
+  useEffect(() => { if (!disabled) setBusyNotice(false); }, [disabled]);
   // A failed walk-in searches again, so a member the server refused leaves the picker instead of staying listed.
   const [searchAgain, setSearchAgain] = useState(0);
   useEffect(() => {
@@ -132,7 +133,7 @@ function Roster({ sessionId }: { sessionId: string }) {
   // The attendance IDs whose check-in was recorded here without spending a credit.
   const [needsCredits, setNeedsCredits] = useState<Set<string>>(new Set());
   const [undoing, setUndoing] = useState<{ attendance: Attendance; name: string } | null>(null);
-  const [recorded, setRecorded] = useState<Recorded | null>(null), readsStarted = useRef(0), undoneAt = useRef(0);
+  const [recorded, setRecorded] = useState<Recorded | null>(null), readsStarted = useRef(0), undoneAt = useRef(0), checkedInAt = useRef(0);
   const [loading, setLoading] = useState(true), [saving, setSaving] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false), [stale, setStale] = useState(false), [saveFailed, setSaveFailed] = useState(false);
   const savingRef = useRef(false);
@@ -154,7 +155,7 @@ function Roster({ sessionId }: { sessionId: string }) {
     if (!quiet) setLoading(true);
     const read = ++readsStarted.current;
     void attendanceClient.roster(sessionId, offset).then(page => {
-      if (!active || read <= undoneAt.current) return;
+      if (!active || read <= undoneAt.current || read <= checkedInAt.current) return;
       loudPending.current = false;
       // A page emptied by an undo falls back to the last page that still has rows.
       if (page.data.length === 0 && offset > 0) setOffset(Math.max(0, Math.floor((page.pagination.total - 1) / 50) * 50));
@@ -166,7 +167,7 @@ function Roster({ sessionId }: { sessionId: string }) {
         setRecorded(current => observe(current, page, read, offset));
       }
     }).catch(() => {
-      if (!active) return;
+      if (!active || read <= undoneAt.current || read <= checkedInAt.current) return;
       loudPending.current = false;
       if (quiet && shownOffset.current === offset) { setStale(true); return; }
       // A failed page change keeps the previous pager and checked-in count while hiding rows via shownOffset/currentPage.
@@ -238,6 +239,7 @@ function Roster({ sessionId }: { sessionId: string }) {
     setSaving(true); setSaveFailed(false); setRecorded(null);
     try {
       const attendance = await attendanceClient.record({ memberId: member.id, sessionId, programId: null });
+      checkedInAt.current = readsStarted.current;
       const credits = attendance.needsCredits === true;
       if (credits) setNeedsCredits(previous => new Set(previous).add(attendance.id));
       if (walkIn || credits) setRecorded({ attendanceId: attendance.id, memberId: member.id, name: member.name, at: attendance.occurredAt, walkIn,

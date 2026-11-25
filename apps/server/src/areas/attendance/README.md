@@ -124,12 +124,15 @@ up to 4 pages of matches and omitting members already shown on the current roste
 page; choosing a member records their check-in, and they then appear as a walk-in
 until the check-in is undone. Choosing a walk-in while another save is still running
 shows a notice under the picker and leaves the chosen member's name in it, so nothing
-is recorded until the coach chooses again. The roster reloads once
+is recorded until the coach chooses again; the notice clears when the roster's
+controls enable again. The roster reloads once
 after every check-in and undo and skips the follow-up read that its own session-change
 notification to the bookings panel would otherwise cause (for up to 10 seconds, or
 until that bookings read fails, so the next real bookings read is still followed). Any
-roster read started before an undo finishes is ignored so stale rows cannot restore
-the undone visit or re-enable its check-in. It also follows each other
+roster read started before a check-in is recorded or an undo finishes is ignored,
+whether it succeeds or fails, so older rows cannot replace what the next read shows or
+restore an undone visit, and its failure raises no out-of-date line or load error. It
+also follows each other
 successful read by the session dialog's bookings panel (after a booking or
 cancellation in that panel, a promotion after a capacity change, and that panel's
 periodic, focus and visibility reloads) with one quiet read of its own page, and
