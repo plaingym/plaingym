@@ -197,14 +197,20 @@ class PrereleaseTests(UpdateFixture):
         self.assertIn("caddy_image_required", self.status())
         self.assertNotIn("kill --signal", self.calls())
 
-    def test_pagination_stops_on_a_full_page_that_contains_running_version(self):
+    def test_pagination_continues_past_a_full_page_that_contains_running_version(self):
         self.chain()
+        self.publish("v0.1.5", prerelease=True, floor="v0.1.0")
+        self.keep_release()
         self.tags([{"tag_name": tag, "prerelease": True} for tag in ("v0.3.0", "v0.2.0", "v0.1.0")]
-                  + [{"tag_name": f"v0.0.{index}", "prerelease": True} for index in range(97)])
+                  + [{"tag_name": f"v0.0.{index}", "draft": True} for index in range(97)])
+        (self.release / "releases-page2.json").write_text(json.dumps([{"tag_name": "v0.1.5", "prerelease": True}]))
         result = self.run_update()
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("&page=2", self.calls())
+        self.assertEqual(self.calls().count("/releases?per_page=100"), 2)
+        self.assertLess(result.stdout.index("to=v0.1.5"), result.stdout.index("to=v0.2.0"))
         self.assertLess(result.stdout.index("to=v0.2.0"), result.stdout.index("to=v0.3.0"))
-        self.assertNotIn("&page=2", self.calls())
+        self.assertIn(f"APP_IMAGE={IMAGE}:v0.3.0@{DIGEST}", (self.root / ".env").read_text())
 
     def test_pagination_finds_intermediate_prerelease_on_later_page(self):
         self.chain()
@@ -227,12 +233,27 @@ class PrereleaseTests(UpdateFixture):
             (self.release / f"releases-page{page}.json").write_text(json.dumps(full_page))
         result = self.run_update()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("skipped; from=v0.1.0 to=- reason=release_list_incomplete", self.status())
+        self.assertIn("skipped; from=v0.1.0 to=- reason=running_release_not_listed", self.status())
         self.assertEqual(result.stdout, self.status())
         self.assertEqual(self.calls().count("/releases?per_page=100"), 10)
         self.assertIn("&page=10", self.calls())
         self.assertNotIn("release-manifest", self.calls())
         self.assertNotIn("kill --signal", self.calls())
+
+    def test_full_pages_with_running_version_on_page_3_proceeds_at_safety_cap(self):
+        draft_page = [{"tag_name": f"v0.0.{index}", "draft": True} for index in range(100)]
+        first = [{"tag_name": "v0.2.0", "prerelease": True}] + draft_page[:99]
+        third = [{"tag_name": "v0.1.0", "prerelease": True}] + draft_page[:99]
+        self.tags(first)
+        for page in range(2, 11):
+            entries = third if page == 3 else draft_page
+            (self.release / f"releases-page{page}.json").write_text(json.dumps(entries))
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("updated; from=v0.1.0 to=v0.2.0", self.status())
+        self.assertIn(f"APP_IMAGE={IMAGE}:v0.2.0@{DIGEST}", (self.root / ".env").read_text())
+        self.assertEqual(self.calls().count("/releases?per_page=100"), 10)
+        self.assertIn("&page=10", self.calls())
 
     def test_pagination_continues_past_an_older_published_tag(self):
         self.chain()
@@ -257,15 +278,72 @@ class PrereleaseTests(UpdateFixture):
         self.assertIn("updated; from=v0.1.0 to=v0.2.0", self.status())
         self.assertIn("&page=2", self.calls())
 
-    def test_stable_pagination_stops_on_full_page_with_eligible_release(self):
+    def test_stable_pagination_continues_past_full_page_with_eligible_release(self):
         (self.root / ".env").write_text(self.initial + "DEMO_RELEASE_CHANNEL=stable\n")
+        self.publish("v0.1.1", floor="v0.1.0")
+        self.keep_release()
         self.publish("v0.2.0", floor="v0.1.0")
-        first = [{"tag_name": f"v0.{index}.0", "prerelease": True} for index in range(3, 102)]
-        self.tags(first + [{"tag_name": "v0.2.0", "prerelease": False}])
+        self.keep_release()
+        first = [{"tag_name": "v0.1.1", "prerelease": False}] + [
+            {"tag_name": f"v0.{index}.0", "prerelease": True} for index in range(3, 102)
+        ]
+        self.tags(first)
+        (self.release / "releases-page2.json").write_text(json.dumps([
+            {"tag_name": "v0.2.0", "prerelease": False},
+            {"tag_name": "v0.1.0", "prerelease": False},
+        ]))
         result = self.run_update()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("updated; from=v0.1.0 to=v0.2.0", self.status())
-        self.assertEqual(self.calls().count("/releases?per_page=100"), 1)
+        self.assertIn(f"APP_IMAGE={IMAGE}:v0.2.0@{DIGEST}", (self.root / ".env").read_text())
+        self.assertEqual(self.calls().count("/releases?per_page=100"), 2)
+        self.assertEqual(self.calls().count("kill --signal SIGTERM"), 1)
+
+    def test_stable_pagination_continues_past_full_page_with_running_release_and_no_eligible(self):
+        (self.root / ".env").write_text(self.initial + "DEMO_RELEASE_CHANNEL=stable\n")
+        first = [{"tag_name": "v0.1.0", "prerelease": False}] + [
+            {"tag_name": f"v0.2.{index}", "prerelease": True} for index in range(99)
+        ]
+        self.tags(first)
+        (self.release / "releases-page2.json").write_text(json.dumps([
+            {"tag_name": "v0.0.9", "prerelease": False},
+            {"tag_name": "v0.3.0", "draft": True},
+        ]))
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("up_to_date; from=v0.1.0 to=- reason=-", self.status())
+        self.assertEqual(self.calls().count("/releases?per_page=100"), 2)
+        self.assertNotIn("release-manifest", self.calls())
+
+    def test_stable_full_pages_with_running_release_on_page_3_apply_newest_stable_at_safety_cap(self):
+        (self.root / ".env").write_text(self.initial + "DEMO_RELEASE_CHANNEL=stable\n")
+        self.publish("v0.2.0", floor="v0.1.0")
+        filler = [{"tag_name": f"v0.9.{index}", "prerelease": True} for index in range(100)]
+        # Tags outside the vX.Y.Z grammar are never chosen, even when they read as newer.
+        first = [{"tag_name": tag, "prerelease": False}
+                 for tag in ("v0.03.0", "v0.1000000.0", "v0.4.0-rc.1", "v0.1.1", "v0.2.0")] + filler[:95]
+        third = [{"tag_name": "v0.1.0", "prerelease": False}] + filler[:99]
+        self.tags(first)
+        for page in range(2, 11):
+            (self.release / f"releases-page{page}.json").write_text(json.dumps(third if page == 3 else filler))
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("updated; from=v0.1.0 to=v0.2.0", self.status())
+        self.assertIn(f"APP_IMAGE={IMAGE}:v0.2.0@{DIGEST}", (self.root / ".env").read_text())
+        self.assertEqual(self.calls().count("/releases?per_page=100"), 10)
+        self.assertEqual(self.calls().count("kill --signal SIGTERM"), 1)
+
+    def test_stable_full_pages_without_running_release_skip_at_safety_cap(self):
+        (self.root / ".env").write_text(self.initial + "DEMO_RELEASE_CHANNEL=stable\n")
+        filler = [{"tag_name": f"v0.9.{index}", "prerelease": True} for index in range(100)]
+        self.tags([{"tag_name": "v0.2.0", "prerelease": False}] + filler[:99])
+        for page in range(2, 11):
+            (self.release / f"releases-page{page}.json").write_text(json.dumps(filler))
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("skipped; from=v0.1.0 to=- reason=running_release_not_listed", self.status())
+        self.assertEqual(self.calls().count("/releases?per_page=100"), 10)
+        self.assertNotIn("release-manifest", self.calls())
 
     def test_stable_pagination_stops_on_short_page_without_eligible_release(self):
         (self.root / ".env").write_text(self.initial + "DEMO_RELEASE_CHANNEL=stable\n")

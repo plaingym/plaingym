@@ -165,12 +165,13 @@ delay; it acts once between 02:00 and 05:00 in `DEMO_UPDATE_TIMEZONE` (default
 By default the demo follows published prereleases and stable releases with the
 running image's major version. It installs the **next** newer version, then the
 next, in order while each update succeeds and the nightly window remains open.
-The updater reads release pages until the page that holds the running release's tag.
-On the `prerelease` channel it reads on through full pages.
-`DEMO_RELEASE_CHANNEL=stable` reads on only while no newer stable release in the
-running major has appeared, then applies the newest eligible stable patch **or
-minor** release as a single update. Either channel skips an incomplete history
-at the 1,000-entry safety cap. A new major requires an explicit operator update.
+`DEMO_RELEASE_CHANNEL=stable` applies the newest eligible stable patch **or
+minor** release as a single update. The updater reads release pages until the
+end of the history or the 1,000-entry safety cap, on both channels. When the cap
+is reached and the running release was among them, it chooses from those entries
+(a newer version created before all of them isn't seen); when the running
+release isn't among them, it skips with `running_release_not_listed`. A new
+major requires an explicit operator update.
 Tags and image labels use plain `vX.Y.Z`,
 including nightly `v0.Y.Z` prereleases; development/bundle labels are skipped.
 Set these host-only options in the root-only installed `.env`:

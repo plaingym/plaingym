@@ -455,25 +455,6 @@ class DeployArchiveTests(unittest.TestCase):
                     self.assertFalse(stale.is_symlink())
                     self.assertEqual(original.read_text(), "keep")
 
-    @unittest.skipUnless(os.name == "posix", "Shared host helpers require POSIX.")
-    def test_tag_selection_uses_stable_newer_versions_in_the_running_major(self):
-        with tempfile.TemporaryDirectory() as directory:
-            releases = Path(directory) / "releases.json"
-            releases.write_text(json.dumps([
-                {"tag_name": name, **flags} for name, flags in [
-                    ("v1.2.4", {}), ("v1.10.0", {}), ("v1.9.99", {}), ("v2.0.0", {}),
-                    ("v1.99.0", {"draft": True}), ("v1.98.0", {"prerelease": True}),
-                    ("v1.11.0-rc.1", {}), ("v01.20.0", {}), ("v1.1000000.0", {}), (None, {})]]))
-            def select(current):
-                return subprocess.run(["sh", "-c", '. "$1"; newest_release "$2" "$3"', "test",
-                                       str(DEPLOY / "lib.sh"), current, str(releases)],
-                                      capture_output=True, text=True, timeout=10)
-            self.assertEqual(select("v1.2.3").stdout.strip(), "v1.10.0")
-            self.assertEqual(select("v1.10.0").stdout.strip(), "")
-            self.assertNotEqual(select("invalid").returncode, 0)
-            releases.write_text('{"message":"unavailable"}')
-            self.assertNotEqual(select("v1.2.3").returncode, 0)
-
     @unittest.skipUnless(os.name == "posix", "Shared journal requires POSIX.")
     def test_shared_journal_restores_demo_files_absence_and_units_and_keeps_committed_files(self):
         with tempfile.TemporaryDirectory() as directory:

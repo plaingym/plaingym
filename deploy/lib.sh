@@ -328,18 +328,6 @@ host_apply() { # SOURCE TARGET_PIN PREVIOUS_IMAGE_ID [FILES UNITS]; empty ID ski
 }
 valid_timezone() { printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$' && [ -f "/usr/share/zoneinfo/$1" ]; }
 in_window() { hour=$(TZ="$1" date +%H); hour=${hour#0}; [ "$hour" -ge 2 ] && [ "$hour" -lt 5 ]; }
-# Select a stable, non-draft release in the running major, using the same version grammar as manifests.
-newest_release() { # VERSION RELEASES_JSON
-  valid_version "$1" || return 1
-  python3 -c 'import json,re,sys
-current=tuple(map(int,sys.argv[1][1:].split(".")))
-releases=json.load(open(sys.argv[2]))
-if not isinstance(releases,list) or any(not isinstance(r,dict) for r in releases): raise ValueError("Invalid release list")
-tags=[r.get("tag_name", "") for r in releases if not r.get("draft") and not r.get("prerelease")]
-versions=[tuple(map(int,t[1:].split("."))) for t in tags if isinstance(t,str) and re.fullmatch(sys.argv[3],t)]
-newer=[v for v in versions if v[0]==current[0] and v>current]
-print("v"+".".join(map(str,max(newer))) if newer else "")' "$1" "$2" "$version_pattern"
-}
 # The newest patch of VERSION's minor among TAGS (one per line), or nothing if VERSION is the newest.
 newest_patch() { # VERSION TAGS
   printf '%s\n' "$2" | grep -E "$version_pattern" | awk -v current="$1" '
