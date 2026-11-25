@@ -198,6 +198,14 @@ describe('Settings → Backups', () => {
     expect(screen.queryByRole('button', { name: 'Change destination or key' })).toBeNull();
     expect(document.body.textContent).not.toContain('rotated-secret');
   });
+  it('explains that replacing credentials also updates a waiting change for the same bucket', async () => {
+    current = { ...configured, revision: 5, backups: { ...configured.backups!, pending: { destination, publicKey } } };
+    const user = userEvent.setup(); renderSection();
+    await user.click(await screen.findByRole('button', { name: 'Change storage credentials' }));
+    const form = screen.getByRole('form', { name: 'Change storage credentials' });
+    expect(within(form).getByText('These keys replace the ones for gym-backups, for current snapshots and for the change waiting for its key.')).toBeDefined();
+    expect(within(form).queryByText(/choose Generate a new key instead/)).toBeNull();
+  });
   it('closes an open credentials form when the pending key is confirmed instead', async () => {
     current = pending;
     client.POST.mockImplementation(async () => { current = { ...configured, revision: 6, backups: { ...configured.backups!, publicKey } }; return reply(200, { data: current }); });

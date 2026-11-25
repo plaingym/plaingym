@@ -14,7 +14,7 @@ import type { BackupKind, Manifest, Snapshot, UploadReference } from './backups.
 import { guardSnapshot, inventory, pruneUnlocked, UnverifiedInventory, type RunStatuses } from './backups.retention.js';
 import { PostgresMaintenance } from './backups.database.js';
 import { SnapshotContentError } from './backups.content.js';
-import { backupFailureCause } from './backups.failure.js';
+import { backupFailureCause, markedStore } from './backups.failure.js';
 import { logError } from '../../core/log.js';
 import { invalidateBackupHealth } from './backups.health-cache.js';
 
@@ -33,10 +33,12 @@ export interface BackupOptions {
 }
 export class BackupService {
   readonly scope: { forSystem: typeof forSystem };
+  readonly #store: BackupObjectStore;
   constructor(readonly options: BackupOptions) {
     validateRecipient(options.recipient);
     if (options.appEncryptionKey.length !== 32 || options.blobKey.length !== 32) throw new Error('Invalid backup recovery key');
     this.scope = options.scope ?? { forSystem };
+    this.#store = markedStore(options.store);
   }
   /** Each run is recorded before anything is uploaded, so an uncommitted prefix can be traced to its run. */
   readonly runs: RunStatuses = async (prefixes) => new Map((await this.scope.forSystem((tx) => tx
@@ -45,7 +47,7 @@ export class BackupService {
   async #upload(key: string, path: string): Promise<ObjectInfo> {
     // Every retry opens the encrypted staging file anew; the store aborts failed multipart sessions.
     for (let attempt = 1; ; attempt++) {
-      try { return await this.options.store.putObject(key, fileStream(path)); }
+      try { return await this.#store.putObject(key, fileStream(path)); }
       catch (error) { if (attempt >= 3) throw new Error('Backup object upload failed', { cause: error }); }
     }
   }
@@ -61,12 +63,12 @@ export class BackupService {
       let committed = false;
       try {
         // An unverifiable inventory stops pruning but never the next snapshot: one interrupted run must not end backups.
-        try { if (!await o.database.pruningHeld()) await pruneUnlocked(o.store, o.blobKey, sources, startedAt, 0, o.budgetBytes, new Date(startedAt.getTime() - 1), this.runs,
+        try { if (!await o.database.pruningHeld()) await pruneUnlocked(this.#store, o.blobKey, sources, startedAt, 0, o.budgetBytes, new Date(startedAt.getTime() - 1), this.runs,
           guardSnapshot(process.env)); }
         catch (error) { if (!(error instanceof UnverifiedInventory)) throw error; }
-        const previous = await inventory(o.store, o.blobKey, this.runs);
+        const previous = await inventory(this.#store, o.blobKey, this.runs);
         const reusable = new Map(previous.snapshots.flatMap((s) => s.uploads.map((u) => [u.blob, u] as const)));
-        const stored = new Set((await o.store.listObjects('blobs/')).map((blob) => blob.key));
+        const stored = new Set((await this.#store.listObjects('blobs/')).map((blob) => blob.key));
         const dumpHash = createHash('sha256'); let dumpBytes = 0;
         const dump = (await o.database.dump()).pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
           transform(chunk, controller) { dumpHash.update(chunk); dumpBytes += chunk.length; controller.enqueue(chunk); },
@@ -90,7 +92,7 @@ export class BackupService {
             if (known) encrypted = known.encrypted;
             else if (stored.has(blob)) {
               // Never overwrite a stored blob: re-encryption would break the references of snapshots that use it.
-              const body = await o.store.getObject(blob);
+              const body = await this.#store.getObject(blob);
               if (!body) throw new Error('Upload blob disappeared during backup');
               const copy = join(staging, 'existing.age');
               encrypted = await saveStream(copy, body); await rm(copy);
@@ -116,7 +118,7 @@ export class BackupService {
           database: encryptedDump, manifest: manifestInfo, uploads: publicReferences(references, o.blobKey) };
         const referencePath = join(staging, 'references.json');
         const referenceInfo = await saveStream(referencePath, referenceStream(snapshot, o.blobKey));
-        const existing = [...await o.store.listObjects('snapshots/'), ...await o.store.listObjects('blobs/')];
+        const existing = [...await this.#store.listObjects('snapshots/'), ...await this.#store.listObjects('blobs/')];
         const required = existing.reduce((n, item) => n + item.size, 0) +
           pending.reduce((n, item) => n + item.size, 0) + encryptedDump.size + manifestInfo.size + referenceInfo.size;
         if (required + (o.reserveBytes ?? 128 * 1024 * 1024) > (o.budgetBytes ?? 8_000_000_000))
@@ -139,7 +141,7 @@ export class BackupService {
         // must still be marked failed with its cause class (never the upstream text). It stops at the first refused
         // delete, so a reference list that may have been published never outlives the objects it names.
         if (!committed) {
-          try { for (const name of ['references.json', 'manifest.age', 'database.age']) await o.store.deleteObject(prefix + name); }
+          try { for (const name of ['references.json', 'manifest.age', 'database.age']) await this.#store.deleteObject(prefix + name); }
           catch { /* the prefix stays for the next safe prune */ }
         }
         const cause = backupFailureCause(error);
@@ -155,7 +157,7 @@ export class BackupService {
     const o = this.options;
     return o.database.locked(async () => {
       if (await o.database.pruningHeld()) throw new UnverifiedInventory('Restore pruning hold; the owner must confirm the old server is gone');
-      return pruneUnlocked(o.store, o.blobKey, await o.uploads(), o.clock.now(),
+      return pruneUnlocked(this.#store, o.blobKey, await o.uploads(), o.clock.now(),
         o.reserveBytes, o.budgetBytes, o.clock.now(), this.runs,
         guardSnapshot(process.env));
     }).finally(() => { invalidateBackupHealth(); });

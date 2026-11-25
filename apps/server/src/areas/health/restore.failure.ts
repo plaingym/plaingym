@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { ZodError } from 'zod';
 import { AgeKeyMismatchError } from '../../infra/age/index.js';
-import { backupFailureCause } from './backups.failure.js';
+import { backupFailureCause, fromStorage, markStorageFailure } from './backups.failure.js';
 /**
  * A fixed, public diagnostic; never pass file contents, paths, keys or upstream error text as the message.
  * The optional cause is for the structured log, which keeps its name, code and frames and drops its message.
@@ -32,6 +32,19 @@ const identifier = /^[A-Za-z][A-Za-z0-9_.:-]{0,63}$/;
 /** A value that looks like an error code or name, or null: anything else could quote a path or a secret. */
 export const safeName = (value: unknown): string | null => typeof value === 'string' && identifier.test(value) ? value : null;
 
+/** Parenthesized safe error code or name (omitting plain `'Error'`), or empty when neither is safe. */
+export function causeSuffix(error: unknown): string {
+  if (typeof error !== 'object' || error === null) return '';
+  const value = error as { code?: unknown; name?: unknown };
+  const name = safeName(value.code) ?? safeName(value.name);
+  return name && name !== 'Error' ? ' (' + name + ')' : '';
+}
+
+/** Shared wording for an unreachable backup or uploads bucket, with `causeSuffix` when available. */
+export function unreachableReason(error: unknown, bucket: 'backup' | 'uploads'): string {
+  return 'Cannot reach the ' + bucket + ' bucket' + causeSuffix(error);
+}
+
 /**
  * What an S3 client error says about `bucket`: the backup bucket a snapshot is read from, or the uploads bucket a
  * staged restore publishes files to. One with an HTTP status or a server-supplied code is the bucket's answer
@@ -45,11 +58,9 @@ export function s3Reason(error: unknown, bucket: 'backup' | 'uploads'): string |
   const status = (value.$metadata as { httpStatusCode?: unknown }).httpStatusCode;
   const served = safeName(value.Code);
   if (typeof status !== 'number' && !served) {
-    const cause = safeName(value.code) ?? safeName(value.name);
-    const suffix = cause && cause !== 'Error' ? ' (' + cause + ')' : '';
     return backupFailureCause(error) === 'endpoint_unreachable'
-      ? 'Cannot reach the ' + bucket + ' bucket' + suffix
-      : 'The connection to the ' + bucket + ' bucket failed' + suffix;
+      ? unreachableReason(error, bucket)
+      : 'The connection to the ' + bucket + ' bucket failed' + causeSuffix(error);
   }
   const code = served ?? safeName(value.name);
   const cause = backupFailureCause(error);
@@ -68,17 +79,8 @@ export type RestoreFailureClass = 'credentials_rejected' | 'bucket_missing' | 's
 const downloads = new WeakSet<object>();
 /** Marks an error as raised by a snapshot download, so a bare network code in it names the storage endpoint. */
 export function markDownload(error: unknown): void {
+  markStorageFailure(error);
   if (typeof error === 'object' && error !== null) downloads.add(error);
-}
-/** Whether this error or one of its causes is an S3 client's: the SDK puts `$metadata` on every error it raises. */
-function fromStorage(error: unknown): boolean {
-  let current = error;
-  for (let depth = 0; depth < 5 && typeof current === 'object' && current !== null; depth++) {
-    const value = current as { $metadata?: unknown; cause?: unknown; errors?: unknown };
-    if (typeof value.$metadata === 'object' && value.$metadata !== null) return true;
-    current = current instanceof AggregateError ? (current.errors as unknown[])[0] : value.cause;
-  }
-  return false;
 }
 
 export function restoreFailureClass(error: unknown): RestoreFailureClass {

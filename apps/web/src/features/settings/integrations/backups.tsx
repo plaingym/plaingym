@@ -131,7 +131,10 @@ export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { ba
     {credentialsOpen && backups.configured && <form onSubmit={replaceCredentials} aria-label={label('changeCredentials')}>
       <fieldset disabled={busy} className="grid min-w-0 gap-4">
         <p className="text-sm text-muted-foreground">{label('credentialsHint')}</p>
-        {pending && backups.destination && <p className="text-sm text-muted-foreground [overflow-wrap:anywhere]">{text('backups.credentialsPendingHint', { bucket: backups.destination.bucket })}</p>}
+        {pending && backups.destination && <p className="text-sm text-muted-foreground [overflow-wrap:anywhere]">{text(
+          pending.destination.endpoint === backups.destination.endpoint && pending.destination.region === backups.destination.region && pending.destination.bucket === backups.destination.bucket
+            ? 'backups.credentialsPendingSameHint' : 'backups.credentialsPendingHint',
+          { bucket: backups.destination.bucket })}</p>}
         <Field name="accessKeyId" idPrefix="integrations-backup-credentials-"/>
         <Field name="secretAccessKey" type="password" idPrefix="integrations-backup-credentials-"/>
         <div className="flex flex-col gap-3 sm:flex-row"><Button type="submit">{label(busy ? 'checking' : 'replaceCredentials')}</Button></div>

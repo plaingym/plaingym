@@ -107,7 +107,9 @@ until the bucket reaches the retention budget and the snapshot's budget check fa
 The Last backup tile reports `pruningHeld` separately from an inventory failure.
 An inventory failure the destination caused names its class in `destinationFailure`
 (`credentials_rejected`, `bucket_missing` or `endpoint_unreachable`, from the error's
-status and code only) with its own message; any other failure keeps the pruning-stopped one.
+status and code only; a bare network code counts only when a destination call raised
+it, so other connection failures such as the database stay `other`) with its own message;
+any other failure keeps the pruning-stopped one.
 Its warning names the hold and explains that new snapshots stop at the retention budget;
 it replaces the healthy and capacity messages but not the missing or overdue snapshot ones.
 The snapshot named by an active `SCHEMA_ROLLBACK_FLOOR` / `SCHEMA_SNAPSHOT` guard

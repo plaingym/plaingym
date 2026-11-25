@@ -4,6 +4,7 @@ import { idSchema } from '@plaingym/shared/contracts';
 import type { BackupObjectStore, Uploads } from '../../infra/storage/index.js';
 import { protectedName, readReferences, snapshotPrefix, verifyReferences } from './backups.format.js';
 import type { Snapshot } from './backups.format.js';
+import { markedStore } from './backups.failure.js';
 
 /** Only an active schema guard protects its named rollback restore point. The updater writes `-` when it has none. */
 export function guardSnapshot(env: NodeJS.ProcessEnv): string | undefined {
@@ -61,6 +62,7 @@ export class UnverifiedInventory extends Error {}
  * when its run is recorded as not succeeded: runs hold the backup lock, so none of them is still in progress.
  */
 export async function inventory(store: BackupObjectStore, blobKey: Buffer, runs?: RunStatuses): Promise<BackupInventory> {
+  store = markedStore(store);
   const objects = await store.listObjects('snapshots/');
   const ids = new Set<string>(), suspect: string[] = [];
   for (const object of objects) {
@@ -108,6 +110,7 @@ export function prunePlan(state: BackupInventory, now: Date, floorSnapshot?: str
 }
 export async function pruneUnlocked(store: BackupObjectStore, blobKey: Buffer, uploads: ReadonlyMap<string, Uploads>,
   now: Date, reserveBytes = 0, budget = 8_000_000_000, sweepBefore = now, runs?: RunStatuses, floorSnapshot?: string): Promise<{ retainedBytes: number; protectedKeys: ReadonlySet<string> }> {
+  store = markedStore(store);
   const state = await inventory(store, blobKey, runs);
   const { keep, stopped } = prunePlan(state, now, floorSnapshot);
   if (stopped) throw new UnverifiedInventory('Backup inventory could not be verified; pruning stopped');

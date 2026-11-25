@@ -684,8 +684,10 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     },
 
     /**
-     * Replaces only the stored storage access key, after the destination accepts it. The endpoint, bucket, backup key,
-     * blob key, retention budget, a pending key and the snapshots stay as they are; the next snapshot reads the new key.
+     * Replaces the stored storage access key, after the destination accepts it. A pending change for the same
+     * destination receives the same newly encrypted credentials so confirming it keeps the rotated key; a pending
+     * change for another destination (endpoint, region or bucket), and the endpoint, bucket, backup key, blob key, retention budget and snapshots stay
+     * as they are. The next snapshot reads the new key.
      */
     async replaceBackupCredentials(context: MutationContext, input: ReplaceBackupCredentialsRequest): Promise<Integrations> {
       assertBackups();
@@ -702,9 +704,20 @@ export function createIntegrationsService(options: IntegrationsOptions) {
         const stored = backups(before);
         if (!stored?.configured || stored.destination?.endpoint !== checked.endpoint || stored.destination.region !== checked.region
           || stored.destination.bucket !== checked.bucket) throw notConfigured();
+        const waiting = pendingBackup(before);
+        const pendingUpdated = waiting !== null
+          && waiting.destination.endpoint === checked.endpoint
+          && waiting.destination.region === checked.region
+          && waiting.destination.bucket === checked.bucket;
+        const settings = before.settings as { integrations?: Record<string, unknown> };
+        // Spread the stored entry, not the parsed one: keys a newer release stored there stay after a rollback.
+        const set: Partial<Gym> = pendingUpdated
+          ? { s3Config, settings: { ...settings, integrations: { ...settings.integrations,
+            backup: { ...settings.integrations?.backup as PendingBackup, s3Config } satisfies PendingBackup } } }
+          : { s3Config };
         // The key ID and secret are never audited.
-        return { set: { s3Config }, action: 'integrations.backup_credentials_replaced',
-          before: { destination: stored.destination }, after: (after) => ({ destination: backups(after)?.destination ?? null }) };
+        return { set, action: 'integrations.backup_credentials_replaced',
+          before: { destination: stored.destination }, after: (after) => ({ destination: backups(after)?.destination ?? null, pendingUpdated }) };
       });
       return present(context.gymId, userId);
     },

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { ZodError } from 'zod';
-import { ageKeyReason, RestoreFailure, restoreFailureClass, s3Reason, safeName } from '../areas/health/restore.failure.js';
+import { ageKeyReason, RestoreFailure, restoreFailureClass, s3Reason, safeName, unreachableReason } from '../areas/health/restore.failure.js';
 
 /**
  * The fields a Zod error names. Only the paths of the fields the schema defines, never the values that failed.
@@ -25,12 +25,7 @@ export function restoreFailureReason(error: unknown): string {
   if (error instanceof ZodError) return "The snapshot's contents are not in a format this version reads";
   const s3 = s3Reason(error, 'backup');
   if (s3) return s3;
-  if (restoreFailureClass(error) === 'endpoint_unreachable') {
-    const value = typeof error === 'object' && error !== null ? error as { code?: unknown; name?: unknown } : null;
-    const name = value ? safeName(value.code) ?? safeName(value.name) : null;
-    const suffix = name && name !== 'Error' ? ' (' + name + ')' : '';
-    return 'Cannot reach the backup bucket' + suffix;
-  }
+  if (restoreFailureClass(error) === 'endpoint_unreachable') return unreachableReason(error, 'backup');
   const key = ageKeyReason(error);
   if (key) return key;
   return 'Unexpected error (' + (error instanceof Error ? safeName(error.name) ?? 'Error' : 'unknown') + ')';

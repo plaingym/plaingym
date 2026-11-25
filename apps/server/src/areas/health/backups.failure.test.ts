@@ -12,7 +12,7 @@ import { FakeBackupObjectStore } from '../../infra/storage/index.js';
 import { BackupService } from './backups.js';
 import type { PostgresMaintenance } from './backups.database.js';
 import { bytesStream } from './backups.files.js';
-import { backupFailureCause } from './backups.failure.js';
+import { backupFailureCause, markedStore, markStorageFailure } from './backups.failure.js';
 
 const unauthorized = { name: 'Unauthorized', $metadata: { httpStatusCode: 401 } };
 const reset = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
@@ -22,7 +22,8 @@ describe('backup failure causes', () => {
     ['access denied', { name: 'AccessDenied', Code: 'AccessDenied', $metadata: { httpStatusCode: 403 } }, 'credentials_rejected'],
     ['a missing bucket', { name: 'NoSuchBucket', Code: 'NoSuchBucket', $metadata: { httpStatusCode: 404 } }, 'bucket_missing'],
     ['no answer from the server', { name: 'TimeoutError', $metadata: {} }, 'endpoint_unreachable'],
-    ['a failed DNS lookup', Object.assign(new Error('x'), { code: 'ENOTFOUND' }), 'endpoint_unreachable'],
+    ['an unmarked DNS lookup error', Object.assign(new Error('x'), { code: 'ENOTFOUND' }), 'other'],
+    ['an unmarked connection reset', { code: 'ECONNRESET' }, 'other'],
     ['a chained upload failure', new Error('Snapshot failed', { cause: new Error('Backup object upload failed', { cause: unauthorized }) }), 'credentials_rejected'],
     ['a server error', { name: 'InternalError', Code: 'InternalError', $metadata: { httpStatusCode: 500 } }, 'other'],
     ['a local error', new Error('disk full'), 'other'],
@@ -37,10 +38,47 @@ describe('backup failure causes', () => {
     ['an aborted connection under the retry metadata', { code: 'ECONNABORTED', $metadata: { attempts: 1 } }, 'endpoint_unreachable'],
     ['a headers timeout under the retry metadata', { code: 'UND_ERR_HEADERS_TIMEOUT', $metadata: { attempts: 1 } }, 'endpoint_unreachable'],
     ['a body timeout under the retry metadata', { code: 'UND_ERR_BODY_TIMEOUT', $metadata: { attempts: 1 } }, 'endpoint_unreachable'],
-    ['a bare broken pipe without retry metadata', { code: 'EPIPE' }, 'endpoint_unreachable'],
+    ['an unmarked bare broken pipe without retry metadata', { code: 'EPIPE' }, 'other'],
     ['an AbortError under the retry metadata', { name: 'AbortError', $metadata: { attempts: 1 } }, 'other'],
   ] as const)('classifies %s', (_, error, cause) => {
     expect(backupFailureCause(error)).toBe(cause);
+  });
+  it('classifies bare network codes as endpoint_unreachable once marked from storage, including under a wrapper', () => {
+    for (const error of [
+      { code: 'EPIPE' },
+      { code: 'ECONNRESET' },
+      Object.assign(new Error('x'), { code: 'ENOTFOUND' }),
+    ]) {
+      expect(backupFailureCause(error)).toBe('other');
+      markStorageFailure(error);
+      expect(backupFailureCause(error)).toBe('endpoint_unreachable');
+      expect(backupFailureCause(new Error('Snapshot failed', { cause: error }))).toBe('endpoint_unreachable');
+    }
+  });
+  it('marks store rejections and getObject stream read errors through markedStore', async () => {
+    const store = new FakeBackupObjectStore(clock);
+    const wrapped = markedStore(store);
+    expect(markedStore(wrapped)).toBe(wrapped);
+
+    const listReset = { code: 'ECONNRESET' };
+    vi.spyOn(store, 'listObjects').mockRejectedValueOnce(listReset);
+    const listError = await wrapped.listObjects('snapshots/').then(() => null, (error: unknown) => error);
+    expect(listError).toBe(listReset);
+    expect(backupFailureCause(listError)).toBe('endpoint_unreachable');
+
+    const streamPipe = { code: 'EPIPE' };
+    let pulled = false;
+    vi.spyOn(store, 'getObject').mockResolvedValueOnce(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (!pulled) { pulled = true; controller.enqueue(new Uint8Array([1, 2, 3])); }
+        else controller.error(streamPipe);
+      },
+    }));
+    const body = await wrapped.getObject('blobs/x');
+    expect(body).not.toBeNull();
+    const readError = await new Response(body).arrayBuffer().then(() => null, (error: unknown) => error);
+    expect(readError).toBe(streamPipe);
+    expect(backupFailureCause(readError)).toBe('endpoint_unreachable');
   });
   it.each(['RequestTimeTooSkewed', 'AccountProblem', 'AllAccessDisabled', 'InvalidObjectState'])('calls a 403 %s other, not rejected credentials', (code) => {
     expect(backupFailureCause({ name: code, Code: code, $metadata: { httpStatusCode: 403 } })).toBe('other');
@@ -57,20 +95,37 @@ let root: string, recipient: string;
 beforeAll(async () => { root = await mkdtemp(join(tmpdir(), 'backup-failure-')); recipient = await identityToRecipient(await generateIdentity()); });
 afterAll(async () => { await rm(root, { recursive: true, force: true }); });
 beforeEach(async () => { await db.forSystem((tx) => tx.delete(backupRuns)); });
-function service(store: FakeBackupObjectStore) {
+function service(store: FakeBackupObjectStore, dump: () => Promise<ReadableStream<Uint8Array>> = async () => bytesStream('database dump')) {
   const database = { locked: <T>(action: () => Promise<T>) => action(), newId: () => uuidv7(), pruningHeld: async () => false,
-    dump: async () => bytesStream('database dump') } as unknown as PostgresMaintenance;
+    dump } as unknown as PostgresMaintenance;
   return new BackupService({ database, store, uploads: async () => new Map(), clock, recipient, appEncryptionKey: Buffer.alloc(32, 1),
     blobKey: Buffer.alloc(32, 2), stagingDirectory: join(root, 'staging'), scope: db });
 }
-async function failedSnapshot(store: FakeBackupObjectStore) {
+async function failedSnapshot(store: FakeBackupObjectStore, dump?: () => Promise<ReadableStream<Uint8Array>>) {
   const logs: string[] = [], previous = setLogSink((line) => logs.push(line));
-  try { await expect(service(store).snapshot('manual')).rejects.toThrow('Snapshot failed'); }
+  try { await expect(service(store, dump).snapshot('manual')).rejects.toThrow('Snapshot failed'); }
   finally { setLogSink(previous); }
   const runs = await db.forSystem((tx) => tx.select().from(backupRuns));
   return { runs, logs: logs.filter((line) => (JSON.parse(line) as { event: string }).event === 'backup.snapshot_failed') };
 }
 describe('a failed snapshot', () => {
+  it('records other when the database dump fails with a bare EPIPE socket error', async () => {
+    const store = new FakeBackupObjectStore(clock);
+    const { runs, logs } = await failedSnapshot(store, async () => { throw { code: 'EPIPE' }; });
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ status: 'failed', error: 'other', completedAt: clock.now() });
+    expect(logs).toHaveLength(1);
+    expect(JSON.parse(logs[0]!)).toMatchObject({ level: 'error', runId: runs[0]!.id, kind: 'manual', cause: 'other' });
+  });
+  it('records endpoint_unreachable when putObject rejects with a bare ECONNRESET on every attempt', async () => {
+    const store = new FakeBackupObjectStore(clock);
+    vi.spyOn(store, 'putObject').mockRejectedValue({ code: 'ECONNRESET' });
+    const { runs, logs } = await failedSnapshot(store);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ status: 'failed', error: 'endpoint_unreachable', completedAt: clock.now() });
+    expect(logs).toHaveLength(1);
+    expect(JSON.parse(logs[0]!)).toMatchObject({ level: 'error', runId: runs[0]!.id, kind: 'manual', cause: 'endpoint_unreachable' });
+  });
   it('is recorded and logged with its cause when the destination refuses every call, deletes included', async () => {
     const store = new FakeBackupObjectStore(clock);
     const rejected = Object.assign(new Error('upstream text quoting the key'), unauthorized);

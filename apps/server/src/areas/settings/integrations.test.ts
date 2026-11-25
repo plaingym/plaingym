@@ -719,8 +719,54 @@ describe('Settings → Backups', () => {
     expect(requestSnapshot).not.toHaveBeenCalled();
     const audits = await database.forGym(gymA, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'integrations.backup_credentials_replaced')));
     expect(audits).toHaveLength(1);
-    expect(audits[0]!.after).toMatchObject({ destination: { bucket: 'second' }, revision: after.revision });
+    expect(audits[0]!.after).toMatchObject({ destination: { bucket: 'second' }, pendingUpdated: false, revision: after.revision });
     for (const secret of [rotatedKeyId, rotatedSecret, storageKeyId, storageSecret]) expect(JSON.stringify(audits)).not.toContain(secret);
+  });
+  it('also updates a waiting change for the same destination when replacing credentials, and leaves no-pending saves unchanged', async () => {
+    const sameBucketKeyId = 'same-bucket-rotated-id', sameBucketSecret = 'same-bucket-rotated-secret';
+    const noPendingKeyId = 'no-pending-rotated-id', noPendingSecret = 'no-pending-rotated-secret';
+    const current = await read();
+    // Create a pending key for the same endpoint, region and bucket (`second`) with the old keys.
+    const created = createBackupKeyResponseSchema.parse((await call(server(), 'POST', '/backups',
+      { revision: current.revision, destination: destination('second') })).json).data;
+    // Keys a newer release stored in the waiting change survive the credentials save.
+    const waiting = (await row()).settings as { integrations: { backup: { destination: object } } };
+    const newer = { ...waiting, integrations: { ...waiting.integrations, backup: { ...waiting.integrations.backup, newerKey: true,
+      destination: { ...waiting.integrations.backup.destination, newerKey: true } } } };
+    await database.forGym(gymA, (tx) => tx.update(gyms).set({ settings: newer }).where(eq(gyms.id, gymA)));
+    const before = await row();
+    checkDestination.mockClear(); requestSnapshot.mockClear();
+    const replaced = await call(server(), 'PUT', '/backups/credentials',
+      { revision: before.revision, accessKeyId: sameBucketKeyId, secretAccessKey: sameBucketSecret });
+    expect(replaced.status).toBe(200);
+    const afterReplace = await row();
+    expect((afterReplace.settings as { integrations: { backup: unknown } }).integrations.backup)
+      .toMatchObject({ newerKey: true, destination: { bucket: 'second', newerKey: true } });
+    expect(JSON.parse(decryptSecret(key, { secretClass: 's3_config', owner: gymA }, afterReplace.s3Config!)))
+      .toEqual({ accessKeyId: sameBucketKeyId, secretAccessKey: sameBucketSecret });
+    const replaceAudits = await database.forGym(gymA, (tx) => tx.select().from(auditEvents)
+      .where(eq(auditEvents.action, 'integrations.backup_credentials_replaced')).orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)));
+    expect(replaceAudits[0]!.after).toMatchObject({ destination: { bucket: 'second' }, pendingUpdated: true, revision: afterReplace.revision });
+    for (const secret of [sameBucketKeyId, sameBucketSecret]) expect(JSON.stringify(replaceAudits)).not.toContain(secret);
+    // Confirming the pending key activates the rotated keys rather than the old pending copy.
+    const confirmed = integrationsResponseSchema.parse((await call(server(), 'POST', '/backups/confirm',
+      { revision: afterReplace.revision, privateKey: created.privateKey })).json).data;
+    expect(confirmed.backups).toMatchObject({ destination: { bucket: 'second' }, publicKey: created.publicKey, pending: null });
+    const afterConfirm = await row();
+    expect(JSON.parse(decryptSecret(key, { secretClass: 's3_config', owner: gymA }, afterConfirm.s3Config!)))
+      .toEqual({ accessKeyId: sameBucketKeyId, secretAccessKey: sameBucketSecret });
+    // With no pending change, replacing credentials behaves as before and records pendingUpdated: false.
+    const replacedAlone = await call(server(), 'PUT', '/backups/credentials',
+      { revision: afterConfirm.revision, accessKeyId: noPendingKeyId, secretAccessKey: noPendingSecret });
+    expect(replacedAlone.status).toBe(200);
+    const afterAlone = await row();
+    expect(JSON.parse(decryptSecret(key, { secretClass: 's3_config', owner: gymA }, afterAlone.s3Config!)))
+      .toEqual({ accessKeyId: noPendingKeyId, secretAccessKey: noPendingSecret });
+    expect(afterAlone.settings).toEqual(afterConfirm.settings);
+    const aloneAudits = await database.forGym(gymA, (tx) => tx.select().from(auditEvents)
+      .where(eq(auditEvents.action, 'integrations.backup_credentials_replaced')).orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)));
+    expect(aloneAudits[0]!.after).toMatchObject({ destination: { bucket: 'second' }, pendingUpdated: false, revision: afterAlone.revision });
+    for (const secret of [noPendingKeyId, noPendingSecret]) expect(JSON.stringify(aloneAudits)).not.toContain(secret);
   });
   it('saves nothing when the destination refuses the new credentials or the revision is stale', async () => {
     const before = await row(), audits = async () => (await database.forGym(gymA, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.targetId, gymA)))).length;

@@ -9,7 +9,7 @@ import { decrypt, encrypt, generateIdentity, identityToRecipient } from '../infr
 import { createS3Client, S3BackupObjectStore } from '../infra/storage/index.js';
 import { s3Server } from '../infra/storage/s3-server.test-helper.js';
 import { commands, maintenanceCommand, reportRestoreResume } from './restore.js';
-import { markDownload, RestoreFailure } from '../areas/health/restore.failure.js';
+import { markDownload, RestoreFailure, s3Reason } from '../areas/health/restore.failure.js';
 import { restoreFailureReason } from './restore.reason.js';
 import { RestoreService } from '../areas/health/restore.js';
 import { bytesStream } from '../areas/health/backups.files.js';
@@ -187,6 +187,13 @@ describe('restoreFailureReason', () => {
     const wrapped = new Error('read failed 10.0.0.1:443', { cause: { code: 'ECONNRESET' } });
     markDownload(wrapped);
     expect(restoreFailureReason(wrapped)).toBe('Cannot reach the backup bucket');
+    const withMetadata = Object.assign(new Error('x'), { code: 'ECONNRESET', $metadata: {} });
+    const withoutMetadata = Object.assign(new Error('x'), { code: 'ECONNRESET' });
+    markDownload(withMetadata);
+    markDownload(withoutMetadata);
+    expect(s3Reason(withMetadata, 'backup')).toBe('Cannot reach the backup bucket (ECONNRESET)');
+    expect(restoreFailureReason(withMetadata)).toBe('Cannot reach the backup bucket (ECONNRESET)');
+    expect(restoreFailureReason(withoutMetadata)).toBe('Cannot reach the backup bucket (ECONNRESET)');
   });
   it('gives only the error name for any other failure', () => {
     class DiskFullError extends Error { constructor() { super('no space left writing /srv/SECRETFIELDVALUE with DBPASSWORD'); this.name = 'DiskFullError'; } }
