@@ -122,8 +122,8 @@ the route still owns permission enforcement. It allows another attempt after a
 decline, and an explicit charge before the due date, while retaining billing,
 review, unpaid-state and pending-attempt guards. Reservation, intent and result
 audits use that user. One-off failures remain open and are never retried; a
-declined or action-needed staff charge sends the payer the failed-payment notice
-(`transitions/README.md`).
+declined or action-needed staff charge, or automatic charge of an assignment
+invoice, sends the payer the failed-payment notice (`transitions/README.md`).
 The default mode is automatic; the retry callback selects `{ mode: 'retry' }`.
 
 Skip reasons include `billing_disabled`, `not_payable`, `needs_review`,

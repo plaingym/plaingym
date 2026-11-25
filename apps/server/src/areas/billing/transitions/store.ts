@@ -23,6 +23,8 @@ export interface TransitionEffect {
   checkoutBankFailure?: true;
   /** A declined staff charge of a saved method on a one-off: send the failed-payment notice, no retries. Absent on older effects. */
   staffCharge?: true;
+  /** A declined automatic or retry charge of an open assignment invoice: send the failed-payment notice, no retries. Absent on older effects. */
+  assignmentCharge?: true;
   /** A staff notice's subject; absent on older notices, which all report a duplicate payment. */
   notice?: 'refund_canceled' | 'refund_failed' | 'refund_released' | 'refund_missing' | 'refund_found' | 'refund_found_failed'
     | 'refund_arrived' | 'duplicate_released' | 'credits_not_granted';

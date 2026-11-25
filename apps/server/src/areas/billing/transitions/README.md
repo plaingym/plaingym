@@ -64,10 +64,13 @@ pending attempt, or writes a late processing audit for an unrecorded Checkout
 intent without an attempt. The invoice keeps its terminal state. `cardSucceeded` records a settled debit as
 `bank_debit`. A cycle or assignment invoice returns to past due after a bank
 failure, and a past-due assignment invoice stays past due on a later card
-decline. A one-off charge returns to open. If staff charged its saved method
-(the runner's `mode: 'staff'`) and the card was declined or needs
-authentication, the payer still gets the failed-payment notice (email, and a
-text where SMS is on and consented) with pay and update-card links. A closed account is revoked by its
+decline, which sends the payer its failed-payment notice. A one-off charge
+returns to open. If staff charged its saved method (the runner's
+`mode: 'staff'`), or the runner charged an open assignment invoice on its own
+(`mode: 'automatic'` or `'retry'`), and the card was declined or needs
+authentication, the payer still gets the failed-payment notice once (email, and
+a text where SMS is on and consented) with pay and update-card links; the
+invoice stays open and nothing retries. A closed account is revoked by its
 processor method ID and the household receives an update-method link. The
 transition records `billing.payment_method.unsaved_revoked` with the invoice ID
 and processor method ID when the household has no saved row for the account. The
@@ -290,13 +293,15 @@ The runner also cancels an older action-needed intent before reserving another
 attempt and applies the cancellation result; if the old intent succeeded, it
 settles the invoice instead of creating another charge. Paid invoices suppress queued dunning/retries. The last unpaid retry
 leaves the invoice past due. One-off failures return the invoice to open and
-never enqueue retries. Only a declined or action-needed staff charge enqueues
-the failed-payment notice: `failedInvoice` reads the attempt's
-`billing.runner.reserved` audit and marks that `dunning` effect `staffCharge`.
-Cancelling an action-needed intent later (before another charge or a cash or
-check payment) queues no new failed-payment notice, for either a one-off or a
-recurring invoice. Automatic, retry and Checkout failures of a one-off send
-nothing.
+never enqueue retries. Only a declined or action-needed staff charge of any
+one-off, or automatic or retry charge of an assignment invoice, enqueues the
+failed-payment notice: `failedInvoice` reads the attempt's
+`billing.runner.reserved` audit and marks that `dunning` effect `staffCharge`
+or `assignmentCharge`. Cancelling an action-needed intent later (before another
+charge or a cash or check payment) queues no new failed-payment notice, for
+either a one-off or a recurring invoice. Automatic and retry card failures of a
+one-off that isn't an assignment invoice, and Checkout card failures of any
+one-off, send nothing.
 
 Runner collection is explicit for staff one-offs. Daily collection includes only
 cycles and assignment one-offs; the assignment route invokes `collectAssigned`

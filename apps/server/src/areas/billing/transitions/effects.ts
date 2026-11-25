@@ -293,7 +293,9 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       await credits.reverse(gymId, invoice.id);
     } else if (work.kind === 'dunning') {
       const bankFailure = work.bankCode || work.checkoutBankFailure;
-      if ((invoice.kind === 'cycle' || bankFailure || work.staffCharge) && ['open', 'past_due'].includes(invoice.status)
+      // Only an assignment invoice can be a past-due one-off: a bank failure made it past due.
+      if ((invoice.kind === 'cycle' || invoice.status === 'past_due' || bankFailure || work.staffCharge || work.assignmentCharge)
+        && ['open', 'past_due'].includes(invoice.status)
         && (bankFailure && !work.attemptId || attempt?.id === latestAttempt?.id))
         await options.notifications.dunning({ ...data, actionRequired: attempt?.status === 'requires_action',
           ...(work.bankCode ? { bankCode: work.bankCode } : {}) });

@@ -253,12 +253,17 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Billi
     if (stop && !await recorded(tx, retriesStopped, invoice.id)) await audit(tx, context, clock, retriesStopped, 'invoice', invoice.id, { bankCode });
     const source = { ...(attemptId ? { attemptId } : {}), ...(bankCode ? { bankCode } : {}),
       ...(checkoutFailureCode && !bankCode ? { checkoutBankFailure: true as const } : {}) };
-    // A declined or action-needed staff charge of a saved method on a one-off: the payer hears of it, with no retries.
-    // Cancelling an action-needed intent (before another charge or a cash or check payment) queues no new notice, for
-    // one-off and recurring invoices alike: the payer already had the authentication notice for that attempt, if any.
+    // A declined or action-needed staff charge of a saved method on a one-off, or automatic or retry charge of an open
+    // assignment invoice (a sign-up fee or first-period proration): the payer hears of it once, the invoice stays open
+    // and nothing retries. Cancelling an action-needed intent (before another charge or a cash or check payment) queues
+    // no new notice, for one-off and recurring invoices alike: the payer already had the authentication notice for that
+    // attempt, if any.
     const staffCharge = !canceled && !recurring && !bankCode && !!attemptId && await staffReserved(tx, attemptId);
-    if (canceled !== 'action_needed' && (recurring || bankCode === 'payment_method_unusable' || staffCharge))
-      await effect(tx, context, clock, { kind: 'dunning', invoiceId: invoice.id, ...source, ...(staffCharge ? { staffCharge: true as const } : {}) });
+    const assignmentCharge = !canceled && !recurring && !bankCode && !!attemptId && !staffCharge
+      && await runnerReserved(tx, attemptId) && await isAssignmentInvoice(tx, invoice.id);
+    if (canceled !== 'action_needed' && (recurring || bankCode === 'payment_method_unusable' || staffCharge || assignmentCharge))
+      await effect(tx, context, clock, { kind: 'dunning', invoiceId: invoice.id, ...source, ...(staffCharge ? { staffCharge: true as const } : {}),
+        ...(assignmentCharge ? { assignmentCharge: true as const } : {}) });
     if (recurring && !stop && !await recorded(tx, 'billing.invoice.dunning_started', invoice.id) && !await recorded(tx, retriesStopped, invoice.id)) {
       const { retryDays } = await readBillingRules(tx, context.gymId);
       await audit(tx, context, clock, 'billing.invoice.dunning_started', 'invoice', invoice.id, { ...source, retryDays });
@@ -290,6 +295,11 @@ const attemptReserved = 'billing.runner.reserved'; // Written by the runner's re
 async function staffReserved(tx: Transaction, attemptId: string) {
   const row = await recorded(tx, attemptReserved, attemptId);
   return (row?.after as { mode?: unknown } | null | undefined)?.mode === 'staff';
+}
+/** Whether the runner charged this attempt on its own (`mode: 'automatic'` or `'retry'`); an attempt with no reservation audit is not. */
+async function runnerReserved(tx: Transaction, attemptId: string) {
+  const mode = ((await recorded(tx, attemptReserved, attemptId))?.after as { mode?: unknown } | null | undefined)?.mode;
+  return mode === 'automatic' || mode === 'retry';
 }
 function samePayment(row: PaymentRow, request: CardSuccess | ManualPayment, method: string) {
   return row.invoiceId === request.invoiceId && row.amountCents === request.amountCents && row.currency === request.currency
