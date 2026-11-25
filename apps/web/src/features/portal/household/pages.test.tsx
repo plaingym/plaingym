@@ -1356,6 +1356,64 @@ describe('portal household page', () => {
     await screen.findByText('Saved.');
     expect(JSON.parse(String(view.calls('PATCH', endpoint)[1]![1]!.body))).toEqual({ phone: '+1 604 555 0100', revision: 4 });
   });
+  it('keeps a country picked with no number while a household save is in flight', async () => {
+    let current: Household = household;
+    const patchWrite = Promise.withResolvers<void>();
+    const endpoint = '/api/portal/household';
+    mount(<PortalHousehold />, async (path, init) => {
+      if (path === endpoint && init?.method === 'PATCH') {
+        await patchWrite.promise;
+        const { revision, ...changes } = JSON.parse(String(init.body)) as { name?: string; revision: number };
+        current = { ...current, ...changes, revision: revision + 1 };
+        return { data: current };
+      }
+      if (path === endpoint) return { data: current };
+      return path.startsWith('/api/portal/members?') ? page([]) : undefined;
+    }, { context: payer, country: 'CA' });
+    const user = userEvent.setup();
+    const name = await screen.findByLabelText<HTMLInputElement>('Household name');
+    const select = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Country code' });
+    fireEvent.change(name, { target: { value: 'Updated household' } });
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await user.selectOptions(select, 'GB');
+    expect(select.value).toBe('GB');
+    await act(async () => { patchWrite.resolve(); });
+    await screen.findByText('Saved.');
+    expect(select.value).toBe('GB');
+  });
+  it('keeps a carrier-kept number typed under another country while a household save is in flight and sends it on the next save', async () => {
+    let current: Household = household;
+    const patchWrite = Promise.withResolvers<void>();
+    const endpoint = '/api/portal/household';
+    const view = mount(<PortalHousehold />, async (path, init) => {
+      if (path === endpoint && init?.method === 'PATCH') {
+        const { revision, ...changes } = JSON.parse(String(init.body)) as { name?: string; phone?: string; revision: number };
+        if (revision === 3) await patchWrite.promise;
+        current = { ...current, ...changes, revision: revision + 1 };
+        return { data: current };
+      }
+      if (path === endpoint) return { data: current };
+      return path.startsWith('/api/portal/members?') ? page([]) : undefined;
+    }, { context: payer, country: 'CA' });
+    const user = userEvent.setup();
+    const name = await screen.findByLabelText<HTMLInputElement>('Household name');
+    const select = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Country code' });
+    const phone = screen.getByLabelText<HTMLInputElement>('Phone');
+    const save = screen.getByRole<HTMLButtonElement>('button', { name: 'Save' });
+    fireEvent.change(name, { target: { value: 'Updated household' } });
+    await user.click(save);
+    await waitFor(() => expect(view.calls('PATCH', endpoint)).toHaveLength(1));
+    await user.selectOptions(select, 'BR');
+    await user.type(phone, '0021 44 20 7946 0018');
+    await act(async () => { patchWrite.resolve(); });
+    await screen.findByText('Saved.');
+    expect(select.value).toBe('BR');
+    expect(phone.value).toBe('0021 44 20 7946 0018');
+    await waitFor(() => expect(save.disabled).toBe(false));
+    await user.click(save);
+    await waitFor(() => expect(view.calls('PATCH', endpoint)).toHaveLength(2));
+    expect(JSON.parse(String(view.calls('PATCH', endpoint)[1]![1]!.body))).toEqual({ phone: '0021 44 20 7946 0018', revision: 4 });
+  });
   it('saves and withdraws each adult SMS choice with the profile revision and open household', async () => {
     let current: PortalMember = { ...people[2]!, status: 'active', phone: '+12025550123', sms: { phoneValid: true, phoneE164: '+12025550123', notices: null, announcements: null } };
     const endpoint = `/api/portal/members/${ids.adult}/sms-consent`;

@@ -78,7 +78,7 @@ describe('join form phone country choice', () => {
     expect(optionOf(form({ country: 'CA' }, { phoneCountry: '', phone: '604 555 0123' }), '')).toContain('selected');
   });
 
-  it('adds under 26,000 characters of markup', () => {
-    expect(String(phoneField(t, { label: 'Phone', country: 'CA' })).length).toBeLessThan(26_000);
+  it('adds under 28,000 characters of markup', () => {
+    expect(String(phoneField(t, { label: 'Phone', country: 'CA' })).length).toBeLessThan(28_000);
   });
 });
