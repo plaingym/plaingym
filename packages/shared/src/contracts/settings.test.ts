@@ -4,7 +4,8 @@ import type { gyms } from '../../../db/src/schema/index.js';
 import {
   gymBrandingSchema, setupGymDetailsSchema, gymSettingsSchema, gymTimezoneSchema, setupTimezoneSchema,
   updateGymSettingsRequestSchema, updateBookingRulesRequestSchema, updateBankDebitsRequestSchema,
-  updateGymCurrencyRequestSchema, updateGoLiveRequestSchema, updateDropInSettingsRequestSchema, settingsContracts,
+  updateGymCurrencyRequestSchema, updateGoLiveRequestSchema, updateDropInSettingsRequestSchema,
+  goLiveChecklistItemSchema, settingsContracts,
   errorResponse, AppError, type GymSettings, type BookingRules, type GoLiveSwitches,
 } from './index.js';
 import { canStaff, staffRoles } from '../permissions.js';
@@ -34,6 +35,14 @@ describe('gym settings contracts', () => {
         { id: 'reconciliation_complete', status: 'needs_attention', message: 'Resolve pending items' }] } };
     expect(settingsContracts.updateGoLive.response).toBe(settingsContracts.goLiveChecklist.response);
     expect(settingsContracts.updateGoLive.response.parse(response)).toEqual(response);
+  });
+  it('accepts optional modeChanged booleans on go-live checklist items and refuses non-booleans', () => {
+    expect(goLiveChecklistItemSchema.parse({ id: 'reconciliation_complete', status: 'needs_attention', message: 'Check again', modeChanged: true }))
+      .toEqual({ id: 'reconciliation_complete', status: 'needs_attention', message: 'Check again', modeChanged: true });
+    expect(goLiveChecklistItemSchema.parse({ id: 'reconciliation_complete', status: 'ready', message: 'Ready' }))
+      .toEqual({ id: 'reconciliation_complete', status: 'ready', message: 'Ready' });
+    expect(goLiveChecklistItemSchema.safeParse({ id: 'reconciliation_complete', status: 'needs_attention', message: 'Check again', modeChanged: 'yes' }).success)
+      .toBe(false);
   });
   it('projects only existing, non-secret gym columns', () => {
     expect(gymSettingsSchema.parse(settings)).toEqual(settings);

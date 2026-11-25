@@ -97,6 +97,7 @@ export const updateGoLiveRequestSchema = goLiveSwitchesSchema.partial().extend({
 export const goLiveChecklistItemSchema = z.strictObject({
   id: z.enum(['gym_details', 'members_imported', 'schedule_ready', 'stripe_ready', 'cards_collected', 'waivers_signed', 'online_joining', 'smtp_ready', 'sms_ready', 'backup_ready', 'webhook_ready', 'reconciliation_complete', 'past_due_dates']),
   status: z.enum(['ready', 'needs_attention', 'not_applicable']), message: z.string(),
+  modeChanged: z.boolean().optional(),
 });
 export const goLiveChecklistResponseSchema = z.strictObject({ data: z.strictObject({
   revision: revisionSchema, ...goLiveSwitchesSchema.shape, items: z.array(goLiveChecklistItemSchema),

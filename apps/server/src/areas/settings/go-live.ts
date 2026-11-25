@@ -21,8 +21,8 @@ const t = createTranslator(locales.en ?? {});
 type WireChecklist = ReturnType<typeof goLiveChecklistResponseSchema.parse>['data'];
 type Checklist = WireChecklist & { pastDueMemberships: NonNullable<WireChecklist['pastDueMemberships']> };
 type Status = GoLiveChecklistItem['status'];
-const item = (id: GoLiveChecklistItem['id'], status: Status, message?: string): GoLiveChecklistItem =>
-  ({ id, status, message: message ?? t(`settings/go-live:check.${id}.${status}`) });
+const item = (id: GoLiveChecklistItem['id'], status: Status, message?: string, extra?: { modeChanged: true }): GoLiveChecklistItem =>
+  ({ id, status, message: message ?? t(`settings/go-live:check.${id}.${status}`), ...extra });
 const ready = (value: unknown): Status => value ? 'ready' : 'needs_attention';
 /** The safe part of a failed resolver read: a message can quote credentials or submitted values. */
 const errorName = (error: unknown) => error instanceof Error ? error.name : typeof error;
@@ -169,7 +169,8 @@ export function createGoLiveService(options: {
         item('webhook_ready', !stripe ? 'not_applicable'
           : ready(webhook.lastProcessedAt && !webhook.pendingCount && !webhook.failedCount)),
         item('reconciliation_complete', !stripe && recovery.empty ? 'not_applicable' : ready(recovery.ready), recovery.modeMessage
-          ? t('settings/go-live:check.reconciliation_complete.needs_attention') + ' ' + recovery.modeMessage : undefined),
+          ? t('settings/go-live:check.reconciliation_complete.needs_attention') + ' ' + recovery.modeMessage : undefined,
+          recovery.modeMessage ? { modeChanged: true } : undefined),
         item('past_due_dates', ready(!pastDueMemberships.length)),
       ] });
       return { ...result, pastDueMemberships };

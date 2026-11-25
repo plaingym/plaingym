@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { formatCount } from '../../lib/count.js';
 import { instantLabel } from '../../lib/instant.js';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { type GoLiveSwitches, type GymSettings } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
@@ -38,6 +38,7 @@ const checkRunning = (body: unknown) => {
 /** Shows the billing and member-email switches with the readiness checklist from the go-live contract. */
 export function GoLiveSettings() {
   const cache = useQueryClient();
+  const reloadSeq = useRef(0);
   const [lastChecklist, rememberChecklist] = useState<Checklist | null>(null);
   const [ownRead, setOwnRead] = useState<'pending' | 'failed' | null>(null);
   const [saving, setBusy] = useState(false);
@@ -53,11 +54,19 @@ export function GoLiveSettings() {
   const background = query.isFetching && query.data !== undefined && ownRead !== 'pending';
   const busy = saving || (query.isFetching && !background);
   const readError = query.isError && (query.data === undefined || ownRead === 'failed');
+  const pastDueKey = (checklist?.pastDueMemberships ?? []).map(({ id, revision, nextDueOn }) => id + ':' + revision + ':' + nextDueOn).join('|');
+  useEffect(() => { setConfirmed(false); }, [pastDueKey]);
   useEffect(() => { if (query.data) rememberChecklist(query.data); }, [query.data]);
   useEffect(() => { setOwnRead(null); }, [query.dataUpdatedAt]);
+  useEffect(() => { if (ownRead === 'pending' && !query.isFetching) setOwnRead(query.isError ? 'failed' : null); }, [query.isFetching]);
   const reloadChecklist = () => {
+    const seq = ++reloadSeq.current;
     setOwnRead('pending');
-    void query.refetch().then(result => setOwnRead(result.isError ? 'failed' : null));
+    void query.refetch().then(result => {
+      if (seq !== reloadSeq.current) return;
+      if (cache.isFetching({ queryKey: goLiveKey(settings?.revision, gym.epoch) }) > 0) return;
+      setOwnRead(result.isError ? 'failed' : null);
+    });
   };
   const setChecklist = (next: ReturnType<typeof parseChecklist>) => {
     void cache.cancelQueries({ queryKey: goLiveKey(settings?.revision, gym.epoch) });
@@ -91,7 +100,7 @@ export function GoLiveSettings() {
   function retry() {
     setMessage(null);
     if (gym.failed) gym.reload();
-    if (checklistFailed) reloadChecklist();
+    if (checklistFailed || query.isError) reloadChecklist();
   }
   async function toggle(name: keyof GoLiveSwitches, confirmDates = false) {
     if (!checklist || !settings || locked) return;
@@ -158,7 +167,7 @@ export function GoLiveSettings() {
       {busy && <p role="status" className="text-sm text-muted-foreground">{label(checking ? 'reconcileRunning' : 'saving')}</p>}
       <h3 className="font-semibold">{label('checklist')}</h3>
       <ul className="divide-y divide-border rounded-lg border border-border">{checklist.items.map((item) => <li key={item.id} className="flex flex-col items-start gap-2 p-3 sm:flex-row sm:justify-between sm:gap-3">
-        <span className="min-w-0"><span className="block font-medium">{label('item.' + item.id)}</span><span role={item.id === 'reconciliation_complete' && hasRestoreModeNote(item.message) ? 'note' : undefined} className="block wrap-anywhere text-sm text-muted-foreground">{item.message}</span></span>
+        <span className="min-w-0"><span className="block font-medium">{label('item.' + item.id)}</span><span role={hasRestoreModeNote(item) ? 'note' : undefined} className="block wrap-anywhere text-sm text-muted-foreground">{item.message}</span></span>
         <Badge tone={statusTone[item.status]} className="shrink-0">{label('status.' + item.status)}</Badge>
       </li>)}</ul>
       {checklist.restoreReconciliation && <div className="space-y-3 rounded-lg border border-border p-3" aria-label={label('reconcileTitle')}>

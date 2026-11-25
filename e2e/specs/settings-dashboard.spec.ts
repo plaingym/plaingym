@@ -23,7 +23,7 @@ for (const width of [360, 1280]) test(`settings sections and an empty dashboard 
     if (path === '/api/settings/go-live') return route.fulfill({ json: { data: { revision: 3, billingEnabled: false, memberEmailsEnabled: false,
       memberSmsEnabled: false,
       items: [{ id: 'members_imported', status: rosterReady ? 'ready' : 'needs_attention', message: 'Add your first members.' },
-        { id: 'reconciliation_complete', status: 'needs_attention', message: 'Resolve pending payment attempts or refunds. The last check read Stripe test mode. Check restored payments again in live mode before turning billing on.' }],
+        { id: 'reconciliation_complete', status: 'needs_attention', modeChanged: true, message: 'Resolve pending payment attempts or refunds. The last check read Stripe test mode. Check restored payments again in live mode before turning billing on.' }],
       restoreReconciliation: { restoreId: '00000000-0000-7000-8000-000000000003', snapshotAt: '2026-11-01T12:00:00Z',
         checkedAt: '2026-11-02T12:00:00Z', inspected: 0, unresolved: 0, stripeConfigured: true, stripeMode: 'test' },
     } } });

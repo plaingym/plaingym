@@ -48,7 +48,7 @@ describe('Settings → Payments', () => {
     const get = client.GET.getMockImplementation()!;
     const modeMessage = 'Resolve pending payment attempts or refunds. The last check read Stripe test mode. Check restored payments again in live mode before turning billing on.';
     const checklist = { revision: 3, billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false,
-      items: [{ id: 'reconciliation_complete', status: 'needs_attention', message: modeMessage }],
+      items: [{ id: 'reconciliation_complete', status: 'needs_attention', modeChanged: true, message: modeMessage }],
       restoreReconciliation: { restoreId: '00000000-0000-7000-8000-000000000003', snapshotAt: '2026-11-01T12:00:00Z',
         checkedAt: '2026-11-02T12:00:00Z', inspected: 0, unresolved: 0, stripeConfigured: true, stripeMode: 'test' } };
     client.GET.mockImplementation((path: string) => path === '/api/settings/go-live' ? Promise.resolve(reply(200, { data: checklist })) : get(path));
@@ -74,7 +74,8 @@ describe('Settings → Payments', () => {
       if (path !== '/api/settings/go-live') return get(path);
       reads += 1;
       return Promise.resolve(reply(200, { data: { ...base,
-        items: [{ id: 'reconciliation_complete', status: reads === 1 ? 'needs_attention' : 'ready', message: reads === 1 ? modeMessage : 'All clear' }],
+        items: [{ id: 'reconciliation_complete', status: reads === 1 ? 'needs_attention' : 'ready',
+          ...(reads === 1 ? { modeChanged: true } : {}), message: reads === 1 ? modeMessage : 'All clear' }],
       } }));
     });
     renderSection();
@@ -101,6 +102,7 @@ describe('Settings → Payments', () => {
     const get = client.GET.getMockImplementation()!;
     client.GET.mockImplementation((path: string) => path === '/api/settings/go-live' ? Promise.resolve(reply(200, { data: {
       revision: current.revision, billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false, items: [{ id: 'reconciliation_complete', status: 'needs_attention',
+        modeChanged: true,
         message: `Resolve pending payment attempts or refunds. The last check read Stripe ${checkedMode} mode. Check restored payments again in ${current.payments.mode} mode before turning billing on.` }], restoreReconciliation: {
         restoreId: '00000000-0000-7000-8000-000000000003', snapshotAt: '2026-11-01T12:00:00Z',
         checkedAt: '2026-11-02T12:00:00Z', inspected: 0, unresolved: 0, stripeConfigured: true, stripeMode: checkedMode,
@@ -110,6 +112,23 @@ describe('Settings → Payments', () => {
     const note = await screen.findByRole('note');
     expect(note.textContent).toContain(`last check read Stripe ${checkedMode} mode`);
     expect(note.textContent).toContain(`again in ${current.payments.mode} mode before turning billing on`);
+  });
+  it('marks the restore note by modeChanged rather than message text', async () => {
+    current = live;
+    const get = client.GET.getMockImplementation()!;
+    let modeChanged: boolean | undefined = true;
+    let message = 'Custom wording';
+    client.GET.mockImplementation((path: string) => path === '/api/settings/go-live' ? Promise.resolve(reply(200, { data: {
+      revision: current.revision, billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false,
+      items: [{ id: 'reconciliation_complete', status: 'needs_attention', message, ...(modeChanged ? { modeChanged } : {}) }],
+    } })) : get(path));
+    renderSection();
+    expect((await screen.findByRole('note')).textContent).toBe('Custom wording');
+    modeChanged = undefined;
+    message = 'Resolve pending payment attempts or refunds. The last check read Stripe test mode. Check restored payments again in live mode before turning billing on.';
+    act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+    await waitFor(() => expect(client.GET.mock.calls.filter(([path]) => path === '/api/settings/go-live')).toHaveLength(2));
+    expect(screen.queryByRole('note')).toBeNull();
   });
   it('reloads an operator-managed refusal and hides the payment form', async () => {
     renderSection();

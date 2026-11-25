@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { focusManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { goLiveChecklistItemSchema, settingsContracts, type GymSettings, type UpdateGoLiveRequest } from '@plaingym/shared/contracts';
 import { canStaff, staffRoles } from '@plaingym/shared';
 import { instantLabel } from '../../lib/instant.js';
 import { GoLiveSettings, reconcileTimeoutMs } from './go-live.js';
-import { saveTimeoutMs } from './gym-settings.js';
+import { gymSettingsKey, saveTimeoutMs } from './gym-settings.js';
 import { holdTimeouts, stalledRequests } from './save-timeout.test-helper.js';
 import { registration } from './go-live.registrations.js';
 const client = vi.hoisted(() => ({ GET: vi.fn(), PATCH: vi.fn(), POST: vi.fn() }));
@@ -33,7 +33,10 @@ const gymSettings = (revision: number): GymSettings => ({ id: '01900000-0000-700
   currency: 'CAD', address: {}, branding: {}, websiteEnabled: false, existingSiteUrl: null, bookingWindowDays: 14, cancellationCutoffMinutes: 60,
   openMatCountsAsClass: false, billingEnabled: false, bankDebitsEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false, smsDailyCap: 1000, retryDays: [3, 7], dropInChargeTypeId: null, revision,
   createdAt: '2026-10-26T12:00:00Z', updatedAt: '2026-10-26T12:00:00Z' });
-const start = () => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } })}><GoLiveSettings/></QueryClientProvider>);
+const start = (clientOverride?: QueryClient) => {
+  const queryClient = clientOverride ?? new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } });
+  return render(<QueryClientProvider client={queryClient}><GoLiveSettings/></QueryClientProvider>);
+};
 beforeEach(() => {
   live.mockReset(); settingsReads.mockReset(); client.GET.mockReset(); client.PATCH.mockReset(); client.POST.mockReset();
   client.GET.mockImplementation(async (path: string) => path === '/api/settings' ? settingsReads(path) : live(path));
@@ -44,7 +47,7 @@ describe('go-live settings', () => {
   it.each(['test', 'live'] as const)('names the %s-mode restore check when the saved mode differs', async checkedMode => {
     const savedMode = checkedMode === 'test' ? 'live' : 'test', response = restored(0);
     live.mockResolvedValue(reply(200, { data: { ...response.data,
-      items: response.data.items.map(item => item.id === 'reconciliation_complete' ? { ...item, status: 'needs_attention',
+      items: response.data.items.map(item => item.id === 'reconciliation_complete' ? { ...item, status: 'needs_attention', modeChanged: true,
         message: `Resolve pending payment attempts or refunds. The last check read Stripe ${checkedMode} mode. Check restored payments again in ${savedMode} mode before turning billing on.` } : item),
       restoreReconciliation: { ...response.data.restoreReconciliation, stripeConfigured: true, stripeMode: checkedMode } } }));
     start();
@@ -417,5 +420,106 @@ describe('go-live settings', () => {
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     expect(await screen.findByRole('button', { name: 'Turn off: Billing' })).toBeDefined();
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+  it('marks the reconciliation note by modeChanged rather than message text', async () => {
+    const flagged = checklist();
+    flagged.data.items = flagged.data.items.map(item => item.id === 'reconciliation_complete'
+      ? { ...item, status: 'needs_attention', modeChanged: true, message: 'Custom wording' } : item);
+    const unflagged = checklist();
+    unflagged.data.items = unflagged.data.items.map(item => item.id === 'reconciliation_complete'
+      ? { ...item, status: 'needs_attention', message: 'Resolve pending payment attempts or refunds. The last check read Stripe test mode. Check restored payments again in live mode before turning billing on.' }
+      : item);
+    live.mockResolvedValueOnce(reply(200, flagged)).mockResolvedValueOnce(reply(200, unflagged));
+    start();
+    expect((await screen.findByRole('note')).textContent).toBe('Custom wording');
+    act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+    await screen.findByText(/last check read Stripe test mode/);
+    expect(screen.queryByRole('note')).toBeNull();
+  });
+  it('clears the past-due confirmation tick when a focus read changes the list, and keeps it when unchanged', async () => {
+    const a = { id: '00000000-0000-7000-8000-000000000001', memberId: '00000000-0000-7000-8000-000000000011',
+      memberName: 'Ana Silva', planName: 'Monthly classes', revision: 2, nextDueOn: '2026-10-20' };
+    const b = { id: '00000000-0000-7000-8000-000000000002', memberId: '00000000-0000-7000-8000-000000000012',
+      memberName: 'Bruno Costa', planName: 'Annual classes', revision: 1, nextDueOn: '2026-10-21' };
+    const c = { id: '00000000-0000-7000-8000-000000000003', memberId: '00000000-0000-7000-8000-000000000013',
+      memberName: 'Carla Dias', planName: 'Monthly classes', revision: 1, nextDueOn: '2026-10-22' };
+    const withPastDue = (pastDueMemberships: (typeof a)[], smtpMessage = 'Message for smtp_ready') => ({ data: { ...checklist().data,
+      items: checklist().data.items.map(item => item.id === 'smtp_ready' ? { ...item, message: smtpMessage } : item), pastDueMemberships } });
+    live.mockResolvedValueOnce(reply(200, withPastDue([a, b])))
+      .mockResolvedValueOnce(reply(200, withPastDue([a, b], 'Read again with the same list')))
+      .mockResolvedValueOnce(reply(200, withPastDue([a, b, c])));
+    client.PATCH.mockResolvedValue(reply(200, checklist(4, true)));
+    const user = userEvent.setup(); start();
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
+    const dialog = screen.getByRole('dialog', { name: 'Review past billing dates' });
+    const box = within(dialog).getByRole<HTMLInputElement>('checkbox');
+    const confirm = within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Confirm dates and turn billing on' });
+    await user.click(box);
+    expect(box.checked).toBe(true);
+    expect(confirm.disabled).toBe(false);
+    act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+    await screen.findByText('Read again with the same list');
+    expect(live).toHaveBeenCalledTimes(2);
+    expect(box.checked).toBe(true);
+    expect(confirm.disabled).toBe(false);
+    act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+    await within(dialog).findByText('Carla Dias');
+    expect(box.checked).toBe(false);
+    expect(confirm.disabled).toBe(true);
+    await user.click(box);
+    await user.click(confirm);
+    expect(client.PATCH).toHaveBeenCalledWith('/api/settings/go-live', {
+      signal: expect.any(AbortSignal),
+      body: {
+        revision: 3,
+        billingEnabled: true,
+        confirmedPastDueDates: [a, b, c].map(({ id, revision, nextDueOn }) => ({ id, revision, nextDueOn })),
+      },
+    });
+  });
+  it('keeps switches locked through overlapping explicit reloads until the latest read answers', async () => {
+    let resolveFirst!: (value: unknown) => void, resolveSecond!: (value: unknown) => void;
+    live.mockResolvedValueOnce(reply(200, checklist()))
+      .mockResolvedValueOnce(reply(500))
+      .mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise(resolve => { resolveSecond = resolve; }));
+    client.PATCH.mockResolvedValueOnce(reply(409));
+    const user = userEvent.setup(); start();
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
+    const retry = await screen.findByRole('button', { name: 'Try again' });
+    act(() => {
+      fireEvent.click(retry);
+      fireEvent.click(retry);
+    });
+    await vi.waitFor(() => { expect(resolveFirst).toBeDefined(); expect(resolveSecond).toBeDefined(); });
+    expect((screen.getByRole('button', { name: 'Turn on: Billing' }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => { resolveFirst(reply(200, checklist(4, false))); });
+    expect((screen.getByRole('button', { name: 'Turn on: Billing' }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => { resolveSecond(reply(200, checklist(4, false))); });
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Turn on: Billing' }) as HTMLButtonElement).disabled).toBe(false));
+  });
+  it('reloads the checklist on Retry when both a background checklist read and the settings read failed', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } });
+    let resolveSettingsReload!: (value: unknown) => void;
+    live.mockResolvedValueOnce(reply(200, checklist()))
+      .mockResolvedValueOnce(reply(500))
+      .mockResolvedValue(reply(200, checklist(3, true)));
+    settingsReads.mockResolvedValueOnce(reply(200, { data: gymSettings(3) }))
+      .mockResolvedValueOnce(reply(500))
+      .mockImplementationOnce(() => new Promise(resolve => { resolveSettingsReload = resolve; }));
+    const user = userEvent.setup(); start(queryClient);
+    await screen.findByRole('button', { name: 'Turn on: Billing' });
+    act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+    await vi.waitFor(() => expect(live).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole('alert')).toBeNull();
+    await act(async () => { await queryClient.refetchQueries({ queryKey: gymSettingsKey, exact: true }); });
+    const retry = await screen.findByRole('button', { name: 'Try again' });
+    await user.click(retry);
+    await vi.waitFor(() => {
+      expect(live).toHaveBeenCalledTimes(3);
+      expect(settingsReads).toHaveBeenCalledTimes(3);
+    });
+    await act(async () => { resolveSettingsReload(reply(200, { data: gymSettings(3) })); });
+    expect(await screen.findByRole('button', { name: 'Turn off: Billing' })).toBeDefined();
   });
 });
