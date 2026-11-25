@@ -51,11 +51,12 @@ currency caused it, and also settles a default for methods already imported.
 
 Imports, card removal and clearing test cards share default promotion. An existing
 default stays selected; otherwise cards, and bank accounts of the gym currency's own
-type (US bank accounts in USD, Canadian PADs in CAD), are ordered newest first by processor
+type (US bank accounts in USD, Canadian PADs with a stored mandate in CAD), are ordered newest first by processor
 creation time when known (local creation time otherwise), then local creation time,
 then row ID. The first method with no stored expiry, or whose expiry month has not passed in
 the gym's timezone, is promoted; if every such method has expired, the newest is promoted.
-A bank account the currency can't charge stays on file but is never promoted.
+A bank account the currency can't charge, or a Canadian PAD without a mandate, stays on file
+but is never promoted.
 No customer IDs or processor IDs enter the route response. The billing runner
 then uses that stored default normally; campaign filtering still uses local rows.
 

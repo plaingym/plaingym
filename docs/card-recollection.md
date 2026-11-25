@@ -101,12 +101,12 @@ Both views let staff make a payment method default or remove it, including
 before the first invoice. The audit trail records import outcomes and skipped payment methods.
 
 Removing a default payment method promotes the newest remaining method the gym's currency
-can charge (a card, or US bank accounts in USD and Canadian PADs in CAD) with no expiry
-or whose stored expiry has not passed in the gym's timezone. Methods are ordered by processor creation time
+can charge (a card, or US bank accounts in USD and Canadian PADs with a mandate in CAD)
+with no expiry or whose stored expiry has not passed in the gym's timezone. Methods are ordered by processor creation time
 when known (local creation time otherwise), then local creation time and row ID.
 If all such methods have expired, the newest is promoted. A bank account the currency
-can't charge stays on file but is never promoted. If none remain,
-automatic payments stop until another method is saved. A Stripe detach error
+can't charge, or a Canadian PAD without a mandate, stays on file but is never promoted.
+If none remain, automatic payments stop until another method is saved. A Stripe detach error
 can occur after the local removal; the method then shows **Removal pending** with
 **Retry payment method removal** until Stripe has detached it, then **Removed from Stripe**.
 
