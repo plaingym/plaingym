@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, or } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Ordering expressions use only payment-method columns and a bound gym month.
 import { sql } from 'drizzle-orm';
 import { auditEvents, forGym, paymentMethods, payments, refunds, uuidv7, type Transaction } from '@plaingym/db';
@@ -86,7 +86,9 @@ export async function promoteDefaultCard(tx: Transaction, context: MutationConte
   const expiry = sql`(${paymentMethods.expiryYear}::text || '-' || lpad(${paymentMethods.expiryMonth}::text, 2, '0')) collate "C"`;
   // Compare instants at millisecond precision, as the app's Date values carry them; local time, then row ID, break ties.
   const [replacement] = await tx.select({ id: paymentMethods.id }).from(paymentMethods)
-    .where(and(active, inArray(paymentMethods.type, bank ? ['card', bank] : ['card'])))
+    .where(and(active, or(eq(paymentMethods.type, 'card'),
+      bank === 'acss_debit' ? and(eq(paymentMethods.type, 'acss_debit'), isNotNull(paymentMethods.mandateId))
+        : bank ? eq(paymentMethods.type, bank) : undefined)))
     .orderBy(asc(sql`coalesce(${expiry} < ${month}, false)`),
       desc(sql`date_trunc('milliseconds', coalesce(${paymentMethods.processorCreatedAt}, ${paymentMethods.createdAt}))`),
       desc(sql`date_trunc('milliseconds', ${paymentMethods.createdAt})`), desc(paymentMethods.id)).limit(1);
@@ -97,7 +99,7 @@ export async function promoteDefaultCard(tx: Transaction, context: MutationConte
   }
 }
 
-export function createPaymentMutations({ scope, clock, settings, transitions, jobs, paymentsFor, detachCard }: Options) {
+export function createPaymentMutations({ scope, clock, settings, transitions, jobs, recovery, paymentsFor, detachCard }: Options) {
   return {
     async importCustomerCards(context: MutationContext, householdId: string) {
       // Check local ownership before configuration or provider access.
@@ -183,24 +185,36 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
       });
       if (!detachCard) paymentUnavailable('detach_unavailable', 'Card removal is not configured');
       const { timezone } = await settings.get(context.gymId);
-      const row = await scope(context.gymId, async tx => {
+      const outcome = await scope(context.gymId, async tx => {
         await loadHousehold(tx, householdId, true);
         // Card state may have changed since the ownership check. Decide under the household lock.
         const card = (await tx.select().from(paymentMethods).where(and(eq(paymentMethods.id, id), eq(paymentMethods.householdId, householdId))))[0] ?? notFound();
+        if (card.revokedAt) {
+          const [revoked] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
+            eq(auditEvents.action, cardRevokedAction), eq(auditEvents.targetType, 'payment_method'), eq(auditEvents.targetId, id))).limit(1);
+          if (!revoked) return { unchanged: card } as const;
+        }
         const changed = (await tx.update(paymentMethods).set({ isDefault: false, revokedAt: card.revokedAt ?? clock.now() })
           .where(eq(paymentMethods.id, id)).returning())[0] ?? notFound();
         if (!card.revokedAt) await catalogAudit(tx, context, clock, cardRevokedAction, 'payment_method', id, undefined, { householdId });
         if (card.isDefault) await promoteDefaultCard(tx, context, clock, householdId, timezone);
-        return changed;
+        return { row: changed, retry: Boolean(card.revokedAt) } as const;
       });
+      if ('unchanged' in outcome) return masked(outcome.unchanged);
+      const { row, retry } = outcome;
       // Queue before the immediate attempt: a Stripe outage leaves a revoked local card and durable retry.
       if (jobs) await jobs.enqueue(detachJob, { paymentMethodId: id }, {
         gymId: context.gymId, timezone, idempotencyKey: `detach:${id}`, maxAttempts: 12,
       });
+      let reset = false;
+      if (retry && recovery) {
+        const failed = await recovery.failedJobs(detachJob, [`detach:${id}`], { gymId: context.gymId });
+        if (failed[0]) reset = await recovery.retryFailed(failed[0].jobId, { gymId: context.gymId, runAt: clock.now() });
+      }
       try { await detachCard(context.gymId, row.processorId); }
       catch (error) {
         // An outage or an app refusal (Stripe not configured) still fails the request; only a provider refusal waits for the job.
-        if (transientFailure(error) || error instanceof AppError) throw error;
+        if (transientFailure(error) || error instanceof AppError || !jobs || (retry && !reset)) throw error;
         logError('billing.card.detach_deferred', { gymId: context.gymId, paymentMethodId: id }, error);
         return masked(row, 'pending');
       }

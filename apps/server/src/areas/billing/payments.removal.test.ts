@@ -260,6 +260,74 @@ describe('a finished card removal', () => {
     expect(await f.detached()).toHaveLength(0);
   });
 
+  it('resets an exhausted detach job on retry with recovery, and throws the refusal without recovery or a failed job', async () => {
+    const f = await fixture();
+    const refusal = Object.assign(new Error('Payment method belongs to another gym'), { code: 'invalid_request_error', statusCode: 400 });
+    f.detachCard.mockRejectedValue(refusal);
+    const settings = createGymSettingsAccessor({ scope: db.forGym });
+    const withoutRecovery = f.service;
+    const retryFailed = vi.spyOn(f.jobs, 'retryFailed');
+    const withRecovery = createPaymentService({
+      scope: db.forGym, clock: f.clock, settings, jobs: f.jobs, recovery: f.jobs, detachCard: f.detachCard,
+    });
+
+    const first = await withoutRecovery.revokeCard(f.context, f.home.id, f.card.id);
+    expect(first).toMatchObject({ id: f.card.id, removal: 'pending' });
+
+    for (let attempt = 0; attempt < 12; attempt++) {
+      expect(await f.jobs.runNext()).toBe(true);
+      f.clock.advance(60 * 60 * 1000);
+    }
+    const key = `detach:${f.card.id}`;
+    expect(f.jobs.jobs.find(job => job.options.idempotencyKey === key)).toMatchObject({ status: 'failed', attempt: 12 });
+
+    await expect(withoutRecovery.revokeCard(f.context, f.home.id, f.card.id)).rejects.toBe(refusal);
+    expect(f.jobs.jobs.find(job => job.options.idempotencyKey === key)).toMatchObject({ status: 'failed', attempt: 12 });
+
+    const recovered = await withRecovery.revokeCard(f.context, f.home.id, f.card.id);
+    expect(recovered).toMatchObject({ id: f.card.id, removal: 'pending' });
+    expect(retryFailed).toHaveBeenCalledTimes(1);
+    expect(f.jobs.jobs.find(job => job.options.idempotencyKey === key)).toMatchObject({ status: 'queued', attempt: 0 });
+
+    // No failed job remains to reset, so another inline refusal reaches staff instead of returning pending.
+    await expect(withRecovery.revokeCard(f.context, f.home.id, f.card.id)).rejects.toBe(refusal);
+    expect(retryFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws a provider refusal on a first removal when no job queue is configured', async () => {
+    const f = await fixture();
+    const refusal = Object.assign(new Error('Customer is not owned by this gym'), { code: 'invalid_request_error', statusCode: 400 });
+    f.detachCard.mockRejectedValueOnce(refusal);
+    const service = createPaymentService({
+      scope: db.forGym, clock: f.clock, settings: createGymSettingsAccessor({ scope: db.forGym }), detachCard: f.detachCard,
+    });
+    await expect(service.revokeCard(f.context, f.home.id, f.card.id)).rejects.toBe(refusal);
+    expect((await f.list()).find(r => r.id === f.card.id)).toMatchObject({ revokedAt: f.clock.now().toISOString(), removal: 'pending' });
+    expect(await f.detached()).toHaveLength(0);
+  });
+
+  it('leaves an already revoked row with no removal audit unchanged, with no job, Stripe call or audit', async () => {
+    const f = await fixture();
+    const bank = await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_bank_revoked',
+      type: 'us_bank_account', bankName: 'Test Bank', brand: null, last4: '6789', expiryMonth: null, expiryYear: null, isDefault: false });
+    const invoice = await factory('invoices', f.gymId, { householdId: f.home.id, number: 1, status: 'past_due', amountCents: 5000, currency: 'USD' });
+    await db.forGym(f.gymId, tx => revokeBankMethod(tx, f.context, f.clock, invoice, bank.processorId));
+    const cleared = await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_test_cleared',
+      isDefault: false, revokedAt: f.clock.now() });
+
+    const auditsBefore = await db.forGym(f.gymId, tx => tx.select().from(auditEvents));
+    const bankResult = await f.service.revokeCard(f.context, f.home.id, bank.id);
+    const clearedResult = await f.service.revokeCard(f.context, f.home.id, cleared.id);
+
+    expect(bankResult).toMatchObject({ id: bank.id, isDefault: false, revokedAt: f.clock.now().toISOString() });
+    expect('removal' in bankResult).toBe(false);
+    expect(clearedResult).toMatchObject({ id: cleared.id, isDefault: false, revokedAt: f.clock.now().toISOString() });
+    expect('removal' in clearedResult).toBe(false);
+    expect(f.jobs.jobs).toHaveLength(0);
+    expect(f.detachCard).not.toHaveBeenCalled();
+    expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents))).toHaveLength(auditsBefore.length);
+  });
+
   it('is not visible to another household or gym', async () => {
     const f = await fixture();
     await f.service.revokeCard(f.context, f.home.id, f.card.id);

@@ -325,6 +325,50 @@ describe('household Stripe customer reservations with PostgreSQL', () => {
     expect(saved.household.stripeCustomerId).toBe(linked);
     expect(saved.audits.filter(a => a.action === 'billing.customer.linked')).toMatchObject([{ after: { customerId: linked } }]);
   });
+  it('records stripe_mode_changed when a mode-changing Payments save commits during creation without clearing test data', async () => {
+    const f = await fixture(), create = f.provider.createCustomer.bind(f.provider);
+    let first: string | undefined;
+    const spy = vi.spyOn(f.provider, 'createCustomer').mockImplementationOnce(async request => {
+      const made = await create(request);
+      first = made.id;
+      await db.forGym(f.gymId, tx => tx.insert(auditEvents).values({ gymId: f.gymId, actorKind: 'system',
+        action: 'integrations.stripe_saved', targetType: 'gym', targetId: f.gymId,
+        before: { mode: 'test', endpointId: 'we_old' },
+        after: { mode: 'live', endpointId: 'we_new', endpointReused: false, testDataCleared: false },
+        occurredAt: f.clock.now() }));
+      return made;
+    });
+    const linked = await f.service.ensureCustomer(f.gymId, f.household.id);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(linked).not.toBe(first);
+    const saved = await f.read(), abandoned = saved.audits.find(a => a.action === customerUnlinkedAction);
+    expect(abandoned).toMatchObject({ targetId: f.household.id, after: { customerId: null, reason: 'stripe_mode_changed' } });
+    expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ idempotencyKey: `household:${f.household.id}:customer:after:${abandoned!.id}` }));
+    expect(saved.household.stripeCustomerId).toBe(linked);
+  });
+  it('still records stripe_test_cleared when a clearing save commits both audits in one transaction', async () => {
+    const f = await fixture(), create = f.provider.createCustomer.bind(f.provider);
+    let first: string | undefined;
+    const spy = vi.spyOn(f.provider, 'createCustomer').mockImplementationOnce(async request => {
+      const made = await create(request);
+      first = made.id;
+      await db.forGym(f.gymId, async tx => {
+        await tx.insert(auditEvents).values({ gymId: f.gymId, actorKind: 'system', action: stripeTestClearedAction,
+          targetType: 'gym', targetId: f.gymId, before: null, after: {}, occurredAt: f.clock.now() });
+        await tx.insert(auditEvents).values({ gymId: f.gymId, actorKind: 'system', action: 'integrations.stripe_saved',
+          targetType: 'gym', targetId: f.gymId,
+          before: { mode: 'test', endpointId: 'we_old' },
+          after: { mode: 'live', endpointId: 'we_new', endpointReused: false, testDataCleared: true },
+          occurredAt: f.clock.now() });
+      });
+      return made;
+    });
+    const linked = await f.service.ensureCustomer(f.gymId, f.household.id);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(linked).not.toBe(first);
+    const saved = await f.read(), abandoned = saved.audits.find(a => a.action === customerUnlinkedAction);
+    expect(abandoned).toMatchObject({ targetId: f.household.id, after: { customerId: null, reason: 'stripe_test_cleared' } });
+  });
   it('waits for a switch that holds the gym row when the creation comes to link, then abandons it', async () => {
     const f = await fixture(), create = f.provider.createCustomer.bind(f.provider);
     const locked = Promise.withResolvers<number>(), release = Promise.withResolvers<void>();

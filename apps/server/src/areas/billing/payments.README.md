@@ -158,9 +158,10 @@ invoice is unchanged.
 Removing a payment method first revokes it locally and clears its default flag.
 Removing the default promotes the household's newest active method the gym's current
 currency can charge: a card, or the currency's own bank type (US bank accounts in USD,
-Canadian PADs in CAD, and no bank type otherwise). It prefers a method with no stored
+Canadian PADs with a stored mandate in CAD, and no bank type otherwise). It prefers a method with no stored
 expiry or an expiry that has not passed in the gym's timezone, and falls back to the
-newest when all eligible methods have expired. An account the currency cannot charge
+newest when all eligible methods have expired. An account the currency cannot charge,
+or a Canadian PAD without a mandate,
 stays on file and is never promoted to the default. Eligible methods are ordered by processor
 creation time when known (local creation time otherwise), then local creation time
 and row ID descending, in the same transaction under the household lock, with a
@@ -169,15 +170,22 @@ default alone. Removing the only active method leaves no default. The test-to-li
 Stripe switch shares this promotion when it revokes a default and keeps an imported
 active method.
 Customer-card imports also use it after the final page or exhausted restarts.
-Retrying removal of a revoked method
+Removing a method that is already revoked without a `billing.card.revoked` audit
+(no removal state) changes nothing: it returns the masked row with no `removal`,
+queues no job, makes no provider call, and writes no audit. Retrying removal of a
+revoked method with a `billing.card.revoked` audit
 does not change the default or repeat these audits. Removal then queues
-a detach retry and attempts detachment outside the transaction. If the inline
-detach is refused for ownership (for instance, a card saved on an untagged
-customer by a people import) rather than a transient provider failure, or if
-recording the detach audit fails after Stripe removed the card, the request
-logs the error with identifiers only and returns `removal: 'pending'` so the
-queued job finishes it; transient outages and app errors (such as Stripe not
-being configured for the gym) still fail the request. Revoked rows
+a detach retry when a job queue is supplied, resets an exhausted `detach:<id>` job
+on a retry when a `JobRecovery` is supplied, and attempts detachment outside the transaction.
+If the inline detach is refused for ownership (for instance, a card saved on an untagged
+customer by a people import) rather than a transient provider failure, the request
+logs the error with identifiers only and returns `removal: 'pending'` only when a
+job queue will finish it (on a first removal, or on a retry that reset a failed
+detach job); without a job queue, without recovery on a retry, or with no failed
+job to reset, the refusal reaches staff. If recording the detach audit fails after
+Stripe removed the card, the request logs the error with identifiers only and
+returns `removal: 'pending'` so the queued job finishes it; transient outages and
+app errors (such as Stripe not being configured for the gym) still fail the request. Revoked rows
 remain visible so staff can retry removal after an outage. A detach call that returns
 writes one `billing.card.detached` audit (`recordCardDetached`, in its own transaction after
 the call, from the removal request, the erasure route, or the detach job; a repeat writes none).

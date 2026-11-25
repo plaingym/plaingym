@@ -9,7 +9,7 @@ import { logError } from '../../core/log.js';
 import { notFound, type MutationContext } from '../../core/interfaces/common.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import type { DetachOptions, Payments } from '../../infra/payments/index.js';
-import type { Jobs } from '../../infra/jobs/index.js';
+import type { JobRecovery, Jobs } from '../../infra/jobs/index.js';
 import { gymSettingsAccessor } from '../settings/settings.js';
 import { catalogAudit } from './catalog.js';
 import { calculateOneOffInvoice } from './invoicing/index.js';
@@ -27,6 +27,7 @@ export interface PaymentOptions {
   transitions?: BillingInvoiceTransitions;
   paymentsFor?: (gymId: string) => Promise<Payments | null>;
   jobs?: Jobs;
+  recovery?: Pick<JobRecovery, 'failedJobs' | 'retryFailed'>;
   runner?: Pick<ChargeRunner, 'charge'>;
   /** The runtime delegates to the gym's Payments.detachPaymentMethod outside the transaction. */
   detachCard?: (gymId: string, processorId: string, options?: DetachOptions) => Promise<void>;

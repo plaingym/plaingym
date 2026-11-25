@@ -6,7 +6,7 @@ import { auditEvents, forGym, households, writeAudit, type Transaction } from '@
 import { AppError, type Clock } from '@plaingym/shared';
 import { clock as defaultClock } from '../../core/clock.js';
 import { CustomerCreationInProgress, CustomerDeleted, type Payments } from '../../infra/payments/index.js';
-import { stripeSwitchSnapshot, stripeWriteCurrent } from './stripe-writes.js';
+import { stripeSwitchSnapshot, stripeTestClearedAction, stripeWriteCurrent } from './stripe-writes.js';
 
 export type CustomerUnavailableReason = 'stripe_not_configured' | 'missing_details' | 'creation_expired' | 'details_changed' | 'customer_unreadable';
 export class CustomerUnavailable extends AppError {
@@ -111,7 +111,16 @@ export function createCustomersService(options: CustomersOptions) {
       // A switch committed after the provider was resolved, without seeing this creation (reserved after it looked):
       // the customer was made with the old key. Abandon the creation as the switch does, in a new generation.
       if (!current) {
-        await audit(tx, gymId, householdId, customerUnlinkedAction, { customerId: null, reason: 'stripe_test_cleared' });
+        const latest = await stripeSwitchSnapshot(tx, gymId);
+        const [event] = latest
+          ? await tx.select({ action: auditEvents.action, after: auditEvents.after }).from(auditEvents)
+            .where(eq(auditEvents.id, latest)).limit(1)
+          : [];
+        const cleared = event?.action === stripeTestClearedAction
+          || (event?.after as { testDataCleared?: unknown } | null)?.testDataCleared === true;
+        await audit(tx, gymId, householdId, customerUnlinkedAction, {
+          customerId: null, reason: cleared ? 'stripe_test_cleared' : 'stripe_mode_changed',
+        });
         return null;
       }
       // The ID is system-owned and hidden from staff, so linking leaves the staff edit revision unchanged.

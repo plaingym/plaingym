@@ -41,7 +41,8 @@ provider resolved before the switch committed, is abandoned the same way when th
 gym's switch snapshot changed meanwhile (`stripeSwitchSnapshot`: the latest
 `integrations.stripe_test_cleared` audit, or the latest Payments save that changed
 the Stripe mode): the service
-writes the unlink audit itself, then starts once more. The lock and audit comparison
+writes the unlink audit itself (`reason: 'stripe_test_cleared'` after a clear,
+or `'stripe_mode_changed'` after a mode-changing Payments save), then starts once more. The lock and audit comparison
 use `stripeWriteCurrent` in `stripe-writes.ts`, shared with the runner, refunds and
 webhook writes. Card setup starts record their customer, so a session made
 for an earlier customer is never reused (`signed-link-checkout.ts`).
