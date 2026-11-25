@@ -571,10 +571,156 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
     expect(complete).toHaveBeenLastCalledWith(f.gymId, linkId, checkoutRef.id);
     const collected = await f.read();
     expect(collected.audits.filter(row => row.action === 'billing.payment_method.updated')).toHaveLength(1);
+    expect(collected.audits.filter(row => row.action === 'billing.payment_method.deferred_collection_completed'))
+      .toMatchObject([{ targetType: 'household', targetId: f.household.id, after: { paymentMethodId: id, setupId: setupRef.id } }]);
     await f.run('payment_method.updated', update);
-    expect(complete).toHaveBeenCalledTimes(3);
-    expect(complete).toHaveBeenLastCalledWith(f.gymId, linkId, checkoutRef.id);
+    expect(complete).toHaveBeenCalledTimes(2);
     expect(await f.read()).toEqual(collected);
+  });
+  async function skippedBank(f: Fixture) {
+    const id = 'pm_usbank_6789', setupRef = { kind: 'setup' as const, id: 'seti_bank' };
+    setup(f, setupRef.id, id);
+    const method = f.transport.objects.get(id)!;
+    method.us_bank_account = { last4: null };
+    await f.run('setup_intent.succeeded', setupRef);
+    expect((await f.read()).methods.filter(row => row.processorId === id)).toEqual([]);
+    method.us_bank_account = { last4: '6789' };
+    return { id, setupRef, update: { kind: 'payment_method' as const, id } };
+  }
+  const defaultChanged = (f: Fixture, householdId: string, methodId: string) => db.forGym(f.gymId, tx => writeAudit(tx, {
+    gymId: f.gymId, actorKind: 'system', action: 'billing.card.default_changed', targetType: 'payment_method', targetId: methodId,
+    after: { householdId }, occurredAt: f.clock.now(), createdAt: f.clock.now() }));
+  it.each([
+    { name: 'keeps an older card made default after the skip', card: 'after_skip', bankDefault: false },
+    { name: 'replaces an older default chosen before the skip', card: 'before_skip', bankDefault: true },
+    { name: 'becomes the default of a household without one', card: 'none', bankDefault: true },
+    { name: 'ignores a default chosen for another household after the skip', card: 'other_household', bankDefault: true },
+  ] as const)('a deferred bank collection $name', async ({ card, bankDefault }) => {
+    const f = await fixture();
+    const older = new Date(f.clock.now().getTime() - 86400000);
+    const cardRow = card === 'none' ? undefined : await factory('paymentMethods', f.gymId, { householdId: f.household.id,
+      processorId: 'pm_card_older', isDefault: card !== 'after_skip', processorCreatedAt: older });
+    if (card === 'before_skip') await defaultChanged(f, f.household.id, cardRow!.id);
+    f.clock.advance(60000);
+    const bank = await skippedBank(f);
+    f.clock.advance(60000);
+    if (card === 'after_skip') {
+      await db.forGym(f.gymId, tx => tx.update(paymentMethods).set({ isDefault: true }).where(eq(paymentMethods.id, cardRow!.id)));
+      await defaultChanged(f, f.household.id, cardRow!.id);
+    }
+    if (card === 'other_household') {
+      const other = await factory('households', f.gymId, { stripeCustomerId: 'cus_other' });
+      const otherCard = await factory('paymentMethods', f.gymId, { householdId: other.id, isDefault: true });
+      await defaultChanged(f, other.id, otherCard.id);
+    }
+    await f.run('payment_method.updated', bank.update);
+    const { methods } = await f.read();
+    expect(methods.find(row => row.processorId === bank.id)).toMatchObject({ last4: '6789', isDefault: bankDefault });
+    expect(methods.filter(row => row.householdId === f.household.id && row.isDefault).map(row => row.processorId))
+      .toEqual([bankDefault ? bank.id : 'pm_card_older']);
+  });
+  it('retries a deferred collection link after a failed setup read, then stops rerunning it', async () => {
+    const complete = vi.fn<NonNullable<HandlerOptions['afterCheckoutRecorded']>>().mockResolvedValue(undefined);
+    const f = await fixture('cycle', undefined, complete), linkId = uuidv7(), checkoutId = 'cs_setup';
+    const bank = await skippedBank(f);
+    const metadata = { gym_id: f.gymId, link_id: linkId };
+    f.transport.objects.get(bank.setupRef.id)!.metadata = metadata;
+    f.transport.objects.set(checkoutId, { id: checkoutId, object: 'checkout.session', mode: 'setup', status: 'complete',
+      setup_intent: bank.setupRef.id, customer: 'cus_fixture', metadata });
+    await db.forGym(f.gymId, tx => writeAudit(tx, { gymId: f.gymId, actorKind: 'system', action: 'billing.card_setup.started',
+      targetType: 'signed_link', targetId: linkId, after: { sessionId: checkoutId }, occurredAt: f.clock.now() }));
+    const completions = async () => (await f.read()).audits
+      .filter(row => row.action === 'billing.payment_method.deferred_collection_completed');
+
+    const read = f.provider.readPaymentObject.bind(f.provider);
+    let failed = false;
+    const setupRead = vi.spyOn(f.provider, 'readPaymentObject').mockImplementation(reference => {
+      if (reference.kind !== 'setup' || failed) return read(reference);
+      failed = true;
+      return Promise.reject(new Error('Setup read unavailable'));
+    });
+    try {
+      await expect(f.run('payment_method.updated', bank.update)).rejects.toThrow('Setup read unavailable');
+    } finally { setupRead.mockRestore(); }
+    expect((await f.read()).methods).toMatchObject([{ processorId: bank.id, last4: '6789', isDefault: true }]);
+    expect(complete).not.toHaveBeenCalled();
+    expect(await completions()).toEqual([]);
+
+    await f.run('payment_method.updated', bank.update);
+    expect(complete).toHaveBeenCalledExactlyOnceWith(f.gymId, linkId, checkoutId);
+    expect(await completions()).toMatchObject([{ actorKind: 'system', targetType: 'household', targetId: f.household.id }]);
+    expect((await completions())[0]!.after).toEqual({ paymentMethodId: bank.id, setupId: bank.setupRef.id });
+    const collected = await f.read();
+    expect(collected.methods).toMatchObject([{ processorId: bank.id, isDefault: true }]);
+
+    const requests = f.transport.requests.length;
+    await f.run('payment_method.updated', bank.update);
+    await f.run('payment_method.automatically_updated', bank.update);
+    expect(complete).toHaveBeenCalledOnce();
+    expect(f.transport.requests.slice(requests).filter(request => request.path.includes('setup_intents')
+      || request.path.includes('checkout/sessions'))).toEqual([]);
+    expect(await f.read()).toEqual(collected);
+  });
+  it('converges concurrent deferred bank updates on one row, one default and at most one completion', async () => {
+    const complete = vi.fn<NonNullable<HandlerOptions['afterCheckoutRecorded']>>().mockResolvedValue(undefined);
+    const f = await fixture('cycle', undefined, complete), linkId = uuidv7(), checkoutId = 'cs_setup';
+    const bank = await skippedBank(f);
+    const metadata = { gym_id: f.gymId, link_id: linkId };
+    f.transport.objects.get(bank.setupRef.id)!.metadata = metadata;
+    f.transport.objects.set(checkoutId, { id: checkoutId, object: 'checkout.session', mode: 'setup', status: 'complete',
+      setup_intent: bank.setupRef.id, customer: 'cus_fixture', metadata });
+    await db.forGym(f.gymId, tx => writeAudit(tx, { gymId: f.gymId, actorKind: 'system', action: 'billing.card_setup.started',
+      targetType: 'signed_link', targetId: linkId, after: { sessionId: checkoutId }, occurredAt: f.clock.now() }));
+    await Promise.all([f.run('payment_method.updated', bank.update), f.run('payment_method.updated', bank.update)]);
+    const { methods, audits } = await f.read();
+    expect(methods).toMatchObject([{ processorId: bank.id, last4: '6789', isDefault: true }]);
+    expect(complete).toHaveBeenCalledWith(f.gymId, linkId, checkoutId);
+    expect(audits.filter(row => row.action === 'billing.payment_method.deferred_collection_completed')).toHaveLength(1);
+  });
+  it('completes a deferred collection link with one completion call and one audit', async () => {
+    const complete = vi.fn<NonNullable<HandlerOptions['afterCheckoutRecorded']>>().mockResolvedValue(undefined);
+    const f = await fixture('cycle', undefined, complete), linkId = uuidv7(), checkoutId = 'cs_setup';
+    const bank = await skippedBank(f);
+    const metadata = { gym_id: f.gymId, link_id: linkId };
+    f.transport.objects.get(bank.setupRef.id)!.metadata = metadata;
+    f.transport.objects.set(checkoutId, { id: checkoutId, object: 'checkout.session', mode: 'setup', status: 'complete',
+      setup_intent: bank.setupRef.id, customer: 'cus_fixture', metadata });
+    await db.forGym(f.gymId, tx => writeAudit(tx, { gymId: f.gymId, actorKind: 'system', action: 'billing.card_setup.started',
+      targetType: 'signed_link', targetId: linkId, after: { sessionId: checkoutId }, occurredAt: f.clock.now() }));
+    await f.run('payment_method.updated', bank.update);
+    expect(complete).toHaveBeenCalledExactlyOnceWith(f.gymId, linkId, checkoutId);
+    const requests = f.transport.requests.length;
+    await f.run('payment_method.updated', bank.update);
+    expect(complete).toHaveBeenCalledOnce();
+    expect(f.transport.requests.slice(requests).filter(request => request.path.includes('setup_intents')
+      || request.path.includes('checkout/sessions'))).toEqual([]);
+    expect((await f.read()).audits.filter(row => row.action === 'billing.payment_method.deferred_collection_completed'))
+      .toHaveLength(1);
+  });
+  it('writes no completion audit for a skipped setup that has not succeeded or whose completion fails', async () => {
+    const complete = vi.fn<NonNullable<HandlerOptions['afterCheckoutRecorded']>>()
+      .mockRejectedValueOnce(new Error('Link completion unavailable')).mockResolvedValue(undefined);
+    const f = await fixture('cycle', undefined, complete), linkId = uuidv7(), checkoutId = 'cs_setup';
+    const bank = await skippedBank(f);
+    const metadata = { gym_id: f.gymId, link_id: linkId };
+    const setupIntent = f.transport.objects.get(bank.setupRef.id)!;
+    setupIntent.metadata = metadata;
+    f.transport.objects.set(checkoutId, { id: checkoutId, object: 'checkout.session', mode: 'setup', status: 'complete',
+      setup_intent: bank.setupRef.id, customer: 'cus_fixture', metadata });
+    await db.forGym(f.gymId, tx => writeAudit(tx, { gymId: f.gymId, actorKind: 'system', action: 'billing.card_setup.started',
+      targetType: 'signed_link', targetId: linkId, after: { sessionId: checkoutId }, occurredAt: f.clock.now() }));
+    const completions = async () => (await f.read()).audits
+      .filter(row => row.action === 'billing.payment_method.deferred_collection_completed');
+    setupIntent.status = 'processing';
+    await f.run('payment_method.updated', bank.update);
+    expect(complete).not.toHaveBeenCalled();
+    expect(await completions()).toEqual([]);
+    setupIntent.status = 'succeeded';
+    await expect(f.run('payment_method.updated', bank.update)).rejects.toThrow('Link completion unavailable');
+    expect(await completions()).toEqual([]);
+    await f.run('payment_method.updated', bank.update);
+    expect(complete).toHaveBeenCalledTimes(2);
+    expect(await completions()).toHaveLength(1);
   });
   it('keeps the newer collected card on reverse delivery, replay, and concurrent collection', async () => {
     const f = await fixture(); setup(f, 'seti_old', 'pm_4242'); setup(f);

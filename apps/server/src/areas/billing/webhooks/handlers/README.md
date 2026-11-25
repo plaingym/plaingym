@@ -81,8 +81,13 @@ including the mandate ID and SetupIntent ID when available. Collection reads the
 method once more after the skip commits to catch digits that arrived during the
 skip. A later payment-method update with usable digits finishes that household's
 collection and carries over the recorded mandate. Once the method is saved, an
-update also completes the recorded setup's card-update or onboarding link. A
-replayed update leaves the saved method and completed link unchanged. An account
+update also completes the recorded setup's card-update or onboarding link. That
+completion runs on each update until it succeeds once, recorded by a
+`billing.payment_method.deferred_collection_completed` audit on the household
+(only the method and SetupIntent IDs); a failed SetupIntent read or completion
+writes none, so the retried update runs it again, and later updates of the method
+make no SetupIntent or Checkout reads. A replayed update leaves the saved method
+and completed link unchanged. An account
 revoked as unusable before it was saved is never saved. A payment Checkout still
 uses its pay link and starts a join's memberships. Replaying a Checkout does not
 pay twice.
@@ -91,7 +96,12 @@ The method's immutable processor creation time is stored in nullable
 `payment_methods.processor_created_at`. Under the household row lock, a collected
 method becomes default only when its processor time is newer than the current
 default's; null counts as older, and processor ID breaks equal-time ties. There
-is no collection audit watermark or payment-history lookup. Reverse and concurrent
+is no collection audit watermark or payment-history lookup. A deferred collection
+(an update bringing a skipped bank account's digits) first keeps any default
+chosen since the skip: when a `billing.card.default_changed` audit for the
+household was recorded at or after the skip audit, the current default stays and
+the bank method is saved as non-default; otherwise, or when the household has no
+default, the processor-time rule applies. Reverse and concurrent
 deliveries converge on the newer method. Outside deferred collections,
 `payment_method.updated` and `payment_method.automatically_updated` refresh
 known methods without changing the selected default. No event re-enables a

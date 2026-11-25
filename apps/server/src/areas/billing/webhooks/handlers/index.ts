@@ -133,8 +133,11 @@ export function registerBillingWebhookHandlers(inbox: Pick<WebhookInbox, 'regist
       const collected = await cards.update(gymId, found.value.object, event.id);
       if (collected) {
         const current = await readCurrent(provider, { kind: 'setup', id: collected.setupId });
-        if (current.kind === 'setup' && current.object.status === 'succeeded')
+        if (current.kind === 'setup' && current.object.status === 'succeeded') {
           await afterCheckoutRecorded(gymId, provider, current.object.metadata, { kind: 'setup', id: current.object.id });
+          const method = found.value.object;
+          await cards.markCollectionCompleted(gymId, method.customerId, method.id, collected.setupId);
+        }
       }
       return;
     }
