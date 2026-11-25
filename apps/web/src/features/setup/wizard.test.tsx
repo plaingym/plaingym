@@ -1084,7 +1084,7 @@ describe('setup wizard restore progress', () => {
     expect(responses).toHaveLength(0);
     expect(screen.queryByText(emailUnavailable)).toBeNull();
   });
-  it('shows the email-unavailable message at step 1 when owner creation falls back to a magic link that returns 503 EMAIL_UNAVAILABLE', async () => {
+  it('moves to the sign-in step at step 1 when owner creation succeeds and magic link returns 503 EMAIL_UNAVAILABLE, and retries only the link', async () => {
     const emailUnavailable = "The gym's email isn't working right now, so no sign-in link was sent. Check the server's email (SMTP) settings, then try again.";
     vi.mocked(services.loadBootstrap).mockResolvedValue({
       gym: { id: 'gym', name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] },
@@ -1093,8 +1093,12 @@ describe('setup wizard restore progress', () => {
     });
     const { fetcher } = start(1);
     const base = fetcher.getMockImplementation()!;
+    const linkResponses = [
+      () => Promise.resolve(Response.json({ code: 'EMAIL_UNAVAILABLE', message: 'x' }, { status: 503 })),
+      () => Promise.resolve(Response.json({ status: true })),
+    ];
     fetcher.mockImplementation((path, options) => String(path) === '/api/auth/sign-in/magic-link'
-      ? Promise.resolve(Response.json({ code: 'EMAIL_UNAVAILABLE', message: 'x' }, { status: 503 }))
+      ? linkResponses.shift()!()
       : base(path, options));
 
     await userEvent.type(await screen.findByLabelText('Your name'), 'Gym Owner');
@@ -1103,5 +1107,111 @@ describe('setup wizard restore progress', () => {
     await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Save and continue' }));
 
     expect(await screen.findByText(emailUnavailable)).toBeDefined();
+    expect(await screen.findByText('Sign in as the owner to continue setup.')).toBeDefined();
+    expect(screen.queryByLabelText('Your name')).toBeNull();
+    const countByPath = (target: string) => fetcher.mock.calls.filter(([path]) => String(path) === target).length;
+    expect(countByPath('/api/setup')).toBe(2);
+    expect(countByPath('/api/setup/owner')).toBe(1);
+    expect(countByPath('/api/auth/sign-in/magic-link')).toBe(1);
+
+    await userEvent.type(screen.getByLabelText('Email address'), 'owner@example.org');
+    await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(await screen.findByText('Check your inbox for a sign-in link, then return here to continue setup.')).toBeDefined();
+    expect(countByPath('/api/setup/owner')).toBe(1);
+    expect(countByPath('/api/auth/sign-in/magic-link')).toBe(2);
+  });
+  it('moves to the sign-in step at step 1 when the magic link fails with a network error and retries only the link', async () => {
+    vi.mocked(services.loadBootstrap).mockResolvedValue({
+      gym: { id: 'gym', name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] },
+      session: null,
+      login: { password: false, magicLink: true },
+    });
+    const { fetcher } = start(1);
+    const base = fetcher.getMockImplementation()!;
+    const linkResponses = [
+      () => Promise.reject(new TypeError('Failed to fetch')),
+      () => Promise.resolve(Response.json({ status: true })),
+    ];
+    fetcher.mockImplementation((path, options) => String(path) === '/api/auth/sign-in/magic-link'
+      ? linkResponses.shift()!()
+      : base(path, options));
+
+    await userEvent.type(await screen.findByLabelText('Your name'), 'Gym Owner');
+    await userEvent.type(screen.getByLabelText('Email address'), 'owner@example.org');
+    await userEvent.type(screen.getByLabelText('Password (12–128 characters)'), 'owner-password-123');
+    await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Save and continue' }));
+
+    expect(await screen.findByText('Could not save this step. Check the details and try again.')).toBeDefined();
+    expect(await screen.findByText('Sign in as the owner to continue setup.')).toBeDefined();
+    const countByPath = (target: string) => fetcher.mock.calls.filter(([path]) => String(path) === target).length;
+    expect(countByPath('/api/setup/owner')).toBe(1);
+
+    await userEvent.type(screen.getByLabelText('Email address'), 'owner@example.org');
+    await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(await screen.findByText('Check your inbox for a sign-in link, then return here to continue setup.')).toBeDefined();
+    expect(countByPath('/api/setup/owner')).toBe(1);
+    expect(countByPath('/api/auth/sign-in/magic-link')).toBe(2);
+  });
+  it('leaves the owner form at step 1 when owner creation succeeds and password sign-in throws', async () => {
+    vi.mocked(services.loadBootstrap).mockResolvedValue({
+      gym: { id: 'gym', name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] },
+      session: null,
+      login: { password: true, magicLink: false },
+    });
+    vi.mocked(services.signInWithPassword).mockRejectedValueOnce(new Error('sign-in failed'));
+    const { fetcher } = start(1);
+
+    await userEvent.type(await screen.findByLabelText('Your name'), 'Gym Owner');
+    await userEvent.type(screen.getByLabelText('Email address'), 'owner@example.org');
+    await userEvent.type(screen.getByLabelText('Password (12–128 characters)'), 'owner-password-123');
+    await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Save and continue' }));
+
+    expect(await screen.findByText('Could not save this step. Check the details and try again.')).toBeDefined();
+    expect(await screen.findByText('Sign in as the owner to continue setup.')).toBeDefined();
+    expect(screen.queryByLabelText('Your name')).toBeNull();
+    expect(fetcher.mock.calls.filter(([path]) => String(path) === '/api/setup').length).toBe(2);
+  });
+  it('shows the rate-limited message at the sign-in step on 429 and clears it on a following 200', async () => {
+    vi.mocked(services.loadBootstrap).mockResolvedValue({
+      gym: { id: 'gym', name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] },
+      session: null,
+      login: { password: false, magicLink: true },
+    });
+    const { fetcher } = start(2);
+    const base = fetcher.getMockImplementation()!;
+    const responses = [
+      Response.json({ code: 'rate_limited', message: 'Too many requests' }, { status: 429 }),
+      Response.json({ status: true }),
+    ];
+    fetcher.mockImplementation((path, options) => String(path) === '/api/auth/sign-in/magic-link'
+      ? Promise.resolve(responses.shift()!)
+      : base(path, options));
+
+    await userEvent.type(await screen.findByLabelText('Email address'), 'owner@example.org');
+    const signInButton = screen.getByRole('button', { name: 'Sign in' });
+
+    await userEvent.click(signInButton);
+    expect(await screen.findByText('Too many attempts. Please wait before trying again.')).toBeDefined();
+    expect(screen.queryByText('Could not save this step. Check the details and try again.')).toBeNull();
+
+    await userEvent.click(signInButton);
+    expect(await screen.findByText('Check your inbox for a sign-in link, then return here to continue setup.')).toBeDefined();
+    expect(screen.queryByText('Too many attempts. Please wait before trying again.')).toBeNull();
+  });
+  it('stays on the owner form with no extra status refetch when the owner POST returns 400', async () => {
+    const { fetcher } = start(1);
+    const base = fetcher.getMockImplementation()!;
+    fetcher.mockImplementation((path, options) => String(path) === '/api/setup/owner'
+      ? Promise.resolve(Response.json({ error: { code: 'invalid_request', message: 'Bad request' } }, { status: 400 }))
+      : base(path, options));
+
+    await userEvent.type(await screen.findByLabelText('Your name'), 'Gym Owner');
+    await userEvent.type(screen.getByLabelText('Email address'), 'owner@example.org');
+    await userEvent.type(screen.getByLabelText('Password (12–128 characters)'), 'owner-password-123');
+    await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Save and continue' }));
+
+    expect(await screen.findByText('Could not save this step. Check the details and try again.')).toBeDefined();
+    expect(screen.getByLabelText('Your name')).toBeDefined();
+    expect(fetcher.mock.calls.filter(([path]) => String(path) === '/api/setup').length).toBe(1);
   });
 });

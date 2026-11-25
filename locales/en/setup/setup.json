@@ -40,6 +40,7 @@
   "signIn": "Sign in",
   "sent": "Check your inbox for a sign-in link, then return here to continue setup.",
   "emailUnavailable": "The gym's email isn't working right now, so no sign-in link was sent. Check the server's email (SMTP) settings, then try again.",
+  "rateLimited": "Too many attempts. Please wait before trying again.",
   "packHint": "Choose any of the shipped packs, or continue without one. Programs, ranks, and colors stay editable.",
   "builtin": "Use the built-in website",
   "existing": "I already have a website",

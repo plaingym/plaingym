@@ -154,6 +154,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
       // No link went out this time, so an earlier "check your inbox" note would contradict the alert.
       if (emailUnavailable) setSent(false);
       setError(emailUnavailable ? 'emailUnavailable'
+        : failure instanceof ApiError && failure.status === 429 ? 'rateLimited'
         : failure instanceof ApiError && failure.status === 403 ? 'setupLink' : failure instanceof ApiError && failure.status === 409 ? 'changed'
         : reasons.includes('unreachable') ? 'unreachable' : reasons.includes('google_rejected') ? 'googleRejected' : 'failed');
       if (failure instanceof ApiError && failure.status === 409) await refresh();
@@ -221,9 +222,15 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
       {step === 1 && <Form action={async (data) => {
         const email = text(data, 'email'), password = text(data, 'password');
         await client.call('owner', { name: text(data, 'ownerName'), email, password });
-        const bootstrap = await services.loadBootstrap();
-        if (bootstrap.login.password) await services.signInWithPassword(email, password);
-        else { await client.magicLink(email); setSent(true); }
+        // Once the owner is saved, move to the sign-in step even if signing in or sending the link fails, so a retry doesn't re-post owner.
+        try {
+          const bootstrap = await services.loadBootstrap();
+          if (bootstrap.login.password) await services.signInWithPassword(email, password);
+          else { await client.magicLink(email); setSent(true); }
+        } catch (failure) {
+          await queries.invalidateQueries({ queryKey: bootstrapKey }); await refresh();
+          throw failure;
+        }
         await queries.invalidateQueries({ queryKey: bootstrapKey }); await refresh();
       }}><Field name="ownerName" /><Field name="email" type="email" /><Field name="password" type="password" minLength={12} maxLength={128} /></Form>}
       {step >= 2 && session.isPending ? <LoadingState label={t('setup/setup:loading')} />
