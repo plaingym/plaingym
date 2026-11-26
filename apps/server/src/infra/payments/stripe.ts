@@ -283,7 +283,11 @@ export class StripePayments implements Payments {
         const session = await this.#checkout(await this.#get(this.#path('checkout/sessions', reference.id)));
         outcome = session.chargeId ? this.#intent(await this.#ownedIntent(session.chargeId)) : { status: 'unknown', reference };
       }
-    } catch (error) { if (missing(error) || error instanceof PaymentObjectNotForGym) return { status: 'unknown', reference }; throw error; }
+    } catch (error) {
+      if (missing(error)) return { status: 'unknown', reference };
+      if (error instanceof PaymentObjectNotForGym) return { status: 'unknown', reference, notForGym: true };
+      throw error;
+    }
     // The intent read's expanded Charge normally supplies the time. Otherwise read the Charge: a missing one is
     // retryable, never an unknown intent and never permission to substitute the processing clock.
     if (options?.includeSuccessTime && outcome.status === 'succeeded' && !outcome.succeededAt) {

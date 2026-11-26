@@ -10,10 +10,11 @@ import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { createApp } from '../../app.js';
 import { TestClock } from '../../core/clock.js';
 import type { Principal } from '../../core/context.js';
+import { setLogSink } from '../../core/log.js';
 import type { ChargeOutcome, Payments } from '../../infra/payments/index.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { createCheckoutDebitReviewProvider } from './alerts/checkout-debits.js';
-import { createPaymentService } from './payments.js';
+import { createPaymentService, type PaymentOptions } from './payments.js';
 import { createPaymentRoutes } from './payments.routes.js';
 import { checkoutReviewAction } from './runner/reconciliation.js';
 import { createInvoiceTransitions, processingReleased } from './transitions/index.js';
@@ -100,25 +101,44 @@ describe('releasing an invoice stuck on a flagged Checkout bank debit', () => {
       [{ ...f.identity, status: 'failed', code: 'canceled', metadata: { gymId: uuidv7(), invoiceId: f.bill.id } }, refused('debit_mismatch')],
       [{ ...f.identity, id: 'pi_other', status: 'failed', code: 'canceled' }, refused('debit_mismatch')],
       [{ status: 'unknown', reference: { kind: 'charge', id: 'pi_1' } }, refused('debit_unknown')],
-      [new Error('Stripe timed out'), refused('payments_unavailable', 'unavailable')],
+      [{ status: 'unknown', reference: { kind: 'charge', id: 'pi_1' }, notForGym: true }, refused('debit_mismatch')],
+      [Object.assign(new Error('Stripe timed out'), { type: 'StripeConnectionError' }), refused('payments_unavailable', 'unavailable')],
+      [Object.assign(new Error('Server error'), { statusCode: 500 }), refused('payments_unavailable', 'unavailable')],
+      [Object.assign(new Error('Restricted key'), { statusCode: 403, type: 'StripePermissionError' }), refused('debit_unreadable')],
+      [new Error('Unreadable'), refused('debit_unreadable')],
     ];
     const before = (await f.audits()).length;
-    for (const [answer, expected] of cases) {
-      f.answers.splice(0, f.answers.length, answer);
-      await expect(f.service.releaseProcessing(f.context, f.bill.id)).rejects.toMatchObject(expected);
-      expect((await f.row()).status).toBe('processing');
-    }
+    const lines: string[] = [], previous = setLogSink(line => { lines.push(line); });
+    try {
+      for (const [answer, expected] of cases) {
+        f.answers.splice(0, f.answers.length, answer);
+        await expect(f.service.releaseProcessing(f.context, f.bill.id)).rejects.toMatchObject(expected);
+        expect((await f.row()).status).toBe('processing');
+      }
+    } finally { setLogSink(previous); }
     expect(f.findCharge).toHaveBeenCalledTimes(cases.length);
     expect((await f.audits()).length).toBe(before);
+    const logged = lines.map(line => JSON.parse(line) as Record<string, unknown>);
+    expect(logged.map(line => line.event)).toEqual(['billing.processing_release.unreadable', 'billing.processing_release.unreadable']);
+    for (const line of logged) expect(line).toMatchObject({ level: 'error', gymId: f.gymId, invoiceId: f.bill.id, error: { name: 'Error' } });
   });
 
-  it('answers payments_unavailable when the gym has no readable Stripe provider', async () => {
+  it('answers payments_unavailable when the provider lookup throws, and debit_unconfigured when no Stripe key is saved', async () => {
     const f = await fixture();
-    for (const paymentsFor of [async () => { throw new Error('Stripe settings unreadable'); }, async () => null]) {
-      const service = createPaymentService({ scope: db.forGym, clock: f.clock, transitions: f.transitions, paymentsFor });
-      await expect(service.releaseProcessing(f.context, f.bill.id)).rejects.toMatchObject(refused('payments_unavailable', 'unavailable'));
+    const before = (await f.audits()).length;
+    const cases: [PaymentOptions['paymentsFor'], ReturnType<typeof refused>][] = [
+      [async () => { throw new Error('Stripe settings unreadable'); }, refused('payments_unavailable', 'unavailable')],
+      [async () => null, refused('debit_unconfigured')],
+      [undefined, refused('debit_unconfigured')],
+    ];
+    for (const [paymentsFor, expected] of cases) {
+      const service = createPaymentService({ scope: db.forGym, clock: f.clock, transitions: f.transitions,
+        ...(paymentsFor ? { paymentsFor } : {}) });
+      await expect(service.releaseProcessing(f.context, f.bill.id)).rejects.toMatchObject(expected);
+      expect((await f.row()).status).toBe('processing');
     }
-    expect((await f.row()).status).toBe('processing');
+    expect(f.findCharge).not.toHaveBeenCalled();
+    expect((await f.audits()).length).toBe(before);
   });
 
   it('releases a debit whose metadata names no invoice', async () => {
@@ -194,6 +214,18 @@ describe('releasing a flagged bank debit that failed on an unusable account', ()
     expect(await f.transitions.releaseProcessing(f.system, { invoiceId: f.bill.id, paymentIntentId: 'pi_1',
       code: 'payment_method_unusable', paymentMethodId: 'pm_bank' })).toMatchObject({ outcome: 'ignored' });
     expect(await f.audits(revoked)).toHaveLength(1);
+  });
+
+  it("releases but leaves the bank method saved when the debit's metadata names no invoice", async () => {
+    const f = await fixture();
+    const { bank } = await withMethods(f);
+    f.answers.push({ ...f.identity, status: 'failed', code: 'payment_method_unusable', paymentMethodId: 'pm_bank',
+      metadata: { gymId: f.gymId } });
+    expect(await f.service.releaseProcessing(f.context, f.bill.id)).toMatchObject({ status: 'open' });
+    expect((await f.row()).status).toBe('open');
+    expect(await method(f, bank.id)).toMatchObject({ revokedAt: null, isDefault: true });
+    expect(await f.audits(revoked)).toEqual([]);
+    expect(await f.audits(unsavedRevoked)).toEqual([]);
   });
 
   it.each(['insufficient_funds', 'declined', 'canceled'] as const)('leaves the bank method saved for %s', async code => {

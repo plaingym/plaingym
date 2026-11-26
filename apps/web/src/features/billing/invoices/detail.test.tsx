@@ -177,5 +177,20 @@ it("gives a bank debit release its own text when Stripe can't be reached or has 
   fireEvent.click(await screen.findByRole('button', { name: 'Stop waiting for this bank debit' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Confirm' }));
   expect((await screen.findByRole('alert')).textContent).toContain("Stripe has no record of this debit under the gym's current Stripe key, "
-    + 'for example after the key was changed, so the invoice keeps waiting for it. Check the debit in the Stripe Dashboard of the account that made it.');
+    + 'for example after the key was changed or the payment was deleted, so the invoice keeps waiting for it and can\'t be released here. '
+    + 'Check the debit in the Stripe Dashboard of the account that made it.');
+});
+
+it.each([
+  ['debit_unconfigured', "No Stripe key is saved for this gym, so the bank debit can't be checked and the invoice keeps waiting for it. "
+    + "Save the gym's Stripe key in Settings, then try again."],
+  ['debit_unreadable', "Stripe wouldn't show this debit to the gym's current Stripe key, so the invoice keeps waiting for it. "
+    + 'Check that the key can read payments, then try again.'],
+])('shows the %s refusal of a bank debit release in the form', async (reason, text) => {
+  startProcessing(true, () => Response.json({ error: { code: 'conflict', message: 'Refused', details: { reason: [reason] } } }, { status: 409 }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Stop waiting for this bank debit' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Confirm' }));
+  const alert = await screen.findByRole('alert');
+  expect(alert.textContent).toContain(text);
+  expect(alert.textContent).not.toContain("Stripe couldn't be reached");
 });

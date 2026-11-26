@@ -31,7 +31,8 @@ export type ChargeOutcome =
   | (ChargeIdentity & { status: 'failed'; code: 'declined' | 'canceled' | 'provider_error' | 'insufficient_funds' | 'payment_method_unusable' })
   | (ChargeIdentity & { status: 'action_required'; code: 'authentication_required' })
   | (ChargeIdentity & { status: 'pending' })
-  | { status: 'unknown'; reference: ChargeReference };
+  // `notForGym` is set when the processor holds the object for another gym or with no gym tag, never for a missing one.
+  | { status: 'unknown'; reference: ChargeReference; notForGym?: true };
 export interface CreateCharge {
   readonly amount: number;
   readonly currency: string;

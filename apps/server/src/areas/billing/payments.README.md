@@ -53,14 +53,23 @@ transaction it reads that intent from Stripe: a failed or cancelled debit releas
 the invoice, `succeeded` refuses `debit_paid`, `processing` refuses
 `debit_processing`, a pending or action-needed intent refuses `debit_open` (staff
 cancel it in the Stripe Dashboard first), an intent whose ID, gym or invoice
-metadata differs refuses `debit_mismatch`, an unknown answer (Stripe has no
-record of the intent under the gym's current key) refuses `debit_unknown`, and a
-Stripe that can't be read or isn't configured is 503 `payments_unavailable`. The
+metadata differs, or that Stripe holds for another gym or with no gym tag,
+refuses `debit_mismatch`, and an unknown answer (Stripe has no record of the
+intent under the gym's current key, for example after the key was changed or the
+payment was deleted) refuses `debit_unknown`. A `debit_unknown` debit can't be
+released in the app: the invoice stays `processing` (and on the dashboard's
+count) until a Stripe read under the gym's key reports the debit failed or
+cancelled. No Stripe key saved refuses `debit_unconfigured`; a read Stripe
+refuses for a lasting reason (such as a restricted key that can't read payments)
+refuses `debit_unreadable` and logs the error as
+`billing.processing_release.unreadable`; an outage (Stripe unreachable, timed out, rate
+limited, a Stripe server error or the key rejected), or a gym whose Stripe
+settings can't be read, is 503 `payments_unavailable`. The
 release transition takes the invoice lock, makes a cycle or assignment invoice
 `past_due` and any other `open`, clears the Checkout session fields and writes one
 `billing.invoice.processing_released` audit with the intent and failure code.
 When Stripe reports the debit failed with `payment_method_unusable` and names its
-payment method, the same transaction revokes that household's saved bank method
+payment method, and the intent's metadata names this invoice, the same transaction revokes that household's saved bank method
 (or records an unsaved one's revocation) as an ordinary bank failure does. It
 makes no Stripe write, sends no notice, starts no dunning or retries, leaves
 payments, attempts and other saved methods as they are, and doesn't count toward

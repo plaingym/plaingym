@@ -8,7 +8,7 @@ import { clock as defaultClock } from '../../core/clock.js';
 import { logError } from '../../core/log.js';
 import { notFound, type MutationContext } from '../../core/interfaces/common.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
-import type { ChargeOutcome, DetachOptions, Payments } from '../../infra/payments/index.js';
+import { isProviderOutage, type ChargeOutcome, type DetachOptions, type Payments } from '../../infra/payments/index.js';
 import type { JobRecovery, Jobs } from '../../infra/jobs/index.js';
 import { gymSettingsAccessor } from '../settings/settings.js';
 import { catalogAudit } from './catalog.js';
@@ -155,8 +155,11 @@ export function createPaymentService(options: PaymentOptions = {}) {
     /**
      * Stops waiting for a Checkout bank debit the sweep flagged for checking. Stripe is read after the click, and only an
      * intent it reports failed or cancelled releases the invoice; nothing is written to Stripe. A debit that failed on an
-     * unusable bank account also revokes that saved method. An intent Stripe has no record of under the current key is
-     * refused `debit_unknown`; a Stripe that can't be read is `payments_unavailable`.
+     * unusable bank account also revokes that saved method, only when the intent's metadata names this invoice. Refusals:
+     * no Stripe key saved is `debit_unconfigured`; a read Stripe refuses for a lasting reason is `debit_unreadable`; an
+     * outage (or a provider lookup that throws) is `payments_unavailable`; an intent held for another gym, with no gym tag,
+     * or naming another invoice is `debit_mismatch`; an intent Stripe has no record of under the current key is
+     * `debit_unknown`, which can't be released here.
      */
     async releaseProcessing(context: MutationContext, invoiceId: string) {
       const paymentIntentId = await scope(context.gymId, async tx => {
@@ -169,10 +172,22 @@ export function createPaymentService(options: PaymentOptions = {}) {
           paymentConflict('debit_not_stuck', 'This bank debit has not been flagged for checking');
         return latest;
       });
+      const unavailable = () => paymentUnavailable('payments_unavailable', 'Stripe is unavailable; check the bank debit again shortly');
+      let provider: Payments | null | undefined;
+      try { provider = await options.paymentsFor?.(context.gymId); }
+      catch { return unavailable(); }
+      if (!provider) paymentConflict('debit_unconfigured', 'No Stripe key is saved; the bank debit cannot be checked');
       let current: ChargeOutcome;
-      try { current = await (await providerFor(context.gymId)).findCharge({ kind: 'charge', id: paymentIntentId }); }
-      catch { return paymentUnavailable('payments_unavailable', 'Stripe is unavailable; check the bank debit again shortly'); }
-      if (current.status === 'unknown') paymentConflict('debit_unknown', 'Stripe has no record of this debit under the current key');
+      try { current = await provider.findCharge({ kind: 'charge', id: paymentIntentId }); }
+      catch (error) {
+        if (isProviderOutage(error)) return unavailable();
+        logError('billing.processing_release.unreadable', { gymId: context.gymId, invoiceId }, error);
+        return paymentConflict('debit_unreadable', 'Stripe refused to read this debit with the current key');
+      }
+      if (current.status === 'unknown') {
+        if (current.notForGym) paymentConflict('debit_mismatch', "Stripe's record of this debit does not match this invoice");
+        paymentConflict('debit_unknown', 'Stripe has no record of this debit under the current key');
+      }
       if (current.id !== paymentIntentId || current.metadata.gymId !== context.gymId
         || (current.metadata.invoiceId !== undefined && current.metadata.invoiceId !== invoiceId))
         paymentConflict('debit_mismatch', "Stripe's record of this debit does not match this invoice");
@@ -184,7 +199,8 @@ export function createPaymentService(options: PaymentOptions = {}) {
         default: { const exhaustive: never = current; return exhaustive; }
       }
       const released = await transitions.releaseProcessing(context, { invoiceId, paymentIntentId, code: current.code,
-        ...(current.code === 'payment_method_unusable' && current.paymentMethodId ? { paymentMethodId: current.paymentMethodId } : {}) });
+        ...(current.code === 'payment_method_unusable' && current.paymentMethodId && current.metadata.invoiceId === invoiceId
+          ? { paymentMethodId: current.paymentMethodId } : {}) });
       if (released.outcome === 'ignored') notProcessing();
       return scope(context.gymId, async tx => presentInvoice(await loadInvoice(tx, invoiceId)));
     },

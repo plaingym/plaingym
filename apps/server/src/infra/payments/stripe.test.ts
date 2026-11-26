@@ -405,6 +405,16 @@ it('rejects foreign gym objects and mutates none of them', async () => {
   expect((await payments.listChangesSince(new Date('2026-10-01'))).changes).toEqual([]);
   expect(transport.requests.filter((input) => input.path.endsWith('/confirm'))).toEqual([]);
 });
+it("marks an intent held for another gym or with no gym tag as not this gym's, and a missing one without that mark", async () => {
+  const { payments, transport } = fixture(), intent = await payments.createCharge(charge);
+  for (const metadata of [{ gym_id: 'other' }, {}]) {
+    transport.objects.get(intent.id)!.metadata = metadata;
+    expect(await payments.findCharge({ kind: 'charge', id: intent.id }))
+      .toEqual({ status: 'unknown', reference: { kind: 'charge', id: intent.id }, notForGym: true });
+  }
+  expect(await payments.findCharge({ kind: 'charge', id: 'pi_absent' }))
+    .toEqual({ status: 'unknown', reference: { kind: 'charge', id: 'pi_absent' } });
+});
 it.each(['charge', 'refund', 'dispute', 'setup', 'payment_method', 'checkout'] as const)(
   'skips an untagged %s and its untagged parents while retaining tagged changes on the same pages', async (kind) => {
     const { transport, payments: writer, since } = fixture(), intent = await writer.createCharge(charge);
