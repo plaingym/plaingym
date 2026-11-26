@@ -120,7 +120,7 @@ export const setupRestoreRequestSchema = z.strictObject({
 });
 export const setupRestoreJobParamsSchema = z.strictObject({ jobId: idSchema });
 export const setupRestoreFailureReasonSchema = z.enum(['credentials_rejected', 'bucket_missing', 'snapshot_missing', 'endpoint_unreachable',
-  'wrong_key', 'invalid_key', 'damaged', 'unsupported', 'interrupted', 'not_started', 'other']);
+  'wrong_key', 'invalid_key', 'damaged', 'unsupported', 'interrupted', 'not_started', 'access_denied', 'other']);
 export const setupRestoreResponseSchema = z.strictObject({ data: z.discriminatedUnion('status', [
   z.strictObject({ status: z.literal('running'), jobId: idSchema, phase: z.enum(['verifying', 'database', 'secrets', 'uploads', 'reconciling']) }),
   // Restore skips the rest of setup and leaves billing paused for reconciliation.

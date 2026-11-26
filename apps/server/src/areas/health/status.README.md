@@ -108,10 +108,19 @@ and explicit pruning (including its upload sweep) while new snapshots continue,
 until the bucket reaches the retention budget and the snapshot's budget check fails.
 The Last backup tile reports `pruningHeld` separately from an inventory failure.
 An inventory failure the destination caused names its class in `destinationFailure`
-(`credentials_rejected`, `bucket_missing` or `endpoint_unreachable`, from the error's
+(`credentials_rejected` for a key the service rejects, such as `InvalidAccessKeyId`,
+`SignatureDoesNotMatch`, `InvalidToken` or `ExpiredToken`; `access_denied` for a refused
+access, `AccessDenied`, `Unauthorized` or a bare 401 or 403, worded as a permissions
+problem; `bucket_missing` or `endpoint_unreachable`; from the error's
 status and code only; a bare network code counts only when a destination call raised
 it, so other connection failures such as the database stay `other`) with its own message;
-any other failure keeps the pruning-stopped one.
+any other failure keeps the pruning-stopped one, and logs
+`health.backup_inventory_unverified` with the reasons that stopped pruning (`suspect`, the
+fixed reason texts joined by `; `, and `damagedRetained`), never an object key or snapshot ID.
+The tile reads the bucket outside the backup lock, so a run can publish while it lists: a
+prefix without a reference list whose run reads `succeeded` is listed again, and left out
+of that read when its reference list is there now (the next read counts it). Pruning, which
+holds the lock, keeps stopping for such a prefix.
 Its warning names the hold and explains that new snapshots stop at the retention budget;
 it replaces the healthy and capacity messages but not the missing or overdue snapshot ones.
 The snapshot named by an active `SCHEMA_ROLLBACK_FLOOR` / `SCHEMA_SNAPSHOT` guard
@@ -134,7 +143,7 @@ lane so a slow snapshot doesn't block the gym's regular jobs; both endpoints req
 `settings.manage` (owners/admins). The request UUID, job and audit commit in one
 short gym transaction. Pending/running requests refuse a second UUID, retries of
 the current UUID return its state, and a failed job is reflected back into that state.
-A failed request stores its cause class in `failure` (`credentials_rejected`,
+A failed request stores its cause class in `failure` (`credentials_rejected`, `access_denied`,
 `bucket_missing`, `endpoint_unreachable` or `other`, never the error's text), which the
 `backup.failed` audit also records; a stored class this release doesn't know reads as
 `other`, and a missing one as null.

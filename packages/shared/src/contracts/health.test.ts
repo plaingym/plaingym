@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { healthTileIds, healthTileSchema, healthResponseSchema, healthContracts, chargeFailureReportSchema, chargeFailuresResponseSchema,
   dismissChargeFailuresRequestSchema, dismissChargeFailuresResponseSchema, maxDismissedChargeRuns, autoUpdateContracts,
-  autoUpdateSettingsResponseSchema, updateAutoUpdateSettingsRequestSchema, sharedDiskVolume } from './index.js';
+  autoUpdateSettingsResponseSchema, updateAutoUpdateSettingsRequestSchema, sharedDiskVolume, backupFailureCauseSchema, manualBackupSchema } from './index.js';
 import { canStaff, staffRoles } from '../permissions.js';
 
 const now = '2026-10-21T20:00:00Z';
@@ -22,6 +22,20 @@ const details = {
   sms: { configured: true, memberSmsEnabled: true, sentToday: 2, refusedToday: 0, smsDailyCap: 1000, lastTestAt: null, lastTestResult: null },
 };
 const tiles = healthTileIds.map((id) => ({ id, status: 'healthy', checkedAt: now, message: 'Status checked', details: details[id] }));
+
+describe('backup failure causes', () => {
+  const causes = ['credentials_rejected', 'access_denied', 'bucket_missing', 'endpoint_unreachable', 'other'];
+  const id = '019a0af0-9c00-7000-8000-0000000000aa';
+  it('parses every cause, a refused access included, on the tile and the manual backup', () => {
+    expect([...backupFailureCauseSchema.options].sort()).toEqual([...causes].sort());
+    for (const cause of causes) {
+      expect(healthTileSchema.safeParse({ id: 'last_backup', status: 'error', checkedAt: now, message: 'Checked',
+        details: { ...details.last_backup, destinationFailure: cause } }).success).toBe(true);
+      expect(manualBackupSchema.parse({ requestId: id, status: 'failed', requestedAt: now, completedAt: now, snapshotId: null, failure: cause }).failure).toBe(cause);
+    }
+    expect(manualBackupSchema.parse({ requestId: id, status: 'failed', requestedAt: now, completedAt: now, snapshotId: null }).failure).toBeNull();
+  });
+});
 
 describe('health contracts', () => {
   it.each(healthTileIds)('%s supports checked, failed, and not-configured provider states', (id) => {

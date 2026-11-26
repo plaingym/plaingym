@@ -68,11 +68,16 @@ export function s3Reason(error: unknown, bucket: 'backup' | 'uploads'): string |
   if (bucket === 'backup' && (code === 'NoSuchKey' || code === 'NotFound')) return "The snapshot isn't in the backup bucket (" + code + '); check the snapshot ID';
   const named = code && code !== 'Error' ? code : 'HTTP ' + status;
   if (cause === 'credentials_rejected') return 'The ' + bucket + ' bucket rejected the access key or secret (' + named + ')';
+  // A key without list permission is refused a missing object too, so a mistyped snapshot ID reads this way.
+  if (cause === 'access_denied') {
+    return 'The ' + bucket + ' bucket refused access (' + named + "); check the key's permissions on this bucket"
+      + (bucket === 'backup' ? ' and the snapshot ID' : '');
+  }
   return 'The ' + bucket + ' bucket answered with error ' + named;
 }
 
 /** Why a wizard restore failed, as a class the page words in a fixed line. Only a `RestoreFailure`'s own fixed text is read. */
-export type RestoreFailureClass = 'credentials_rejected' | 'bucket_missing' | 'snapshot_missing' | 'endpoint_unreachable'
+export type RestoreFailureClass = 'credentials_rejected' | 'access_denied' | 'bucket_missing' | 'snapshot_missing' | 'endpoint_unreachable'
   | 'wrong_key' | 'invalid_key' | 'damaged' | 'unsupported' | 'other';
 
 /** Errors thrown while a snapshot object was read from the backup bucket, including its body stream. */

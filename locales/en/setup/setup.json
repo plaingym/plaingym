@@ -84,6 +84,7 @@
   "restoring": "Restoring your verified backup. Keep this page open; billing will stay paused.",
   "restoreFailed": "Restore failed. Check the storage details, snapshot ID and private key, then start again.",
   "restoreFailure.credentials_rejected": "Restore failed: the storage service rejected the access key ID or secret. Check both, then start again.",
+  "restoreFailure.access_denied": "Restore failed: the storage service refused access. Check the key's permissions on this bucket, and the snapshot ID, then start again.",
   "restoreFailure.bucket_missing": "Restore failed: that bucket doesn't exist at the endpoint. Check the bucket name and the endpoint, then start again.",
   "restoreFailure.snapshot_missing": "Restore failed: the snapshot wasn't found. Check the snapshot ID, then start again.",
   "restoreFailure.endpoint_unreachable": "Restore failed: the storage endpoint couldn't be reached. Check its address and the server's network, then start again.",

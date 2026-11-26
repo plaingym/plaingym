@@ -64,7 +64,13 @@ it('distinguishes a failed connection from an unreachable endpoint in s3Reason',
   expect(s3Reason({ code: 'UND_ERR_HEADERS_TIMEOUT', $metadata: { attempts: 1 } }, 'backup')).toBe('Cannot reach the backup bucket (UND_ERR_HEADERS_TIMEOUT)');
   expect(s3Reason({ code: 'UND_ERR_BODY_TIMEOUT', $metadata: { attempts: 1 } }, 'backup')).toBe('Cannot reach the backup bucket (UND_ERR_BODY_TIMEOUT)');
   expect(s3Reason({ name: 'TimeoutError', $metadata: { attempts: 1 } }, 'backup')).toBe('Cannot reach the backup bucket (TimeoutError)');
-  expect(s3Reason({ Code: 'AccessDenied', $metadata: { httpStatusCode: 403 } }, 'backup')).toBe('The backup bucket rejected the access key or secret (AccessDenied)');
+  expect(s3Reason({ Code: 'AccessDenied', $metadata: { httpStatusCode: 403 } }, 'backup'))
+    .toBe("The backup bucket refused access (AccessDenied); check the key's permissions on this bucket and the snapshot ID");
+  expect(s3Reason({ Code: 'AccessDenied', $metadata: { httpStatusCode: 403 } }, 'uploads'))
+    .toBe("The uploads bucket refused access (AccessDenied); check the key's permissions on this bucket");
+  // A key without list permission is refused a missing object, but a missing object it may list still names the snapshot.
+  expect(s3Reason({ Code: 'NoSuchKey', $metadata: { httpStatusCode: 404 } }, 'backup')).toBe("The snapshot isn't in the backup bucket (NoSuchKey); check the snapshot ID");
+  expect(s3Reason({ Code: 'InvalidAccessKeyId', $metadata: { httpStatusCode: 403 } }, 'backup')).toBe('The backup bucket rejected the access key or secret (InvalidAccessKeyId)');
 });
 it('rejects a second restore while one is staged', async () => {
   await stage();

@@ -201,9 +201,11 @@ describe('manual backups and restore pruning confirmation', () => {
     expect((await f.request('owner', nowPath, { requestId: uuidv7() })).status).toBe(200);
     await f.queue.runNext();
   });
-  const rejected = { name: 'Unauthorized', $metadata: { httpStatusCode: 401 } };
+  const rejected = { name: 'InvalidAccessKeyId', Code: 'InvalidAccessKeyId', $metadata: { httpStatusCode: 403 } };
+  const denied = { name: 'AccessDenied', Code: 'AccessDenied', $metadata: { httpStatusCode: 403 } };
   it.each([
     ['credentials_rejected', new Error('Snapshot failed', { cause: new Error('Backup object upload failed', { cause: rejected }) })],
+    ['access_denied', new Error('Snapshot failed', { cause: new Error('Backup object upload failed', { cause: denied }) })],
     ['other', new Error('disk full')],
   ] as const)('stores and audits the %s cause of a failed manual backup without its text', async (failure, error) => {
     const f = await fixture(), requestId = uuidv7();

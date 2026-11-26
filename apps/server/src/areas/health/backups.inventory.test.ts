@@ -68,6 +68,53 @@ describe('backup inventory reads', () => {
     expect(state.snapshots.map((snapshot) => snapshot.id)).toEqual(ids.filter((id) => id !== broken.id));
     expect(state.damaged).toEqual([]);
   });
+  describe('a publication that finishes during the listing', () => {
+    /** The newest snapshot's objects without its reference list; `finish` uploads the list as a run's last step. */
+    async function publishing(store: FakeBackupObjectStore) {
+      const earlier = await committed(store, 60);
+      const id = uuidv7(), prefix = snapshotPrefix(id);
+      const snapshot: Snapshot = { id, version: 1, kind: 'hourly', startedAt: clock.now().toISOString(),
+        database: { sha256: 'a'.repeat(64), size: 3 }, manifest: { sha256: 'b'.repeat(64), size: 3 }, uploads: [] };
+      await store.putObject(prefix + 'database.age', bytesStream('abc'));
+      await store.putObject(prefix + 'manifest.age', bytesStream('abc'));
+      return { earlier, prefix, finish: () => store.putObject(prefix + 'references.json', referenceStream(snapshot, blobKey)) };
+    }
+    /** The status read runs after the listing: by then the run has uploaded its reference list (or not) and reads `status`. */
+    const runsAfter = (status: string, before: () => Promise<unknown> = async () => undefined) =>
+      async (prefixes: readonly string[]) => { await before(); return new Map(prefixes.map((prefix) => [prefix, status])); };
+
+    it('stays suspect without the option, listing only the two prefixes', async () => {
+      const store = new FakeBackupObjectStore(clock), { earlier, finish } = await publishing(store);
+      const list = vi.spyOn(store, 'listObjects');
+      const state = await inventory(store, blobKey, runsAfter('succeeded', finish));
+      expect(state.suspect).toEqual(['Missing snapshot reference list']);
+      expect(state.snapshots.map((snapshot) => snapshot.id)).toEqual([earlier.id]);
+      expect(list.mock.calls.map(([prefix]) => prefix)).toEqual(['snapshots/', 'blobs/']);
+    });
+    it('lists a succeeded prefix again and leaves it out once its reference list is there', async () => {
+      const store = new FakeBackupObjectStore(clock), { earlier, prefix, finish } = await publishing(store);
+      const list = vi.spyOn(store, 'listObjects');
+      const state = await inventory(store, blobKey, runsAfter('succeeded', finish), { relistFinished: true });
+      expect(state).toMatchObject({ suspect: [], damaged: [], abandoned: [] });
+      expect(state.snapshots.map((snapshot) => snapshot.id)).toEqual([earlier.id]);
+      expect(list.mock.calls.map(([listed]) => listed)).toEqual(['snapshots/', 'blobs/', prefix]);
+    });
+    it('keeps a succeeded prefix suspect when its reference list is still missing', async () => {
+      const store = new FakeBackupObjectStore(clock), { earlier } = await publishing(store);
+      const state = await inventory(store, blobKey, runsAfter('succeeded'), { relistFinished: true });
+      expect(state.suspect).toEqual(['Missing snapshot reference list']);
+      expect(state.snapshots.map((snapshot) => snapshot.id)).toEqual([earlier.id]);
+    });
+    it('counts a running or unrecorded prefix as before, without listing it again', async () => {
+      const store = new FakeBackupObjectStore(clock), { prefix } = await publishing(store);
+      const list = vi.spyOn(store, 'listObjects');
+      const running = await inventory(store, blobKey, runsAfter('running'), { relistFinished: true });
+      expect(running).toMatchObject({ suspect: [], abandoned: [prefix.split('/')[1]] });
+      const unrecorded = await inventory(store, blobKey, async () => new Map(), { relistFinished: true });
+      expect(unrecorded.suspect).toEqual(['Missing snapshot reference list']);
+      expect(list.mock.calls.map(([listed]) => listed)).toEqual(['snapshots/', 'blobs/', 'snapshots/', 'blobs/']);
+    });
+  });
   it('lists each prefix once and returns empty results for an empty bucket', async () => {
     const store = new FakeBackupObjectStore(clock), list = vi.spyOn(store, 'listObjects'), get = vi.spyOn(store, 'getObject');
     expect(await inventory(store, blobKey)).toEqual({ snapshots: [], damaged: [], abandoned: [], suspect: [], objects: [], blobs: [] });

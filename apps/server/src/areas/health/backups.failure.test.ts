@@ -19,17 +19,23 @@ const unauthorized = { name: 'Unauthorized', $metadata: { httpStatusCode: 401 } 
 const reset = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
 describe('backup failure causes', () => {
   it.each([
-    ['a 401 answer', unauthorized, 'credentials_rejected'],
-    ['access denied', { name: 'AccessDenied', Code: 'AccessDenied', $metadata: { httpStatusCode: 403 } }, 'credentials_rejected'],
+    ['a 401 answer', unauthorized, 'access_denied'],
+    ['access denied', { name: 'AccessDenied', Code: 'AccessDenied', $metadata: { httpStatusCode: 403 } }, 'access_denied'],
+    ['a bare 403', { name: 'Error', $metadata: { httpStatusCode: 403 } }, 'access_denied'],
+    ['a bare 401', { name: 'Error', $metadata: { httpStatusCode: 401 } }, 'access_denied'],
+    ['a mismatched signature', { name: 'SignatureDoesNotMatch', Code: 'SignatureDoesNotMatch', $metadata: { httpStatusCode: 403 } }, 'credentials_rejected'],
+    ['an unknown access key', { name: 'InvalidAccessKeyId', Code: 'InvalidAccessKeyId', $metadata: { httpStatusCode: 403 } }, 'credentials_rejected'],
+    ['an invalid session token', { name: 'InvalidToken', Code: 'InvalidToken', $metadata: { httpStatusCode: 400 } }, 'credentials_rejected'],
+    ['an expired session token', { name: 'ExpiredToken', Code: 'ExpiredToken', $metadata: { httpStatusCode: 400 } }, 'credentials_rejected'],
     ['a missing bucket', { name: 'NoSuchBucket', Code: 'NoSuchBucket', $metadata: { httpStatusCode: 404 } }, 'bucket_missing'],
     ['no answer from the server', { name: 'TimeoutError', $metadata: {} }, 'endpoint_unreachable'],
     ['an unmarked DNS lookup error', Object.assign(new Error('x'), { code: 'ENOTFOUND' }), 'other'],
     ['an unmarked connection reset', { code: 'ECONNRESET' }, 'other'],
-    ['a chained upload failure', new Error('Snapshot failed', { cause: new Error('Backup object upload failed', { cause: unauthorized }) }), 'credentials_rejected'],
+    ['a chained upload failure', new Error('Snapshot failed', { cause: new Error('Backup object upload failed', { cause: unauthorized }) }), 'access_denied'],
     ['a server error', { name: 'InternalError', Code: 'InternalError', $metadata: { httpStatusCode: 500 } }, 'other'],
     ['a local error', new Error('disk full'), 'other'],
     ['a non-object', 'Unauthorized', 'other'],
-    ['an upload whose abort failed too', new AggregateError([unauthorized, reset], 'S3 multipart upload and abort failed', { cause: reset }), 'credentials_rejected'],
+    ['an upload whose abort failed too', new AggregateError([unauthorized, reset], 'S3 multipart upload and abort failed', { cause: reset }), 'access_denied'],
     ['a TLS certificate error the retry step added metadata to', { name: 'Error', $metadata: { attempts: 1 }, code: 'CERT_HAS_EXPIRED' }, 'other'],
     ['a timeout after retries', { name: 'TimeoutError', $metadata: { attempts: 3 } }, 'endpoint_unreachable'],
     ['a refused connection under the retry metadata', { name: 'Error', $metadata: { attempts: 3 }, cause: { code: 'ECONNREFUSED' } }, 'endpoint_unreachable'],
@@ -91,7 +97,7 @@ describe('backup failure causes', () => {
   });
   it('classifies errors marked from uploads as other even with S3 metadata', () => {
     const accessDenied = { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } };
-    expect(backupFailureCause(accessDenied)).toBe('credentials_rejected');
+    expect(backupFailureCause(accessDenied)).toBe('access_denied');
     markUploadsFailure(accessDenied);
     expect(backupFailureCause(accessDenied)).toBe('other');
     expect(backupFailureCause(new Error('Snapshot failed', { cause: accessDenied }))).toBe('other');
@@ -150,14 +156,14 @@ describe('a failed snapshot', () => {
     // The refused reference list delete stops the cleanup: the objects it may name stay with it.
     expect(deletes.mock.calls.map(([key]) => key)).toEqual([runs[0]!.objectPrefix + 'references.json']);
     expect(runs).toHaveLength(1);
-    expect(runs[0]).toMatchObject({ status: 'failed', error: 'credentials_rejected', completedAt: clock.now() });
+    expect(runs[0]).toMatchObject({ status: 'failed', error: 'access_denied', completedAt: clock.now() });
     expect(logs).toHaveLength(1);
-    expect(JSON.parse(logs[0]!)).toMatchObject({ level: 'error', runId: runs[0]!.id, kind: 'manual', cause: 'credentials_rejected' });
+    expect(JSON.parse(logs[0]!)).toMatchObject({ level: 'error', runId: runs[0]!.id, kind: 'manual', cause: 'access_denied' });
     expect(logs[0]).not.toContain('upstream text');
   });
   it('still removes the uncommitted objects when only the upload fails', async () => {
     const store = new FakeBackupObjectStore(clock);
-    vi.spyOn(store, 'putObject').mockRejectedValue(unauthorized);
+    vi.spyOn(store, 'putObject').mockRejectedValue({ name: 'SignatureDoesNotMatch', Code: 'SignatureDoesNotMatch', $metadata: { httpStatusCode: 403 } });
     const deletes = vi.spyOn(store, 'deleteObject');
     const { runs, logs } = await failedSnapshot(store);
     expect(runs[0]).toMatchObject({ status: 'failed', error: 'credentials_rejected' });

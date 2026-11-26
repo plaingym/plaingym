@@ -14,7 +14,7 @@ export const healthStatusSchema = z.enum(['healthy', 'warning', 'error', 'not_co
 const count = z.int().nonnegative();
 const common = { status: healthStatusSchema, checkedAt: instantSchema.nullable(), message: z.string() };
 /** Why a backup destination call failed, classified from the error's status and code; never upstream text. */
-export const backupFailureCauseSchema = z.enum(['credentials_rejected', 'bucket_missing', 'endpoint_unreachable', 'other']);
+export const backupFailureCauseSchema = z.enum(['credentials_rejected', 'bucket_missing', 'endpoint_unreachable', 'access_denied', 'other']);
 export const backupHealthDetailsSchema = z.strictObject({
   latestRestorableAt: instantSchema.nullable(), ageSeconds: count.nullable(), overdue: z.boolean(),
   /** A verified destination has no complete snapshot known to use the current recipient. False when the check failed. */

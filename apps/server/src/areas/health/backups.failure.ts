@@ -4,7 +4,13 @@ import type { BackupObjectStore } from '../../infra/storage/index.js';
 
 export type { BackupFailureCause };
 
-const rejected = new Set(['AccessDenied', 'InvalidAccessKeyId', 'SignatureDoesNotMatch', 'Unauthorized', 'InvalidToken', 'ExpiredToken']);
+/** The key itself was refused: unknown, mistyped, or expired. */
+const rejected = new Set(['InvalidAccessKeyId', 'SignatureDoesNotMatch', 'InvalidToken', 'ExpiredToken']);
+/**
+ * A known key was refused this bucket or object: a policy denies it, or a key without list permission asked for
+ * an object that isn't there (so a mistyped snapshot ID reads this way too).
+ */
+const denied = new Set(['AccessDenied', 'Unauthorized']);
 const unreachable = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'ECONNRESET', 'EHOSTUNREACH', 'EHOSTDOWN', 'ENETUNREACH',
   'ENETDOWN', 'EPIPE', 'ECONNABORTED', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET']);
 /** Refusals for a reason other than the key: the server clock, the account, or the object's storage class. */
@@ -104,7 +110,8 @@ export function backupFailureCause(error: unknown): BackupFailureCause {
       if (code === 'NoSuchBucket') return 'bucket_missing';
       const refused = status === 401 || status === 403;
       if (refused && typeof code === 'string' && refusedOtherwise.has(code)) return 'other';
-      if (refused || (typeof code === 'string' && rejected.has(code))) return 'credentials_rejected';
+      if (typeof code === 'string' && rejected.has(code)) return 'credentials_rejected';
+      if (refused || (typeof code === 'string' && denied.has(code))) return 'access_denied';
       // The SDK's retry step adds `$metadata` to any failed call, so only a network error means nothing answered.
       if (typeof status !== 'number' && typeof current.Code !== 'string') return networkFailure(current) ? 'endpoint_unreachable' : 'other';
       return 'other';

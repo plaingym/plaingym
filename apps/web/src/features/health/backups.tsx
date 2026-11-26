@@ -14,7 +14,7 @@ import { Dialog } from '../../components/ui/dialog.js';
 const label = (key: string, values?: Record<string, string | number>) => t('health/backups:' + key, values);
 /** A failed manual backup names a destination cause the owner can fix; any other failure keeps the general text. */
 const failedMessages: Record<Exclude<BackupFailureCause, 'other'>, string> = {
-  credentials_rejected: 'failedCredentials', bucket_missing: 'failedBucket', endpoint_unreachable: 'failedEndpoint',
+  credentials_rejected: 'failedCredentials', access_denied: 'failedAccessDenied', bucket_missing: 'failedBucket', endpoint_unreachable: 'failedEndpoint',
 };
 /** Shared by Settings and the Last backup tile; cache and pending requests belong to this gym. */
 export function BackupActions({ gymId, owner, onConfirmed }: { gymId: string; owner: boolean; onConfirmed?: () => void }) {

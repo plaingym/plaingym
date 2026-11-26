@@ -996,6 +996,12 @@ describe('setup wizard restore progress', () => {
     expect(await screen.findByRole('heading', { name: 'Create your owner account' })).toBeDefined();
     expect(screen.queryByText(/^Restore failed/)).toBeNull();
   });
+  it('names a refused access apart from rejected keys', async () => {
+    restorePolls = [failed('access_denied', false)];
+    await startRestore();
+    expect(await screen.findByText("Restore failed: the storage service refused access. Check the key's permissions on this bucket, and the snapshot ID, then start again.")).toBeDefined();
+    expect(document.body.textContent).not.toMatch(/rejected the access key/);
+  });
   it('says a verified restore is staged, and how it finishes, when the server says so', async () => {
     restorePolls = [failed('other', true)];
     await startRestore();

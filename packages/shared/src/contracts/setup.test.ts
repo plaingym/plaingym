@@ -6,7 +6,7 @@ import {
   setupContracts, setupGymDetailsSchema, setupTimezoneSchema, gymTimezoneSchema, storedTimezoneSchema, setupWebsiteRequestSchema, setupSmtpRequestSchema,
   setupSmtpResponseSchema, setupStripeRequestSchema, setupStripeResponseSchema,
   setupBackupRequestSchema, setupBackupKeyResponseSchema, setupBackupConfirmRequestSchema,
-  setupBackupConfirmResponseSchema, setupRestoreRequestSchema, setupRestoreResponseSchema,
+  setupBackupConfirmResponseSchema, setupRestoreRequestSchema, setupRestoreResponseSchema, setupRestoreFailureReasonSchema,
   setupFinishRequestSchema, setupFinishResponseSchema, setupPacksRequestSchema, type SetupGymDetails,
 } from './index.js';
 
@@ -93,6 +93,15 @@ describe('setup wizard contracts', () => {
     expect(setupRestoreResponseSchema.safeParse({ data: { status: 'restored', jobId: id, billingEnabled: false, next: 'login' } }).success).toBe(true);
     expect(setupRestoreResponseSchema.safeParse({ data: { status: 'restored', jobId: id, billingEnabled: true, next: 'login' } }).success).toBe(false);
     expect(setupRestoreResponseSchema.safeParse({ data: { status: 'restored', jobId: id, billingEnabled: false, next: 'step_1' } }).success).toBe(false);
+  });
+  it('parses every restore failure reason, a refused access included, and defaults a missing one to other', () => {
+    const reasons = ['credentials_rejected', 'access_denied', 'bucket_missing', 'snapshot_missing', 'endpoint_unreachable', 'wrong_key',
+      'invalid_key', 'damaged', 'unsupported', 'interrupted', 'not_started', 'other'];
+    for (const reason of reasons) expect(setupRestoreFailureReasonSchema.safeParse(reason).success).toBe(true);
+    expect([...setupRestoreFailureReasonSchema.options].sort()).toEqual([...reasons].sort());
+    const failed = { status: 'failed', jobId: id, message: 'Restore failed.' };
+    expect(setupRestoreResponseSchema.parse({ data: { ...failed, reason: 'access_denied' } }).data).toMatchObject({ reason: 'access_denied' });
+    expect(setupRestoreResponseSchema.parse({ data: failed }).data).toMatchObject({ reason: 'other', staged: false });
   });
   it('keeps billing and member emails off after importing or starting fresh', () => {
     expect(setupFinishRequestSchema.safeParse({ choice: 'import', importId: id, revision: 1 }).success).toBe(true);

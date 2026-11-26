@@ -114,6 +114,7 @@ describe('backup actions shared by Settings and Health', () => {
   });
   it.each([
     ['credentials_rejected', 'Your backup failed: the storage destination rejected the access key. The owner can replace the storage credentials in Settings → Integrations → Backups.'],
+    ['access_denied', "Your backup failed: the storage destination refused access. Check the key's permissions on this bucket. The owner can replace the storage credentials in Settings → Integrations → Backups."],
     ['bucket_missing', "Your backup failed: the bucket doesn't exist. The owner can check the bucket name in Settings → Integrations → Backups."],
     ['endpoint_unreachable', "Your backup failed: the storage endpoint couldn't be reached. Check the endpoint address and try again."],
     ['other', 'Your backup failed. Check backup settings and System health before trying again.'],

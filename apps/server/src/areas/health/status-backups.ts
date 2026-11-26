@@ -9,9 +9,11 @@ import { guardSnapshot, inventory, prunePlan, UnverifiedInventory, type BackupIn
 import { backupHealthGeneration } from './backups.health-cache.js';
 import { healthProvider, healthReadAgeMs, statusMessage } from './status.js';
 import { backupFailureCause, type BackupFailureCause } from './backups.failure.js';
+import { logWarn } from '../../core/log.js';
 
 const causeMessages: Record<Exclude<BackupFailureCause, 'other'>, string> = {
-  credentials_rejected: 'backupCredentialsRejected', bucket_missing: 'backupBucketMissing', endpoint_unreachable: 'backupEndpointUnreachable',
+  credentials_rejected: 'backupCredentialsRejected', access_denied: 'backupAccessDenied', bucket_missing: 'backupBucketMissing',
+  endpoint_unreachable: 'backupEndpointUnreachable',
 };
 
 export function createBackupHealthProvider(options: {
@@ -80,7 +82,8 @@ export function createBackupHealthProvider(options: {
         closed = true;
         destination.close();
       };
-      try { return await inventory(destination.store, settings.blobKey, runStatuses); }
+      // Outside the backup lock a run can publish during the listing, so a finished one is listed again.
+      try { return await inventory(destination.store, settings.blobKey, runStatuses, { relistFinished: true }); }
       finally { close(); }
     })();
     const seq = ++nextSeq;
@@ -120,8 +123,10 @@ export function createBackupHealthProvider(options: {
       backupHealthGeneration()])).digest('hex');
     let damagedGuardSnapshot: string | null = null;
     let missingGuardSnapshot: string | null = null;
+    let listed: BackupInventory | null = null;
     try {
       const state = await cachedInventory(settings, key, () => context.clock.now().getTime(), readStart);
+      listed = state;
       // An abandoned run is cleaned up by the next prune; only what stops pruning is reported.
       const floorSnapshot = guardSnapshot(env);
       damagedGuardSnapshot = state.damaged.find(snapshot => snapshot.id === floorSnapshot)?.id ?? null;
@@ -149,6 +154,10 @@ export function createBackupHealthProvider(options: {
       // The authenticated inventory is also pruning's safety check. Do not claim a snapshot is restorable when it fails.
       // A destination that refused the check names its cause class; anything else is an unverifiable inventory.
       const cause = backupFailureCause(error), destinationFailure = cause === 'other' ? null : cause;
+      // Which check stopped pruning: the fixed reason texts only, never an object key or a snapshot ID.
+      if (!destinationFailure && listed) {
+        logWarn('health.backup_inventory_unverified', { suspect: [...new Set(listed.suspect)].join('; '), damagedRetained: listed.damaged.length > 0 });
+      }
       return { id: 'last_backup', status: 'error', checkedAt, message: statusMessage(destinationFailure ? causeMessages[destinationFailure] : 'backupPruningStopped'),
         details: { latestRestorableAt: null, ageSeconds: null, overdue: true, retainedBytes: 0,
           noneUnderCurrentKey: false, retentionBudgetBytes: settings.budgetBytes, pruningStopped: true,

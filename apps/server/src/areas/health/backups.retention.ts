@@ -57,11 +57,22 @@ export type RunStatuses = (prefixes: readonly string[]) => Promise<ReadonlyMap<s
 /** Pruning stopped because the inventory cannot be verified; new snapshots still publish, deleting nothing. */
 export class UnverifiedInventory extends Error {}
 
+export interface InventoryOptions {
+  /**
+   * For a read outside the backup lock: a prefix without a reference list whose run reads `succeeded` is listed
+   * again, and left out when its reference list is there now (a publication that finished during the listing;
+   * the next read counts it). Pruning runs under the lock and never sets this.
+   */
+  relistFinished?: boolean;
+}
+
 /**
  * Enumerate prefixes, not only commits. A prefix without a reference list is an abandoned publication only
- * when its run is recorded as not succeeded: runs hold the backup lock, so none of them is still in progress.
+ * when its run is recorded as not succeeded. Under the backup lock no run is still in progress; a caller outside
+ * it (the health read) passes `relistFinished`, since a run can publish while the bucket is listed.
  */
-export async function inventory(store: BackupObjectStore, blobKey: Buffer, runs?: RunStatuses): Promise<BackupInventory> {
+export async function inventory(store: BackupObjectStore, blobKey: Buffer, runs?: RunStatuses,
+  options: InventoryOptions = {}): Promise<BackupInventory> {
   store = markedStore(store);
   const objects = await store.listObjects('snapshots/');
   const ids = new Set<string>(), suspect: string[] = [];
@@ -73,6 +84,14 @@ export async function inventory(store: BackupObjectStore, blobKey: Buffer, runs?
   const blobs = await store.listObjects('blobs/');
   const uncommitted = [...ids].filter((id) => !objects.some((object) => object.key === snapshotPrefix(id) + 'references.json'));
   const statuses = runs && uncommitted.length ? await runs(uncommitted.map(snapshotPrefix)) : new Map<string, string>();
+  // A run can upload its reference list and succeed between the listing above and the status read.
+  const finished = new Set<string>();
+  if (options.relistFinished) {
+    for (const id of uncommitted.filter((id) => statuses.get(snapshotPrefix(id)) === 'succeeded')) {
+      const prefix = snapshotPrefix(id);
+      if ((await store.listObjects(prefix)).some((object) => object.key === prefix + 'references.json')) finished.add(id);
+    }
+  }
   // Reference lists are fetched a few at a time; the results are then walked in `ids` order, as before.
   const committed = [...ids].filter((id) => !uncommitted.includes(id));
   const verified = new Map((await readAtMost(committed, 4, async (id) => {
@@ -82,6 +101,7 @@ export async function inventory(store: BackupObjectStore, blobKey: Buffer, runs?
   const snapshots: Snapshot[] = [], damaged: Snapshot[] = [], abandoned: string[] = [];
   for (const id of ids) {
     const prefix = snapshotPrefix(id);
+    if (finished.has(id)) continue;
     if (uncommitted.includes(id)) {
       const status = statuses.get(prefix);
       if (status !== undefined && status !== 'succeeded') abandoned.push(id);
