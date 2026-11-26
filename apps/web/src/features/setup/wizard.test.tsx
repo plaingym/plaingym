@@ -2082,7 +2082,7 @@ describe('setup wizard restore progress', () => {
     expect(document.activeElement).toBe(alertOf(changedText));
   });
 
-  const unansweredText = 'The restore request got no answer, so the restore may be running. Wait a few minutes, then reload this page; once the restore has finished, it shows the sign-in page.';
+  const unansweredText = 'The restore request got no answer, so the restore may be running. Wait a few minutes, then reload this page; once the restore has finished, it says setup is unavailable, with a link to sign in.';
   /** Sends a restore request that ends as `request` says, with the status read after it answering `reload` (the usual status when null). */
   async function sendRestoreEnding(request: () => Promise<Response>, reload: (() => Response | Promise<Response>) | null) {
     const started = start(0);
@@ -2185,5 +2185,147 @@ describe('setup wizard restore progress', () => {
 
     expect(await screen.findByRole('button', { name: 'Start fresh' })).toBeDefined();
     expect(screen.queryByText(unansweredText)).toBeNull();
+  });
+  const pressBack = () => userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Back' }));
+  /** An unanswered request whose own status read fails too, leaving the save error and the reload alert. */
+  async function dropWithoutStatus() {
+    const started = await sendRestoreEnding(dropped, serverError);
+    expect(await screen.findByText(saveFailedText)).toBeDefined();
+    expect(await screen.findByText(reloadText)).toBeDefined();
+    await settle();
+    expect(document.activeElement).toBe(alertOf(saveFailedText));
+    return started;
+  }
+
+  it('keeps the form, saying the restore may be running, when a later status read answers 404', async () => {
+    const { shown } = await dropWithoutStatus();
+    const errorAlert = alertOf(saveFailedText);
+
+    statusAnswer = gone;
+    await refocus();
+
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+    await settle();
+    expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
+    expect(screen.queryByText(saveFailedText)).toBeNull();
+    expect(screen.queryByText(reloadText)).toBeNull();
+    expect(alertOf(unansweredText)).toBe(errorAlert);
+    expect(document.activeElement).toBe(errorAlert);
+    expect(shown()).toBe(false);
+  });
+  it('leaves the focus in a field when a later 404 brings the message', async () => {
+    await dropWithoutStatus();
+    const field = screen.getByLabelText('Storage bucket');
+    await userEvent.click(field);
+
+    statusAnswer = gone;
+    await refocus();
+
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+    await settle();
+    expect(document.activeElement).toBe(field);
+  });
+  it('stops waiting for the status read after 10 seconds, and shows the message when it answers 404 later', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const read = later();
+    const { shown } = await sendRestoreEnding(dropped, () => read.response);
+    await settle();
+    const actions = screen.getByRole('group', { name: 'Setup actions' });
+    expect(within(actions).getByRole('button', { name: 'Saving…' })).toBeDefined();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+
+    expect(await screen.findByText(saveFailedText)).toBeDefined();
+    expect(within(actions).queryByRole('button', { name: 'Saving…' })).toBeNull();
+    expect(within(actions).getByRole('button', { name: 'Back' })).toHaveProperty('disabled', false);
+
+    await act(async () => { read.send(gone()); await vi.advanceTimersByTimeAsync(10); });
+
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+    expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
+    expect(shown()).toBe(false);
+  });
+  it.each([
+    ['404', gone],
+    ['409, as while a restore runs', () => Response.json({ error: { code: 'conflict', message: 'A restore is already running' } }, { status: 409 })],
+  ])('keeps the form and the message when sending again is refused with %s', async (_, refusal) => {
+    const answers = [dropped, () => Promise.resolve(refusal())];
+    const { fetcher, shown } = await sendRestoreEnding(() => answers.shift()!(), gone);
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+
+    await sendRestore();
+
+    await waitFor(() => expect(fetcher.mock.calls.filter(([path]) => String(path) === '/api/setup/restore')).toHaveLength(2));
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+    await settle();
+    expect(document.activeElement).toBe(alertOf(unansweredText));
+    expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
+    expect(shown()).toBe(false);
+  });
+  it('focuses the unavailable screen after Back from the message', async () => {
+    await sendRestoreEnding(dropped, gone);
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+
+    await pressBack();
+
+    const message = await screen.findByText(unavailableText);
+    await settle();
+    expect(document.activeElement).toBe(message.closest('[role="status"]'));
+  });
+  it('focuses the unavailable screen after Back without waiting for a status read under way', async () => {
+    await sendRestoreEnding(dropped, gone);
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+    const read = later();
+    statusAnswer = () => read.response;
+    await refocus();
+
+    await pressBack();
+
+    const message = await screen.findByText(unavailableText);
+    await settle();
+    expect(document.activeElement).toBe(message.closest('[role="status"]'));
+    // That read's answer then moves nothing.
+    const signIn = screen.getByRole('link', { name: 'Sign in' });
+    signIn.focus();
+    await act(async () => { read.send(gone()); });
+    await settle();
+    expect(document.activeElement).toBe(signIn);
+  });
+  it.each([
+    ['after the save error', false],
+    ['after the message', true],
+  ])('ends the unanswered state with a status read that works %s', async (_, messageFirst) => {
+    await dropWithoutStatus();
+    if (messageFirst) {
+      statusAnswer = gone;
+      await refocus();
+      expect(await screen.findByText(unansweredText)).toBeDefined();
+    }
+    statusAnswer = null;
+    await refocus();
+    await settle();
+    expect(screen.queryByText(reloadText)).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Start fresh or restore a backup' })).toBeDefined();
+
+    statusAnswer = gone;
+    await refocus();
+
+    expect(await screen.findByText(unavailableText)).toBeDefined();
+    expect(screen.queryByLabelText('Backup private key')).toBeNull();
+  });
+  it('moves no focus on a later read after Back from a form whose staged restore keeps the steps', async () => {
+    restorePolls = [failed('other', true)];
+    const { query } = await startRestore();
+    expect(await screen.findByText(/^A verified restore is staged on the server\./)).toBeDefined();
+    statusAnswer = gone;
+    await reloadStatus(query);
+    await pressBack();
+    const startFresh = await screen.findByRole('button', { name: 'Start fresh' });
+    startFresh.focus();
+
+    await refocus();
+    await settle();
+
+    expect(document.activeElement).toBe(startFresh);
   });
 });
