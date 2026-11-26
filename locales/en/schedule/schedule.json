@@ -116,6 +116,7 @@
   "noTemplatesHelp": "Weekly classes fill the calendar automatically. Use New weekly class to add one.",
   "templateCapacityHelp": "Changing it also updates upcoming sessions of this class that still have its old capacity. Sessions with their own capacity keep it.",
   "templateCapacityBelowBooked": "An upcoming session of this class has more booked members than that capacity. Choose a higher capacity, or change that session on its own.",
+  "templateCapacityBelowBookedOn": "The session on {when} has more booked members than that capacity. Choose a higher capacity, or change that session on its own.",
   "coachesHelpPending": "Coaches come from staff profiles.",
   "coachesHelp": "Coaches come from staff profiles. Add one in Staff → Staff profiles, and link it to a login to coach from your own account.",
   "coachesHelpAsk": "Coaches come from staff profiles. Ask an owner or admin to add one.",

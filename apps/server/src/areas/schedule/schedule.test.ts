@@ -607,7 +607,7 @@ describe('template capacity edits on upcoming sessions', () => {
       expect(audit.after).not.toHaveProperty('cancelBefore');
     }
   });
-  it('keeps a session\'s own capacity, cancelled and started sessions, another template\'s sessions and detached sessions', async () => {
+  it('keeps a session\'s own capacity, started sessions, another template\'s sessions and detached sessions, while updating cancelled ones at the old capacity', async () => {
     const f = await weekly();
     const other = await f.own.createTemplate(context(f.gymId), { ...f.body, name: 'Other class', weekday: 2 });
     const detached = await f.own.createSession(context(f.gymId), { ...sessionFields(), coachId: null, programIds: [f.program.id], startsAt: '2026-03-10T18:00:00Z', endsAt: '2026-03-10T19:00:00Z' });
@@ -621,12 +621,52 @@ describe('template capacity edits on upcoming sessions', () => {
     const after = new Map((await f.sessions()).map(row => [row.id, row]));
     expect(after.get(started!.id)).toMatchObject({ capacity: null, revision: before.get(started!.id)!.revision });
     expect(after.get(overridden!.id)).toMatchObject({ capacity: 6, revision: before.get(overridden!.id)!.revision });
-    expect(after.get(cancelled!.id)).toMatchObject({ status: 'cancelled', capacity: null, revision: before.get(cancelled!.id)!.revision });
+    expect(after.get(cancelled!.id)).toMatchObject({ status: 'cancelled', capacity: 10, revision: before.get(cancelled!.id)!.revision + 1 });
     expect(after.get(detached.id)).toMatchObject({ templateId: null, capacity: null, revision: before.get(detached.id)!.revision });
     for (const row of before.values()) if (row.templateId === other.id) expect(after.get(row.id)).toMatchObject({ capacity: null, revision: row.revision });
     for (const row of rest) expect(after.get(row.id)).toMatchObject({ capacity: 10 });
     const targets = (await f.audits('schedule.session.capacity')).filter(audit => (audit.after as { capacity: number }).capacity === 10).map(audit => audit.targetId);
-    expect(targets.sort()).toEqual(rest.map(row => row.id).sort());
+    expect(targets.sort()).toEqual([cancelled!, ...rest].map(row => row.id).sort());
+  });
+  it('updates cancelled sessions at the old capacity without touching cancelled bookings so restore rebooks up to the new capacity', async () => {
+    const f = await weekly(10);
+    const upcoming = (await f.sessions()).filter(row => row.templateId === f.template.id);
+    expect(upcoming.length).toBeGreaterThanOrEqual(3);
+    const cancelled = upcoming[1]!;
+    for (let index = 0; index < 12; index++) {
+      const member = await factory('members', f.gymId, { firstName: 'Member ' + index });
+      await factory('classBookings', f.gymId, { sessionId: cancelled.id, memberId: member.id, bookedBy: f.user.id,
+        status: index < 10 ? 'booked' : 'waitlisted', waitlistPosition: index < 10 ? null : index - 9,
+        createdAt: new Date(Date.UTC(2026, 1, 20, 12, index)) });
+    }
+    await f.own.changeSession(context(f.gymId), cancelled.id, 'cancel', { revision: cancelled.revision });
+    const bookingsBefore = await database.forGym(f.gymId, tx => tx.select().from(classBookings).where(eq(classBookings.sessionId, cancelled.id)).orderBy(asc(classBookings.id)));
+    await f.edit({ capacity: 20 });
+    const after = new Map((await f.sessions()).map(row => [row.id, row]));
+    for (const row of upcoming) expect(after.get(row.id)).toMatchObject({ capacity: 20 });
+    const cancelledAudits = (await f.audits('schedule.session.capacity')).filter(audit => audit.targetId === cancelled.id);
+    expect(cancelledAudits).toHaveLength(1);
+    expect(cancelledAudits[0]!.before).toMatchObject({ capacity: 10 });
+    expect(cancelledAudits[0]!.after).toMatchObject({ capacity: 20 });
+    const bookingsAfterEdit = await database.forGym(f.gymId, tx => tx.select().from(classBookings).where(eq(classBookings.sessionId, cancelled.id)).orderBy(asc(classBookings.id)));
+    expect(bookingsAfterEdit).toEqual(bookingsBefore);
+    await f.own.restoreSession(context(f.gymId), cancelled.id, { revision: after.get(cancelled.id)!.revision });
+    const restoredBookings = await database.forGym(f.gymId, tx => tx.select().from(classBookings).where(eq(classBookings.sessionId, cancelled.id)));
+    expect(restoredBookings.filter(row => row.status === 'booked')).toHaveLength(12);
+    expect(restoredBookings.filter(row => row.status === 'waitlisted')).toHaveLength(0);
+    await f.edit({ capacity: 25 });
+    expect((await f.sessions()).find(row => row.id === cancelled.id)).toMatchObject({ capacity: 25 });
+  });
+  it('keeps a cancelled session\'s own capacity and started sessions when the class capacity changes', async () => {
+    const f = await weekly(10);
+    const [started, cancelled] = (await f.sessions()).filter(row => row.templateId === f.template.id);
+    const overridden = await f.own.changeSession(context(f.gymId), cancelled!.id, 'capacity', { revision: cancelled!.revision, capacity: 8 });
+    await f.own.changeSession(context(f.gymId), cancelled!.id, 'cancel', { revision: overridden.revision });
+    f.at.set('2026-03-02T00:00:00Z');
+    await f.edit({ capacity: 20 });
+    const after = new Map((await f.sessions()).map(row => [row.id, row]));
+    expect(after.get(cancelled!.id)).toMatchObject({ status: 'cancelled', capacity: 8 });
+    expect(after.get(started!.id)).toMatchObject({ capacity: 10 });
   });
   async function booked() {
     const f = await weekly(5);
@@ -657,11 +697,32 @@ describe('template capacity edits on upcoming sessions', () => {
     expect(promoted[0]!.after).toMatchObject({ memberId: f.memberIds[5] });
     expect((await f.sessions()).find(row => row.id === f.session.id)).toMatchObject({ capacity: 6 });
   });
-  it('refuses a template capacity below a session\'s booked count and changes nothing', async () => {
+  it('refuses a template capacity below a session\'s booked count, naming the first blocking session, and changes nothing', async () => {
     const f = await booked();
+    const otherSession = (await f.sessions())[2]!;
+    for (let index = 0; index < 2; index++) {
+      const member = await factory('members', f.gymId, { firstName: 'Other ' + index });
+      await factory('classBookings', f.gymId, { sessionId: otherSession.id, memberId: member.id, bookedBy: f.user.id, status: 'booked' });
+    }
     const before = await f.snapshot();
-    await expect(f.edit({ capacity: 3 })).rejects.toMatchObject({ code: 'conflict', details: { reason: ['capacityBelowBooked'] } });
+    await expect(f.edit({ capacity: 3 })).rejects.toMatchObject({ code: 'conflict',
+      details: { reason: ['capacityBelowBooked'], startsAt: [f.session.startsAt.toISOString()] } });
     expect(await f.snapshot()).toEqual(before);
+  });
+  it('names the first by session ID when several sessions block the new capacity, not the earliest', async () => {
+    const f = await booked();
+    const otherSession = (await f.sessions())[2]!;
+    for (let index = 0; index < 4; index++) {
+      const member = await factory('members', f.gymId, { firstName: 'Other ' + index });
+      await factory('classBookings', f.gymId, { sessionId: otherSession.id, memberId: member.id, bookedBy: f.user.id, status: 'booked' });
+    }
+    const [lower, higher] = [f.session, otherSession].sort((a, b) => a.id < b.id ? -1 : 1);
+    // Move the lower ID past the other session, so ID order and date order disagree.
+    const startsAt = new Date(higher!.startsAt.getTime() + 86_400_000);
+    await database.forGym(f.gymId, tx => tx.update(classSessions).set({ startsAt, endsAt: new Date(startsAt.getTime() + 3_600_000) })
+      .where(eq(classSessions.id, lower!.id)));
+    await expect(f.edit({ capacity: 3 })).rejects.toMatchObject({ code: 'conflict',
+      details: { reason: ['capacityBelowBooked'], startsAt: [startsAt.toISOString()] } });
   });
   it('returns the refusal as a 409 through the route', async () => {
     const f = await booked();
@@ -677,7 +738,8 @@ describe('template capacity edits on upcoming sessions', () => {
     const contract = scheduleContracts.updateTemplate;
     const response = await request(app, contract.method, contract.path.replace('{id}', f.template.id), { ...f.body, capacity: 3, revision: f.template.revision });
     expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ error: { code: 'conflict', details: { reason: ['capacityBelowBooked'] } } });
+    expect(await response.json()).toMatchObject({ error: { code: 'conflict',
+      details: { reason: ['capacityBelowBooked'], startsAt: [f.session.startsAt.toISOString()] } } });
     expect(await f.snapshot()).toEqual(before);
   });
   it('reads and writes no session when the capacity is unchanged, and hides the template from another gym', async () => {

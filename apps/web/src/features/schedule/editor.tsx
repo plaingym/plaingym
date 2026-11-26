@@ -2,6 +2,8 @@
 import { useId, useState, type FormEvent } from 'react';
 import { createClassSessionRequestSchema, createClassTemplateRequestSchema, type ClassTag, type ClassTemplate } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
+import { t } from '../../lib/i18n.js';
+import { instantLabel } from '../../lib/instant.js';
 import { Button } from '../../components/ui/button.js';
 import { Dialog, DialogActions, DialogCancel } from '../../components/ui/dialog.js';
 import { Input } from '../../components/ui/input.js';
@@ -34,9 +36,13 @@ export function ClassEditor({ template, options, tags, onSaved, onClose, standal
         const body = createClassTemplateRequestSchema.parse({ ...common, weekday: Number(value('weekday')), localStartTime: value('localStartTime'), durationMinutes: Number(value('durationMinutes')) });
         result = template ? await api.PUT('/api/schedule/templates/{id}', { params: { path: { id: template.id } }, body: { ...body, revision: template.revision } })
           : await api.POST('/api/schedule/templates', { body });
-        const error = result.error as { error?: { details?: { reason?: unknown } } } | undefined;
-        const reasons = result.response.status === 409 ? error?.error?.details?.reason : undefined;
-        if (Array.isArray(reasons) && reasons.includes('capacityBelowBooked')) { setNotice(text('templateCapacityBelowBooked')); return; }
+        const error = result.error as { error?: { details?: { reason?: unknown; startsAt?: unknown } } } | undefined;
+        const details = result.response.status === 409 ? error?.error?.details : undefined;
+        if (Array.isArray(details?.reason) && details.reason.includes('capacityBelowBooked')) {
+          const when = Array.isArray(details.startsAt) && typeof details.startsAt[0] === 'string' ? details.startsAt[0] : undefined;
+          setNotice(when ? t('schedule/schedule:templateCapacityBelowBookedOn', { when: instantLabel(when, options.timezone) }) : text('templateCapacityBelowBooked'));
+          return;
+        }
       }
       check(result.response); await onSaved(); onClose();
     } catch (error) { setNotice(message(error)); } finally { setBusy(false); }

@@ -18,13 +18,17 @@ its session's current start, so existing local dates are preserved when a
 template's start time changes. Program and tag mappings and the kind (`class` or
 `open_mat`) are copied to sessions;
 subsequent template edits affect only dates that have not been materialized,
-except a capacity change, which also updates the template's upcoming, not
-cancelled sessions that still have its previous capacity (one
-`schedule.session.capacity` audit each, with the same booking reconciliation as
-a session capacity change). A session whose capacity differs from the previous
-one keeps it; one set by hand to that same value can't be told apart and changes
-too. The whole template save is refused when one of those sessions has more
-booked members than the new capacity.
+except a capacity change, which also updates the template's upcoming scheduled
+and cancelled sessions that still have its previous capacity (one
+`schedule.session.capacity` audit each, with booking reconciliation for scheduled
+sessions and none for cancelled ones). Restoring such a cancelled session books
+up to the new capacity: after a lowered one, former bookings over it join the
+waitlist. A session whose capacity differs from the previous one keeps it; one
+set by hand to that same value can't be told apart and changes too. The whole
+template save is refused when one of those scheduled sessions has more booked
+members than the new capacity. The refusal names one blocking session's start
+(`details.startsAt`; of several, the first by session ID, not necessarily the
+earliest), which the editor shows in the gym's timezone.
 Cancellation, coach swaps, notes and capacity overrides survive retries.
 The kind defaults to `class` on create; full-replacement updates must restate it.
 

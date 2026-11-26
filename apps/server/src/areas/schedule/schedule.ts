@@ -106,23 +106,32 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
     await writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind, ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}), action: 'schedule.' + action, targetType: 'schedule', targetId: id, before, after, occurredAt: clock.now() });
   };
   /**
-   * Gives a template's upcoming, scheduled sessions that still hold its previous capacity the new one, through the
-   * session capacity path: one row lock each (after the template's), booking reconciliation and one capacity audit.
-   * A session with its own capacity keeps it. Reconciliation refuses a capacity below a session's booked count, which
-   * rolls back the whole template save.
+   * Gives a template's upcoming scheduled and cancelled sessions that still hold its previous capacity the new one,
+   * through the session capacity path: one row lock each (after the template's), booking reconciliation for scheduled
+   * sessions, and one capacity audit each. A session with its own capacity keeps it. Reconciliation refuses a capacity
+   * below a scheduled session's booked count, naming that session's start and rolling back the whole template save.
    */
   async function applyTemplateCapacity(tx: Transaction, context: MutationContext, templateId: string, previous: number | null, capacity: number | null) {
     const now = clock.now();
-    const sessions = await tx.select().from(classSessions).where(and(eq(classSessions.templateId, templateId), eq(classSessions.status, 'scheduled'),
+    const sessions = await tx.select().from(classSessions).where(and(eq(classSessions.templateId, templateId), inArray(classSessions.status, ['scheduled', 'cancelled']),
       gt(classSessions.startsAt, now), previous === null ? isNull(classSessions.capacity) : eq(classSessions.capacity, previous)))
       .orderBy(asc(classSessions.id)).for('update');
     if (!sessions.length) return;
-    const rules = await readBookingRules(tx, context.gymId);
+    const rules = sessions.some(session => session.status === 'scheduled') ? await readBookingRules(tx, context.gymId) : undefined;
     for (const session of sessions) {
       const guard = revisionGuard(classSessions.revision, session.revision);
       const afterRow = assertRevised(await tx.update(classSessions).set({ capacity, revision: guard.next })
         .where(and(eq(classSessions.id, session.id), guard.matches)).returning());
-      await reconcileSessionBookings(tx, afterRow, context, now, rules);
+      if (session.status === 'scheduled') {
+        try {
+          await reconcileSessionBookings(tx, afterRow, context, now, rules);
+        } catch (error) {
+          if (error instanceof AppError && error.details?.reason?.includes('capacityBelowBooked')) {
+            throw new AppError('conflict', error.message, { reason: ['capacityBelowBooked'], startsAt: [session.startsAt.toISOString()] });
+          }
+          throw error;
+        }
+      }
       await audit(tx, context, 'session.capacity', session.id, await sessionSnapshot(tx, session), await sessionSnapshot(tx, afterRow));
     }
   }

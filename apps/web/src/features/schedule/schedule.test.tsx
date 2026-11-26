@@ -654,6 +654,17 @@ describe('weekly class capacity and the coach hint', () => {
     expect(screen.getByRole('dialog')).toBeDefined();
     expect((screen.getByLabelText('Capacity') as HTMLInputElement).value).toBe('3');
   });
+  it('names the blocking session in the gym timezone when the 409 includes startsAt', async () => {
+    const onClose = vi.fn(), onSaved = vi.fn();
+    vi.mocked(api.PUT).mockResolvedValue({ response: new Response(null, { status: 409 }),
+      error: { error: { code: 'conflict', message: 'Below booked', details: { reason: ['capacityBelowBooked'], startsAt: ['2026-03-06T23:30:00.000Z'] } } } } as Awaited<ReturnType<typeof api.PUT>>);
+    render(<ClassEditor template={template} options={options} tags={[]} onSaved={onSaved} onClose={onClose}/>);
+    fireEvent.change(screen.getByLabelText('Capacity'), { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('The session on Mar 6, 2026, 6:30 PM has more booked members than that capacity. Choose a higher capacity, or change that session on its own.');
+    expect(onSaved).not.toHaveBeenCalled(); expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeDefined();
+  });
   it('keeps the general conflict message for any other refused template save', async () => {
     vi.mocked(api.PUT).mockResolvedValue({ response: new Response(null, { status: 409 }),
       error: { error: { code: 'conflict', message: 'Changed', details: { reason: ['revision_conflict'] } } } } as Awaited<ReturnType<typeof api.PUT>>);
