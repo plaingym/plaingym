@@ -263,7 +263,8 @@ export async function recordRefundProvenance(tx: Transaction, context: MutationC
  * recorded release yet, read under the invoice lock without writing. A report for another payment, gym, currency or charge,
  * or on a processing invoice, asks about none, since `applyProcessorRefund` rejects it first. Otherwise the report asks
  * about its own failed row when it reports that row succeeded or failed with the same amount and currency, and about
- * another failed row its pending read for that ID shows failed with the same refund. */
+ * another failed row its pending read for that ID shows failed with the same refund. A row already recorded as found or as
+ * failed before found is never asked about, as `applyRefund` returns before `releasedAsMissing` for it. */
 export async function provenanceNeeded(tx: Transaction, context: MutationContext, invoice: InvoiceRow,
   input: ProcessorRefundTransition): Promise<string[]> {
   const value = input.processorRefund;
@@ -282,7 +283,10 @@ export async function provenanceNeeded(tx: Transaction, context: MutationContext
     return current?.status === 'failed' && sameRefund(current, row, payment, context.gymId);
   });
   const needed: string[] = [];
-  for (const row of asked) if (await knownRefundRelease(tx, context.gymId, row) === null) needed.push(row.processorId!);
+  for (const row of asked) {
+    if (await recorded(tx, missingFound, row.id) || await recorded(tx, missingFailedBeforeFound, row.id)) continue;
+    if (await knownRefundRelease(tx, context.gymId, row) === null) needed.push(row.processorId!);
+  }
   return needed;
 }
 

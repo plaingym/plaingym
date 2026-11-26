@@ -11,7 +11,7 @@ import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../../core/clock.js';
 import type { ProcessorRefundTransition } from '../../../core/interfaces/invoice-transitions.js';
 import { createInvoiceTransitions } from './index.js';
-import { effectCreated, missingFailedBeforeFound, missingFound, systemContext } from './store.js';
+import { effectCreated, missingFailedBeforeFound, missingFound, missingFoundFailed, systemContext } from './store.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 const refundRecorded = 'billing.refund.recorded', refundReversed = 'billing.refund.reversed';
@@ -66,25 +66,49 @@ beforeAll(async () => {
   try { await admin.sql`analyze audit_events`; } finally { await admin.close(); }
 });
 
-/** The `audit_events` tuples a processor refund report reads across all its transactions, including one that throws, and
- * how many transactions it opens. */
-async function measureReport(request: ProcessorRefundTransition) {
+/** The provenance audits this transaction itself inserted (by row `xmin`), so another report's commits don't count. A row
+ * inserted inside a savepoint carries the subtransaction's ID and isn't counted; no report path uses one. */
+async function provenanceWritten(tx: Transaction) {
+  // eslint-disable-next-line database/system-tables -- Read the audits' system column `xmin` through the measured transaction.
+  const [written] = await tx.execute<{ total: number }>(sql`
+    select count(*)::int as total from audit_events
+    where action = ${refundProvenance} and xmin = pg_current_xact_id_if_assigned()::xid
+  `);
+  return written!.total;
+}
+
+/** The `audit_events` tuples a processor refund report reads across all its transactions, including one that throws, how
+ * many transactions it opens, and how many provenance audits each transaction writes, read inside it (so a write the
+ * transaction then rolls back still counts). The report's applying transaction, its last, must never write one: a
+ * conflict there would roll the provenance back. */
+async function measureReport(request: ProcessorRefundTransition,
+  { context, clock }: Pick<typeof measured, 'context' | 'clock'> = measured) {
   let tuples = 0, transactions = 0;
+  const provenanceWrites: number[] = [];
   const scope: typeof db.forGym = (gymId, work) => db.forGym(gymId, async tx => {
-    transactions++;
+    const index = transactions++;
+    provenanceWrites[index] = 0;
     const before = await auditTuplesRead(tx);
-    try { return await work(tx); } finally { tuples += (await auditTuplesRead(tx)) - before; }
+    try { return await work(tx); } finally {
+      tuples += (await auditTuplesRead(tx)) - before;
+      provenanceWrites[index] = await provenanceWritten(tx);
+    }
   });
-  const report = createInvoiceTransitions({ scope, clock: measured.clock }).processorRefund(measured.context, request);
+  const report = createInvoiceTransitions({ scope, clock }).processorRefund(context, request);
   const settled = await report.then(value => ({ value, error: undefined }), (error: unknown) => ({ value: undefined, error }));
-  return { tuples, transactions, ...settled };
+  expect(provenanceWrites.at(-1)).toBe(0);
+  return { tuples, transactions, provenanceWrites, ...settled };
+}
+
+async function measureIgnored(request: ProcessorRefundTransition) {
+  const measurement = await measureReport(request);
+  if (measurement.error !== undefined) throw measurement.error;
+  expect(measurement.value!.outcome).toBe('ignored');
+  return measurement;
 }
 
 async function measure(request: ProcessorRefundTransition) {
-  const { tuples, value, error } = await measureReport(request);
-  if (error !== undefined) throw error;
-  expect(value!.outcome).toBe('ignored');
-  return tuples;
+  return (await measureIgnored(request)).tuples;
 }
 
 it('reads at most 50 audit tuples for success and failure reports on an ordinary failed refund', async () => {
@@ -117,7 +141,9 @@ it('finds a legacy release once, records provenance for older failures, and skip
   const failedFirst = await legacyFailure('re_legacy_failed_first', true);
   const ordinary = await legacyFailure('re_legacy_ordinary', false);
   // The lower bound shows the measure sees the effect search that older failures fall back to.
-  expect(await measure(found)).toBeGreaterThan(10_000);
+  const firstFound = await measureIgnored(found);
+  expect(firstFound.tuples).toBeGreaterThan(10_000);
+  expect(firstFound.provenanceWrites).toEqual([0, 1, 0]);
   expect(await events(missingFound, found.refundId)).toHaveLength(1);
   expect(await notice('refund_found', found.refundId)).toHaveLength(1);
   expect(await events(refundProvenance, found.refundId)).toMatchObject([
@@ -125,7 +151,9 @@ it('finds a legacy release once, records provenance for older failures, and skip
   ]);
 
   // First report on an ordinary legacy failure searches once and records false provenance.
-  expect(await measure(ordinary)).toBeGreaterThan(10_000);
+  const firstOrdinary = await measureIgnored(ordinary);
+  expect(firstOrdinary.tuples).toBeGreaterThan(10_000);
+  expect(firstOrdinary.provenanceWrites).toEqual([0, 1, 0]);
   expect(await events(missingFound, ordinary.refundId)).toHaveLength(0);
   expect(await notice('refund_found', ordinary.refundId)).toHaveLength(0);
   expect(await events(refundProvenance, ordinary.refundId)).toMatchObject([
@@ -133,7 +161,7 @@ it('finds a legacy release once, records provenance for older failures, and skip
   ]);
 
   const failure = report('re_legacy_failed_first', 2000, 'failed');
-  await measure(failure);
+  expect((await measureIgnored(failure)).provenanceWrites).toEqual([0, 1, 0]);
   expect(await events(missingFailedBeforeFound, failedFirst.refundId)).toHaveLength(1);
   expect(await events(refundProvenance, failedFirst.refundId)).toMatchObject([
     { targetType: 'refund', targetId: failedFirst.refundId, after: { releasedMissing: true } },
@@ -162,7 +190,10 @@ async function paidInvoice(name: string, number = 2) {
     chargeId, amountCents: 10000, currency: 'USD', paidAt: clock.now().toISOString(), method: 'card' });
   const refund = (id: string, amount: number, status: ProcessorRefundTransition['processorRefund']['status']):
   ProcessorRefundTransition['processorRefund'] => ({ id, amount, status, chargeId, currency: 'usd', metadata: { gymId } });
-  return { invoiceId, paymentId, refund };
+  const notice = (name: string, refundId: string) => db.forGym(gymId, tx => tx.select().from(auditEvents)
+    .where(and(eq(auditEvents.action, effectCreated),
+      eq(auditEvents.after, { kind: 'staff_notice', notice: name, invoiceId, paymentId, refundId }))));
+  return { invoiceId, paymentId, refund, notice };
 }
 
 it('keeps an older failure\'s provenance when the report then conflicts, so a retry skips the effect scan', async () => {
@@ -183,6 +214,7 @@ it('keeps an older failure\'s provenance when the report then conflicts, so a re
   expect(first.error).toBeInstanceOf(Error);
   expect((first.error as Error).message).toBe(conflictMessage);
   expect(first.tuples).toBeGreaterThan(10_000);
+  expect(first.provenanceWrites).toEqual([0, 1, 0]);
   expect(await events(refundProvenance, legacyId)).toMatchObject([
     { targetType: 'refund', targetId: legacyId, after: { releasedMissing: false } },
   ]);
@@ -190,6 +222,7 @@ it('keeps an older failure\'s provenance when the report then conflicts, so a re
   const second = await measureReport(external);
   expect((second.error as Error).message).toBe(conflictMessage);
   expect(second.tuples).toBeLessThanOrEqual(50);
+  expect(second.provenanceWrites).toEqual([0]);
   expect(await events(refundProvenance, legacyId)).toHaveLength(1);
 });
 
@@ -252,13 +285,94 @@ it('records no provenance for a pending report on its own older failure or a mis
   expect(await events(refundProvenance, ownId)).toHaveLength(0);
 });
 
+/** An older failed refund like `legacyRow`'s that an earlier report already marked with this action, before provenance
+ * audits existed. */
+async function markedLegacyRow(invoiceId: string, paymentId: string, processorId: string, action: string) {
+  const { gymId, clock } = measured;
+  const refundId = await legacyRow(invoiceId, paymentId, processorId, 2000);
+  await factory('auditEvents', gymId, { action, targetType: 'refund', targetId: refundId, occurredAt: clock.now(),
+    after: { processorId, amountCents: 2000, currency: 'USD' } });
+  return refundId;
+}
+
+it('asks nothing about an older failure already marked found, in one transaction', async () => {
+  const { events } = measured;
+  const { invoiceId, paymentId, refund, notice } = await paidInvoice('marked_found', 6);
+  const refundId = await markedLegacyRow(invoiceId, paymentId, 're_marked_found', missingFound);
+  const success = await measureIgnored({ invoiceId, paymentId, refundId: uuidv7(), pendingRefunds: [],
+    processorRefund: refund('re_marked_found', 2000, 'succeeded') });
+  expect(success.transactions).toBe(1);
+  expect(success.provenanceWrites).toEqual([0]);
+  expect(success.tuples).toBeLessThanOrEqual(50);
+  expect(await events(refundProvenance, refundId)).toHaveLength(0);
+  expect(await events(missingFound, refundId)).toHaveLength(1);
+  expect(await notice('refund_found', refundId)).toHaveLength(0);
+});
+
+it('asks nothing about an older failure already marked failed before found, in one transaction', async () => {
+  const { events } = measured;
+  const { invoiceId, paymentId, refund } = await paidInvoice('marked_failed_first', 7);
+  const refundId = await markedLegacyRow(invoiceId, paymentId, 're_marked_failed_first', missingFailedBeforeFound);
+  const failure = await measureIgnored({ invoiceId, paymentId, refundId: uuidv7(), pendingRefunds: [],
+    processorRefund: refund('re_marked_failed_first', 2000, 'failed') });
+  expect(failure.transactions).toBe(1);
+  expect(failure.provenanceWrites).toEqual([0]);
+  expect(failure.tuples).toBeLessThanOrEqual(50);
+
+  // Another refund's report whose pending read shows the marked row failed with the same refund.
+  const other = await measureReport({ invoiceId, paymentId, refundId: uuidv7(),
+    pendingRefunds: [refund('re_marked_failed_first', 2000, 'failed')],
+    processorRefund: refund('re_marked_failed_first_external', 1000, 'succeeded') });
+  expect(other.error).toBeUndefined();
+  expect(other.value!.outcome).toBe('applied');
+  expect(other.transactions).toBe(1);
+  expect(other.provenanceWrites).toEqual([0]);
+  expect(other.tuples).toBeLessThanOrEqual(50);
+  expect(await events(refundProvenance, refundId)).toHaveLength(0);
+  expect(await events(missingFailedBeforeFound, refundId)).toHaveLength(1);
+});
+
+it('asks nothing about a failure report on an older failure already marked found, in one transaction', async () => {
+  const { events } = measured;
+  const { invoiceId, paymentId, refund, notice } = await paidInvoice('marked_found_failed', 8);
+  const refundId = await markedLegacyRow(invoiceId, paymentId, 're_marked_found_failed', missingFound);
+
+  // Another refund's report whose pending read shows the found row failed records the follow-up once.
+  const other = await measureReport({ invoiceId, paymentId, refundId: uuidv7(),
+    pendingRefunds: [refund('re_marked_found_failed', 2000, 'failed')],
+    processorRefund: refund('re_marked_found_failed_external', 1000, 'succeeded') });
+  expect(other.error).toBeUndefined();
+  expect(other.value!.outcome).toBe('applied');
+  expect(other.transactions).toBe(1);
+  expect(other.provenanceWrites).toEqual([0]);
+  expect(other.tuples).toBeLessThanOrEqual(50);
+  expect(await events(missingFoundFailed, refundId)).toHaveLength(1);
+  expect(await notice('refund_found_failed', refundId)).toHaveLength(1);
+
+  // The row's own failure report then finds the follow-up recorded.
+  const failure = await measureIgnored({ invoiceId, paymentId, refundId: uuidv7(), pendingRefunds: [],
+    processorRefund: refund('re_marked_found_failed', 2000, 'failed') });
+  expect(failure.transactions).toBe(1);
+  expect(failure.provenanceWrites).toEqual([0]);
+  expect(failure.tuples).toBeLessThanOrEqual(50);
+  expect(await events(missingFoundFailed, refundId)).toHaveLength(1);
+  expect(await notice('refund_found_failed', refundId)).toHaveLength(1);
+  expect(await events(refundProvenance, refundId)).toHaveLength(0);
+});
+
 it('leaves one provenance audit per older failure when two reports for the invoice race', async () => {
   const f = await fixture();
   const found = await legacyFailure('re_race_found', true, f), ordinary = await legacyFailure('re_race_ordinary', false, f);
   // Both reports' pending reads show the older failures, so both ask about them.
   const pendingRefunds = [f.report('re_race_found', 2000, 'failed').processorRefund, f.report('re_race_ordinary', 2000, 'failed').processorRefund];
-  const results = await Promise.all(['re_race_a', 're_race_b'].map(id => f.apply({ ...f.report(id, 1000), pendingRefunds })));
-  expect(results.map(value => value.outcome)).toEqual(['applied', 'applied']);
+  const results = await Promise.all(['re_race_a', 're_race_b'].map(id => measureReport({ ...f.report(id, 1000), pendingRefunds }, f)));
+  expect(results.map(({ value, error }) => error ?? value!.outcome)).toEqual(['applied', 'applied']);
+  // Whichever report records them writes both in its middle transaction; a report that finds them recorded writes none.
+  for (const { provenanceWrites } of results) {
+    expect([1, 3]).toContain(provenanceWrites.length);
+    expect(provenanceWrites.filter((_, index) => index !== 1)).toEqual(provenanceWrites.length === 1 ? [0] : [0, 0]);
+  }
+  expect(results.reduce((sum, { provenanceWrites }) => sum + (provenanceWrites[1] ?? 0), 0)).toBe(2);
   expect(await f.events(refundProvenance, found.refundId)).toMatchObject([{ after: { releasedMissing: true } }]);
   expect(await f.events(refundProvenance, ordinary.refundId)).toMatchObject([{ after: { releasedMissing: false } }]);
 });

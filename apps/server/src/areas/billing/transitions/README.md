@@ -355,11 +355,12 @@ the invoice lock (`provenanceNeeded`): a report for another payment, gym, curren
 charge, or on a processing invoice, asks about no refund. Otherwise it asks only about
 the failed refunds it could reach: its own row, when it reports that row succeeded or
 failed with the same amount and currency, and another failed row its pending read shows
-failed with the same refund. When none of those lacks a recorded release, the report
-applies in that one transaction. Otherwise that transaction writes nothing, a second
-records their provenance under the invoice lock, and a third applies the report without
-asking again, so a report that then fails with a conflict keeps the provenance and a
-retry doesn't search again. Every writer rereads under the invoice lock, so a refund
+failed with the same refund. A refund already marked found or failed before found needs
+no provenance, as the write checks those markers first. When none of the remaining
+refunds lacks a recorded release, the report applies in that one transaction. Otherwise
+that transaction writes nothing, a second records their provenance under the invoice
+lock, and a third applies the report without asking again, so a report that then fails
+with a conflict keeps the provenance and a retry doesn't search again. Every writer rereads under the invoice lock, so a refund
 gets at most one provenance audit. The restore check uses the same reads
 (`knownRefundRelease`, `refundEffectSearch`) and the same writer
 (`recordRefundProvenance`) in `refunds.ts`.
