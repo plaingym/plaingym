@@ -180,7 +180,13 @@ to obtain an encrypted receipt. It does not grant
 any account access. A browser return merely triggers a completion check. A
 Checkout a signed-in portal login started marks its receipt `portal`; once such a
 link is complete (and not still processing), its return redirects to
-`/portal/billing` instead of showing the used link's page.
+`/portal/billing` instead of showing the used link's page. A pay link's other
+returns (`?returned=1`, not on a front-desk tablet) to a link the provider's webhook
+already completed show the same "You're all set" payment confirmation the open page's
+script shows, with the member portal link, and clear the receipt, but only when the
+receipt's own Checkout session paid the invoice (`resolve` reports `paid`). Opened any
+other way, including after a Checkout this browser started and abandoned, a used link
+shows the generic "Already done" page.
 
 **Webhook-only completion:** Checkout and its setup/payment intent carry `linkId`.
 The existing Checkout-start audits target that immutable link ID and store
@@ -200,7 +206,8 @@ the exact link and persisted start association.
 
 Pay links complete when the matching Checkout and invoice are paid or the bank debit
 is processing. A returning payer's matching encrypted receipt can show the processing
-notice after the link has been consumed. A used token alone shows generic completion.
+notice after the link has been consumed, or the payment confirmation once that
+session's payment went through. A used token alone shows generic completion.
 Setup completion requires the matching session and recorded method. A bank setup
 saves the bank name, last four digits and mandate when available. Onboarding
 additionally checks current signatures and stays pending until those are signed.

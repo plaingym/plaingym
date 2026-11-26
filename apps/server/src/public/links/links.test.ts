@@ -542,11 +542,36 @@ describe('signed-link pages through production registrations', () => {
     expect(await f.checkout.complete(f.gymId, f.link.link.id, session.session.id)).toBe(true);
     const done = await returned();
     expect(done.status).toBe(302); expect(done.headers.get('location')).toBe('/portal/billing');
-    // Without the portal flag, the same return keeps the link page.
+    // Without the portal flag, a card link's return keeps the used link's page.
     const plain = receiptCookie + '=' + receipts.seal({ token: f.link.token, gymId: f.gymId, linkId: f.link.link.id, sessionId: session.session.id,
       expires: Date.now() + 60_000, tablet: false });
     const page = await f.app().request('https://gym.example.test/l/' + f.link.token + '?returned=1', { headers: { cookie: plain } });
     expect(await page.text()).toContain('Already done');
+  });
+  it('confirms the payment to a payer back from the Checkout that paid a pay link its webhook completed first', async () => {
+    const f = await fixture('pay_invoice');
+    const receipts = checkoutReceipts(new Uint8Array(32).fill(7));
+    const session = await f.checkout.start(f.gymId, f.link.link.id);
+    await f.completeAtStripe(session.session.id);
+    expect(await f.checkout.complete(f.gymId, f.link.link.id, session.session.id)).toBe(true);
+    const seal = ({ tablet = false, linkId = f.link.link.id, sessionId = session.session.id } = {}) => receiptCookie + '=' + receipts.seal({
+      token: f.link.token, gymId: f.gymId, linkId, sessionId, expires: Date.now() + 60_000, tablet });
+    const page = await f.app().request('https://gym.example.test/l/' + f.link.token + '?returned=1', { headers: { cookie: seal() } });
+    expect(page.status).toBe(200);
+    const body = await page.text();
+    expect(body).toContain('data-state="paid"'); expect(body).toContain('<h1 class="text-2xl font-bold">You&#39;re all set</h1>');
+    expect(body).toContain('<p>Your payment has been confirmed. Thank you.</p>');
+    expect(body).toContain('href="/portal">Member portal</a></section><p id="feedback"'); expect(body).not.toContain('Already done');
+    expect(page.headers.getSetCookie().some(cookie => cookie.startsWith(receiptCookie + '=') && /Max-Age=0/i.test(cookie))).toBe(true);
+    // The used link's generic page stays everywhere else: opened without returning from Checkout, on a front-desk tablet
+    // (whose page clears itself), with no receipt, with another link's receipt, or with a receipt for a Checkout session
+    // this browser started but didn't pay with.
+    const used = async (path: string, cookie?: string) =>
+      (await f.app().request('https://gym.example.test/l/' + f.link.token + path, cookie ? { headers: { cookie } } : {})).text();
+    for (const text of [await used('', seal()), await used('?returned=1&tablet=1', seal({ tablet: true })), await used('?returned=1&tablet=1', seal()),
+      await used('?returned=1'), await used('?returned=1', seal({ linkId: uuidv7() })), await used('?returned=1', seal({ sessionId: 'cs_abandoned' }))]) {
+      expect(text).toContain('data-state="alreadyDone"'); expect(text).toContain('Already done');
+    }
   });
   for (const [name, contract] of Object.entries({ ...contracts, ...actions })) {
     if (contract.permission.kind !== 'signed_link' || contract.permission.purpose === 'unsubscribe') continue;

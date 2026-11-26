@@ -135,6 +135,14 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
         return c.redirect('/portal/billing', 302);
       }
       const common = { ...await presentation(c), tablet: c.req.valid('query').tablet === '1' };
+      // A payer is often back from Checkout after its webhook has already paid the link, so the browser whose own session
+      // paid gets the payment confirmation rather than the generic used-link page. A front-desk tablet keeps that page,
+      // which clears itself.
+      if (receipt?.token === token && !receipt.tablet && !common.tablet && c.req.valid('query').returned === '1'
+        && resolution.status === 'used' && resolution.paid) {
+        deleteAppCookie(c, receiptCookie);
+        return html(c, { ...common, state: 'paid' });
+      }
       if (resolution.status !== 'active') {
         // This is static guidance, never proof a credential or household exists. Other gyms see the same page.
         const replaced = resolution.status === 'not_found' && /^campaign_[A-Za-z0-9_-]{43}$/.test(c.req.valid('param').token);

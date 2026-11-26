@@ -29,9 +29,12 @@ export const signedLinkExpiryDays = campaignLimits.expiryDays;
 export type SignedLinkPrincipal = Extract<Principal, { kind: 'signed_link' }>;
 export type SignedLinkResolution =
   | { readonly status: 'active'; readonly principal: SignedLinkPrincipal }
-  | { readonly status: 'used'; readonly processing?: true }
+  /** With a pay link's own Checkout receipt: `processing` while that session's bank debit settles, `paid` once it paid. */
+  | { readonly status: 'used'; readonly processing?: true; readonly paid?: true }
   | { readonly status: 'not_found' | 'expired' | 'revoked' };
 export interface LinkScope { readonly gymId: string; readonly linkId: string }
+/** Invoice states in which a pay link's Checkout payment went through. */
+const paidStatuses = new Set(['paid', 'partially_refunded', 'refunded']);
 /** What a send command remembers for its replay. */
 const sentLinkSchema = z.strictObject({ linkId: idSchema });
 const sendRefusalReasons = new Set([
@@ -247,11 +250,12 @@ export function createSignedLinksService(options: {
         ));
         if (!row) return { status: 'not_found' };
         const status = state(row, clock.now());
-        if (status === 'used' && receipt?.linkId === row.id && row.purpose === 'pay_invoice' && row.invoiceId
-          && !row.revokedAt && row.expiresAt > clock.now()) {
-          const [settling] = await tx.select({ id: invoices.id }).from(invoices).where(and(eq(invoices.id, row.invoiceId),
-            eq(invoices.householdId, row.householdId), eq(invoices.checkoutSessionId, receipt.sessionId), eq(invoices.status, 'processing')));
-          if (settling) return { status, processing: true };
+        if (status === 'used' && receipt?.linkId === row.id && row.purpose === 'pay_invoice' && row.invoiceId) {
+          // Only the receipt's own Checkout session counts: one abandoned in this browser never reads as another's payment.
+          const [invoice] = await tx.select({ status: invoices.status }).from(invoices).where(and(eq(invoices.id, row.invoiceId),
+            eq(invoices.householdId, row.householdId), eq(invoices.checkoutSessionId, receipt.sessionId)));
+          if (invoice?.status === 'processing' && !row.revokedAt && row.expiresAt > clock.now()) return { status, processing: true };
+          if (invoice && paidStatuses.has(invoice.status)) return { status, paid: true };
         }
         return status === 'active' ? { status, principal: principal(row) } : { status };
       });

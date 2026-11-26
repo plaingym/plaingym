@@ -38,6 +38,11 @@ match one-by-one creation, except that every link and audit of a call shares one
 `resolve(gymId, token)` returns `active` with a `SignedLinkPrincipal`, or `not_found`,
 `used`, `revoked`, or `expired`. When multiple conditions apply, used takes precedence,
 then revoked, then expired, matching the campaign contract. Expiry includes equality.
+An optional third argument, a pay link's Checkout receipt (`{ linkId, sessionId }`),
+adds to a `used` result `processing: true` while that session's bank debit settles (on
+an unrevoked, unexpired link), or `paid: true` once the invoice that session paid is
+paid, partially refunded or refunded, which the return page confirms. Another
+session's receipt adds nothing.
 The principal's resource fields are display metadata. Signed-link page handlers must
 use `forHousehold({ kind: 'signed_link', gymId, linkId, now: clock.now() }, ...)`,
 which reloads and verifies the actual link in its transaction. Recheck authorization

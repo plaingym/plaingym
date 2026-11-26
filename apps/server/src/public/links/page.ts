@@ -18,7 +18,8 @@ export interface PageInput {
   documentBase?: string;
   portalClaim?: { password: boolean } | undefined;
   data?: PortalSignedLinkData;
-  state?: 'alreadyDone' | 'unavailable' | 'replaced' | 'cleared';
+  /** `paid`: a payer back from the Checkout session that paid this link. */
+  state?: 'alreadyDone' | 'unavailable' | 'replaced' | 'cleared' | 'paid';
   processing?: boolean;
   tablet?: boolean;
   now: Date;
@@ -39,12 +40,17 @@ export function linkPage({ data, state, portalClaim, processing = false, tablet 
     ? portalClaim ? 'portal' : !data.paymentMethods.some(method => method.last4) ? 'card' : unsigned ? 'waiver' : 'complete'
     : data?.purpose === 'update_card' ? 'card' : data?.purpose === 'sign_waiver' ? 'waiver' : payable ? 'invoice' : 'complete';
   const announcementText = (key: string, values?: Record<string, string | number>) => t('links/unsubscribe:' + key, values);
-  const title = !state && data?.purpose === 'unsubscribe' ? announcementText('title') : text(state ?? data?.purpose ?? 'unavailable');
+  const title = !state && data?.purpose === 'unsubscribe' ? announcementText('title')
+    : state === 'paid' ? text('completedTitle') : text(state ?? data?.purpose ?? 'unavailable');
   const money = (value: number, currency: string) => formatMoney(value, currency, locale);
   const date = (value: string) => new Intl.DateTimeFormat(locale, { dateStyle: 'long', timeZone: timezone })
     .format(zonedInstant(value, '12:00', timezone, { gap: 'shift' })!);
   const settling = processing || (data?.purpose === 'pay_invoice' && data.invoice.invoice.status === 'processing');
-  const notice = state ? h('section', { class: panel }, h('h1', { class: 'text-2xl font-bold' }, title), h('p', null, text(settling ? 'bankProcessing' : state + 'Body'))) : null;
+  // A return from the Checkout that paid shows the same confirmation the page's script shows in place.
+  const notice = state === 'paid' ? h('section', { class: panel },
+    h('h1', { class: 'text-2xl font-bold' }, title), h('p', null, text('completed_pay_invoice')),
+    h('a', { class: button, href: '/portal' }, text('portalSignIn')))
+    : state ? h('section', { class: panel }, h('h1', { class: 'text-2xl font-bold' }, title), h('p', null, text(settling ? 'bankProcessing' : state + 'Body'))) : null;
   const card = data && (data.purpose === 'update_card' || data.purpose === 'onboarding')
     ? h('section', { class: panel, 'data-card-panel': true }, h('h2', { class: 'text-xl font-semibold' }, text('card')),
       h('p', null, text('cardHelp')),
