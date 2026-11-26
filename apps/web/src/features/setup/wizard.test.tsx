@@ -2735,4 +2735,107 @@ describe('setup wizard restore progress', () => {
     await waitFor(() => expect(screen.queryByText(unansweredText)).toBeNull());
     expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
   });
+
+  /** An unanswered request whose own status read outlasts the form's wait, leaving the unanswered message. */
+  async function dropWithSlowRead() {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const read = later();
+    const started = await sendRestoreEnding(dropped, () => read.response);
+    await settle();
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+    expect(document.activeElement).toBe(alertOf(unansweredText));
+    return { ...started, read };
+  }
+  const workingStatus = () => Response.json({ data: { currentStep: 0, completedSteps: [], completed: false, revision: 1, googleSkipped: false, backupsLater: false } });
+  /** Answers the held read and lets the screen take it. */
+  const answer = (read: ReturnType<typeof later>, response: Response) =>
+    act(async () => { read.send(response); await vi.advanceTimersByTimeAsync(10); });
+
+  it('shows the save error, focused, when the status read the form stopped waiting for works', async () => {
+    const { read } = await dropWithSlowRead();
+
+    await answer(read, workingStatus());
+
+    expect(await screen.findByText(saveFailedText)).toBeDefined();
+    await settle();
+    expect(document.activeElement).toBe(alertOf(saveFailedText));
+    expect(screen.queryByText(unansweredText)).toBeNull();
+    expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
+
+    // A later read that works leaves that error.
+    statusAnswer = null;
+    await refocus();
+    await settle();
+    expect(screen.getByText(saveFailedText)).toBeDefined();
+  });
+  it('leaves the focus in a field when the slow status read brings the save error', async () => {
+    const { read } = await dropWithSlowRead();
+    const field = screen.getByLabelText('Storage bucket');
+    act(() => field.focus());
+
+    await answer(read, workingStatus());
+
+    expect(await screen.findByText(saveFailedText)).toBeDefined();
+    await settle();
+    expect(document.activeElement).toBe(field);
+  });
+  it('shows neither message once a later read works, when the slow status read failed', async () => {
+    const { read } = await dropWithSlowRead();
+
+    await answer(read, new Response('Bad gateway', { status: 502 }));
+    expect(screen.getByText(unansweredText)).toBeDefined();
+    statusAnswer = null;
+    await refocus();
+
+    await waitFor(() => expect(screen.queryByText(unansweredText)).toBeNull());
+    expect(screen.queryByText(saveFailedText)).toBeNull();
+  });
+  it.each([
+    ['gets no response', dropped],
+    ['answers 502', proxyAnswer(502)],
+    ['answers 504', proxyAnswer(504)],
+    ['answers 520', proxyAnswer(520)],
+    ['answers 522', proxyAnswer(522)],
+    ['answers 524', proxyAnswer(524)],
+  ])('replaces the save error with the unanswered message when a later status read %s', async (_, later_) => {
+    await dropWithoutStatus();
+    const errorAlert = alertOf(saveFailedText);
+
+    statusAnswer = later_;
+    await refocus();
+
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+    await settle();
+    expect(screen.queryByText(saveFailedText)).toBeNull();
+    expect(alertOf(unansweredText)).toBe(errorAlert);
+    expect(document.activeElement).toBe(errorAlert);
+    expect(screen.getByText(reloadText)).toBeDefined();
+    expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
+  });
+  it('keeps the save error when a later status read answers 521', async () => {
+    const { fetcher } = await dropWithoutStatus();
+    const reads = statusReads(fetcher);
+
+    statusAnswer = proxyAnswer(521);
+    await refocus();
+    await settle();
+
+    expect(statusReads(fetcher)).toBe(reads + 1);
+    expect(screen.getByText(saveFailedText)).toBeDefined();
+    expect(screen.queryByText(unansweredText)).toBeNull();
+  });
+  it('removes the message a later unclear read brought once a status read works', async () => {
+    await dropWithoutStatus();
+    statusAnswer = dropped;
+    await refocus();
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+
+    statusAnswer = null;
+    await refocus();
+
+    await waitFor(() => expect(screen.queryByText(unansweredText)).toBeNull());
+    expect(screen.queryByText(saveFailedText)).toBeNull();
+    expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
+  });
 });

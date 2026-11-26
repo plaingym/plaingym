@@ -41,6 +41,8 @@ class RestoreUnansweredError extends Error {
 }
 /** How long the status read after an unanswered restore request is waited for before the form shows the unanswered message, not the save error. */
 const restoreReadLimit = 10_000;
+/** A status read that got no answer, or a proxy's gateway answer: it doesn't say whether a restore is running. */
+const unclearRead = (error: unknown) => error instanceof TypeError || (error instanceof ApiError && [502, 504, 520, 522, 524].includes(error.status));
 const text = (data: FormData, name: string) => String(data.get(name) ?? '');
 /** A message key in the wizard's own locale file, or a full `namespace:key`. */
 const say = (message: string, values?: Record<string, string>) => t(message.includes(':') ? message : 'setup/setup:' + message, values);
@@ -121,14 +123,17 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   const [jobId, setJobId] = useState<string | null>(() => sessionStorage.getItem('setup.restore'));
   const [restoreSending, setRestoreSending] = useState(false);
   // A restore request got no answer, then a status read met a restore's hold, the read awaited after the request got no
-  // clear answer either (none, a gateway's, or none in time), or a resend failed without ruling out that restore: the
-  // form stays.
+  // clear answer either (none, a gateway's, or none in time), a later read after its save error got none or a gateway's,
+  // or a resend failed without ruling out that restore: the form stays.
   const [restoreUnanswered, setRestoreUnanswered] = useState(false);
-  // When the last restore request went unanswered, until a status read works: a later 404 or 503 keeps the form too.
+  // When the last restore request went unanswered, until a status read works: a later 404 or 503 keeps the form too, as
+  // does, after the save error, a later read with no answer or a gateway's.
   const [unansweredAt, setUnansweredAt] = useState<number | null>(null);
   // The status read failures counted when a resend after an unanswered request failed with its own message; a later read
   // that meets a restore's hold brings the "may be running" message back.
   const [failedAtReads, setFailedAtReads] = useState<number | null>(null);
+  // Set when the read the form stopped waiting for works after all.
+  const slowReadWorked = useRef(false);
   // A restore, from its request on, makes the status answer 404, and that answer would outlive a restore that then fails.
   const status = useQuery({ queryKey: key, queryFn: () => client.call('status'), retry: false,
     refetchOnWindowFocus: !jobId && !restoreSending, refetchOnReconnect: !jobId && !restoreSending });
@@ -309,13 +314,29 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
     setFailedAtReads(null); setQuietError(document.activeElement !== null && document.activeElement !== document.body);
     setError('restoreUnanswered');
   }, [awaitingAnswer, restoreSending, failedAtReads, status.errorUpdateCount]);
-  // A status read that works ends the unanswered state and its message, so a still later 404 is news of its own.
+  // After the save error that followed the request's own status read, a later read with no answer or a gateway's answer
+  // leaves open whether the restore is running, so the unanswered message replaces that error. It takes the focus only
+  // when nothing else holds it.
+  useEffect(() => {
+    if (unansweredAt === null || restoreSending || restoreUnanswered || !status.isError || status.errorUpdatedAt < unansweredAt
+      || !unclearRead(status.error)) return;
+    setQuietError(document.activeElement !== null && document.activeElement !== document.body);
+    setRestoreUnanswered(true); setError('restoreUnanswered');
+  }, [unansweredAt, restoreSending, restoreUnanswered, status.isError, status.errorUpdatedAt, status.error]);
+  // A status read that works ends the unanswered state and its message, so a still later 404 is news of its own. When it
+  // is a read the form had stopped waiting for, the save error replaces the message: the request failed.
   useEffect(() => {
     if (!status.isSuccess || unansweredAt === null || status.dataUpdatedAt < unansweredAt) return;
+    const failed = slowReadWorked.current;
+    slowReadWorked.current = false;
     setUnansweredAt(null); setFailedAtReads(null); setRestoreUnanswered(false);
-    // Removing the focused message would leave the focus on the page body, so the step's heading takes it.
-    if (error === 'restoreUnanswered' && errorBox.current?.contains(document.activeElement)) heading.current?.focus();
-    setError((shown) => shown === 'restoreUnanswered' ? null : shown);
+    if (error === 'restoreUnanswered') {
+      // The save error takes the focus only when nothing else holds it.
+      if (failed) setQuietError(document.activeElement !== null && document.activeElement !== document.body);
+      // Removing the focused message would leave the focus on the page body, so the step's heading takes it.
+      else if (errorBox.current?.contains(document.activeElement)) heading.current?.focus();
+    }
+    setError((shown) => shown === 'restoreUnanswered' ? (failed ? 'failed' : null) : shown);
   }, [status.isSuccess, status.dataUpdatedAt, unansweredAt, error, errorBox]);
   const retryStatus = <Button type="button" disabled={status.isFetching}
     onClick={() => { retried.current = unavailable || !status.data; void readAgain(); }}>{t('setup/setup:retry')}</Button>;
@@ -351,7 +372,8 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
       {step === 0 && (restore ? <Form action={async (data) => {
         // The request takes the restore's hold on the gym: no status read runs until it has answered.
         const wasUnanswered = restoreUnanswered || unansweredAt !== null;
-        setRestoreSending(true); setRestoreUnanswered(false); setUnansweredAt(null); setFailedAtReads(null); await queries.cancelQueries({ queryKey: key });
+        setRestoreSending(true); setRestoreUnanswered(false); setUnansweredAt(null); setFailedAtReads(null); slowReadWorked.current = false;
+        await queries.cancelQueries({ queryKey: key });
         try {
           const result = await client.call('restore', { choice: 'restore', source: destination(data), snapshotPrefix: text(data, 'snapshotPrefix'), privateKey: text(data, 'privateKey') });
           setRestoreFailure(null); setUnreachable(false); setThrottled(false); setPhase(null);
@@ -380,10 +402,12 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
           // Awaited with the request still counted as pending, so a 404 can't swap the form out first; not forever:
           // when the wait ends, the form shows the unanswered message, not the save error.
           let timer: ReturnType<typeof setTimeout> | undefined;
-          const read = await Promise.race([status.refetch(),
+          const readAt = Date.now(), reading = status.refetch();
+          const read = await Promise.race([reading,
             new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), restoreReadLimit); })])
             .finally(() => clearTimeout(timer));
-          if (!read || read.error instanceof TypeError || (read.error instanceof ApiError && [404, 502, 503, 504, 520, 522, 524].includes(read.error.status))) {
+          if (!read || unclearRead(read.error) || (read.error instanceof ApiError && [404, 503].includes(read.error.status))) {
+            if (!read) void reading.then((late) => { if (late.isSuccess && late.dataUpdatedAt >= readAt) slowReadWorked.current = true; });
             setRestoreUnanswered(true);
             throw new RestoreUnansweredError({ cause: failure });
           }
@@ -391,7 +415,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
         } finally { setRestoreSending(false); }
       }} submit="restore" secondary={<Button type="button" variant="outline" disabled={busy}
         onClick={() => {
-          setRestore(false); setRestoreUnanswered(false); setUnansweredAt(null); setFailedAtReads(null);
+          setRestore(false); setRestoreUnanswered(false); setUnansweredAt(null); setFailedAtReads(null); slowReadWorked.current = false;
           // Where this swaps in the unavailable screen, the focus goes to it; where the steps stay, no focus moves later.
           if (finished && !restoreStays) backedOut.current = true;
           // Only the form's own request can have gone unanswered: the choice screen mustn't say a restore may be running.
