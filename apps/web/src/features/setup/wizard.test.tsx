@@ -1252,6 +1252,24 @@ describe('setup wizard restore progress', () => {
     expect(await screen.findByText('Too many attempts. Please wait before trying again.')).toBeDefined();
     expect(await screen.findByText('Sign in as the owner to continue setup.')).toBeDefined();
   });
+  const unavailableText = 'Setup is unavailable for this install. Sign in to manage your gym.';
+  const reloadText = 'Could not load the latest setup progress. Check your connection and try again.';
+  const changedText = 'Setup changed in another window. Your progress has been refreshed.';
+  const gone = () => Response.json({ error: { code: 'not_found', message: 'Not found' } }, { status: 404 });
+  const serverError = () => Response.json({}, { status: 500 });
+  const statusReads = (fetcher: ReturnType<typeof start>['fetcher']) => fetcher.mock.calls.filter(([path]) => String(path) === '/api/setup').length;
+  /** Saves the gym step against a newer revision, with the reload that follows answering `reload` (the usual status when null). */
+  async function saveGymAnswering409(reload: (() => Response) | null) {
+    const started = start(2);
+    const base = started.fetcher.getMockImplementation()!;
+    started.fetcher.mockImplementation((path, options) => String(path).endsWith('/gym')
+      ? Promise.resolve(Response.json({ error: { code: 'conflict', message: 'Changed' } }, { status: 409 }))
+      : base(path, options));
+    await userEvent.type(await screen.findByLabelText('Gym name'), 'Reload Academy');
+    statusAnswer = reload;
+    await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Save and continue' }));
+    return started;
+  }
   /** Saves the owner after "Start fresh" (so the cached status still says step 0) while every later status reload fails. */
   async function saveOwnerWithoutReload(linkFails: boolean) {
     vi.mocked(services.loadBootstrap).mockResolvedValue({
@@ -1285,7 +1303,7 @@ describe('setup wizard restore progress', () => {
     expect(screen.queryByText('Setup is unavailable for this install. Sign in to manage your gym.')).toBeNull();
     expect(fetcher.mock.calls.filter(([path]) => String(path) === '/api/setup/owner').length).toBe(1);
   }
-  it('shows the sign-in step and alert when status reload fails after earlier status data, and shows unavailable only with no status data', async () => {
+  it('shows the sign-in step and alert when status reload fails after earlier status data, and the reload alert with no status data', async () => {
     const fetcher = await saveOwnerWithoutReload(true);
 
     expect(await screen.findByText("Your owner account was saved, but signing in didn't finish. Sign in as the owner to continue setup.")).toBeDefined();
@@ -1296,13 +1314,184 @@ describe('setup wizard restore progress', () => {
     const failClient = createSetupClient(vi.fn(async () => { throw new TypeError('Failed to fetch'); }) as typeof fetch);
     const query = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     render(<QueryClientProvider client={query}><ShellServicesContext.Provider value={services}><SetupWizard client={failClient} /></ShellServicesContext.Provider></QueryClientProvider>);
-    expect(await screen.findByText('Setup is unavailable for this install. Sign in to manage your gym.')).toBeDefined();
+    expect(await screen.findByText('Could not load the latest setup progress. Check your connection and try again.')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeDefined();
+    expect(screen.queryByText('Setup is unavailable for this install. Sign in to manage your gym.')).toBeNull();
   });
   it('does not bring the owner form back when the link is sent but the status reload fails', async () => {
     const fetcher = await saveOwnerWithoutReload(false);
 
     expect(await screen.findByText('Check your inbox for a sign-in link, then return here to continue setup.')).toBeDefined();
     expectSignInStepOnly(fetcher);
+  });
+  it('shows the reload alert on the step after the owner when the reload answers 500, and Try again reads the status again', async () => {
+    vi.mocked(services.loadBootstrap).mockResolvedValue({
+      gym: { id: 'gym', name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] },
+      session: { userId: 'owner', displayName: 'Test User', roles: ['owner'] as const, member: false },
+      login: { password: true, magicLink: false },
+    });
+    const { fetcher } = start(1);
+    await userEvent.type(await screen.findByLabelText('Your name'), 'Gym Owner');
+    await userEvent.type(screen.getByLabelText('Email address'), 'owner@example.org');
+    await userEvent.type(screen.getByLabelText('Password (12–128 characters)'), 'owner-password-123');
+    statusAnswer = serverError;
+    await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Save and continue' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain(reloadText);
+    expect(screen.getByRole('heading', { name: 'Gym details' })).toBeDefined();
+    expect(screen.getByText('Step 3 / 9')).toBeDefined();
+    expect(screen.queryByLabelText('Your name')).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+
+    // Once a read works, its answer decides the step again, even one further on than the owner step left it.
+    statusAnswer = () => Response.json({ data: { currentStep: 4, completedSteps: [0, 1, 2, 3], completed: false, revision: 3, googleSkipped: false, backupsLater: false } });
+    const before = statusReads(fetcher);
+    await userEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByRole('heading', { name: 'Your website' })).toBeDefined();
+    expect(screen.queryByText(reloadText)).toBeNull();
+    expect(statusReads(fetcher)).toBe(before + 1);
+  });
+  it('shows only the reload alert when the reload after a 409 fails', async () => {
+    const { fetcher } = await saveGymAnswering409(serverError);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain(reloadText);
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    expect(screen.queryByText(changedText)).toBeNull();
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(statusReads(fetcher)).toBe(2);
+  });
+  it('says the setup changed when the reload after a 409 works', async () => {
+    await saveGymAnswering409(null);
+
+    expect(await screen.findByText(changedText)).toBeDefined();
+    expect(screen.queryByText(reloadText)).toBeNull();
+  });
+  it('focuses the reload alert after each failed reload a save asked for, including one already on screen', async () => {
+    const { query } = start(2);
+    await userEvent.type(await screen.findByLabelText('Gym name'), 'Reload Academy');
+    statusAnswer = serverError;
+    const save = within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Save and continue' });
+    await userEvent.click(save);
+    const alert = await screen.findByRole('alert');
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+
+    save.focus();
+    await userEvent.click(save);
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    expect(query.getQueryState(['setup', 'status'])?.status).toBe('error');
+  });
+  it.each([
+    ['before any save', false],
+    ['after a save whose reload worked', true],
+  ])('shows the reload alert for a failed background refetch %s without moving focus', async (_, saveFirst) => {
+    const { fetcher } = start(2);
+    await userEvent.type(await screen.findByLabelText('Gym name'), 'Reload Academy');
+    if (saveFirst) {
+      await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Save and continue' }));
+      await screen.findByRole('heading', { name: 'What do you teach?' });
+    }
+    const focused = document.activeElement;
+    const before = statusReads(fetcher);
+    statusAnswer = serverError;
+    await act(async () => {
+      window.dispatchEvent(new Event('visibilitychange'));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain(reloadText);
+    expect(statusReads(fetcher)).toBe(before + 1);
+    expect(document.activeElement).toBe(focused);
+  });
+  it('leaves focus off a reload alert already on screen while a save reads the status again', async () => {
+    const { fetcher } = start(2);
+    await userEvent.type(await screen.findByLabelText('Gym name'), 'Reload Academy');
+    statusAnswer = serverError;
+    await act(async () => { window.dispatchEvent(new Event('visibilitychange')); });
+    const alert = await screen.findByRole('alert');
+    const base = fetcher.getMockImplementation()!;
+    let answer = () => {};
+    const held = new Promise<void>((resolve) => { answer = resolve; });
+    fetcher.mockImplementation(async (path, options) => {
+      if (String(path) === '/api/setup') await held;
+      return base(path, options);
+    });
+    statusAnswer = null;
+    const before = statusReads(fetcher);
+    await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Save and continue' }));
+    await waitFor(() => expect(statusReads(fetcher)).toBe(before + 1));
+    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+
+    expect(within(alert).getByRole('button', { name: 'Try again' })).toHaveProperty('disabled', true);
+    expect(document.activeElement).not.toBe(alert);
+    await act(async () => { answer(); });
+    const next = await screen.findByRole('heading', { name: 'What do you teach?' });
+    await waitFor(() => expect(document.activeElement).toBe(next));
+    expect(screen.queryByText(reloadText)).toBeNull();
+  });
+  it('keeps the owner form while signing in when the status had already failed to reload', async () => {
+    vi.mocked(services.loadBootstrap).mockResolvedValue({
+      gym: { id: 'gym', name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] },
+      session: null,
+      login: { password: true, magicLink: false },
+    });
+    let signedIn = () => {};
+    vi.mocked(services.signInWithPassword).mockImplementationOnce(() => new Promise<void>((resolve) => { signedIn = resolve; }));
+    start(1);
+    await userEvent.type(await screen.findByLabelText('Your name'), 'Gym Owner');
+    await userEvent.type(screen.getByLabelText('Email address'), 'owner@example.org');
+    await userEvent.type(screen.getByLabelText('Password (12–128 characters)'), 'owner-password-123');
+    statusAnswer = serverError;
+    await act(async () => { window.dispatchEvent(new Event('visibilitychange')); });
+    await screen.findByRole('alert');
+    await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Save and continue' }));
+    await waitFor(() => expect(services.signInWithPassword).toHaveBeenCalledTimes(1));
+    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+
+    expect(screen.getByLabelText('Your name')).toBeDefined();
+    expect(screen.getByText('Step 2 / 9')).toBeDefined();
+    await act(async () => { signedIn(); });
+    expect(await screen.findByText('Step 3 / 9')).toBeDefined();
+    expect(screen.queryByLabelText('Your name')).toBeNull();
+  });
+  it('focuses the new reload alert when Try again after a failed first read fails too', async () => {
+    statusAnswer = serverError;
+    const { fetcher } = start(0);
+    await screen.findByText(reloadText);
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => expect(statusReads(fetcher)).toBe(2));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('alert')));
+  });
+  it('offers Try again, not the unavailable screen, when the first status read answers 502', async () => {
+    statusAnswer = () => Response.json({}, { status: 502 });
+    start(0);
+
+    expect(await screen.findByText(reloadText)).toBeDefined();
+    expect(screen.queryByText(unavailableText)).toBeNull();
+    expect(screen.queryByText(/\/ 9$/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Start fresh' })).toBeNull();
+
+    statusAnswer = null;
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByRole('heading', { name: 'Start fresh or restore a backup' })).toBeDefined();
+    expect(screen.getByText('Step 1 / 9')).toBeDefined();
+    expect(screen.queryByText(reloadText)).toBeNull();
+  });
+  it('offers Try again beside Sign in when the first status read answers 404, and shows the step a later answer names', async () => {
+    statusAnswer = gone;
+    start(4);
+
+    expect(await screen.findByText(unavailableText)).toBeDefined();
+    expect(screen.getByRole('link', { name: 'Sign in' })).toBeDefined();
+    expect(screen.queryByText(reloadText)).toBeNull();
+
+    statusAnswer = null;
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByRole('heading', { name: 'Your website' })).toBeDefined();
+    expect(screen.queryByText(unavailableText)).toBeNull();
   });
   it('shows an error with Try again when the session read fails at step 2, then loads the magic-link sign-in form on retry', async () => {
     vi.mocked(services.loadBootstrap)
@@ -1414,10 +1603,7 @@ describe('setup wizard restore progress', () => {
     expect(screen.queryByRole('heading', { name: 'Your website' })).toBeNull();
     expect(screen.queryByText('Could not load the latest setup progress. Check your connection and try again.')).toBeNull();
   });
-  const unavailableText = 'Setup is unavailable for this install. Sign in to manage your gym.';
-  const reloadText = 'Could not load the latest setup progress. Check your connection and try again.';
   const rejectedText = 'Restore failed: the storage service rejected the access key ID or secret. Check both, then start again.';
-  const gone = () => Response.json({ error: { code: 'not_found', message: 'Not found' } }, { status: 404 });
   /** Reloads the status and lets the screen take the answer, so a check that nothing changed means something. */
   const reloadStatus = (query: QueryClient) => act(async () => {
     await query.refetchQueries({ queryKey: ['setup', 'status'] });

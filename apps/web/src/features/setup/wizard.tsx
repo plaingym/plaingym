@@ -114,13 +114,19 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   const status = useQuery({ queryKey: key, queryFn: () => client.call('status'), retry: false,
     refetchOnWindowFocus: !jobId, refetchOnReconnect: !jobId });
   const [override, setOverride] = useState<number | null>(null), [held, setHeld] = useState<Held | null>(null);
-  const step = Math.min(8, held ? heldStep[held.kind] : override ?? status.data?.currentStep ?? 0);
+  // Saved in this visit: while the status can't be reloaded its old answer would bring the owner form back.
+  const [ownerSaved, setOwnerSaved] = useState(false);
+  const step = Math.min(8, held ? heldStep[held.kind]
+    : override ?? Math.max(status.data?.currentStep ?? 0, ownerSaved && status.isError ? 2 : 0));
   const heading = useRef<HTMLHeadingElement>(null);
   const registered = (id: string) => registries.setupSteps.all().find((entry) => entry.id === id && entry.enabled)?.component;
   const Stripe = registered(stripeStep), Final = registered(finalStep);
   const session = useQuery({ queryKey: bootstrapKey, queryFn: () => services.loadBootstrap(), enabled: step >= 2, retry: false });
   const catalog = useQuery({ queryKey: ['setup', 'catalog'], queryFn: () => client.catalog(), enabled: step === 3 });
   const [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null);
+  // Counts the failed status reloads the owner asked for: each takes focus to the reload alert, and nothing else does.
+  const [failedReloads, setFailedReloads] = useState(0);
+  const reloadBox = useRevealed<HTMLDivElement>(failedReloads);
   const errorBox = useRevealed<HTMLDivElement>(error);
   const [restore, setRestore] = useState(false);
   const [restoreState, setRestoreState] = useState<'running' | 'failed' | 'restored' | null>(null);
@@ -153,7 +159,12 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   const googlePage = held?.kind === 'google' || (step === 6 && !held && !googleSaved && session.data !== undefined && session.data.login.google !== true
     && status.data?.googleSkipped !== true && !status.data?.completedSteps.includes(6));
   const revision = status.data?.revision ?? 1;
-  const refresh = async () => { setOverride(null); await status.refetch(); };
+  const readAgain = async () => {
+    const result = await status.refetch();
+    if (result.isError) setFailedReloads((count) => count + 1);
+    return result;
+  };
+  const refresh = () => { setOverride(null); return readAgain(); };
   const proceed = () => { setHeld(null); void refresh(); };
   const run = async (action: () => Promise<void>) => {
     if (busy) return;
@@ -164,12 +175,15 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
       const emailUnavailable = failure instanceof ApiError && failure.status === 503 && failure.code === 'EMAIL_UNAVAILABLE';
       // No link went out this time, so an earlier "check your inbox" note would contradict the alert.
       if (emailUnavailable) setSent(false);
-      setError(failure instanceof OwnerSavedSignInError ? 'ownerSavedSignInFailed'
+      if (failure instanceof ApiError && failure.status === 409) {
+        // "Your progress has been refreshed" only when it was; otherwise the reload alert says what failed.
+        const reloaded = await refresh();
+        setError(reloaded.isError ? null : 'changed');
+      } else setError(failure instanceof OwnerSavedSignInError ? 'ownerSavedSignInFailed'
         : emailUnavailable ? 'emailUnavailable'
         : failure instanceof ApiError && failure.status === 429 ? 'rateLimited'
-        : failure instanceof ApiError && failure.status === 403 ? 'setupLink' : failure instanceof ApiError && failure.status === 409 ? 'changed'
+        : failure instanceof ApiError && failure.status === 403 ? 'setupLink'
         : reasons.includes('unreachable') ? 'unreachable' : reasons.includes('google_rejected') ? 'googleRejected' : 'failed');
-      if (failure instanceof ApiError && failure.status === 409) await refresh();
     } finally { setBusy(false); }
   };
   useEffect(() => {
@@ -208,8 +222,16 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   const stagedFailure = restoreState === 'failed' && Boolean(restoreFailure?.staged) && step === 0;
   const restoreStays = finished && status.data ? restoreState === 'running' || restoreState === 'restored' || stagedFailure
     : Boolean(restoreState);
-  const unavailable = status.isError && (!status.data || finished) && !jobId && !done && !finalFinishing && !restoreStays;
-  useEffect(() => { heading.current?.focus(); }, [step, restore, googlePage, held]);
+  const noSteps = !jobId && !done && !finalFinishing && !restoreStays;
+  const unavailable = finished && noSteps;
+  // A first read that failed for any other reason says nothing about the install, so it offers only another try.
+  const loadFailed = status.isError && !status.data && !finished && noSteps;
+  const reloadShown = loadFailed || (status.isError && Boolean(status.data) && !finished && !finalFinishing);
+  // The reload alert is focused by an earlier effect: a step that changes along with it must not take the focus back.
+  useEffect(() => { if (!reloadBox.current?.contains(document.activeElement)) heading.current?.focus(); },
+    [step, restore, googlePage, held, reloadBox]);
+  const retryStatus = <Button type="button" disabled={status.isFetching} onClick={() => void readAgain()}>{t('setup/setup:retry')}</Button>;
+  const reloadAlert = <Alert ref={reloadBox} variant="error"><p>{t('setup/setup:reloadFailed')}</p>{retryStatus}</Alert>;
   const deferBackups = <Button type="button" disabled={busy} variant="outline" onClick={() => void run(async () => {
     await client.call('decide', { revision, decision: 'backups_later' }); setBackupKey(null); draft.clear(); await refresh();
   })}>{t('setup/setup:skipBackups')}</Button>;
@@ -221,14 +243,16 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
     {complete ? <><h2 className="text-xl font-semibold">{t('setup/setup:completeTitle')}</h2><p role="status">{t(restoreState === 'restored' ? 'setup/setup:restored' : 'setup/setup:finished')}</p>
       {restoreState === 'restored' ? <Button asChild><a href="/login">{t('setup/setup:signIn')}</a></Button>
         : <Button asChild><a href="/admin">{t('setup/setup:openAdmin')}</a></Button>}</>
-    : unavailable ? <><Alert>{t('setup/setup:unavailable')}</Alert><a href="/login" className="inline-flex min-h-11 items-center underline">{t('setup/setup:signIn')}</a></>
+    : unavailable ? <><Alert>{t('setup/setup:unavailable')}</Alert><div className="flex flex-wrap items-center gap-4">{retryStatus}
+      <a href="/login" className="inline-flex min-h-11 items-center underline">{t('setup/setup:signIn')}</a></div></>
+    : loadFailed ? reloadAlert
     : status.isPending && !jobId ? <LoadingState label={t('setup/setup:loading')} />
     : jobId || restoreState === 'running' ? unreachable
       ? <Alert role="status"><p>{t('setup/setup:restoreUnreachable')}</p>
         {phase && <p>{t(phase === 'verifying' ? 'setup/setup:restoreUnreachableVerifying' : 'setup/setup:restoreUnreachableStaged')}</p>}</Alert>
       : <LoadingState label={t('setup/setup:restoring')} />
     : <>
-      {status.isError && status.data && !finished && !finalFinishing && <Alert variant="error"><p>{t('setup/setup:reloadFailed')}</p><Button type="button" disabled={status.isFetching} onClick={() => void status.refetch()}>{t('setup/setup:retry')}</Button></Alert>}
+      {reloadShown && reloadAlert}
       <p className="text-sm text-muted-foreground">{t('setup/setup:step')} {googlePage ? t('setup/setup:googleStepNumber') : step + 1} / 9</p>
       <h2 ref={heading} tabIndex={-1} className="scroll-mt-4 text-xl font-semibold focus:outline-none">{googlePage ? t('setup/google-step:title') : t('setup/setup:step' + step)}</h2>
       {error && <Alert ref={errorBox} tabIndex={-1} variant="error">{say(error)}</Alert>}
@@ -247,12 +271,9 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
       {step === 1 && <Form action={async (data) => {
         const email = text(data, 'email'), password = text(data, 'password');
         await client.call('owner', { name: text(data, 'ownerName'), email, password });
-        const reload = async () => {
-          await queries.invalidateQueries({ queryKey: bootstrapKey }); await refresh();
-          // A failed status reload keeps the old answer, which would bring the owner form back. The owner is saved, so show at
-          // least the next step, and leave the answer stale so a later reload replaces it.
-          queries.setQueryData<NonNullable<typeof status.data>>(key, (current) => current && { ...current, currentStep: Math.max(current.currentStep, 2) }, { updatedAt: 0 });
-        };
+        // From here a failed status reload shows at least the next step, never the owner form again. Not set any earlier,
+        // so the form stays on screen while signing in.
+        const reload = async () => { setOwnerSaved(true); await queries.invalidateQueries({ queryKey: bootstrapKey }); await refresh(); };
         // Once the owner is saved, move to the sign-in step even if signing in or sending the link fails, so a retry doesn't re-post owner.
         try {
           const bootstrap = await services.loadBootstrap();
