@@ -12,7 +12,7 @@ import type { Principal, RequestEnvironment } from '../../core/context.js';
 import { TestClock } from '../../core/clock.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { authorize } from '../staff/auth.permissions.js';
-import { encryptSmtpConfig } from '../settings/smtp.js';
+import { encryptSmtpConfig, installSmtpFingerprint } from '../settings/smtp.js';
 import { createEmailStatusRecorder } from '../settings/email-status.js';
 import { SmtpDeliveryError } from '../../infra/email/smtp.js';
 import { encryptSmsConfig } from '../settings/sms.js';
@@ -193,6 +193,31 @@ describe('built-in providers', () => {
     await failure('connection');
     expect((await tile('smtp', id, { env: { ...install, TENANCY: 'single' } })).message)
       .toContain("The last email failed: the app couldn't connect to the sending service.");
+  });
+  it('words a refused login by the settings it went through, not the ones in use now', async () => {
+    // The gym's stored value can no longer be read (restored under another key), so mail now goes through the install's.
+    const id = uuidv7(), smtp = { host: 'sending.host', port: 587, security: 'starttls', from: 'owner@example.test', username: 'u', password: 'p' } as const;
+    await factory('gyms', id, { smtpConfig: encryptSmtpConfig(Buffer.alloc(32, 3), id, smtp) });
+    await database.forGym(id, (tx) => writeAudit(tx, { gymId: id, actorKind: 'system', action: 'email.delivery_failed',
+      targetType: 'gym', targetId: id, after: { failure: 'authentication', source: 'gym' }, occurredAt: new Date() }));
+    const install = { ...env, TENANCY: 'single', SMTP_HOST: 'fallback.private', SMTP_FROM: 'install@example.test', SMTP_USER: 'fallback-user', SMTP_PASS: 'fallback-secret' };
+    const unreadable = await tile('smtp', id, { env: install });
+    expect(unreadable).toMatchObject({ status: 'warning', details: { configured: true } });
+    expect(unreadable.message).toContain("install's");
+    expect(unreadable.message).toContain('the service rejected the login');
+    expect(unreadable.message).toContain('Settings → Integrations → Email');
+    expect(unreadable.message).not.toContain('SMTP_USER');
+  });
+  it('keeps a failure through the install\'s settings across a restart while they stay the same', async () => {
+    const id = uuidv7(); await factory('gyms', id);
+    const install = { ...env, TENANCY: 'single', SMTP_HOST: 'fallback.private', SMTP_FROM: 'install@example.test', SMTP_USER: 'fallback-user', SMTP_PASS: 'fallback-secret' };
+    // Recorded before this process started, with the settings' fingerprint.
+    await database.forGym(id, (tx) => writeAudit(tx, { gymId: id, actorKind: 'system', action: 'email.delivery_failed', targetType: 'gym', targetId: id,
+      after: { failure: 'authentication', source: 'install', settings: installSmtpFingerprint(key, install) }, occurredAt: new Date(Date.now() - 86_400_000) }));
+    const same = await tile('smtp', id, { env: install });
+    expect(same).toMatchObject({ status: 'warning' });
+    expect(same.message).toContain('SMTP_USER and SMTP_PASS');
+    expect(await tile('smtp', id, { env: { ...install, SMTP_PASS: 'changed-secret' } })).toMatchObject({ status: 'healthy' });
   });
   it('reports no settings as not configured, even with a standing send failure', async () => {
     const id = uuidv7(); await factory('gyms', id);

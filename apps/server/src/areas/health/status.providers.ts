@@ -11,7 +11,7 @@ import { sourceUrl } from '../../core/source-link.js';
 import { restoreStagingDirectory } from '../../core/maintenance-credentials.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { tenancyMode } from '../../core/tenancy.js';
-import { createSmtpResolver } from '../settings/smtp.js';
+import { createSmtpResolver, installSmtpFingerprint } from '../settings/smtp.js';
 import { readEmailSendFailure } from '../settings/email-status.js';
 import { createSmsResolver } from '../settings/sms.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
@@ -55,7 +55,7 @@ export function createStatusProviders(options: StatusOptions = {}) {
   const device = options.device ?? ((path: string) => stat(path, { bigint: true }).then((stats) => stats.dev));
   let key: Buffer | undefined;
   const encryptionKey = () => key ??= parseEncryptionKey(env.APP_ENCRYPTION_KEY ?? '');
-  let smtp: ReturnType<typeof createSmtpResolver> | undefined;
+  let smtp: ReturnType<typeof createSmtpResolver> | undefined, installSettings: string | null = null;
   let sms: ReturnType<typeof createSmsResolver> | undefined;
   const settings = createGymSettingsAccessor({ scope });
   return [createBackupHealthProvider({ env }), createUpdateAvailableProvider({ env }),
@@ -74,6 +74,7 @@ export function createStatusProviders(options: StatusOptions = {}) {
     healthProvider('smtp', async (context) => {
       if (env.DEMO_MODE === 'true') return { id: 'smtp', status: 'healthy', checkedAt: context.clock.now().toISOString(),
         details: { configured: true, lastTestAt: null }, message: statusMessage('smtpDemo') };
+      if (!smtp) installSettings = installSmtpFingerprint(encryptionKey(), env);
       const resolver = smtp ??= createSmtpResolver({ key: encryptionKey(), env, scope });
       const { source, unreadable } = await resolver.status(context.gymId);
       const configured = source !== null;
@@ -82,11 +83,12 @@ export function createStatusProviders(options: StatusOptions = {}) {
         rows: await tx.select({ action: auditEvents.action, after: auditEvents.after, occurredAt: auditEvents.occurredAt })
           .from(auditEvents).where(inArray(auditEvents.action, emailTestActions)).orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(50),
         // The last real send's failure, until a send works or the settings change (`settings/email-status.ts`).
-        sendFailure: await readEmailSendFailure(tx, context.gymId),
+        sendFailure: await readEmailSendFailure(tx, context.gymId, { installSettings }),
       }));
       const test = latestEmailTest(rows, source === 'gym');
       // A refused login through the install's `SMTP_*` settings is fixed on the server (single-gym) or by whoever runs the install.
-      const failureKey = sendFailure && (source === 'install' && sendFailure.failure === 'authentication'
+      // The wording follows the settings the failure went through, not the ones in use now.
+      const failureKey = sendFailure && (sendFailure.source === 'install' && sendFailure.failure === 'authentication'
         ? 'smtpLastFailed.authentication_' + (tenancyMode(env.TENANCY ?? 'single') === 'single' ? 'install' : 'operator')
         : 'smtpLastFailed.' + sendFailure.failure);
       // With no settings in use and none unreadable, nothing can send, so an old failure or test doesn't make it a warning.

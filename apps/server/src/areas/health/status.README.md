@@ -186,13 +186,16 @@ saved.
 Real sends report too: while the gym's last email failed through its sending service
 (`readEmailSendFailure`, `areas/settings/email-status.ts`), the tile is a warning and its
 message adds the failure's class (`smtpLastFailed.<class>`: connection, secure connection,
-refused login, or refused sender). A refused login while the install's `SMTP_*` settings
-are in use names the server's `SMTP_USER` and `SMTP_PASS` and a restart on a single-gym
-install (`smtpLastFailed.authentication_install`), and whoever runs the install on a
-multi-gym one (`smtpLastFailed.authentication_operator`); with the gym's own settings it
-points to Settings → Integrations → Email. A send that works, or a change to the email
-settings, clears it; a failure through the install's settings also stops counting once
-the app restarts, since changing `SMTP_*` takes a restart. With no settings in use (and
+refused login, or refused sender). The wording follows the settings the failure went
+through (the row's `source`), not the ones in use now: a refused login through the
+install's `SMTP_*` settings names the server's `SMTP_USER` and `SMTP_PASS` and a restart
+on a single-gym install (`smtpLastFailed.authentication_install`), and whoever runs the
+install on a multi-gym one (`smtpLastFailed.authentication_operator`); one through the
+gym's own settings points to Settings → Integrations → Email, even when the stored value
+can no longer be read. A send that works, or a change to the email settings, clears it;
+a failure through the install's settings stands across restarts while those settings stay
+the same (their fingerprint, `installSmtpFingerprint`), and stops counting once they
+change. One recorded without a fingerprint stops counting once the app restarts. With no settings in use (and
 none unreadable) the tile is `not_configured` and says only that email is not
 configured, whatever failure or test came before; `details` don't change.
 

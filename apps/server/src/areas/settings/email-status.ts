@@ -22,12 +22,19 @@ const savedAtEmailStep = (after: unknown) => {
 type SmtpSettings = { port: number; security: 'starttls' | 'tls' | 'plain'; source: 'gym' | 'install' };
 /**
  * When this process started. The install's `SMTP_*` settings change only with a restart, which writes no audit row,
- * so a failure through them recorded before this process started no longer stands.
+ * so a failure through them recorded without a settings fingerprint before this process started no longer stands.
  */
 export const processStartedAt = new Date();
 type Report = NonNullable<SmtpConfig['report']>;
 type Row = { id: string; action: string; after: unknown; occurredAt: Date };
 export type SettingsMark = { occurredAt: Date; id: string } | null;
+/** A standing send failure and whose settings it went through. */
+export type EmailSendFailure = { failure: SmtpTestFailure; at: string; source: 'gym' | 'install' };
+/**
+ * `installSince`: when the install's settings were last read (default: this process's start), for a failure without a
+ * fingerprint. `installSettings`: the install's settings fingerprint now (`installSmtpFingerprint`), null without any.
+ */
+export type InstallSettingsOptions = { installSince?: Date; installSettings?: string | null };
 
 /** The newest email-settings audit row for the gym, or null when none exists. */
 export async function readSettingsMark(tx: Transaction, gymId: string): Promise<SettingsMark> {
@@ -57,28 +64,38 @@ async function newestStatus(tx: Transaction, gymId: string): Promise<Row | undef
 /**
  * The gym's last send failure, while it stands: the newest `email.delivery_failed` row, unless a send worked since
  * (`email.delivery_recovered`) or the email settings changed since (saved or removed in Settings, or saved at setup's email step).
- * A failure through the install's settings (`source: 'install'`) also lapses when it is older than `installSince`
- * (default: this process's start); a row without a source is read as one through the gym's.
+ * A failure through the install's settings (`source: 'install'`) that carries their fingerprint (`settings`) stands while
+ * it equals `installSettings`, when that is given, and lapses once they differ, whenever this process started. One
+ * without a fingerprint, or read without `installSettings`, lapses when it is older than `installSince` (default: this
+ * process's start). A row without a source is read as one through the gym's.
  */
-export async function readEmailSendFailure(tx: Transaction, gymId: string, options: { installSince?: Date } = {}): Promise<{ failure: SmtpTestFailure; at: string } | null> {
+export async function readEmailSendFailure(tx: Transaction, gymId: string, options: InstallSettingsOptions = {}): Promise<EmailSendFailure | null> {
   const newest = await newestStatus(tx, gymId);
   if (newest?.action !== 'email.delivery_failed') return null;
-  const after = newest.after as { failure?: unknown; source?: unknown } | null;
+  const after = newest.after as { failure?: unknown; source?: unknown; settings?: unknown } | null;
   const failure = smtpTestFailureSchema.safeParse(after?.failure);
   if (!failure.success) return null;
-  if (after?.source === 'install' && newest.occurredAt < (options.installSince ?? processStartedAt)) return null;
+  const source = after?.source === 'install' ? 'install' : 'gym';
+  if (source === 'install') {
+    const fingerprinted = typeof after?.settings === 'string' && options.installSettings !== undefined;
+    if (fingerprinted ? after.settings !== options.installSettings : newest.occurredAt < (options.installSince ?? processStartedAt)) return null;
+  }
   if (await settingsChangedAfter(tx, gymId, { occurredAt: newest.occurredAt, id: newest.id })) return null;
-  return { failure: failure.data, at: newest.occurredAt.toISOString() };
+  return { failure: failure.data, at: newest.occurredAt.toISOString(), source };
 }
 
 /**
  * Builds the `SmtpConfig.report` for one gym's sends. A failure is recorded only when it is the sending service's
  * (`emailServiceFailure`), and only when it isn't already the failure shown; a working send is recorded only after a
  * recorded failure. Each record is one short transaction of its own, after the send. The row holds the failure class
- * only, never a recipient, reply or credential. A failed record is logged and never reaches the send.
+ * and whose settings it went through, never a recipient, reply or credential; one through the install's settings also
+ * holds their fingerprint (`installSettings`, an HMAC), so it stands across restarts until they change. A failed record
+ * is logged and never reaches the send.
  */
-export function createEmailStatusRecorder(options: { scope?: typeof forGym; clock?: Clock; installSince?: Date } = {}) {
+export function createEmailStatusRecorder(options: { scope?: typeof forGym; clock?: Clock } & InstallSettingsOptions = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock, installSince = options.installSince ?? processStartedAt;
+  const installSettings = options.installSettings;
+  const readOptions: InstallSettingsOptions = { installSince, ...(installSettings !== undefined ? { installSettings } : {}) };
   return (gymId: string, settings: SmtpSettings, mark?: SettingsMark): Report => async (outcome) => {
     const failure = outcome.ok ? null : emailServiceFailure(outcome.error, settings);
     if (!outcome.ok && failure === null) return;
@@ -92,9 +109,12 @@ export function createEmailStatusRecorder(options: { scope?: typeof forGym; cloc
           return settingsChangedAfter(tx, gymId, mark);
         };
         if (failure !== null) {
-          if ((await readEmailSendFailure(tx, gymId, { installSince }))?.failure === failure || await stale()) return;
+          // The failure shown already says this, through the same settings: nothing new to record.
+          const shown = await readEmailSendFailure(tx, gymId, readOptions);
+          if ((shown?.failure === failure && shown.source === settings.source) || await stale()) return;
+          const fingerprint = settings.source === 'install' && typeof installSettings === 'string' ? { settings: installSettings } : {};
           await writeAudit(tx, { gymId, actorKind: 'system', action: 'email.delivery_failed', targetType: 'gym', targetId: gymId,
-            after: { failure, source: settings.source }, occurredAt: clock.now() });
+            after: { failure, source: settings.source, ...fingerprint }, occurredAt: clock.now() });
         } else if ((await newestStatus(tx, gymId))?.action === 'email.delivery_failed' && !await stale()) {
           await writeAudit(tx, { gymId, actorKind: 'system', action: 'email.delivery_recovered', targetType: 'gym', targetId: gymId,
             after: null, occurredAt: clock.now() });

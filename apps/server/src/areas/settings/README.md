@@ -65,14 +65,20 @@ skipped when the email settings changed (saved, removed, or saved at setup step 
 after its settings were resolved, and a failed record is logged and never changes
 the send. `readEmailSendFailure` returns the newest failure
 until a recovery, `integrations.email_saved`, `integrations.email_removed`, or setup
-step 5 with settings saved (a skip, `test: 'not_sent'`, doesn't count) follows it. A
-failure through the install's `SMTP_*` settings also stops standing once it is older than
-the app process's start (`installSince`, default `processStartedAt`): changing those
-settings takes a restart, which writes no audit row. A row without a `source`, written by
-an earlier version, is read as the gym's. The Email section shows it as `lastSendFailure`,
-with its time; a refused login through the install's settings names the server's
-`SMTP_USER` and `SMTP_PASS` on a single-gym install and whoever runs the install on a
-multi-gym one.
+step 5 with settings saved (a skip, `test: 'not_sent'`, doesn't count) follows it. Changing
+the install's `SMTP_*` settings takes a restart, which writes no audit row, so a failure
+through them records a fingerprint of those settings as `settings`: an HMAC-SHA256 under
+the app's encryption key of `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_FROM`,
+`SMTP_USER` and `SMTP_PASS` (`installSmtpFingerprint` in `smtp.ts`), never the values.
+It stands across restarts and app processes while the current fingerprint matches
+(`installSettings`), and stops standing once the settings differ. One without a
+fingerprint, written by an earlier version, stops standing once it is older than the app
+process's start (`installSince`, default `processStartedAt`). A row without a `source`
+is read as the gym's. `readEmailSendFailure` also returns the row's `source` (`gym` or
+`install`). The Email section shows the failure as `lastSendFailure`, with its time, only
+while mail goes through the settings it failed on (none when no settings are in use); a
+refused login through the install's settings names the server's `SMTP_USER` and
+`SMTP_PASS` on a single-gym install and whoever runs the install on a multi-gym one.
 Removing an unreadable stored value is never refused, since it takes no sign-in
 method away; its audit still records `source: 'gym'` for the stored value. Operator-managed refusals reload the
 integrations and show the operator notice in place of the editable forms.

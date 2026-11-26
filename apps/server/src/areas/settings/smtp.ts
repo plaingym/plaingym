@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { createHmac } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { forGym, gyms } from '@plaingym/db';
@@ -59,6 +60,17 @@ export function smtpFromEnvironment(env: NodeJS.ProcessEnv = process.env): SmtpC
     ...(env.SMTP_USER || env.SMTP_PASS ? { auth: { user: env.SMTP_USER ?? '', pass: env.SMTP_PASS ?? '' } } : {}) };
 }
 
+/**
+ * A fingerprint of the install's `SMTP_*` settings, so a failure recorded through them stands until they change, across
+ * restarts and processes. An HMAC-SHA256 under `key` (the app's encryption key): it never holds or reveals a value.
+ * Null when the install has no `SMTP_HOST`.
+ */
+export function installSmtpFingerprint(key: Buffer, env: NodeJS.ProcessEnv = process.env): string | null {
+  if (!env.SMTP_HOST) return null;
+  const settings = [env.SMTP_HOST, env.SMTP_PORT ?? '587', env.SMTP_SECURITY ?? 'starttls', env.SMTP_FROM ?? '', env.SMTP_USER ?? '', env.SMTP_PASS ?? ''];
+  return createHmac('sha256', key).update('smtp.install\n' + JSON.stringify(settings)).digest('base64url');
+}
+
 export interface SmtpResolver {
   /** Reads the gym value once, including whether a stored value could not be read. */
   status(gymId: string): Promise<{ source: 'gym' | 'install' | null; unreadable: boolean }>;
@@ -70,10 +82,10 @@ export interface SmtpResolver {
   configured(gymId: string): Promise<boolean>;
 }
 export function createSmtpResolver(options: { key: Buffer; env?: NodeJS.ProcessEnv; scope?: typeof forGym; clock?: Clock }): SmtpResolver {
-  const scope = options.scope ?? forGym, fallback = smtpFromEnvironment(options.env);
-  const recorder = createEmailStatusRecorder({ scope, ...(options.clock ? { clock: options.clock } : {}) });
-  // On a multi-gym install a gym's own server is a tenant's choice; the install's own never is.
-  const tenantHosts = tenancyMode((options.env ?? process.env).TENANCY) === 'multi';
+  const env = options.env ?? process.env, scope = options.scope ?? forGym, fallback = smtpFromEnvironment(env);
+  const recorder = createEmailStatusRecorder({ scope, installSettings: installSmtpFingerprint(options.key, env), ...(options.clock ? { clock: options.clock } : {}) });
+  // On a multi-gym install a gym's own server is a tenant's choice; the install's own never is. An env without `TENANCY` is `single`.
+  const tenantHosts = tenancyMode(env.TENANCY ?? 'single') === 'multi';
   const storedConfig = (gymId: string) => scope(gymId, async (tx) => (await tx.select({ smtp: gyms.smtpConfig }).from(gyms).where(eq(gyms.id, gymId)))[0]?.smtp);
   function readOwnConfig(gymId: string, stored: string | null | undefined) {
     return readStoredSecret(options.key, 'smtp_config', gymId, stored ?? null, () =>

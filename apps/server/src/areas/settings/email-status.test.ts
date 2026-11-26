@@ -9,8 +9,8 @@ import { setLogSink } from '../../core/log.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { DeliveryError } from '../../infra/email/index.js';
 import { SmtpDeliveryError } from '../../infra/email/smtp.js';
-import { createEmailStatusRecorder, emailStatusActions, readEmailSendFailure } from './email-status.js';
-import { createSmtpResolver, encryptSmtpConfig } from './smtp.js';
+import { createEmailStatusRecorder, emailStatusActions, readEmailSendFailure, type InstallSettingsOptions } from './email-status.js';
+import { createSmtpResolver, encryptSmtpConfig, installSmtpFingerprint } from './smtp.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
 const clock = new TestClock('2026-11-21T09:00:00.000Z');
@@ -28,7 +28,7 @@ async function rows(gymId: string) {
     .where(and(eq(auditEvents.gymId, gymId), inArray(auditEvents.action, [...emailStatusActions]))).orderBy(asc(auditEvents.occurredAt), asc(auditEvents.id)));
 }
 // The test clock runs before this process started, so install-source rows are read as of the epoch unless a test says otherwise.
-const shown = (gymId: string, options: { installSince?: Date } = { installSince: new Date(0) }) =>
+const shown = (gymId: string, options: InstallSettingsOptions = { installSince: new Date(0) }) =>
   database.forGym(gymId, (tx) => readEmailSendFailure(tx, gymId, options));
 async function record(gymId: string, outcome: Parameters<ReturnType<typeof recorder>>[0], source: 'gym' | 'install' = 'gym') {
   clock.advance(1000);
@@ -53,7 +53,7 @@ describe('the recorded email state', () => {
     await record(gymA, authentication);
     expect(await rows(gymA)).toEqual([{ action: 'email.delivery_failed', after: { failure: 'authentication', source: 'gym' }, actorKind: 'system', targetType: 'gym', targetId: gymA }]);
     const at = clock.now().toISOString();
-    expect(await shown(gymA)).toEqual({ failure: 'authentication', at });
+    expect(await shown(gymA)).toEqual({ failure: 'authentication', at, source: 'gym' });
     await record(gymA, authentication);
     expect(await rows(gymA)).toHaveLength(1);
     await record(gymA, tls);
@@ -126,13 +126,13 @@ describe('the recorded email state', () => {
     expect((await rows(gymId)).map((row) => row.after)).toEqual([{ failure: 'authentication', source: 'install' }]);
     const at = clock.now();
     expect(await shown(gymId, { installSince: new Date(at.getTime() + 1) })).toBeNull();
-    expect(await shown(gymId, { installSince: new Date(at.getTime() - 1) })).toEqual({ failure: 'authentication', at: at.toISOString() });
+    expect(await shown(gymId, { installSince: new Date(at.getTime() - 1) })).toEqual({ failure: 'authentication', at: at.toISOString(), source: 'install' });
     // A process started after that row no longer shows it, so it records the same failure again.
     const restarted = createEmailStatusRecorder({ scope: database.forGym, clock, installSince: new Date(at.getTime() + 1) });
     clock.advance(1000);
     await restarted(gymId, { ...settings, source: 'install' })(authentication);
     expect((await rows(gymId)).map((row) => row.after)).toEqual([{ failure: 'authentication', source: 'install' }, { failure: 'authentication', source: 'install' }]);
-    expect(await shown(gymId, { installSince: new Date(at.getTime() + 1) })).toEqual({ failure: 'authentication', at: clock.now().toISOString() });
+    expect(await shown(gymId, { installSince: new Date(at.getTime() + 1) })).toEqual({ failure: 'authentication', at: clock.now().toISOString(), source: 'install' });
     // The default is this process's start, which is after the test clock's rows.
     expect(await database.forGym(gymId, (tx) => readEmailSendFailure(tx, gymId))).toBeNull();
   });
@@ -145,6 +145,61 @@ describe('the recorded email state', () => {
     await audit(legacy, 'email.delivery_failed', { failure: 'authentication' });
     expect(await shown(legacy, later)).toMatchObject({ failure: 'authentication' });
     expect(await database.forGym(legacy, (tx) => readEmailSendFailure(tx, legacy))).toMatchObject({ failure: 'authentication' });
+    expect(await shown(legacy, later)).toMatchObject({ source: 'gym' });
+  });
+});
+
+describe('an install-source failure with the install settings\' fingerprint', () => {
+  const key = parseEncryptionKey('cd'.repeat(32));
+  const env = { SMTP_HOST: 'smtp.fingerprint.example', SMTP_FROM: 'noreply@fingerprint.example', SMTP_USER: 'install', SMTP_PASS: 'fingerprint-secret' };
+  const F = installSmtpFingerprint(key, env)!, G = installSmtpFingerprint(key, { ...env, SMTP_PASS: 'another-secret' })!;
+  it('stands while the fingerprint matches, whatever the process start, and lapses once it differs', async () => {
+    const gymId = await newGym();
+    clock.advance(1000);
+    await createEmailStatusRecorder({ scope: database.forGym, clock, installSettings: F })(gymId, { ...settings, source: 'install' })(authentication);
+    const at = clock.now();
+    expect((await rows(gymId)).map((row) => row.after)).toEqual([{ failure: 'authentication', source: 'install', settings: F }]);
+    // A restart after the row, with the same settings.
+    const restarted = { installSince: new Date(at.getTime() + 60_000) };
+    expect(await shown(gymId, { ...restarted, installSettings: F })).toEqual({ failure: 'authentication', at: at.toISOString(), source: 'install' });
+    expect(await shown(gymId, { ...restarted, installSettings: G })).toBeNull();
+    expect(await shown(gymId, { installSince: new Date(0), installSettings: G })).toBeNull();
+    expect(await shown(gymId, { ...restarted, installSettings: null })).toBeNull();
+    // Read without the current fingerprint, the process-start rule decides.
+    expect(await shown(gymId, restarted)).toBeNull();
+    const json = JSON.stringify(await rows(gymId));
+    expect(json).not.toContain('smtp.fingerprint.example');
+    expect(json).not.toContain('fingerprint-secret');
+  });
+  it('is recorded once when two processes started at different times report it', async () => {
+    const gymId = await newGym();
+    const first = createEmailStatusRecorder({ scope: database.forGym, clock, installSince: new Date(0), installSettings: F });
+    clock.advance(1000);
+    await first(gymId, { ...settings, source: 'install' })(authentication);
+    const second = createEmailStatusRecorder({ scope: database.forGym, clock, installSince: new Date(clock.now().getTime() + 1), installSettings: F });
+    clock.advance(1000);
+    await second(gymId, { ...settings, source: 'install' })(authentication);
+    clock.advance(1000);
+    await first(gymId, { ...settings, source: 'install' })(authentication);
+    expect((await rows(gymId)).map((row) => row.action)).toEqual(['email.delivery_failed']);
+    // Changed settings make it a new failure through them.
+    const changed = createEmailStatusRecorder({ scope: database.forGym, clock, installSettings: G });
+    clock.advance(1000);
+    await changed(gymId, { ...settings, source: 'install' })(authentication);
+    expect((await rows(gymId)).map((row) => row.after)).toEqual([
+      { failure: 'authentication', source: 'install', settings: F }, { failure: 'authentication', source: 'install', settings: G }]);
+  });
+  it('still lapses on a settings save, and a gym-source row carries no fingerprint', async () => {
+    const gymId = await newGym();
+    const recorder = createEmailStatusRecorder({ scope: database.forGym, clock, installSettings: F });
+    clock.advance(1000);
+    await recorder(gymId, { ...settings, source: 'install' })(authentication);
+    await audit(gymId, 'integrations.email_saved', { source: 'gym' });
+    expect(await shown(gymId, { installSettings: F })).toBeNull();
+    clock.advance(1000);
+    await recorder(gymId, settings)(tls);
+    expect((await rows(gymId)).at(-1)?.after).toEqual({ failure: 'tls', source: 'gym' });
+    expect(await shown(gymId, { installSettings: G })).toMatchObject({ failure: 'tls', source: 'gym' });
   });
 });
 
@@ -168,7 +223,7 @@ describe('the SMTP resolver\'s report', () => {
     expect(await shown(installed)).toMatchObject({ failure: 'tls' });
     expect(await shown(own)).toMatchObject({ failure: 'authentication' });
     expect((await rows(own)).map((row) => row.after)).toEqual([{ failure: 'authentication', source: 'gym' }]);
-    expect((await rows(installed)).map((row) => row.after)).toEqual([{ failure: 'tls', source: 'install' }]);
+    expect((await rows(installed)).map((row) => row.after)).toEqual([{ failure: 'tls', source: 'install', settings: installSmtpFingerprint(key, env) }]);
   });
   it('skips recording when email settings changed after config() resolved', async () => {
     const gymId = await newGym();

@@ -30,8 +30,8 @@ import { promoteDefaultCard } from '../billing/payments.mutations.js';
 import { latestTestSwitchId, stripeTestClearedAction as testClearedAction } from '../billing/stripe-writes.js';
 import { testCleared } from '../billing/transitions/store.js';
 import { cardImportAudits, linkedCustomer, testCards } from './integrations.query.js';
-import { encryptSmtpConfig, readSmtpSchema, sendSmtpTest, smtpFromEnvironment, storedSmtpFromRequest, type SendSmtpTest } from './smtp.js';
-import { readEmailSendFailure } from './email-status.js';
+import { encryptSmtpConfig, installSmtpFingerprint, readSmtpSchema, sendSmtpTest, smtpFromEnvironment, storedSmtpFromRequest, type SendSmtpTest } from './smtp.js';
+import { readEmailSendFailure, type EmailSendFailure } from './email-status.js';
 import { createGoogleClientResolver, encryptGoogleConfig, readGoogleConfig, requireGoogleClient, type CheckGoogle } from './google-login.js';
 import { readStoredSecret } from './unreadable-secret.js';
 import { requireBackupDestination, type CheckBackupDestination } from './backup-destination.js';
@@ -128,7 +128,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
       host: smtp?.host ?? null, port: smtp?.port ?? null, security: smtp?.security ?? null, from: smtp?.from ?? null };
   }
   const signIn = (emailConfigured: boolean) => ({ password: passwordLogin(options.config, emailConfigured), magicLink: emailConfigured });
-  async function email(gym: Gym, userId: string, lastSendFailure: EmailIntegration['lastSendFailure'] = null): Promise<EmailIntegration> {
+  async function email(gym: Gym, userId: string, sendFailure: EmailSendFailure | null = null): Promise<EmailIntegration> {
     const smtp = gymSmtp(gym);
     const { host, port, security, from } = emailAudit(gym, smtp);
     // The section reports the settings mail actually goes through: an unreadable stored value falls back.
@@ -142,6 +142,8 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     // Removing an unreadable value takes no sign-in method away, so it is never blocked.
     const removeBlocked = afterRemove !== null && now.magicLink && !afterRemove.magicLink
       && !(afterRemove.password && await options.hasPassword(userId)) && !googleConfigured;
+    // A failure shows only while mail goes through the settings it failed on, so its wording matches the section.
+    const lastSendFailure = sendFailure && sendFailure.source === source ? { failure: sendFailure.failure, at: sendFailure.at } : null;
     return { source, host, port, security, from, signIn: now, signInAfterSave: signIn(true),
       signInAfterRemove: afterRemove, removeBlocked, unreadable: !!gym.smtpConfig && !smtp, googleConfigured, lastSendFailure };
   }
@@ -376,7 +378,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
       const stored = readStripeConfig(options.key, row.stripeConfig, gymId), found = await stripeReference(tx, gymId);
       return { gym: row, config: stored, reference: found,
         test: stored?.mode === 'test' && found !== null && !sandbox ? await testData(tx, gymId) : null,
-        sendFailure: await readEmailSendFailure(tx, gymId) };
+        sendFailure: await readEmailSendFailure(tx, gymId, { installSettings: installSmtpFingerprint(options.key, options.env) }) };
     });
     const imported = importedOnly(config, reference);
     return { email: await email(gym, userId, sendFailure), sms: sms.present(gym),

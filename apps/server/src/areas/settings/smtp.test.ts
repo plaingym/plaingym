@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { encryptSecret, parseEncryptionKey } from '../../core/secrets.js';
 import { DeliveryError } from '../../infra/email/index.js';
-import { createSmtpResolver, encryptSmtpConfig, sendSmtpTest, smtpFromEnvironment, smtpTestFailure } from './smtp.js';
+import { createSmtpResolver, encryptSmtpConfig, installSmtpFingerprint, sendSmtpTest, smtpFromEnvironment, smtpTestFailure } from './smtp.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
 const key = parseEncryptionKey('ab'.repeat(32));
@@ -139,5 +139,41 @@ describe('per-gym SMTP with an install-wide fallback', () => {
       .toEqual({ host: 'mailpit', port: 1025, from: 'a@b.test', security: 'plain' });
     expect(() => smtpFromEnvironment({ SMTP_HOST: 'x', SMTP_SECURITY: 'ssl' })).toThrow('Invalid SMTP_SECURITY');
     expect(() => encryptSmtpConfig(key, gymA, { ...own, from: 'not-an-email' })).toThrow();
+  });
+  it('reads an injected env without TENANCY as single, whatever the process says', async () => {
+    // Each resolver's `report` is its own function, so the settings are compared without it.
+    const resolved = async (injected: NodeJS.ProcessEnv) => {
+      const config = await createSmtpResolver({ key, env: injected, scope: database.forGym }).config(gymA);
+      return config && { ...config, report: typeof config.report };
+    };
+    const single = await resolved({ ...env, TENANCY: 'single' });
+    try {
+      vi.stubEnv('TENANCY', 'multi');
+      expect(await resolved(env)).toEqual(single);
+      expect(await resolved({ ...env, TENANCY: 'multi' })).toMatchObject({ publicHostOnly: true });
+      vi.stubEnv('TENANCY', 'bogus');
+      expect(await resolved(env)).toEqual(single);
+    } finally { vi.unstubAllEnvs(); }
+    expect(single).not.toHaveProperty('publicHostOnly');
+  });
+});
+
+describe('the install settings\' fingerprint', () => {
+  const settings = { SMTP_HOST: 'smtp.install.example', SMTP_PORT: '2525', SMTP_SECURITY: 'tls', SMTP_FROM: 'noreply@install.example', SMTP_USER: 'install', SMTP_PASS: 'install-secret' };
+  it('is the same for the same key and settings, and changes with any one of them or the key', () => {
+    const fingerprint = installSmtpFingerprint(key, settings);
+    expect(fingerprint).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(installSmtpFingerprint(key, { ...settings })).toBe(fingerprint);
+    for (const name of Object.keys(settings) as (keyof typeof settings)[])
+      expect(installSmtpFingerprint(key, { ...settings, [name]: settings[name] + 'x' }), name).not.toBe(fingerprint);
+    expect(installSmtpFingerprint(parseEncryptionKey('cd'.repeat(32)), settings)).not.toBe(fingerprint);
+    expect(fingerprint).not.toContain('install-secret');
+    expect(fingerprint).not.toContain(Buffer.from('install-secret').toString('base64url'));
+  });
+  it('reads the defaults for a missing port and security, and is null without SMTP_HOST', () => {
+    const defaults = { SMTP_HOST: settings.SMTP_HOST, SMTP_FROM: settings.SMTP_FROM, SMTP_USER: settings.SMTP_USER, SMTP_PASS: settings.SMTP_PASS };
+    expect(installSmtpFingerprint(key, defaults)).toBe(installSmtpFingerprint(key, { ...defaults, SMTP_PORT: '587', SMTP_SECURITY: 'starttls' }));
+    expect(installSmtpFingerprint(key, { ...settings, SMTP_HOST: '' })).toBeNull();
+    expect(installSmtpFingerprint(key, {})).toBeNull();
   });
 });
