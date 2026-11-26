@@ -422,6 +422,96 @@ describe('kiosk check-in screen', () => {
     expect(forgetToken).toHaveBeenCalledOnce();
     expect(screen.getByRole('heading', { name: 'Set up this check-in device' })).toBeDefined();
   });
+  it('leaves focus on the body after a tap or key once the focused field is blurred', () => {
+    render(<KioskApp/>);
+    choosePin();
+    const pin = screen.getByLabelText('Household PIN');
+    pin.focus(); pin.blur();
+    expect(document.activeElement).toBe(document.body);
+    fireEvent.pointerDown(screen.getByRole('button', { name: '1' }));
+    expect(document.activeElement).toBe(document.body);
+    fireEvent.keyDown(screen.getByRole('main'), { key: 'a' });
+    expect(document.activeElement).toBe(document.body);
+  });
+  it('restarts the name and PIN idle timer on a keypad tap', async () => {
+    vi.useFakeTimers();
+    render(<KioskApp/>);
+    choosePin();
+    await act(async () => { await vi.advanceTimersByTimeAsync(50_000); });
+    fireEvent.pointerDown(screen.getByRole('button', { name: '1' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(50_000); });
+    expect(screen.getByLabelText('Your name')).toBeDefined();
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(screen.getByRole('button', { name: 'Name and PIN' })).toBeDefined();
+  });
+  it('moves focus to each new step', () => {
+    render(<KioskApp/>);
+    const choice = screen.getByRole('button', { name: 'Name and PIN' });
+    choice.focus(); fireEvent.click(choice);
+    expect(document.activeElement).toBe(screen.getByLabelText('Your name'));
+    const startOver = screen.getByRole('button', { name: 'Start over' });
+    startOver.focus(); fireEvent.click(startOver);
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'How would you like to check in?' }));
+  });
+  it('returns focus to the QR step when progress removes the focused session choice', async () => {
+    vi.mocked(scanQrCamera).mockImplementation(async (_video, found) => { found('pgci1_' + 'a'.repeat(43)); return { stop: vi.fn() }; });
+    vi.mocked(qrCheckin).mockResolvedValueOnce({ status: 'select_session', member: parent, sessions: [session] })
+      .mockResolvedValueOnce({ status: 'checked_in', member: parent });
+    render(<KioskApp/>);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Scan a QR code' })); });
+    const openMat = screen.getByRole('button', { name: 'Open mat' });
+    openMat.focus();
+    await act(async () => { fireEvent.click(openMat); });
+    expect(screen.queryByRole('button', { name: 'Open mat' })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('region').querySelector('[data-kiosk-focus]'));
+  });
+  it('uses a compact title and name field on a short screen', () => {
+    render(<KioskApp/>);
+    choosePin();
+    expect(screen.getByRole('heading', { name: 'Check in' }).classList).toContain('[@media(max-height:500px)]:text-xl');
+    const name = screen.getByLabelText('Your name');
+    expect(name.classList).toContain('[@media(max-height:500px)]:h-12');
+    expect(name.classList).toContain('sm:h-16');
+  });
+  it('scrolls the focused name field into view on focus and when the visible viewport resizes', () => {
+    const viewport = new EventTarget();
+    vi.stubGlobal('visualViewport', viewport);
+    const scroll = vi.fn();
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scroll });
+    try {
+      render(<KioskApp/>);
+      choosePin();
+      const name = screen.getByLabelText('Your name');
+      act(() => name.blur());
+      scroll.mockClear();
+      act(() => name.focus());
+      expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: 'center' });
+      expect(scroll.mock.contexts[0]).toBe(name);
+      viewport.dispatchEvent(new Event('resize'));
+      expect(scroll).toHaveBeenCalledTimes(2);
+      expect(scroll).toHaveBeenLastCalledWith({ block: 'center' });
+      act(() => screen.getByLabelText('Household PIN').focus());
+      scroll.mockClear();
+      viewport.dispatchEvent(new Event('resize'));
+      expect(scroll).not.toHaveBeenCalled();
+      const removed = vi.spyOn(viewport, 'removeEventListener');
+      fireEvent.click(screen.getByRole('button', { name: 'Start over' }));
+      expect(removed).toHaveBeenCalledWith('resize', expect.any(Function));
+    } finally {
+      if (original) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', original);
+      else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+    }
+  });
+  it('takes the name field focus without a visual viewport', () => {
+    vi.stubGlobal('visualViewport', undefined);
+    render(<KioskApp/>);
+    choosePin();
+    const name = screen.getByLabelText('Your name');
+    act(() => name.blur());
+    expect(() => act(() => name.focus())).not.toThrow();
+    expect(document.activeElement).toBe(name);
+  });
   it('requests fullscreen from the tablet screen', async () => {
     const fullscreen = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(document.documentElement, 'requestFullscreen', { configurable: true, value: fullscreen });

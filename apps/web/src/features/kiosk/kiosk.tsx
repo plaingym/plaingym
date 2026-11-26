@@ -84,14 +84,16 @@ function CheckIn({ token, onUnauthorized }: { token: string; onUnauthorized: () 
   const [busy, setBusy] = useState(false);
   const [activity, setActivity] = useState(0);
   const [qrDone, setQrDone] = useState(false);
+  const [focusCheck, setFocusCheck] = useState(0);
   // Replacing a step or a session choice can remove the focused control.
   // Keep focus in the current step, but preserve focus on controls still present.
   useEffect(() => {
     if (document.activeElement === document.body) root.current?.querySelector<HTMLElement>('[data-kiosk-focus]')?.focus();
-  }, [flow, screen, activity]);
+  }, [flow, screen, focusCheck]);
   const qrProgress = useCallback((result?: KioskCheckinResult) => {
     setQrDone(!!result && result.status !== 'select_session');
     setActivity((value) => value + 1);
+    setFocusCheck((value) => value + 1);
   }, []);
   const openNamePin = useCallback(() => setFlow('pin'), []);
   const generation = useRef(0), pending = useRef(false);
@@ -144,7 +146,7 @@ function CheckIn({ token, onUnauthorized }: { token: string; onUnauthorized: () 
 
   return <main ref={root} id="main-content" className="mx-auto flex w-full max-w-3xl min-w-0 flex-1 flex-col gap-4 p-4 sm:gap-6 sm:p-6" aria-busy={busy}
     onPointerDown={() => setActivity((value) => value + 1)} onKeyDown={() => setActivity((value) => value + 1)}>
-    <div className="flex flex-wrap items-center justify-between gap-3"><h1 className="text-2xl font-semibold sm:text-3xl">{text('title')}</h1>
+    <div className="flex flex-wrap items-center justify-between gap-3"><h1 className="text-2xl font-semibold sm:text-3xl [@media(max-height:500px)]:text-xl">{text('title')}</h1>
       <Button variant="outline" onClick={() => void document.documentElement.requestFullscreen?.().catch(() => undefined)}>{text('fullscreen')}</Button></div>
     {stale && <Alert variant="info" role="status">{text('staleVersion')}</Alert>}
     {screen.kind === 'search' && flow === 'choose' && <Choose onQr={() => setFlow('qr')} onPin={openNamePin}/>}
@@ -169,10 +171,21 @@ function Choose({ onQr, onPin }: { onQr: () => void; onPin: () => void }) {
 function Search({ busy, message, onSearch }: { busy: boolean; message?: 'not_found' | 'error' | undefined; onSearch: (name: string, pin: string) => void }) {
   const [name, setName] = useState(''), [pin, setPin] = useState('');
   const press = (digit: string) => setPin((value) => value.length < 8 ? value + digit : value);
+  const nameRef = useRef<HTMLInputElement>(null);
+  // A landscape phone's keyboard covers most of the screen, so keep the focused name field in view.
+  const scrollName = useCallback(() => nameRef.current?.scrollIntoView?.({ block: 'center' }), []);
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const resized = () => { if (document.activeElement === nameRef.current) scrollName(); };
+    viewport.addEventListener('resize', resized);
+    return () => viewport.removeEventListener('resize', resized);
+  }, [scrollName]);
   function submit(event: FormEvent) { event.preventDefault(); if (name.trim() && pin.length >= 4 && !busy) { onSearch(name.trim(), pin); setPin(''); } }
   return <form className="space-y-4 sm:space-y-6" onSubmit={submit}>
     {message && <Alert variant={message === 'error' ? 'error' : 'info'} focusOnReveal>{text(message === 'error' ? 'error' : 'notFound')}</Alert>}
-    <Label className="grid gap-2 text-lg sm:text-xl">{text('name')}<Input data-kiosk-focus className="h-12 text-lg sm:h-16 sm:text-2xl" value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" autoCapitalize="words" required/></Label>
+    <Label className="grid gap-2 text-lg sm:text-xl [@media(max-height:500px)]:text-base">{text('name')}<Input ref={nameRef} data-kiosk-focus onFocus={scrollName}
+      className="h-12 text-lg sm:h-16 sm:text-2xl [@media(max-height:500px)]:h-12 [@media(max-height:500px)]:text-lg" value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" autoCapitalize="words" required/></Label>
     <div className="space-y-3"><Label className="grid gap-2 text-lg sm:text-xl">{text('pin')}
       <Input type="password" inputMode="none" autoComplete="off" maxLength={8} pattern="[0-9]{4,8}" required
         className="h-14 text-center text-3xl tracking-[0.5em]" value={pin} onChange={(event) => setPin(event.target.value.replace(/[^0-9]/g, '').slice(0, 8))}/></Label>
