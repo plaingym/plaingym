@@ -19,10 +19,12 @@ const unauthorized = { name: 'Unauthorized', $metadata: { httpStatusCode: 401 } 
 const reset = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
 describe('backup failure causes', () => {
   it.each([
-    ['a 401 answer', unauthorized, 'access_denied'],
+    ['a 401 answer', unauthorized, 'credentials_rejected'],
+    ['a coded Unauthorized 401', { name: 'Unauthorized', Code: 'Unauthorized', $metadata: { httpStatusCode: 401 } }, 'credentials_rejected'],
     ['access denied', { name: 'AccessDenied', Code: 'AccessDenied', $metadata: { httpStatusCode: 403 } }, 'access_denied'],
     ['a bare 403', { name: 'Error', $metadata: { httpStatusCode: 403 } }, 'access_denied'],
-    ['a bare 401', { name: 'Error', $metadata: { httpStatusCode: 401 } }, 'access_denied'],
+    ['a bare 401', { name: 'Error', $metadata: { httpStatusCode: 401 } }, 'credentials_rejected'],
+    ['a skewed clock', { name: 'RequestTimeTooSkewed', Code: 'RequestTimeTooSkewed', $metadata: { httpStatusCode: 403 } }, 'other'],
     ['a mismatched signature', { name: 'SignatureDoesNotMatch', Code: 'SignatureDoesNotMatch', $metadata: { httpStatusCode: 403 } }, 'credentials_rejected'],
     ['an unknown access key', { name: 'InvalidAccessKeyId', Code: 'InvalidAccessKeyId', $metadata: { httpStatusCode: 403 } }, 'credentials_rejected'],
     ['an invalid session token', { name: 'InvalidToken', Code: 'InvalidToken', $metadata: { httpStatusCode: 400 } }, 'credentials_rejected'],
@@ -31,11 +33,11 @@ describe('backup failure causes', () => {
     ['no answer from the server', { name: 'TimeoutError', $metadata: {} }, 'endpoint_unreachable'],
     ['an unmarked DNS lookup error', Object.assign(new Error('x'), { code: 'ENOTFOUND' }), 'other'],
     ['an unmarked connection reset', { code: 'ECONNRESET' }, 'other'],
-    ['a chained upload failure', new Error('Snapshot failed', { cause: new Error('Backup object upload failed', { cause: unauthorized }) }), 'access_denied'],
+    ['a chained upload failure', new Error('Snapshot failed', { cause: new Error('Backup object upload failed', { cause: unauthorized }) }), 'credentials_rejected'],
     ['a server error', { name: 'InternalError', Code: 'InternalError', $metadata: { httpStatusCode: 500 } }, 'other'],
     ['a local error', new Error('disk full'), 'other'],
     ['a non-object', 'Unauthorized', 'other'],
-    ['an upload whose abort failed too', new AggregateError([unauthorized, reset], 'S3 multipart upload and abort failed', { cause: reset }), 'access_denied'],
+    ['an upload whose abort failed too', new AggregateError([unauthorized, reset], 'S3 multipart upload and abort failed', { cause: reset }), 'credentials_rejected'],
     ['a TLS certificate error the retry step added metadata to', { name: 'Error', $metadata: { attempts: 1 }, code: 'CERT_HAS_EXPIRED' }, 'other'],
     ['a timeout after retries', { name: 'TimeoutError', $metadata: { attempts: 3 } }, 'endpoint_unreachable'],
     ['a refused connection under the retry metadata', { name: 'Error', $metadata: { attempts: 3 }, cause: { code: 'ECONNREFUSED' } }, 'endpoint_unreachable'],
@@ -156,9 +158,9 @@ describe('a failed snapshot', () => {
     // The refused reference list delete stops the cleanup: the objects it may name stay with it.
     expect(deletes.mock.calls.map(([key]) => key)).toEqual([runs[0]!.objectPrefix + 'references.json']);
     expect(runs).toHaveLength(1);
-    expect(runs[0]).toMatchObject({ status: 'failed', error: 'access_denied', completedAt: clock.now() });
+    expect(runs[0]).toMatchObject({ status: 'failed', error: 'credentials_rejected', completedAt: clock.now() });
     expect(logs).toHaveLength(1);
-    expect(JSON.parse(logs[0]!)).toMatchObject({ level: 'error', runId: runs[0]!.id, kind: 'manual', cause: 'access_denied' });
+    expect(JSON.parse(logs[0]!)).toMatchObject({ level: 'error', runId: runs[0]!.id, kind: 'manual', cause: 'credentials_rejected' });
     expect(logs[0]).not.toContain('upstream text');
   });
   it('still removes the uncommitted objects when only the upload fails', async () => {

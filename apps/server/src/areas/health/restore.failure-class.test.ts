@@ -54,7 +54,10 @@ describe('restoreFailureClass', () => {
   });
   it('names a refused access apart from rejected credentials', () => {
     expect(restoreFailureClass(s3Error({ name: 'AccessDenied', Code: 'AccessDenied', $metadata: { httpStatusCode: 403 } }))).toBe('access_denied');
-    expect(restoreFailureClass(s3Error({ name: 'Error', $metadata: { httpStatusCode: 401 } }))).toBe('access_denied');
+    expect(restoreFailureClass(s3Error({ name: 'Error', $metadata: { httpStatusCode: 403 } }))).toBe('access_denied');
+  });
+  it('names a bare 401 as rejected credentials', () => {
+    expect(restoreFailureClass(s3Error({ name: 'Error', $metadata: { httpStatusCode: 401 } }))).toBe('credentials_rejected');
   });
   it('names a missing bucket', () => {
     expect(restoreFailureClass({ name: 'NoSuchBucket', Code: 'NoSuchBucket', $metadata: { httpStatusCode: 404 } })).toBe('bucket_missing');

@@ -158,7 +158,9 @@ describe('restoreFailureReason', () => {
       expect(restoreFailureReason(Object.assign(new Error('Key SECRETFIELDVALUE'), { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } })))
         .toBe("The backup bucket refused access (AccessDenied); check the key's permissions on this bucket and the snapshot ID");
       expect(restoreFailureReason(Object.assign(new Error('x'), { name: 'bad name SECRETFIELDVALUE', $metadata: { httpStatusCode: 403 } })))
-        .toBe("The backup bucket refused access (HTTP 403); check the key's permissions on this bucket and the snapshot ID");
+        .toBe("The backup bucket refused the request (HTTP 403); check the access key and secret, the key's permissions on this bucket, and the snapshot ID");
+      expect(restoreFailureReason(Object.assign(new Error('Key SECRETFIELDVALUE'), { name: 'Error', $metadata: { httpStatusCode: 401 } })))
+        .toBe('The backup bucket rejected the access key or secret (HTTP 401)');
       expect(restoreFailureReason(Object.assign(new Error('Key SECRETFIELDVALUE'), { name: 'SignatureDoesNotMatch', Code: 'SignatureDoesNotMatch', $metadata: { httpStatusCode: 403 } })))
         .toBe('The backup bucket rejected the access key or secret (SignatureDoesNotMatch)');
       expect(restoreFailureReason(Object.assign(new Error('bucket-name-value'), { name: 'NoSuchBucket', Code: 'NoSuchBucket', $metadata: { httpStatusCode: 404 } })))

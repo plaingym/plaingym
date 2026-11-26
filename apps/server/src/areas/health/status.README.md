@@ -114,14 +114,16 @@ until the bucket reaches the retention budget and the snapshot's budget check fa
 The Last backup tile reports `pruningHeld` separately from an inventory failure.
 An inventory failure the destination caused names its class in `destinationFailure`
 (`credentials_rejected` for a key the service rejects, such as `InvalidAccessKeyId`,
-`SignatureDoesNotMatch`, `InvalidToken` or `ExpiredToken`; `access_denied` for a refused
-access, `AccessDenied`, `Unauthorized` or a bare 401 or 403, worded as a permissions
+`SignatureDoesNotMatch`, `InvalidToken`, `ExpiredToken`, `Unauthorized` or a bare 401;
+`access_denied` for a refused access, `AccessDenied` or a bare 403, worded as a permissions
 problem; `bucket_missing` or `endpoint_unreachable`; from the error's
 status and code only; a bare network code counts only when a destination call raised
 it, so other connection failures such as the database stay `other`) with its own message;
 any other failure keeps the pruning-stopped one, and logs
 `health.backup_inventory_unverified` with the reasons that stopped pruning (`suspect`, the
 fixed reason texts joined by `; `, and `damagedRetained`), never an object key or snapshot ID.
+The line is written once per loaded inventory: reads served from the cached inventory
+within the minute don't repeat it, and the next load that still fails writes it again.
 The tile reads the bucket outside the backup lock, so a run can publish while it lists: a
 prefix without a reference list whose run reads `succeeded` is listed again, and left out
 of that read when its reference list is there now (the next read counts it). Pruning, which

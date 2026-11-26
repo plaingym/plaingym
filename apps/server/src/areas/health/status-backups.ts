@@ -42,6 +42,8 @@ export function createBackupHealthProvider(options: {
   // Only the inventory is reused, never the tile: ages and rules are computed from it on every read.
   // The key covers the destination, the keys, the runs and the backup generation; only its hash is kept.
   let cached: { key: string; storedAt: number; seq: number; state: BackupInventory } | null = null;
+  // Inventories already logged as unverified: reads served from the cache don't repeat the line.
+  const loggedUnverified = new WeakSet<BackupInventory>();
   let expiry: ReturnType<typeof setTimeout> | undefined;
   let nextSeq = 0;
   type LoadingEntry = { startedAt: number; load: Promise<BackupInventory>; close: () => void };
@@ -155,7 +157,8 @@ export function createBackupHealthProvider(options: {
       // A destination that refused the check names its cause class; anything else is an unverifiable inventory.
       const cause = backupFailureCause(error), destinationFailure = cause === 'other' ? null : cause;
       // Which check stopped pruning: the fixed reason texts only, never an object key or a snapshot ID.
-      if (!destinationFailure && listed) {
+      if (!destinationFailure && listed && !loggedUnverified.has(listed)) {
+        loggedUnverified.add(listed);
         logWarn('health.backup_inventory_unverified', { suspect: [...new Set(listed.suspect)].join('; '), damagedRetained: listed.damaged.length > 0 });
       }
       return { id: 'last_backup', status: 'error', checkedAt, message: statusMessage(destinationFailure ? causeMessages[destinationFailure] : 'backupPruningStopped'),

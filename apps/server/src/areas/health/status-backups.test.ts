@@ -178,7 +178,15 @@ describe('last-backup health', () => {
       details: { pruningStopped: true, latestRestorableAt: null, destinationFailure: 'credentials_rejected' } });
     expect(JSON.stringify(tile)).not.toMatch(/upstream|private-/);
   });
-  it.each([['AccessDenied', 403], ['Unauthorized', 401]] as const)('names a destination that refuses access (%s) apart from rejected keys', async (name, httpStatusCode) => {
+  it.each([['Unauthorized', 401], ['Error', 401]] as const)('names a destination that answers %s 401 as rejected credentials', async (name, httpStatusCode) => {
+    await snapshot();
+    vi.spyOn(store, 'listObjects').mockRejectedValue(Object.assign(new Error('upstream says private-access'), { name, $metadata: { httpStatusCode } }));
+    const tile = await read();
+    expect(tile).toMatchObject({ status: 'error', message: expect.stringContaining('rejected the storage credentials'),
+      details: { pruningStopped: true, destinationFailure: 'credentials_rejected' } });
+    expect(JSON.stringify(tile)).not.toMatch(/upstream|private-/);
+  });
+  it.each([['AccessDenied', 403], ['Error', 403]] as const)('names a destination that refuses access (%s) apart from rejected keys', async (name, httpStatusCode) => {
     await snapshot();
     const denied = Object.assign(new Error('upstream says private-bucket denies private-access'), { name, $metadata: { httpStatusCode } });
     vi.spyOn(store, 'listObjects').mockRejectedValue(denied);
@@ -257,6 +265,29 @@ describe('last-backup health during a publication', () => {
     const logged = lines.join('\n');
     for (const secret of [id, prefix, settings.destination.bucket, settings.destination.accessKeyId, settings.destination.secretAccessKey])
       expect(logged).not.toContain(secret);
+  });
+  it('logs an unverified inventory once per loaded inventory, not on every read of the cached one', async () => {
+    await publishing('succeeded', false);
+    const health = provider(), list = vi.spyOn(store, 'listObjects'), start = clock.now();
+    const stopped = { status: 'error', details: { pruningStopped: true, latestRestorableAt: null, destinationFailure: null } };
+    try {
+      expect(healthTileSchema.parse(await health.read(context))).toMatchObject(stopped);
+      const calls = list.mock.calls.length;
+      clock.advance(30_000);
+      expect(healthTileSchema.parse(await health.read(context))).toMatchObject(stopped);
+      expect(list.mock.calls.length).toBe(calls);
+      expect(unverified()).toHaveLength(1);
+      // Past the minute the inventory is loaded again: the same reasons are logged once more for the new inventory.
+      clock.advance(31_000);
+      expect(healthTileSchema.parse(await health.read(context))).toMatchObject(stopped);
+      expect(list.mock.calls.length).toBeGreaterThan(calls);
+      expect(unverified()).toEqual([
+        expect.objectContaining({ suspect: 'Missing snapshot reference list' }),
+        expect.objectContaining({ suspect: 'Missing snapshot reference list' }),
+      ]);
+    } finally {
+      clock.set(start);
+    }
   });
   it('reads a running publication as healthy, and a finished one under a changed access key too', async () => {
     const { earlier, id, record, publish } = await publishing('running', false);

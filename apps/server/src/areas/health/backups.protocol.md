@@ -91,8 +91,8 @@ reference lists and referenced blob sizes. Each run is recorded in `backup_runs`
 before anything is uploaded. A run that fails is marked `failed` with its cause
 class in `error` (`credentials_rejected`, `access_denied`, `bucket_missing`, `endpoint_unreachable`
 or `other`, from the error's HTTP status and code, never its text: a rejected key
-such as `InvalidAccessKeyId` or `SignatureDoesNotMatch` is `credentials_rejected`, while
-`AccessDenied`, `Unauthorized` or a bare 401 or 403 is `access_denied`; a bare network
+(such as `InvalidAccessKeyId` or `SignatureDoesNotMatch`), `Unauthorized` or a bare 401 is
+`credentials_rejected`, while `AccessDenied` or a bare 403 is `access_denied`; a bare network
 code names `endpoint_unreachable` only when a backup destination call raised it,
 other connection failures such as the database are `other`, and an error from
 reading or sweeping the uploads storage during a run or prune is `other`, even

@@ -68,6 +68,14 @@ it('distinguishes a failed connection from an unreachable endpoint in s3Reason',
     .toBe("The backup bucket refused access (AccessDenied); check the key's permissions on this bucket and the snapshot ID");
   expect(s3Reason({ Code: 'AccessDenied', $metadata: { httpStatusCode: 403 } }, 'uploads'))
     .toBe("The uploads bucket refused access (AccessDenied); check the key's permissions on this bucket");
+  // A refusal with no service code (a HEAD answer) may be a wrong secret as well as a policy, so both are named.
+  expect(s3Reason({ name: 'Error', $metadata: { httpStatusCode: 403 } }, 'backup'))
+    .toBe("The backup bucket refused the request (HTTP 403); check the access key and secret, the key's permissions on this bucket, and the snapshot ID");
+  expect(s3Reason({ name: 'Error', $metadata: { httpStatusCode: 403 } }, 'uploads'))
+    .toBe("The uploads bucket refused the request (HTTP 403); check the access key and secret, the key's permissions on this bucket");
+  expect(s3Reason({ name: 'Forbidden', $metadata: { httpStatusCode: 403 } }, 'backup'))
+    .toBe("The backup bucket refused the request (Forbidden); check the access key and secret, the key's permissions on this bucket, and the snapshot ID");
+  expect(s3Reason({ name: 'Unauthorized', $metadata: { httpStatusCode: 401 } }, 'backup')).toBe('The backup bucket rejected the access key or secret (Unauthorized)');
   // A key without list permission is refused a missing object, but a missing object it may list still names the snapshot.
   expect(s3Reason({ Code: 'NoSuchKey', $metadata: { httpStatusCode: 404 } }, 'backup')).toBe("The snapshot isn't in the backup bucket (NoSuchKey); check the snapshot ID");
   expect(s3Reason({ Code: 'InvalidAccessKeyId', $metadata: { httpStatusCode: 403 } }, 'backup')).toBe('The backup bucket rejected the access key or secret (InvalidAccessKeyId)');

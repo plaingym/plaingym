@@ -70,6 +70,12 @@ export function s3Reason(error: unknown, bucket: 'backup' | 'uploads'): string |
   if (cause === 'credentials_rejected') return 'The ' + bucket + ' bucket rejected the access key or secret (' + named + ')';
   // A key without list permission is refused a missing object too, so a mistyped snapshot ID reads this way.
   if (cause === 'access_denied') {
+    // A refusal without a service code (a HEAD answer has no body, so only a status or a generic name) can't tell a
+    // wrong secret from a policy: name both.
+    if (!served && code !== 'AccessDenied') {
+      return 'The ' + bucket + ' bucket refused the request (' + named + "); check the access key and secret, the key's permissions on this bucket"
+        + (bucket === 'backup' ? ', and the snapshot ID' : '');
+    }
     return 'The ' + bucket + ' bucket refused access (' + named + "); check the key's permissions on this bucket"
       + (bucket === 'backup' ? ' and the snapshot ID' : '');
   }
