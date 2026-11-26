@@ -383,7 +383,8 @@ class ReinstallRestoreTests(unittest.TestCase):
 class MergeDemoBillingTests(unittest.TestCase):
     """The installer adds demo billing values to a saved .env on a re-run."""
 
-    KEY, SECRET = "sk_test_FAKEKEY123", "whsec_FAKESECRET456"
+    # Fake Stripe values that the merge test writes to a temporary .env on purpose.
+    FAKE_STRIPE_KEY, FAKE_WEBHOOK_VALUE = "sk_test_FAKEKEY123", "whsec_FAKESECRET456"
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -405,18 +406,18 @@ class MergeDemoBillingTests(unittest.TestCase):
 
     def test_a_rerun_adds_both_values_keeps_every_other_line_and_leaves_0600(self):
         saved = "# comment\nAPP_IMAGE=plaingym:v0.0.0-test\nDEMO_STRIPE_TEST_KEY=\n\nCADDY_IMAGE=c:v1.0.0\n"
-        result = self.merge(saved, f"GYM_HOSTNAME=x\nDEMO_STRIPE_TEST_KEY={self.KEY}\nDEMO_STRIPE_WEBHOOK_SECRET={self.SECRET}\n")
+        result = self.merge(saved, f"GYM_HOSTNAME=x\nDEMO_STRIPE_TEST_KEY={self.FAKE_STRIPE_KEY}\nDEMO_STRIPE_WEBHOOK_SECRET={self.FAKE_WEBHOOK_VALUE}\n")
         lines = result.splitlines()
         self.assertEqual([line for line in lines if not line.startswith("DEMO_STRIPE") and line != ""],
                          ["# comment", "APP_IMAGE=plaingym:v0.0.0-test", "CADDY_IMAGE=c:v1.0.0"])
         self.assertEqual(sorted(line for line in lines if line.startswith("DEMO_STRIPE")),
-                         [f"DEMO_STRIPE_TEST_KEY={self.KEY}", f"DEMO_STRIPE_WEBHOOK_SECRET={self.SECRET}"])
+                         [f"DEMO_STRIPE_TEST_KEY={self.FAKE_STRIPE_KEY}", f"DEMO_STRIPE_WEBHOOK_SECRET={self.FAKE_WEBHOOK_VALUE}"])
         self.assertEqual(stat.S_IMODE((self.root / ".env").stat().st_mode), 0o600)
 
     def test_a_saved_value_is_left_alone_and_only_the_missing_one_is_added(self):
-        saved = f"APP_IMAGE=a:v1.0.0\nDEMO_STRIPE_TEST_KEY={self.KEY}\n"
+        saved = f"APP_IMAGE=a:v1.0.0\nDEMO_STRIPE_TEST_KEY={self.FAKE_STRIPE_KEY}\n"
         result = self.merge(saved, "DEMO_STRIPE_TEST_KEY=sk_test_OTHER\nDEMO_STRIPE_WEBHOOK_SECRET=whsec_NEW\n")
-        self.assertIn(f"DEMO_STRIPE_TEST_KEY={self.KEY}\n", result)
+        self.assertIn(f"DEMO_STRIPE_TEST_KEY={self.FAKE_STRIPE_KEY}\n", result)
         self.assertNotIn("sk_test_OTHER", result)
         self.assertEqual(result.count("DEMO_STRIPE_TEST_KEY"), 1)
         self.assertIn("DEMO_STRIPE_WEBHOOK_SECRET=whsec_NEW\n", result)
@@ -424,14 +425,14 @@ class MergeDemoBillingTests(unittest.TestCase):
 
     def test_a_key_added_now_brings_its_own_secret_in_place_of_a_saved_one(self):
         saved = "A=1\nDEMO_STRIPE_TEST_KEY=\nDEMO_STRIPE_WEBHOOK_SECRET=whsec_OLD\n"
-        result = self.merge(saved, f"DEMO_STRIPE_TEST_KEY={self.KEY}\nDEMO_STRIPE_WEBHOOK_SECRET={self.SECRET}\n")
+        result = self.merge(saved, f"DEMO_STRIPE_TEST_KEY={self.FAKE_STRIPE_KEY}\nDEMO_STRIPE_WEBHOOK_SECRET={self.FAKE_WEBHOOK_VALUE}\n")
         self.assertEqual(sorted(line for line in result.splitlines() if line.startswith("DEMO_STRIPE")),
-                         [f"DEMO_STRIPE_TEST_KEY={self.KEY}", f"DEMO_STRIPE_WEBHOOK_SECRET={self.SECRET}"])
+                         [f"DEMO_STRIPE_TEST_KEY={self.FAKE_STRIPE_KEY}", f"DEMO_STRIPE_WEBHOOK_SECRET={self.FAKE_WEBHOOK_VALUE}"])
         self.assertNotIn("whsec_OLD", result)
         self.assertIn("A=1\n", result)
 
     def test_nothing_changes_when_both_are_saved_or_none_is_given(self):
-        both = f"A=1\nDEMO_STRIPE_TEST_KEY={self.KEY}\nDEMO_STRIPE_WEBHOOK_SECRET={self.SECRET}\n"
+        both = f"A=1\nDEMO_STRIPE_TEST_KEY={self.FAKE_STRIPE_KEY}\nDEMO_STRIPE_WEBHOOK_SECRET={self.FAKE_WEBHOOK_VALUE}\n"
         self.assertEqual(self.merge(both, "DEMO_STRIPE_TEST_KEY=sk_test_X\nDEMO_STRIPE_WEBHOOK_SECRET=whsec_X\n"), both)
         self.assertEqual(stat.S_IMODE((self.root / ".env").stat().st_mode), 0o644)
         plain = "A=1\nDEMO_STRIPE_TEST_KEY=\n"
