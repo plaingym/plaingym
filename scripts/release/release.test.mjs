@@ -346,13 +346,16 @@ test('the image build refuses a SOURCE_URL the app would refuse', () => {
     return result;
   };
   const refused = ['', 'github.com/me/gym', 'ftp://example.com/x', 'https://', 'http:/x', 'https://user:token@github.com/me/gym',
-    'https://user@example.com/x', 'https://exa mple.com', 'https://['];
+    'https://user@example.com/x', 'https://exa mple.com', 'https://[', 'https://github.com/me/gym\t', 'https://github.com/me/gym\n',
+    ' https://github.com/me/gym', 'https://github.com/me/g\rym', 'https://github.com/me/my gym', 'https://github.com/me/gym\x7f',
+    'https://github.com/me/g\x01ym', 'https://github.com/me/gym ', 'https://github.com/me/gym\u0085'];
   for (const value of refused) {
     const result = run(value);
     assert.notEqual(result.status, 0, `${JSON.stringify(value)} must fail`);
     assert.match(result.stderr, /^SOURCE_URL must be an http:\/\/ or https:\/\/ URL without a user name or password\. Leave it unset or empty for scripts\/release\/build-image\.mjs, or omit the build argument, to link to the project repository\.$/m);
   }
-  for (const value of ['https://github.com/plaingym/plaingym', 'https://github.com/me/gym/tree/abc', 'http://localhost/x', 'HTTPS://github.com/me/gym']) {
+  for (const value of ['https://github.com/plaingym/plaingym', 'https://github.com/me/gym/tree/abc', 'http://localhost/x', 'HTTPS://github.com/me/gym',
+    'https://github.com/me/my%20gym']) {
     const result = run(value);
     assert.equal(result.status, 0, `${value} must pass: ${result.stderr}`);
   }

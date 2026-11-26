@@ -6,10 +6,11 @@ ARG REVISION
 # A SOURCE_URL the app refuses at start would give the runtime stage a broken source link, and credentials in it would
 # be baked into the image, so the image's own node checks it here as the app does: a URL that parses, http: or https:,
 # with no user name or password. The text itself must start with http:// or https://, since the image keeps it as
-# given rather than as the parser repairs it (http:/x would become http://x/). The constant marker keeps the value out
-# of the build layers' cache keys. The default matches the runtime stage's.
+# given rather than as the parser repairs it (http:/x would become http://x/), and for the same reason it may hold no
+# whitespace or control characters, which the parser would drop, trim or percent-encode. The constant marker keeps the
+# value out of the build layers' cache keys. The default matches the runtime stage's.
 ARG SOURCE_URL=https://github.com/plaingym/plaingym
-RUN node -e 'const value = process.env.SOURCE_URL ?? ""; const url = URL.canParse(value) ? new URL(value) : undefined; if (!url || !/^https?:[/][/]/i.test(value) || !["http:", "https:"].includes(url.protocol) || url.username || url.password) { console.error("SOURCE_URL must be an http:// or https:// URL without a user name or password. Leave it unset or empty for scripts/release/build-image.mjs, or omit the build argument, to link to the project repository."); process.exit(1); }'
+RUN node -e 'const value = process.env.SOURCE_URL ?? ""; const url = URL.canParse(value) ? new URL(value) : undefined; if (!url || !/^https?:[/][/]/i.test(value) || !["http:", "https:"].includes(url.protocol) || url.username || url.password || /[\s\x00-\x1f\x7f-\x9f]/.test(value)) { console.error("SOURCE_URL must be an http:// or https:// URL without a user name or password. Leave it unset or empty for scripts/release/build-image.mjs, or omit the build argument, to link to the project repository."); process.exit(1); }'
 # Identity is mandatory for both labels and runtime schema compatibility. The helper also handles source archives.
 RUN { test -n "$VERSION" && test -n "$REVISION" || { echo 'Supply VERSION and REVISION build arguments, or use node scripts/release/build-image.mjs IMAGE.' >&2; exit 1; }; } && touch /identity-valid
 
