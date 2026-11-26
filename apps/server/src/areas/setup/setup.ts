@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq } from 'drizzle-orm';
-import { forGym, forSystem, gyms, plans, chargeTypes, memberships, invoices, revisionGuard, assertRevised, writeAudit, uuidv7, type Transaction } from '@plaingym/db';
+import { forGym, forSystem, gyms, revisionGuard, assertRevised, writeAudit, uuidv7, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import type { SetupOwnerRequest, SetupGymDetails, SetupPacksRequest, SetupWebsiteRequest, SetupSmtpRequest, SetupGoogleRequest, SetupDecisionRequest, SetupStripeRequest, SetupBackupRequest, SetupBackupConfirmRequest, SetupFinishRequest } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
@@ -12,6 +12,7 @@ import { authConfig } from '../../infra/auth/config.js';
 import { createSmtpResolver, encryptSmtpConfig, sendSmtpTest, storedSmtpFromRequest, type SendSmtpTest } from '../settings/smtp.js';
 import { encryptGoogleConfig, requireGoogleClient, type CheckGoogle } from '../settings/google-login.js';
 import { requireBackupDestination, type CheckBackupDestination } from '../settings/backup-destination.js';
+import { assertCurrencyChangeable } from '../settings/currency-lock.js';
 import { googleFromEnvironment } from '../../infra/auth/google.js';
 import { backupColumns, backupKeyPair, newBlobKey, recipientOf } from './backup-key.js';
 import { loadContentPacks } from '../ranks/packs.loader.js';
@@ -91,10 +92,7 @@ export function createSetupService(options: {
       if (!state.completedSteps.includes(previousStep)) throw new AppError('conflict', 'Complete the preceding setup step');
       const guard = revisionGuard(gyms.revision, revision);
       if (changes.currency && changes.currency !== before.currency) {
-        for (const table of [plans, chargeTypes, memberships, invoices]) {
-          if ((await tx.select({ id: table.id }).from(table).limit(1)).length)
-            throw new AppError('conflict', 'Currency cannot change after billing records exist');
-        }
+        await assertCurrencyChangeable(tx, context.gymId, before.currency);
       }
       assertRevised(before.revision === revision ? [before] : []);
       await options.effect?.(tx);

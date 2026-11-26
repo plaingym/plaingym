@@ -137,4 +137,52 @@ describe('setup owner authorization and tenant isolation', () => {
     await expect(service.gym({ gymId: gymA, actor: { kind: 'user', userId: userA } }, { revision: 2, name: 'Academy', timezone: 'UTC', currency: 'CAD', address: {}, branding: { logoKey: null, primaryColor: null } })).rejects.toMatchObject({ code: 'conflict' });
     expect((await database.forGym(gymA, (tx) => tx.select().from(gyms)))[0]).toMatchObject({ currency: 'USD', revision: 2 });
   });
+  describe('currency lock on the gym details step', () => {
+    const details = { name: 'Academy', timezone: 'UTC', address: {}, branding: { logoKey: null, primaryColor: null } };
+    async function setupGym() {
+      const gymId = uuidv7();
+      await factory('gyms', gymId, { currency: 'USD', settings: { setup: { ownerId: userA, completed: false, completedSteps: [0, 1] } } });
+      return { gymId, context: { gymId, actor: { kind: 'user', userId: userA } } as const, household: await factory('households', gymId) };
+    }
+    const stored = async (gymId: string) => (await database.forGym(gymId, (tx) => tx.select().from(gyms)))[0];
+    it('refuses changing currency while an active bank account of the current currency exists', async () => {
+      const { gymId, context, household } = await setupGym();
+      await factory('paymentMethods', gymId, { householdId: household.id, type: 'us_bank_account', last4: '6789' });
+      await expect(service.gym(context, { ...details, revision: 1, currency: 'CAD' }))
+        .rejects.toMatchObject({ code: 'conflict', message: 'Currency cannot change after billing records exist' });
+      expect(await stored(gymId)).toMatchObject({ currency: 'USD', revision: 1 });
+      expect(await service.gym(context, { ...details, revision: 1, currency: 'USD' })).toMatchObject({ currency: 'USD', revision: 2 });
+    });
+    it('changes currency once the bank account is revoked', async () => {
+      const { gymId, context, household } = await setupGym();
+      await factory('paymentMethods', gymId, { householdId: household.id, type: 'us_bank_account', last4: '6789', revokedAt: clock.now() });
+      expect(await service.gym(context, { ...details, revision: 1, currency: 'CAD' })).toMatchObject({ currency: 'CAD', revision: 2 });
+      expect(await stored(gymId)).toMatchObject({ currency: 'CAD', revision: 2 });
+    });
+    it('changes currency when the only bank account is of another currency type', async () => {
+      const { gymId, context, household } = await setupGym();
+      await factory('paymentMethods', gymId, { householdId: household.id, type: 'acss_debit', mandateId: 'mandate_cad', last4: '1111' });
+      expect(await service.gym(context, { ...details, revision: 1, currency: 'CAD' })).toMatchObject({ currency: 'CAD', revision: 2 });
+    });
+    it('refuses changing currency once a class pack exists', async () => {
+      const { gymId, context } = await setupGym();
+      await factory('classPacks', gymId);
+      await expect(service.gym(context, { ...details, revision: 1, currency: 'CAD' })).rejects.toMatchObject({ code: 'conflict' });
+      expect(await stored(gymId)).toMatchObject({ currency: 'USD', revision: 1 });
+    });
+    it('refuses changing currency once a discount exists', async () => {
+      const { gymId, context } = await setupGym();
+      await factory('discounts', gymId);
+      await expect(service.gym(context, { ...details, revision: 1, currency: 'CAD' }))
+        .rejects.toMatchObject({ code: 'conflict', message: 'Currency cannot change after billing records exist' });
+      expect(await stored(gymId)).toMatchObject({ currency: 'USD', revision: 1 });
+    });
+    it('does not count another gym\'s billing records', async () => {
+      const other = await setupGym();
+      await factory('classPacks', other.gymId);
+      await factory('paymentMethods', other.gymId, { householdId: other.household.id, type: 'us_bank_account', last4: '6789' });
+      const { context } = await setupGym();
+      expect(await service.gym(context, { ...details, revision: 1, currency: 'CAD' })).toMatchObject({ currency: 'CAD', revision: 2 });
+    });
+  });
 });

@@ -24,6 +24,8 @@ nothing. Step 5 completion records `test: 'sent'` or `'not_sent'`, so skipping
 cannot replace the Health tile's last test time.
 Step saves, Google saves and decisions share the locked owner, preceding-step
 and revision checks; Google saves and decisions do not complete a step.
+The gym details step refuses a currency change with `conflict` on the same records
+Settings does, under the gym row lock (`assertCurrencyChangeable` in `settings/currency-lock.ts`).
 
 The optional Google page after the email step (`PUT /api/setup/google`, contract step 5)
 stores the gym's own OAuth client with `encryptGoogleConfig` (`settings/google-login.ts`)

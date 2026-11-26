@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { asc, eq } from 'drizzle-orm';
-import { auditEvents, households, members, memberTags, memberTagLinks, paymentMethods, uuidv7 } from '@plaingym/db';
+// eslint-disable-next-line database/system-tables -- One test sets a gym's currency directly, past the settings lock, to check a saved bank row isn't validated again.
+import { auditEvents, gyms, households, members, memberTags, memberTagLinks, paymentMethods, uuidv7 } from '@plaingym/db';
 // eslint-disable-next-line no-restricted-imports, database/system-tables -- Extra app-role connections hold concurrent household row locks in this disposable test database.
 import { openConnection, scopedDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -118,6 +119,14 @@ it.each([
   const rerun = await savedRow.run();
   expect(rerun.job.committedRows).toBe(0);
   expect(rerun.issues).toEqual([]);
+  expect((await snapshot(gymId)).methods).toEqual(saved);
+  // A saved bank row isn't validated again once the currency has changed underneath it.
+  await database.forSystem(tx => tx.update(gyms).set({ currency: currency === 'USD' ? 'CAD' : 'USD' }).where(eq(gyms.id, gymId)));
+  const changedRow = await load(csvLine(['First Name', 'Last Name', 'Stripe Customer ID', 'Stripe Payment Method ID'])
+    + csvLine(['First', 'Family', 'cus_Match', 'pm_Match']), { duplicatePolicy: 'skip' }, gymId);
+  const afterChange = await changedRow.run();
+  expect(afterChange.job.committedRows).toBe(0);
+  expect(afterChange.issues).toEqual([]);
   expect((await snapshot(gymId)).methods).toEqual(saved);
 });
 
