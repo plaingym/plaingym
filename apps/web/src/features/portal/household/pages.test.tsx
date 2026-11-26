@@ -712,6 +712,56 @@ describe('portal household page', () => {
       expect(scroll.mock.contexts.at(-1)).toBe(alert);
     } finally { HTMLElement.prototype.scrollIntoView = original; }
   });
+  it('reveals a failed household contact save when the page comes back from a failed recovery', async () => {
+    let release!: (response: Response) => void;
+    const user = userEvent.setup();
+    const original = HTMLElement.prototype.scrollIntoView;
+    const scroll = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scroll;
+    try {
+      mount(<PortalHousehold />, (path, init) => {
+        if (init?.method === 'PATCH') return Response.json({ error: { code: 'conflict' } }, { status: 409, headers: { 'X-Portal-Household': id(99) } });
+        if (path === '/api/portal/household') return { data: household };
+        if (path.startsWith('/api/portal/members?')) return page(people);
+        return undefined;
+      }, { context: payer, householdLists: () => new Promise(resolve => { release = resolve; }) });
+      const input = await screen.findByLabelText('Phone');
+      await user.clear(input); await user.type(input, 'Draft');
+      await user.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Loading'));
+      await act(async () => { release(new Response(null, { status: 503 })); });
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeDefined());
+      const alert = (await screen.findByText('We couldn\'t save. Check the details and try again.')).closest<HTMLElement>('[role="alert"]')!;
+      await waitFor(() => expect(document.activeElement).toBe(alert));
+      expect(scroll.mock.contexts.at(-1)).toBe(alert);
+    } finally { HTMLElement.prototype.scrollIntoView = original; }
+  });
+  it('reveals a refused booking in its class dialog when the dialog comes back from a failed recovery', async () => {
+    let release!: (response: Response) => void;
+    const user = userEvent.setup(), now = new Date('2026-10-29T16:00:00Z');
+    const session = { id: id(40), name: 'Fundamentals', startsAt: '2026-10-30T18:00:00Z', endsAt: '2026-10-30T19:00:00Z', coachId: null,
+      capacity: 10, status: 'scheduled', revision: 1, bookingOpensAt: '2026-10-23T00:00:00Z', cancelBefore: '2026-10-30T17:00:00Z', placesLeft: 4, bookings: [] };
+    const original = HTMLElement.prototype.scrollIntoView;
+    const scroll = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scroll;
+    try {
+      mount(<PortalSchedulePage now={() => now} />, (path, init) => {
+        if (init?.method === 'POST') return Response.json({ error: { code: 'conflict' } }, { status: 409, headers: { 'X-Portal-Household': id(99) } });
+        if (path === '/api/portal/schedule/members') return { data: [{ id: ids.payer, name: 'Pat' }] };
+        if (path.startsWith('/api/portal/schedule?')) return page([session]);
+        return undefined;
+      }, { context: payer, householdLists: () => new Promise(resolve => { release = resolve; }) });
+      await user.click(await screen.findByRole('button', { name: /^Fundamentals, / }));
+      await user.click(await screen.findByRole('button', { name: 'Book Fundamentals for Pat' }));
+      await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Loading'));
+      expect(scroll).not.toHaveBeenCalled();
+      await act(async () => { release(new Response(null, { status: 503 })); });
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Book Fundamentals for Pat' })).toBeDefined());
+      const alert = await within(screen.getByRole('dialog')).findByRole('alert');
+      await waitFor(() => expect(document.activeElement).toBe(alert));
+      expect(scroll.mock.contexts.at(-1)).toBe(alert);
+    } finally { HTMLElement.prototype.scrollIntoView = original; }
+  });
   it('lets the payer edit household contacts and children, not other adults, and shows memberships read-only', async () => {
     const view = mount(<PortalHousehold />, (path, init) => {
       if (path === '/api/portal/household' && init?.method === 'PATCH') return { data: { ...household, phone: '555-0199', revision: 4 } };

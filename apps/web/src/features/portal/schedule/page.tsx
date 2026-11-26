@@ -87,8 +87,8 @@ export function PortalSchedulePage({ client = portalClient, now = currentTime }:
   const cardId = (id: string) => `${cardPrefix}-${id}`;
   const restoreFocusTo = useRef<string[] | null>(null);
   const [revealed, setRevealed] = useState<typeof message>();
-  // Runs after the Alert's own effect, so the message counts as revealed once it has been shown.
-  useEffect(() => { if (message) setRevealed(message); }, [message]);
+  // Runs after the Alert's own effect, so the message counts as revealed once it has been shown. While the household is read again the page is hidden and its dialog closed, so the message hasn't been shown.
+  useEffect(() => { if (message && !scope.moving) setRevealed(message); }, [message, scope.moving]);
   useEffect(() => {
     if (selection || restoreFocusTo.current === null) return;
     const errorId = `${cardPrefix}-error`;

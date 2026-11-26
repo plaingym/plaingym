@@ -93,13 +93,21 @@ describe('failure alerts', () => {
       expect(document.activeElement).toBe(screen.getByRole('alert'));
     } finally { HTMLElement.prototype.scrollIntoView = original; }
   });
-  it('still scrolls to an error revealed inside an inert wrapper that is hidden', () => {
+  it('reveals an error inside a hidden inert wrapper once, when the wrapper is shown', () => {
     const scroll = vi.fn();
     const original = HTMLElement.prototype.scrollIntoView;
     HTMLElement.prototype.scrollIntoView = scroll;
     try {
-      render(<div inert style={{ visibility: 'hidden' }}><Alert variant="error" focusOnReveal>Unable to save</Alert></div>);
+      const content = (hidden: boolean) => <div inert={hidden} style={hidden ? { visibility: 'hidden' } : undefined}>
+        <Alert variant="error" focusOnReveal>Unable to save</Alert></div>;
+      const view = render(content(true));
+      expect(scroll).not.toHaveBeenCalled();
+      view.rerender(content(false));
+      expect(scroll).toHaveBeenCalledTimes(1);
       expect(scroll).toHaveBeenCalledWith({ block: 'center' });
+      expect(document.activeElement).toBe(screen.getByRole('alert'));
+      view.rerender(content(false));
+      expect(scroll).toHaveBeenCalledTimes(1);
     } finally { HTMLElement.prototype.scrollIntoView = original; }
   });
   it('does not scroll to an error in a hidden inert wrapper inside an inert element that is still shown', () => {
@@ -172,6 +180,15 @@ describe('failure alerts', () => {
       expect(document.activeElement).toBe(screen.getByRole('alert'));
       view.rerender(content(true));
       expect(scroll).toHaveBeenCalledTimes(1);
+    } finally { HTMLElement.prototype.scrollIntoView = original; }
+  });
+  it('scrolls at once to an error in an open dialog inside a hidden inert wrapper', () => {
+    const scroll = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scroll;
+    try {
+      render(<div inert style={{ visibility: 'hidden' }}><dialog open><Alert variant="error" focusOnReveal>Unable to save</Alert></dialog></div>);
+      expect(scroll).toHaveBeenCalledWith({ block: 'center' });
     } finally { HTMLElement.prototype.scrollIntoView = original; }
   });
 });

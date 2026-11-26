@@ -6,9 +6,9 @@ import { AlertIcon } from './icons.js';
 
 /**
  * An element under an open phone menu (inert and still shown) can't take the focus, and a scroll would move the locked
- * page behind the menu. An inert page that is also hidden is only waiting to come back (portal recovery), unless an inert
- * element further out is still shown (the menu is open over the recovering page). An open modal dialog stays usable under
- * an inert page.
+ * page behind the menu. An inert page that is also hidden isn't held by a menu, since it is only waiting to come back
+ * (portal recovery, see `waitsForPage`), unless an inert element further out is still shown (the menu is open over the
+ * recovering page). An open modal dialog stays usable under an inert page.
  */
 function heldByMenu(element: HTMLElement) {
   if (element.closest('dialog')?.hasAttribute('open')) return false;
@@ -17,20 +17,26 @@ function heldByMenu(element: HTMLElement) {
   return false;
 }
 
+/** A page hidden while the portal reads the household again can't take the focus yet. */
+function waitsForPage(element: HTMLElement) {
+  return !element.closest('dialog')?.hasAttribute('open') && element.closest('[inert]') !== null && !heldByMenu(element);
+}
+
 /**
  * A message announced to screen readers (`status` for info and warning, `alert` for error). `info` (the default) is a neutral
  * note; `warning` is a caution, in the warning colours; `error` says something failed, with the destructive colours
  * `ErrorState` uses and an icon, so it never reads as a hint.
  * `focusOnReveal` opts submit errors into scrolling and focus on reveal and whenever the rendered message changes;
  * one revealed inside an inert element that is still shown, as under an open phone menu, and not inside an open dialog, is
- * neither scrolled to nor focused; one inside a dialog that is closed for now is revealed when the dialog opens.
+ * neither scrolled to nor focused; one inside a dialog that is closed for now is revealed when the dialog opens, and one
+ * inside a page that is hidden for now (inert and not shown, outside an open dialog) is revealed when the page is shown.
  */
 export function Alert({ className, variant = 'info', focusOnReveal = false, children, ref: forwardedRef, ...props }: ComponentProps<'div'> & { variant?: 'info' | 'warning' | 'error'; focusOnReveal?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const revealed = useRef<{ enabled: boolean; text: string | null } | null>(null);
   useImperativeHandle(forwardedRef, () => ref.current!);
-  // Portal recovery closes and reopens dialogs through this context, so the alert renders again when its dialog opens and
-  // an error that waited is revealed then.
+  // Portal recovery hides the page and closes dialogs, and shows them again through this context, so the alert renders
+  // again when its page is shown or its dialog opens, and an error that waited is revealed then.
   useContext(DialogRecoveryContext);
   // Compare the rendered message, including nested markup, without revealing again just because JSX was recreated.
   useEffect(() => {
@@ -40,6 +46,8 @@ export function Alert({ className, variant = 'info', focusOnReveal = false, chil
     // An error inside a dialog that is closed for now waits, unrevealed, until it opens again.
     const dialog = element?.closest('dialog');
     if (enabled && dialog && !dialog.hasAttribute('open')) return;
+    // So does one inside a page that is hidden for now, until the page is shown.
+    if (enabled && element && waitsForPage(element)) return;
     revealed.current = { enabled, text };
     if (!enabled || !element || (previous?.enabled && previous.text === text)) return;
     if (heldByMenu(element)) return;
