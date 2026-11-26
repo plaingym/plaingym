@@ -50,6 +50,8 @@ export function GoLiveSettings() {
   const [confirmBilling, setConfirmBilling] = useState(false), [confirmedKey, setConfirmedKey] = useState<string | null>(null);
   // Set when a failed read closed the dialog: the read alert then takes the focus the dialog would return to a disabled switch.
   const [readAlertFocus, setReadAlertFocus] = useState(false);
+  // The page's alert: the plain one, or the read alert in its place.
+  const messageBox = useRef<HTMLDivElement>(null);
   const [checking, setChecking] = useState(false), [checkError, setCheckError] = useState<'reconcileError' | 'reconcileTimeout' | 'reconcileBusy' | null>(null);
   // The switches save the gym revision that every section of the page shares, so another section's save doesn't stale them.
   const gym = useGymSettings(), settings = gym.settings;
@@ -93,8 +95,12 @@ export function GoLiveSettings() {
   const refusedUnread = readFailed && (message === 'changed' || message === 'justSaved' || message === 'timeout'
     || message === 'paymentsReadFailed' || message === 'smsProviderRequired' || message === 'smsProviderReadFailed') ? message : null;
   useEffect(() => { if (behind) void query.refetch(); }, [behind, settings?.revision, query.refetch]);
+  // A reason whose alert holds the focus is kept until the next press or Retry, since the owner is reading it; otherwise
+  // any move of the revision, back too, may have changed what it says.
   useEffect(() => {
-    if (messageRevision !== null && settings && settings.revision > messageRevision) { setMessage(null); setMessageRevision(null); }
+    if (messageRevision === null || !settings || settings.revision === messageRevision) return;
+    if (messageBox.current?.contains(document.activeElement)) { setMessageRevision(null); return; }
+    setMessage(null); setMessageRevision(null);
   }, [messageRevision, settings?.revision]);
   // The past-due dialog is modal, so it closes once no save is running if a read failed (the page's retry is behind it),
   // billing is already on (a save that timed out may have turned it on, leaving nothing to confirm), or the list it asks
@@ -106,6 +112,10 @@ export function GoLiveSettings() {
     }
   }, [confirmBilling, busy, readFailed, checklist]);
   useEffect(() => { if (!readFailed) setReadAlertFocus(false); }, [readFailed]);
+  // Read while rendering, before a swap between the two alerts can move the focus: a reason the settings have moved past,
+  // with the owner working elsewhere, is about to be dropped, so the plain alert must not take the focus for it first.
+  const leftBehind = messageRevision !== null && settings?.revision !== messageRevision
+    && !messageBox.current?.contains(document.activeElement);
   /**
    * A refused or conflicting save. A shared revision past the checklist's refetches it through `behind`, once; when the
    * settings did not move past it (their reload failed, or the server's revision went back), nothing else will.
@@ -173,9 +183,9 @@ export function GoLiveSettings() {
   return <section className="space-y-4" aria-label={label('title')}>
     <h2 className="text-lg font-semibold">{label('title')}</h2>
     <p className="text-sm text-muted-foreground">{label('help')}</p>
-    {readFailed ? <Alert variant="error" focusOnReveal={readAlertFocus}>{refusedUnread && label(refusedUnread + 'Unread') + ' '}{label('error')}
+    {readFailed ? <Alert ref={messageBox} variant="error" focusOnReveal={readAlertFocus}>{refusedUnread && label(refusedUnread + 'Unread') + ' '}{label('error')}
       <Button variant="outline" className="mt-3 sm:ml-3 sm:mt-0" onClick={retry}>{label('retry')}</Button></Alert>
-      : message && <Alert variant="error" focusOnReveal={!confirmBilling}>{label(message)}</Alert>}
+      : message && <Alert ref={messageBox} variant="error" focusOnReveal={!confirmBilling && !leftBehind}>{label(message)}</Alert>}
     {!checklist || !settings ? (busy || gym.loading) && <LoadingState label={label('loading')}/> : <>
       <ul className="space-y-3">{(['billingEnabled', 'memberEmailsEnabled', 'memberSmsEnabled'] as const).map((name) => {
         const on = checklist[name], action = label(on ? 'turnOff' : 'turnOn');

@@ -706,10 +706,12 @@ describe('go-live settings', () => {
     expect(screen.getByRole('alert').textContent).toBe(plain);
     return queryClient;
   };
-  const moveSettings = (queryClient: QueryClient) => act(() => {
+  const moveSettings = (queryClient: QueryClient, revision = 4) => act(() => {
     queryClient.setQueryData<{ settings: GymSettings; epoch: number }>(gymSettingsKey,
-      old => old && { ...old, settings: gymSettings(4) });
+      old => old && { ...old, settings: gymSettings(revision) });
   });
+  /** Takes the focus off the alert, as working in another section of the page does. */
+  const leaveAlert = () => act(() => (document.activeElement as HTMLElement | null)?.blur());
   it.each([
     noProvider,
     { refusal: 'a change elsewhere', name: 'Billing', status: 409, details: undefined,
@@ -721,6 +723,7 @@ describe('go-live settings', () => {
   ])('drops the reason for $refusal once the settings move past it, so a later failed read does not repeat it', async refusal => {
     const queryClient = await refuse(refusal);
     live.mockResolvedValue(reply(500));
+    leaveAlert();
     moveSettings(queryClient);
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('The request failed. Please try again.'));
     expect(screen.getAllByRole('alert')).toHaveLength(1);
@@ -741,11 +744,79 @@ describe('go-live settings', () => {
   it('removes a refused switch\'s alert once the settings move past it and the new checklist loads', async () => {
     const queryClient = await refuse(noProvider);
     live.mockResolvedValue(reply(200, checklist(4)));
+    leaveAlert();
     moveSettings(queryClient);
     await waitFor(() => expect(live.mock.calls.length).toBeGreaterThan(2));
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Turn on: Member texts' }).disabled).toBe(false);
+  });
+  it('keeps the reason of a focused refusal alert when the settings move, until Retry', async () => {
+    const queryClient = await refuse(noProvider);
+    const alert = screen.getByRole('alert');
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    live.mockResolvedValue(reply(500));
+    moveSettings(queryClient);
+    await waitFor(() => expect(alert.textContent).toContain('The request failed. Please try again.'));
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.getByRole('alert')).toBe(alert);
+    const text = alert.textContent!;
+    expect(text).toContain('No working SMS provider');
+    expect(text.indexOf('No working SMS provider')).toBeLessThan(text.indexOf('The request failed. Please try again.'));
+    expect(document.activeElement).toBe(alert);
+    live.mockResolvedValue(reply(200, checklist(4)));
+    await userEvent.setup().click(within(alert).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  });
+  it('drops the reason when the settings go back to an earlier revision', async () => {
+    const queryClient = await refuse(noProvider);
+    expect(queryClient.getQueryData<{ settings: GymSettings }>(gymSettingsKey)?.settings.revision).toBe(3);
+    live.mockResolvedValue(reply(500));
+    leaveAlert();
+    moveSettings(queryClient, 2);
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('The request failed. Please try again.'));
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    const text = screen.getByRole('alert').textContent!;
+    expect(text.indexOf('The request failed. Please try again.')).toBe(0);
+    expect(text).not.toContain('No working SMS provider');
+  });
+  /** Refuses a switch with the read after it failing, so the read alert holds the reason and the focus. */
+  const refuseUnread = async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } });
+    let answerRead!: (value: unknown) => void;
+    live.mockResolvedValueOnce(reply(200, checklist())).mockReturnValueOnce(new Promise(resolve => { answerRead = resolve; }))
+      .mockResolvedValue(reply(500));
+    client.PATCH.mockResolvedValue({ response: { ok: false, status: 409 },
+      error: { error: { code: 'refused', details: noProvider.details } } });
+    const user = userEvent.setup(); start(queryClient);
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Member texts' }));
+    const alert = await screen.findByRole('alert');
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    await act(async () => { answerRead(reply(500)); });
+    const button = await screen.findByRole('button', { name: 'Try again' });
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    return { queryClient, alert, button };
+  };
+  it('drops an unfocused reason on a move that follows a failed read, without taking the focus', async () => {
+    const { queryClient, alert } = await refuseUnread();
+    leaveAlert();
+    const focus = vi.spyOn(alert, 'focus');
+    moveSettings(queryClient);
+    await waitFor(() => expect(screen.getByRole('alert').textContent!.indexOf('The request failed. Please try again.')).toBe(0));
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(focus).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(document.body);
+  });
+  it('keeps the reason when the settings move while its Retry button holds the focus', async () => {
+    const { queryClient, button } = await refuseUnread();
+    act(() => button.focus());
+    moveSettings(queryClient);
+    await waitFor(() => expect(live).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('The request failed. Please try again.'));
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.getByRole('alert').textContent).toContain('No working SMS provider');
+    expect(document.activeElement).toBe(screen.getByRole('alert'));
   });
   it('keeps switches locked through overlapping explicit reloads until the latest read answers', async () => {
     let resolveFirst!: (value: unknown) => void, resolveSecond!: (value: unknown) => void;
