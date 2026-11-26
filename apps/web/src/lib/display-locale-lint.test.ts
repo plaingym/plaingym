@@ -52,6 +52,12 @@ describe('display locale lint rule', () => {
     'Intl!.NumberFormat();',
     'new (Intl as typeof Intl).PluralRules();',
     '(globalThis.Intl satisfies typeof Intl).NumberFormat();',
+    'Intl.NumberFormat!();',
+    '(Intl.Collator as any)();',
+    'new (Intl.DateTimeFormat as typeof Intl.DateTimeFormat)();',
+    '(5).toLocaleString!();',
+    'new (globalThis?.Intl).NumberFormat();',
+    'Intl.NumberFormat?.();',
   ])('refuses %s', async code => {
     expect(await restricted(code)).toHaveLength(1);
   });
@@ -81,6 +87,11 @@ describe('display locale lint rule', () => {
     "window.Intl.DateTimeFormat('en', {});",
     "new self.Intl.Collator('en');",
     "globalThis['Intl'].NumberFormat();",
+    '(new Intl.DateTimeFormat() as Intl.DateTimeFormat).resolvedOptions();',
+    'new Intl.DateTimeFormat()!.resolvedOptions();',
+    "Intl.NumberFormat!('en');",
+    // Nested global paths aren't followed.
+    'new window.globalThis.Intl.NumberFormat();',
   ])('allows %s', async code => {
     expect(await restricted(code)).toHaveLength(0);
   });

@@ -29,7 +29,7 @@ function syntax(node) {
 /** @param {unknown} node @returns {Syntax | undefined} */
 function unwrap(node) {
   let current = syntax(node);
-  while (current && typeWrappers.has(current.type)) {
+  while (current && (typeWrappers.has(current.type) || current.type === 'ChainExpression')) {
     current = syntax(current.expression);
   }
   return current;
@@ -54,8 +54,12 @@ function isEmptyLocaleArg(node) {
 
 /** @param {Syntax} node @returns {boolean} */
 function isResolvedOptionsObject(node) {
-  const parent = syntax(node.parent);
-  if (!parent || parent.type !== 'MemberExpression' || parent.object !== node || parent.computed) return false;
+  let child = node, parent = syntax(node.parent);
+  while (parent && typeWrappers.has(parent.type) && parent.expression === child) {
+    child = parent;
+    parent = syntax(parent.parent);
+  }
+  if (!parent || parent.type !== 'MemberExpression' || parent.object !== child || parent.computed) return false;
   const prop = syntax(parent.property);
   return prop?.type === 'Identifier' && prop.name === 'resolvedOptions';
 }
@@ -77,7 +81,7 @@ function isIntlObject(node) {
 
 /** @param {Syntax} node @returns {boolean} */
 function isTarget(node) {
-  const callee = syntax(node.callee);
+  const callee = unwrap(node.callee);
   if (!callee || callee.type !== 'MemberExpression' || callee.computed) return false;
   const prop = syntax(callee.property);
   if (!prop || prop.type !== 'Identifier' || !prop.name) return false;

@@ -2,9 +2,10 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
 import { productOverlay } from './product-stack.mjs';
 import { captureClockInstant } from './product.mjs';
 
@@ -35,9 +36,10 @@ test('the clock shim freezes Date at the instant', () => {
   assert.deepEqual(JSON.parse(result.stdout), ['2026-11-23T12:00:00.000Z', Date.parse('2026-11-23T12:00:00.000Z')]);
 });
 
-const overlayFile = fileURLToPath(new URL('../coverage/product-compose.json', import.meta.url));
-
-/** Runs `productOverlay` as a capture by hand would, then restores the environment. */
+/**
+ * Runs `productOverlay` as a capture by hand would, writing into a temporary directory so a live
+ * capture's file is left alone, then restores the environment.
+ */
 async function withOverlayEnv(instant, run) {
   const saved = { CI: process.env.CI, CAPTURE_CLOCK_INSTANT: process.env.CAPTURE_CLOCK_INSTANT };
   const set = (name, value) => {
@@ -46,30 +48,29 @@ async function withOverlayEnv(instant, run) {
   };
   set('CI', undefined);
   set('CAPTURE_CLOCK_INSTANT', instant);
+  let dir;
   try {
-    // The runner creates this directory before it asks for the overlay.
-    await mkdir(new URL('../coverage/', import.meta.url), { recursive: true });
-    await rm(overlayFile, { force: true });
-    await run();
+    dir = await mkdtemp(join(tmpdir(), 'product-overlay-'));
+    await run(join(dir, 'product-compose.json'));
   } finally {
-    await rm(overlayFile, { force: true });
     for (const [name, value] of Object.entries(saved)) set(name, value);
+    if (dir) await rm(dir, { recursive: true, force: true });
   }
 }
 
 for (const instant of [undefined, 'not-a-date']) {
   test(`the overlay refuses ${instant ?? 'a missing instant'} and writes no file`, async () => {
-    await withOverlayEnv(instant, async () => {
-      await assert.rejects(productOverlay(), /CAPTURE_CLOCK_INSTANT must be an ISO instant/);
-      assert.equal(existsSync(overlayFile), false);
+    await withOverlayEnv(instant, async path => {
+      await assert.rejects(productOverlay(path), /CAPTURE_CLOCK_INSTANT must be an ISO instant/);
+      assert.equal(existsSync(path), false);
     });
   });
 }
 
 test('the overlay writes its file for an ISO instant', async () => {
-  await withOverlayEnv('2026-11-23T12:00:00.000Z', async () => {
-    assert.equal(await productOverlay(), overlayFile);
-    assert.equal(existsSync(overlayFile), true);
+  await withOverlayEnv('2026-11-23T12:00:00.000Z', async path => {
+    assert.equal(await productOverlay(path), path);
+    assert.equal(existsSync(path), true);
   });
 });
 
