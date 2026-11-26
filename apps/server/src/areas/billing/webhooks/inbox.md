@@ -32,8 +32,9 @@ globally unique. Receipt commits before enqueue; 200 follows durable enqueue. A
 redelivery repairs an interrupted enqueue with the same persistent job key, without
 replacing the saved event or re-running a completed one.
 The runtime passes the queue's recovery capability as `recovery` to
-`createWebhookInbox` as well as `jobs`. A redelivery resets an exhausted original dispatch job with `retryFailed`
-and audits `billing.webhook.dispatch_retried`, keeping its ID, payload and key.
+`createWebhookInbox` as well as `jobs`. A redelivery locks the stored event's row and,
+while it is still unprocessed, resets an exhausted original dispatch job with `retryFailed`, and audits
+`billing.webhook.dispatch_retried` in the same transaction, keeping its ID, payload and key.
 Concurrent redeliveries reset it only once; pending and running jobs are unchanged.
 Queue or recovery errors fail the request so the provider retries.
 
@@ -56,25 +57,24 @@ those triggered by redelivery. The next terminal failure after five audited rese
 records one `billing.webhook.dispatch_recovery_exhausted` audit. Later sweeps
 exclude the event before the queue lookup until a redelivery resets it (below),
 and it remains visible in Health for staff replay or redelivery. The sweep decides the cooldown from an unlocked read
-and locks only an event it may reset, mark or exhaust; under the lock it rechecks
-everything and commits each reset with its audit. It safely logs a failed pre-check
+and takes the event's row lock only when it may reset, mark or exhaust it; under that lock
+(shared with redeliveries) it rechecks everything and commits each reset or exhaustion with its audit. It safely logs a failed pre-check
 read and continues with the next page, and logs a per-event error
 and continues with the page. Each sweep still reads every unprocessed event of the
 gym once, including exhausted events and events whose dispatch job is gone: failed
 dispatches are rare, and staff replay or a redelivery still recovers them.
 The sweep uses the inbox supplied by `configureWebhookInboxJobs`.
 
-A redelivery at or after exhaustion reopens automatic recovery. The sweep counts
+A redelivery after exhaustion reopens automatic recovery. The sweep counts
 only resets at or after the latest exhaustion audit, and the redelivery's own
 reset is the first of them, so the sweep resets the event up to four more times,
 after 30, 60, 120 and 240 minutes, before the next terminal failure records a new
-exhaustion audit. That ordering compares audit timestamps written by the app
-processes' clocks, so clock skew between processes or a backward clock step can
-still leave a redelivered event closed until staff replay or a later redelivery.
-
-Redelivery still commits its reset and audit in separate transactions. A crash
-between them can leave a reset out of the sweep's count. Stripe's automatic
-redelivery covers failures reported by the endpoint in a non-2xx response.
+exhaustion audit. Every dispatch audit (a reset from a redelivery or the sweep, or
+an exhaustion) is written under the event's `stripe_events` row lock and stamped no
+earlier than the event's latest dispatch audit (an exhaustion strictly later, at
+least 1 ms after it), so their timestamp order is the order they committed even when
+app processes' clocks disagree. Stripe's automatic redelivery covers failures
+reported by the endpoint in a non-2xx response.
 
 `inbox.register(type, handler)` registers one handler per event type. The dispatcher
 loads the saved event in the job's gym scope and passes the verified reference,
@@ -105,14 +105,16 @@ A failed handler records only `handler_failed` and the failure time as
 a prior successful dispatch), and rethrows to the queue. When reading the stored
 event throws, dispatch still logs the failure as `billing.webhooks.handler_failed`
 (without `type`) and rethrows; a replay also records `handler_failed` and
-`failed_at` on a best-effort basis, keeping the original error even if the marker
-write fails (originals are covered by the recovery sweep). A successful dispatch
+`failed_at` on a best-effort basis, logging `billing.webhooks.marker_write_failed`
+and keeping the original error if the marker write fails (originals are covered by
+the recovery sweep). A successful dispatch
 clears both `error` and `failed_at`. Health and the go-live webhook check count
 only failures still unprocessed, so a failed replay of a processed event shows
 only as a failed job. Health counts a failure as recent when its
 `failed_at` is within the last 7 days; a row that failed before failure times were
-recorded counts by its received time instead. Even if the marker write fails,
-dispatch keeps the handler's error as the job's error and logs the original
+recorded counts by its received time instead. If a handler failure's marker write
+fails, dispatch logs `billing.webhooks.marker_write_failed`, keeps the handler's
+error as the job's error, and still logs the original
 failure as `billing.webhooks.handler_failed` with fields `handlerFailureFields` builds itself, none taken from message text:
 `gymId`, `eventId` and `type`; `errorName` (the error's name when it is an
 identifier, otherwise its JavaScript type) and `errorCode` (a short code of

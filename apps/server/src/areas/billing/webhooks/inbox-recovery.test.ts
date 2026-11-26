@@ -332,6 +332,63 @@ it('reopens recovery when a redelivery reset ties the exhaustion time and keeps 
   expect((await f.audits()).at(-1)).toMatchObject({ targetId: id, after: { delayMs: 2 * webhookRecoveryDelayMs } });
 });
 
+it('reopens recovery when a redelivery arrives from a process whose clock is behind the exhaustion audit', async () => {
+  const f = await fixture(); f.handler.mockRejectedValue(new Error('Unavailable'));
+  await f.deliver(); await f.exhaust();
+  const saved = await f.stored(), [failed] = await f.queue.failedJobs(webhookDispatchJob, [saved.id], { gymId: f.gymId });
+  expect(failed).toBeDefined();
+  const exhaustedAt = f.clock.now();
+  await db.forGym(f.gymId, tx => tx.insert(auditEvents).values({
+    gymId: f.gymId, actorKind: 'system', action: webhookDispatchRecoveryExhausted,
+    targetType: 'stripe_event', targetId: saved.id, after: { jobId: failed!.jobId, resets: webhookRecoveryLimit },
+    occurredAt: exhaustedAt,
+  }));
+  const paged = async () => (await db.forGym(f.gymId, tx => webhookRecoveryPage(tx, f.gymId))).map(row => row.id);
+  expect(await paged()).not.toContain(saved.id);
+  const behind = new TestClock(new Date(exhaustedAt.getTime() - 10 * 60_000));
+  const skewedProvider = new FakePayments(f.gymId, behind);
+  const skewedInbox = createWebhookInbox({ ...f.options, clock: behind, paymentsFor: async () => skewedProvider });
+  const body = new TextEncoder().encode(JSON.stringify({
+    id: saved.eventId, gymId: f.gymId, type: 'payment_intent.succeeded', objectId: 'pi_fixture', objectKind: 'charge',
+  }));
+  await skewedInbox.receive(f.gymId, body, skewedProvider.signWebhook(body));
+  expect(await f.audits()).toMatchObject([{ targetId: saved.id, after: { jobId: failed!.jobId }, occurredAt: exhaustedAt }]);
+  expect(await paged()).toContain(saved.id);
+  await f.exhaust();
+  const sweep = () => f.build().recoverFailed(f.gymId);
+  f.clock.advance(2 * webhookRecoveryDelayMs - 1);
+  expect(await sweep()).toEqual({ recovered: 0, exhausted: 0 });
+  f.clock.advance(1);
+  expect(await sweep()).toEqual({ recovered: 1, exhausted: 0 });
+  expect((await f.audits()).at(-1)).toMatchObject({ targetId: saved.id, after: { jobId: failed!.jobId, delayMs: 2 * webhookRecoveryDelayMs } });
+});
+
+it('stamps an exhaustion audit 1 ms after resets written by a clock ahead of the sweep', async () => {
+  const f = await fixture(); f.handler.mockRejectedValue(new Error('Unavailable'));
+  const now = f.clock.now(), ahead = new Date(now.getTime() + 10 * 60_000);
+  const id = uuidv7(), eventId = 'evt_' + id;
+  await db.forGym(f.gymId, async tx => {
+    await tx.insert(stripeEvents).values({
+      id, gymId: f.gymId, eventId, type: 'payment_intent.succeeded',
+      payload: { id: eventId, gymId: f.gymId, type: 'payment_intent.succeeded', objectId: 'pi_fixture', objectKind: 'charge' },
+      receivedAt: now, error: 'handler_failed', failedAt: now,
+    });
+    await tx.insert(auditEvents).values(Array.from({ length: webhookRecoveryLimit }, () => ({
+      gymId: f.gymId, actorKind: 'system', action: webhookDispatchRetried,
+      targetType: 'stripe_event', targetId: id, after: {}, occurredAt: ahead,
+    })));
+  });
+  await f.queue.enqueue(webhookDispatchJob, { eventId }, { gymId: f.gymId, timezone: 'UTC', idempotencyKey: id, maxAttempts: 1 });
+  expect(await f.queue.runNext()).toBe(true);
+  expect(await f.build().recoverFailed(f.gymId)).toEqual({ recovered: 0, exhausted: 1 });
+  const exhausted = await db.forGym(f.gymId, tx => tx.select().from(auditEvents)
+    .where(eq(auditEvents.action, webhookDispatchRecoveryExhausted)));
+  expect(exhausted).toMatchObject([{ targetId: id, after: { resets: webhookRecoveryLimit }, occurredAt: new Date(ahead.getTime() + 1) }]);
+  const paged = (await db.forGym(f.gymId, tx => webhookRecoveryPage(tx, f.gymId))).map(row => row.id);
+  expect(paged).not.toContain(id);
+  expect(await f.build().recoverFailed(f.gymId)).toEqual({ recovered: 0, exhausted: 0 });
+});
+
 it('logs a failed pre-check read and continues to recover an eligible event on the next page', async () => {
   const f = await fixture(), queue = new FakeJobs(f.clock);
   const old = new Date(f.clock.now().getTime() - 86_400_000);

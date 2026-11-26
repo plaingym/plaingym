@@ -9,7 +9,7 @@ import { recentWebhookFailureMs, type WebhookHealthQuery } from '../../../core/i
 import type { JobContext, Jobs, JobRecovery } from '../../../infra/jobs/index.js';
 import type { PaymentEvent, Payments } from '../../../infra/payments/index.js';
 import { PaymentWebhookError } from '../../../infra/payments/webhook-error.js';
-import { createWebhookInboxRecovery, webhookDispatchRetried } from './inbox-recovery.js';
+import { createWebhookInboxRecovery, resetRedeliveredDispatch } from './inbox-recovery.js';
 import { latestTestSwitch, stripeSwitchSnapshot, StripeTestModeSwitched, withProviderWrites } from '../stripe-writes.js';
 
 export const webhookDispatchJob = 'billing.webhooks.dispatch';
@@ -138,10 +138,7 @@ export function createWebhookInbox(options: {
       });
       // A redelivery also recovers a dispatch that used all its attempts; its audit counts toward the sweep's limit.
       // Reset only this gym's failed original job; concurrent deliveries cannot reset queued or running work.
-      if (options.recovery) for (const job of await options.recovery.failedJobs(webhookDispatchJob, [row.id], { gymId }))
-        if (await options.recovery.retryFailed(job.jobId, { gymId, runAt: clock.now() }))
-          await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: webhookDispatchRetried,
-            targetType: 'stripe_event', targetId: row.id, after: { jobId: job.jobId }, occurredAt: clock.now() }));
+      if (options.recovery) await resetRedeliveredDispatch({ job: webhookDispatchJob, scope, clock, recovery: options.recovery }, gymId, row.id);
     },
     async dispatch(payload: unknown, context: JobContext): Promise<void> {
       const input = dispatchSchema.parse(payload);
@@ -158,7 +155,9 @@ export function createWebhookInbox(options: {
           try {
             await scope(context.gymId, (tx) => tx.update(stripeEvents).set({ error: 'handler_failed', failedAt: clock.now() })
               .where(match(context.gymId, input.eventId)));
-          } catch { /* Best effort: keep and rethrow the original read failure. */ }
+          } catch (writeError) {
+            logError('billing.webhooks.marker_write_failed', { gymId: context.gymId, eventId: input.eventId }, writeError);
+          }
         }
         logFailure(error);
         throw error;
@@ -192,7 +191,9 @@ export function createWebhookInbox(options: {
         try {
           await scope(context.gymId, (tx) => tx.update(stripeEvents).set({ error: 'handler_failed', failedAt: clock.now() })
             .where(match(context.gymId, input.eventId)));
-        } catch { /* Best effort: keep and rethrow the handler's error. */ }
+        } catch (writeError) {
+          logError('billing.webhooks.marker_write_failed', { gymId: context.gymId, eventId: input.eventId }, writeError);
+        }
         logFailure(error, row.type);
         throw error; // The job queue owns retry/backoff and the attempt limit.
       }

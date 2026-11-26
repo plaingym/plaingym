@@ -4,8 +4,11 @@ import { beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
 import { auditEvents, stripeEvents, uuidv7 } from '@plaingym/db';
+// eslint-disable-next-line database/system-tables -- Test inspects the reset job's scheduled time on the disposable database.
+import { jobs as jobsTable } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
+import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { TestClock } from '../../../core/clock.js';
 import { describeError, setLogSink } from '../../../core/log.js';
@@ -18,9 +21,10 @@ import { StripePayments } from '../../../infra/payments/stripe.js';
 import { StripeFixtures } from '../../../infra/payments/stripe-fixtures.js';
 import type { ObjectData } from '../../../infra/payments/transport.js';
 import { PaymentWebhookError } from '../../../infra/payments/webhook-error.js';
-import { createWebhookHealthQuery, createWebhookInbox, handlerFailureFields, testEventSkippedAction, type WebhookInbox } from './inbox.js';
+import { createWebhookHealthQuery, createWebhookInbox, handlerFailureFields, testEventSkippedAction, webhookDispatchJob, type WebhookInbox } from './inbox.js';
 import { stripeTestClearedAction } from '../stripe-writes.js';
 import { createWebhookInboxJobs } from './inbox.jobs.js';
+import { resetRedeliveredDispatch } from './inbox-recovery.js';
 import { createWebhookInboxRoutes } from './inbox.routes.js';
 import { createReplayCommand } from '../../../cli/replay.js';
 
@@ -226,9 +230,13 @@ it('rethrows and logs the original handler failure even when the inbox cannot sa
   try { await expect(service.dispatch({ eventId: 'evt_test' }, context())).rejects.toBe(handlerError); }
   finally { setLogSink(previous); }
   expect(markerAttempts).toBe(1);
-  expect(lines).toHaveLength(1);
-  expect(lines.map(line => JSON.parse(line))).toMatchObject([{ event: 'billing.webhooks.handler_failed',
-    gymId: gymA, eventId: 'evt_test', type: 'payment_intent.succeeded', reason: 'Saved card household is unresolved' }]);
+  expect(lines).toHaveLength(2);
+  expect(lines.map(line => JSON.parse(line))).toMatchObject([
+    { level: 'error', event: 'billing.webhooks.marker_write_failed', gymId: gymA, eventId: 'evt_test',
+      error: expect.objectContaining({ name: 'Error' }) },
+    { event: 'billing.webhooks.handler_failed',
+      gymId: gymA, eventId: 'evt_test', type: 'payment_intent.succeeded', reason: 'Saved card household is unresolved' },
+  ]);
 });
 it('records a replay failure marker when reading the stored event throws, and rethrows and logs the original error if the marker write also throws', async () => {
   await deliver();
@@ -271,8 +279,12 @@ it('records a replay failure marker when reading the stored event throws, and re
   try { await expect(bothFailService.dispatch({ eventId: 'evt_test', replay: true }, context())).rejects.toBe(readError); }
   finally { setLogSink(prevBoth); }
   expect(bothCalls).toBe(2);
-  expect(bothLogs.map(line => JSON.parse(line))).toMatchObject([{ event: 'billing.webhooks.handler_failed',
-    gymId: gymA, eventId: 'evt_test', errorName: 'Error', errorCode: '57P01' }]);
+  expect(bothLogs.map(line => JSON.parse(line))).toMatchObject([
+    { level: 'error', event: 'billing.webhooks.marker_write_failed', gymId: gymA, eventId: 'evt_test',
+      error: expect.objectContaining({ name: 'Error', code: '08006' }) },
+    { event: 'billing.webhooks.handler_failed',
+      gymId: gymA, eventId: 'evt_test', errorName: 'Error', errorCode: '57P01' },
+  ]);
 });
 it('can replay an exhausted handler and retries a failed replay too', async () => {
   let fail = true;
@@ -307,6 +319,121 @@ it('redelivery resets an exhausted PostgreSQL dispatch once, preserving its job 
   expect(await queue.runNext()).toBe(true); expect(handler).toHaveBeenCalledTimes(11);
   expect((await rows())[0]).toMatchObject({ processedAt: clock.now(), error: null });
   await service.receive(gymA, delivery.body, delivery.signature);
+  expect(await queue.runNext()).toBe(false);
+});
+it('redelivery stamps its reset audit and job runAt from one clock read and resets once under concurrency', async () => {
+  let nowMs = new Date('2026-10-24T12:00:00Z').getTime();
+  const tickingClock: Clock & { advance(ms: number): void } = { now: () => new Date(nowMs++), advance(ms) { nowMs += ms; } };
+  const queue = new PostgresJobs({ database, clock: tickingClock });
+  const provider = new FakePayments(gymA, tickingClock);
+  const service = createWebhookInbox({
+    paymentsFor: async () => provider, jobs: queue, recovery: queue, gymSettings, clock: tickingClock,
+    scope: database.forGym, system: database.forSystem,
+  });
+  let fail = true;
+  const handler = vi.fn(async () => { if (fail) throw new Error('Unavailable'); });
+  service.register('payment_intent.succeeded', handler);
+  createServerRegistry({ jobs: createWebhookInboxJobs(service) }).registerJobs(queue, new Set());
+  const delivery = fakeDelivery(event('evt_redelivered_ticking'));
+  await service.receive(gymA, delivery.body, delivery.signature);
+  const saved = (await rows())[0]!;
+  for (let attempt = 0; attempt < 10; attempt++) { expect(await queue.runNext()).toBe(true); tickingClock.advance(600_000); }
+  const [failed] = await queue.failedJobs(webhookDispatchJob, [saved.id], { gymId: gymA });
+  expect(failed).toBeDefined();
+  fail = false;
+  await Promise.all([
+    service.receive(gymA, delivery.body, delivery.signature),
+    service.receive(gymA, delivery.body, delivery.signature),
+  ]);
+  const audits = (await database.forGym(gymA, tx => tx.select().from(auditEvents)
+    .where(eq(auditEvents.action, 'billing.webhook.dispatch_retried')))).filter(row => row.targetId === saved.id);
+  expect(audits).toMatchObject([{ after: { jobId: failed!.jobId } }]);
+  const [resetJob] = await database.forGym(gymA, tx => tx.select({ status: jobsTable.status, runAt: jobsTable.runAt })
+    .from(jobsTable).where(eq(jobsTable.id, failed!.jobId)));
+  expect(resetJob).toMatchObject({ status: 'pending', runAt: audits[0]!.occurredAt });
+  expect(await queue.runNext()).toBe(true);
+  expect(await queue.runNext()).toBe(false);
+  expect(handler).toHaveBeenCalledTimes(11);
+});
+it('leaves a post-redelivery handler failure unchanged without a locked transaction on the next sweep', async () => {
+  let nowMs = new Date('2026-10-24T12:00:00Z').getTime();
+  const tickingClock: Clock & { advance(ms: number): void } = { now: () => new Date(nowMs++), advance(ms) { nowMs += ms; } };
+  const queue = new PostgresJobs({ database, clock: tickingClock });
+  const provider = new FakePayments(gymA, tickingClock);
+  const service = createWebhookInbox({
+    paymentsFor: async () => provider, jobs: queue, recovery: queue, gymSettings, clock: tickingClock,
+    scope: database.forGym, system: database.forSystem,
+  });
+  service.register('payment_intent.succeeded', async () => { throw new Error('Unavailable'); });
+  createServerRegistry({ jobs: createWebhookInboxJobs(service) }).registerJobs(queue, new Set());
+  const delivery = fakeDelivery(event('evt_redelivered_sweep'));
+  await service.receive(gymA, delivery.body, delivery.signature);
+  const saved = (await rows())[0]!;
+  for (let attempt = 0; attempt < 10; attempt++) { expect(await queue.runNext()).toBe(true); tickingClock.advance(600_000); }
+  await service.receive(gymA, delivery.body, delivery.signature);
+  for (let attempt = 0; attempt < 10; attempt++) { expect(await queue.runNext()).toBe(true); tickingClock.advance(600_000); }
+  const failedAt = (await rows())[0]!.failedAt!;
+  const [failed] = await queue.failedJobs(webhookDispatchJob, [saved.id], { gymId: gymA });
+  expect(failed).toBeDefined();
+  expect(failed!.failedAt.getTime()).toBeGreaterThan(failedAt.getTime());
+  let scopes = 0;
+  const countedScope: typeof database.forGym = (gymId, fn) => { scopes++; return database.forGym(gymId, fn); };
+  const sweeper = createWebhookInbox({
+    paymentsFor: async () => provider, jobs: queue, recovery: queue, gymSettings, clock: tickingClock,
+    scope: countedScope, system: database.forSystem,
+  });
+  expect(await sweeper.recoverFailed(gymA)).toEqual({ recovered: 0, exhausted: 0 });
+  expect(scopes).toBe(3);
+  expect((await rows())[0]).toMatchObject({ error: 'handler_failed', failedAt, processedAt: null });
+});
+it('rolls back a redelivery job reset when the recovery transaction fails', async () => {
+  const queue = new PostgresJobs({ database, clock }), service = build(async () => fake, queue);
+  service.register('payment_intent.succeeded', async () => { throw new Error('Unavailable'); });
+  createServerRegistry({ jobs: createWebhookInboxJobs(service) }).registerJobs(queue, new Set());
+  const delivery = fakeDelivery(event('evt_redelivered_rollback'));
+  await service.receive(gymA, delivery.body, delivery.signature);
+  const saved = (await rows())[0]!;
+  for (let attempt = 0; attempt < 10; attempt++) { expect(await queue.runNext()).toBe(true); clock.advance(600_000); }
+  const [failed] = await queue.failedJobs(webhookDispatchJob, [saved.id], { gymId: gymA });
+  expect(failed).toBeDefined();
+  const failingRecovery: JobRecovery = {
+    failedJobs: (...args) => queue.failedJobs(...args),
+    async retryFailed(jobId, opts, transaction) {
+      expect(await queue.retryFailed(jobId, opts, transaction)).toBe(true);
+      throw new Error('recovery commit failed');
+    },
+  };
+  const failingService = createWebhookInbox({
+    paymentsFor: async () => fake, jobs: queue, recovery: failingRecovery, gymSettings, clock,
+    scope: database.forGym, system: database.forSystem,
+  });
+  await expect(failingService.receive(gymA, delivery.body, delivery.signature)).rejects.toThrow('recovery commit failed');
+  expect(await queue.failedJobs(webhookDispatchJob, [saved.id], { gymId: gymA })).toMatchObject([{ jobId: failed!.jobId }]);
+  const audits = (await database.forGym(gymA, tx => tx.select().from(auditEvents)
+    .where(eq(auditEvents.action, 'billing.webhook.dispatch_retried')))).filter(row => row.targetId === saved.id);
+  expect(audits).toEqual([]);
+  expect(await queue.runNext()).toBe(false);
+});
+it('leaves the failed original dispatch alone when a replay processed the event before the redelivery lock', async () => {
+  let fail = true;
+  const queue = new PostgresJobs({ database, clock }), service = build(async () => fake, queue);
+  service.register('payment_intent.succeeded', async () => { if (fail) throw new Error('Unavailable'); });
+  createServerRegistry({ jobs: createWebhookInboxJobs(service) }).registerJobs(queue, new Set());
+  const delivery = fakeDelivery(event('evt_redelivered_processed'));
+  await service.receive(gymA, delivery.body, delivery.signature);
+  const saved = (await rows())[0]!;
+  for (let attempt = 0; attempt < 10; attempt++) { expect(await queue.runNext()).toBe(true); clock.advance(600_000); }
+  const [failed] = await queue.failedJobs(webhookDispatchJob, [saved.id], { gymId: gymA });
+  expect(failed).toBeDefined();
+  fail = false;
+  await service.replay(gymA, 'evt_redelivered_processed'); expect(await queue.runNext()).toBe(true);
+  expect((await rows())[0]!.processedAt).not.toBeNull();
+  expect(await resetRedeliveredDispatch({ job: webhookDispatchJob, scope: database.forGym, clock, recovery: queue },
+    gymA, saved.id)).toBe(0);
+  expect(await queue.failedJobs(webhookDispatchJob, [saved.id], { gymId: gymA })).toMatchObject([{ jobId: failed!.jobId }]);
+  const audits = (await database.forGym(gymA, tx => tx.select().from(auditEvents)
+    .where(eq(auditEvents.action, 'billing.webhook.dispatch_retried')))).filter(row => row.targetId === saved.id);
+  expect(audits).toEqual([]);
   expect(await queue.runNext()).toBe(false);
 });
 it('a failed replay preserves the successful processing timestamp, including a concurrent replay failure', async () => {
