@@ -356,8 +356,8 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
           setRestoreFailure(null); setUnreachable(false); setThrottled(false); setPhase(null);
           restoreAnswer(result); setJobId(result.jobId); sessionStorage.setItem('setup.restore', result.jobId);
         } catch (failure) {
-          // No answer, or a proxy's, doesn't say the server refused the restore.
-          const unanswered = failure instanceof TypeError || (failure instanceof ApiError && (failure.status === 502 || failure.status === 504));
+          // No answer, or a proxy's (its own 503 page lacks the app's code), doesn't say the server refused the restore.
+          const unanswered = failure instanceof TypeError || (failure instanceof ApiError && ([502, 504, 520, 522, 524].includes(failure.status) || (failure.status === 503 && failure.code !== 'unavailable')));
           if (!unanswered) {
             // After an unanswered request, a 409 (a restore is already running) or a 404 (it holds the gym, or has
             // closed setup) is most likely that restore's doing. Any other refusal (a 400 for the snapshot ID and a 403

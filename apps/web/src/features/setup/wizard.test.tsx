@@ -2102,6 +2102,10 @@ describe('setup wizard restore progress', () => {
     ['gets no response', dropped],
     ['answers 502', proxyAnswer(502)],
     ['answers 504', proxyAnswer(504)],
+    ['answers a 503 page', proxyAnswer(503)],
+    ['answers 520', proxyAnswer(520)],
+    ['answers 522', proxyAnswer(522)],
+    ['answers 524', proxyAnswer(524)],
   ])('keeps the restore form, saying the restore may be running, when the request %s and the status read answers 404', async (_, request) => {
     // The status read answers only after a while, as over a real connection.
     const read = later();
@@ -2473,7 +2477,7 @@ describe('setup wizard restore progress', () => {
   const failedAnswer = (status: number) => () => Promise.resolve(Response.json({ error: { code: 'internal', message: 'Failed' } }, { status }));
   const restoreRequests = (fetcher: ReturnType<typeof start>['fetcher']) => fetcher.mock.calls.filter(([path]) => String(path) === '/api/setup/restore');
   it.each([500, 503])('keeps the unanswered state, showing the save error, when sending again answers %i', async (status) => {
-    const answers = [dropped, failedAnswer(status)];
+    const answers = [dropped, status === 503 ? () => Promise.resolve(busy503()) : failedAnswer(status)];
     const { fetcher, shown } = await sendRestoreEnding(() => answers.shift()!(), gone);
     expect(await screen.findByText(unansweredText)).toBeDefined();
 
@@ -2662,5 +2666,33 @@ describe('setup wizard restore progress', () => {
     await settle();
     expect(screen.queryByText(heldText)).toBeNull();
     expect(document.activeElement).toBe(alertOf(unansweredText));
+  });
+  it('shows the unavailable screen when a restore request with none unanswered before it answers the app\'s own 503', async () => {
+    await sendRestoreEnding(() => Promise.resolve(busy503()), gone);
+
+    expect(await screen.findByText(unavailableText)).toBeDefined();
+    expect(screen.queryByText(unansweredText)).toBeNull();
+  });
+  it('ends on the unanswered message when sending again after an unanswered request answers a 503 page', async () => {
+    const answers = [dropped, proxyAnswer(503)];
+    const { fetcher, shown } = await sendRestoreEnding(() => answers.shift()!(), gone);
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+
+    await sendRestore();
+
+    await waitFor(() => expect(restoreRequests(fetcher)).toHaveLength(2));
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+    await settle();
+    expect(screen.queryByText(saveFailedText)).toBeNull();
+    expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
+    expect(shown()).toBe(false);
+  });
+  it('shows the save error and keeps the form when a 524 restore request is followed by a status read that works', async () => {
+    await sendRestoreEnding(proxyAnswer(524), null);
+
+    expect(await screen.findByText(saveFailedText)).toBeDefined();
+    await settle();
+    expect(screen.queryByText(unansweredText)).toBeNull();
+    expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
   });
 });

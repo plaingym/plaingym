@@ -117,6 +117,9 @@ bucket, the snapshot ID, the endpoint, the private key, or a damaged snapshot. F
 When a verified restore is already staged, the wizard says so: it finishes by itself when the
 app restarts ([details](restore-reference.md#if-a-restore-is-interrupted)).
 
+If the setup page can't load and says a restore is running or staged, see
+[If a restore is interrupted](restore-reference.md#if-a-restore-is-interrupted).
+
 ## Restore from the command line
 
 Use this when the wizard can't be reached. Run it on the fresh install, before anyone has
