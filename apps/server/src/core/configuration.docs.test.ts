@@ -285,20 +285,20 @@ describe('docs/configuration.md', () => {
       [resolve(root, 'scan-caller.ts'), "import { required } from './scan-helper'; required('IMPORTED');"],
     ]))).toThrow('Unresolved environment variable');
   });
+  it('lists every variable the deployment Compose file uses', () => {
+    const documented = documentedVariables();
+    expect([...composeVariables()].filter((name) => !documented.has(name)).sort()).toEqual([]);
+  });
+  it('lists every variable the host scripts read', () => {
+    const documented = documentedVariables();
+    expect([...hostVariables()].filter((name) => !documented.has(name)).sort()).toEqual([]);
+  });
   describe('the real sources', () => {
     // The whole-source scan can pass 30 s on a slow Windows runner; later calls read the cache.
     beforeAll(() => { serverVariables(); }, 120_000);
     it('lists every variable the server reads', () => {
       const documented = documentedVariables();
       expect([...serverVariables()].filter((name) => !documented.has(name)).sort()).toEqual([]);
-    });
-    it('lists every variable the deployment Compose file uses', () => {
-      const documented = documentedVariables();
-      expect([...composeVariables()].filter((name) => !documented.has(name)).sort()).toEqual([]);
-    });
-    it('lists every variable the host scripts read', () => {
-      const documented = documentedVariables();
-      expect([...hostVariables()].filter((name) => !documented.has(name)).sort()).toEqual([]);
     });
     it('lists only variables something still reads', () => {
       const used = new Set([...serverVariables(), ...composeVariables(), ...hostVariables()]);

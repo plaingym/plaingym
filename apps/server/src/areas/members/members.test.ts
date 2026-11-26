@@ -426,6 +426,7 @@ describe('members and households', () => {
     expect((await call(`/api/households/${first.id}`)).data.pinSet).toBe(false);
     const saved = await call(`/api/households/${first.id}/pin`, 'PUT', { revision: 1, pin: '1234' });
     expect(saved).toMatchObject({ data: { pinSet: true }, sharedPin: false });
+    const [firstStored] = await database.forGym(gymId, (tx) => tx.select({ pin: households.pinHash }).from(households).where(eq(households.id, first.id)));
     expect((await call(`/api/households/${first.id}`)).data.pinSet).toBe(true);
     expect((await call(`/api/households/${second.id}`)).data.pinSet).toBe(false);
     const shared = await call(`/api/households/${second.id}/pin`, 'PUT', { revision: 1, pin: '1234' });
@@ -435,6 +436,7 @@ describe('members and households', () => {
     expect(verifyHouseholdPin(secretB, gymId, second.id, '1234', stored!.pin)).toBe(true);
     const changed = await call(`/api/households/${second.id}/pin`, 'PUT', { revision: shared.data.revision, pin: '5678' });
     expect(changed).toMatchObject({ data: { pinSet: true }, sharedPin: false });
+    const [changedStored] = await database.forGym(gymId, (tx) => tx.select({ pin: households.pinHash }).from(households).where(eq(households.id, second.id)));
     const cleared = await call(`/api/households/${first.id}/pin`, 'PUT', { revision: saved.data.revision, pin: null });
     expect(cleared).toMatchObject({ data: { pinSet: false }, sharedPin: false });
     expect((await call(`/api/households/${first.id}`)).data.pinSet).toBe(false);
@@ -448,9 +450,13 @@ describe('members and households', () => {
     const audits = await database.forGym(gymId, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'household.pin.updated')));
     expect(audits).toHaveLength(4);
     expect(JSON.stringify(audits)).not.toMatch(/pinHash|pin_hash|sharedPin/);
+    for (const hash of [firstStored!.pin, stored!.pin, changedStored!.pin]) {
+      expect(hash).not.toBeNull();
+      expect(JSON.stringify(audits)).not.toContain(hash!);
+    }
     // Generated IDs can contain a PIN's digits, so UUID values are left out of that check.
     const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    const values = JSON.stringify(audits.map(({ before, after }) => [before, after]),
+    const values = JSON.stringify(audits,
       (_key, value: unknown) => typeof value === 'string' && uuid.test(value) ? undefined : value);
     expect(values).not.toMatch(/1234|5678/);
   });

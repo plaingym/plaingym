@@ -22,10 +22,15 @@ test('a section not visited yet opens offline under the header and banner', asyn
     return route.fulfill({ status: 404, json: { error: { code: 'not_found' } } });
   });
   await page.setViewportSize({ width: 1280, height: 800 });
+  let inFlight = 0;
+  page.on('request', () => { inFlight++; });
+  page.on('requestfinished', () => { inFlight--; });
+  page.on('requestfailed', () => { inFlight--; });
   await page.goto(gymOrigin + '/portal/household');
   await expect(page.getByLabel('Phone', { exact: true })).toBeVisible();
-  // The other sections' code loads in the background; wait for it before the connection drops.
+  // The other sections' code loads in the background; both waits are for it, before the connection drops.
   await page.waitForLoadState('networkidle');
+  await expect.poll(() => inFlight, { timeout: 15_000 }).toBe(0);
   await context.setOffline(true);
   await page.getByRole('navigation', { name: 'Member navigation' }).getByRole('link', { name: 'Progress', exact: true }).click();
   await expect(page).toHaveURL(/\/portal\/progress$/);
