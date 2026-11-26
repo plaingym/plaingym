@@ -16,9 +16,13 @@ while three are unsettled a refresh waits on the newest, and one settling lets t
 refresh start another; a read still unsettled 30 minutes after it started no longer counts
 toward the three, so a tile whose reads hang for good is checked again, but never beyond 12
 unsettled reads of any age per gym and tile: at that cap a refresh waits on the newest, and
-the first refresh held back by it logs `health.tile_hung` once, with the tile ID and the
-count, until the count falls below the cap; if none of those reads ever settles, the tile reads
-"Still checking" until the app restarts, even after its dependency answers again). A read slower
+the first refresh held back by it logs `health.tile_hung` once, with the gym ID, the tile ID
+and the count, until the count falls below the cap; if none of those reads ever settles, the tile reads
+"Still checking" until the app restarts, even after its dependency answers again). Each read's
+database statements run under a 10-second `statement_timeout` (`withStatementTimeout` from
+`@plaingym/db`; the `statementTimeoutMs` option, at least the tile limit), so a read stuck in
+the database is cancelled and gives its pool connection back; the cancelled read becomes the
+unavailable tile. Reads stuck outside the database still count toward the caps above. A read slower
 than 2 seconds logs `health.tile_slow` once, with its tile ID and duration from the read's
 start; each request that reaches the 5-second limit logs
 its own line with `timedOut: true`. The Last backup tile reuses its bucket inventory

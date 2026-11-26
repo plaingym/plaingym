@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { healthTileSchema, type HealthTile } from '@plaingym/shared/contracts';
-import { uuidv7 } from '@plaingym/db';
+import { currentStatementTimeout, uuidv7 } from '@plaingym/db';
 import type { StaffProviderContext } from '../../core/interfaces/extensions.js';
 import { TestClock } from '../../core/clock.js';
 import { setLogSink } from '../../core/log.js';
@@ -339,7 +339,7 @@ describe('health tile time limit', () => {
     const never = healthProvider(b, () => { calls++; return new Promise<HealthTile>(() => undefined); });
     await refreshEveryMinute(createHealthService([never], options), eightHours);
     expect(calls).toBe(12);
-    expect(hungLines()).toEqual([{ time: expect.any(String), level: 'warn', event: 'health.tile_hung', tile: b, unsettled: 12 }]);
+    expect(hungLines()).toEqual([{ time: expect.any(String), level: 'warn', event: 'health.tile_hung', gymId: context.gymId, tile: b, unsettled: 12 }]);
   });
   it('starts one new read once a read settles at the cap, and logs the next cap again', async () => {
     let calls = 0;
@@ -379,6 +379,18 @@ describe('health tile time limit', () => {
   });
   it('refuses a maxHungReads below maxUnsettledReads', () => {
     expect(() => createHealthService([], { maxHungReads: 2 })).toThrow('maxHungReads');
+  });
+  it('names the gym in the hung-read line', async () => {
+    const gymId = uuidv7();
+    const never = healthProvider(b, () => new Promise<HealthTile>(() => undefined));
+    const service = createHealthService([never], { ...options, maxUnsettledReads: 1, maxHungReads: 1 });
+    for (let request = 0; request < 3; request++) {
+      const response = service.get({ ...context, gymId });
+      await vi.advanceTimersByTimeAsync(5000);
+      await response;
+      await vi.advanceTimersByTimeAsync(55_000);
+    }
+    expect(hungLines()).toEqual([{ time: expect.any(String), level: 'warn', event: 'health.tile_hung', gymId, tile: b, unsettled: 1 }]);
   });
   it('starts a new read once the replaced read settles while keeping at most two pending', async () => {
     let calls = 0;
@@ -471,5 +483,30 @@ describe('health tile time limit', () => {
     expect(calls).toBe(4);
     await vi.advanceTimersByTimeAsync(5000);
     await Promise.all([r186, r191]);
+  });
+});
+
+describe('health read statement limit', () => {
+  /** A provider whose tile message records the statement limit its read runs under. */
+  const recording = (id: HealthTile['id']) => healthProvider(id, async () =>
+    healthTileSchema.parse({ ...tileOf(id), message: 'Limit ' + String(currentStatementTimeout()) }));
+  const messageOf = async (service: ReturnType<typeof createHealthService>) =>
+    (await service.get(context)).data.tiles.find((tile) => tile.id === a)?.message;
+  it('runs each provider read under a 10-second statement limit by default', async () => {
+    expect(await messageOf(createHealthService([recording(a)], options))).toBe('Limit 10000');
+    expect(currentStatementTimeout()).toBeUndefined();
+  });
+  it('honors a configured statement limit', async () => {
+    expect(await messageOf(createHealthService([recording(a)], { ...options, statementTimeoutMs: 7000 }))).toBe('Limit 7000');
+  });
+  it('refuses a statement limit below the tile limit', () => {
+    expect(() => createHealthService([], { statementTimeoutMs: 1000, tileTimeoutMs: 5000 })).toThrow('statementTimeoutMs');
+    expect(() => createHealthService([], { statementTimeoutMs: 5000, tileTimeoutMs: 5000 })).not.toThrow();
+    expect(() => createHealthService([], { statementTimeoutMs: 0, tileTimeoutMs: 0 })).toThrow('statementTimeoutMs');
+  });
+  it('turns a read cancelled by the limit into the failed-check tile', async () => {
+    const cancelled = healthProvider(a, () => Promise.reject(Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' })));
+    const tile = (await createHealthService([cancelled], options).get(context)).data.tiles.find((each) => each.id === a);
+    expect(tile).toMatchObject({ status: 'unavailable', message: 'This check is unavailable. Try again or check the server configuration.' });
   });
 });

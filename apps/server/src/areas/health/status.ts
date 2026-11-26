@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { withStatementTimeout } from '@plaingym/db';
 import { AppError, canStaff, createTranslator, type Translator } from '@plaingym/shared';
 import messages from '../../../../../locales/en/health/status.json' with { type: 'json' };
 import { healthResponseSchema, healthTileIds, healthTileSchema, type HealthTile } from '@plaingym/shared/contracts';
@@ -20,11 +21,12 @@ export const healthReadAgeMs = 30_000;
  * late result is discarded. Slow tiles log their ID and duration only.
  */
 export function createHealthService(providers: readonly HealthTileProvider<HealthTile>[],
-  options: { tileTimeoutMs?: number; slowTileMs?: number; maxReadAgeMs?: number; maxReplacedAgeMs?: number; maxUnsettledReads?: number; maxUnsettledAgeMs?: number; maxHungReads?: number; now?: () => number } = {}) {
-  const { tileTimeoutMs = 5000, slowTileMs = 2000, maxReadAgeMs = healthReadAgeMs, maxReplacedAgeMs = 4 * maxReadAgeMs, maxUnsettledReads = 3, maxUnsettledAgeMs = 30 * 60_000, maxHungReads = 12, now = () => performance.now() } = options;
+  options: { tileTimeoutMs?: number; slowTileMs?: number; maxReadAgeMs?: number; maxReplacedAgeMs?: number; maxUnsettledReads?: number; maxUnsettledAgeMs?: number; maxHungReads?: number; statementTimeoutMs?: number; now?: () => number } = {}) {
+  const { tileTimeoutMs = 5000, slowTileMs = 2000, maxReadAgeMs = healthReadAgeMs, maxReplacedAgeMs = 4 * maxReadAgeMs, maxUnsettledReads = 3, maxUnsettledAgeMs = 30 * 60_000, maxHungReads = 12, statementTimeoutMs = 10_000, now = () => performance.now() } = options;
   const registry = new Map(providers.map((provider) => [provider.id, provider]));
   if (registry.size !== providers.length) throw new Error('Duplicate health provider');
   if (maxHungReads < maxUnsettledReads) throw new Error('maxHungReads must be at least maxUnsettledReads');
+  if (!Number.isSafeInteger(statementTimeoutMs) || statementTimeoutMs < Math.max(1, tileTimeoutMs)) throw new Error('statementTimeoutMs must be a positive integer of at least tileTimeoutMs');
   type Entry = { read: Promise<HealthTile>; startedAt: number; loggedSlow: boolean };
   const inFlight = new Map<string, Entry>();
   const replaced = new Map<string, Entry>();
@@ -62,7 +64,7 @@ export function createHealthService(providers: readonly HealthTileProvider<Healt
         if (running && (shared || capped || youngUnsettled(key) >= maxUnsettledReads)) {
           if (!shared && capped && !hungLogged.has(key)) {
             hungLogged.add(key);
-            logWarn('health.tile_hung', { tile: id, unsettled: unsettledCount });
+            logWarn('health.tile_hung', { gymId: context.gymId, tile: id, unsettled: unsettledCount });
           }
           entry = running;
         } else {
@@ -74,7 +76,8 @@ export function createHealthService(providers: readonly HealthTileProvider<Healt
           const fresh: Entry = {
             read: (async (): Promise<HealthTile> => {
               try {
-                const tile = healthTileSchema.parse(provider.schema.parse(await provider.read(context)));
+                // A database statement stuck past the limit is cancelled, so the read gives its pool connection back.
+                const tile = healthTileSchema.parse(provider.schema.parse(await withStatementTimeout(statementTimeoutMs, () => provider.read(context))));
                 if (tile.id !== id) throw new Error('Provider returned another tile');
                 return tile;
               } catch {

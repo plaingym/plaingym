@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { sql } from 'drizzle-orm';
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
@@ -72,12 +73,29 @@ export function validateUuid(value: string) {
     throw new Error('Expected a UUID');
   }
 }
+const statementTimeouts = new AsyncLocalStorage<number>();
+/**
+ * Runs `fn` with a PostgreSQL `statement_timeout` of `ms` milliseconds on every `forGym`, `forHousehold` and
+ * `forSystem` transaction it opens, so a statement stuck in the database is cancelled (SQLSTATE 57014) and its
+ * pooled connection is given back. The limit is set transaction-locally and ends with each transaction.
+ */
+export function withStatementTimeout<T>(ms: number, fn: () => Promise<T>): Promise<T> {
+  if (!Number.isSafeInteger(ms) || ms < 1) throw new Error('Statement timeout must be a positive integer');
+  return statementTimeouts.run(ms, fn);
+}
+/** The limit `withStatementTimeout` set for the current async context, if any. */
+export const currentStatementTimeout = (): number | undefined => statementTimeouts.getStore();
+async function applyStatementTimeout(tx: Transaction) {
+  const limit = statementTimeouts.getStore();
+  if (limit) await tx.execute(sql`select set_config('statement_timeout', ${limit + 'ms'}, true)`);
+}
 export function scopedDatabase(db: Database) {
   async function forGym<T>(gymId: string, fn: (tx: Transaction) => Promise<T>): Promise<T> {
     validateUuid(gymId);
     assertNoTransaction('Nested database scope');
     return runInTransaction(() => db.transaction(async (tx) => {
       await tx.execute(sql`select set_config('app.gym_id', ${gymId}, true)`);
+      await applyStatementTimeout(tx);
       return fn(tx);
     }));
   }
@@ -101,6 +119,7 @@ export function scopedDatabase(db: Database) {
     assertNoTransaction('Nested database scope');
     return runInTransaction(() => db.transaction(async (tx) => {
       await tx.execute(sql`select set_config('app.system', 'on', true)`);
+      await applyStatementTimeout(tx);
       return fn(tx);
     }));
   }

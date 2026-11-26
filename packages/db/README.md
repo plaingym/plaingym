@@ -369,6 +369,14 @@ rows. Malformed context errors. Nested scope calls are rejected. Every tenant
 policy has both USING and WITH CHECK, and references between tenant tables include
 `gym_id`. Use separate transactions for reserve, external I/O, and completion.
 
+`withStatementTimeout(ms, fn)` gives every `forGym`, `forHousehold` and `forSystem`
+transaction that `fn` opens a `statement_timeout` of `ms` milliseconds, set
+transaction-locally right after the scope's context, so a stuck statement is cancelled
+(SQLSTATE `57014`) and the limit never reaches the next transaction on the pooled
+connection. Outside it the scopes add no limit of their own (a database or role default, or
+one a caller sets in its own transaction, still applies); `currentStatementTimeout()` reads
+the current one.
+
 `forHousehold({ kind: 'user', gymId, householdId, userId }, fn)` verifies `household_users` inside
 the gym transaction. Its callback gets named query functions, with no raw handle or
 arbitrary predicates. Payers can read the household; non-payers can read their linked
