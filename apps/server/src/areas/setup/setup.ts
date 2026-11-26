@@ -91,10 +91,10 @@ export function createSetupService(options: {
       if (context.actor.kind !== 'user' || state.ownerId !== context.actor.userId) throw missing();
       if (!state.completedSteps.includes(previousStep)) throw new AppError('conflict', 'Complete the preceding setup step');
       const guard = revisionGuard(gyms.revision, revision);
+      assertRevised(before.revision === revision ? [before] : []);
       if (changes.currency && changes.currency !== before.currency) {
         await assertCurrencyChangeable(tx, context.gymId, before.currency);
       }
-      assertRevised(before.revision === revision ? [before] : []);
       await options.effect?.(tx);
       const next = { ...state, ...extra, completedSteps: extra.completedSteps ?? (!completeStep ? state.completedSteps
         : [...new Set([...state.completedSteps, step])].sort((a, b) => a - b)) };

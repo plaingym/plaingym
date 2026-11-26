@@ -145,6 +145,15 @@ describe('setup owner authorization and tenant isolation', () => {
       return { gymId, context: { gymId, actor: { kind: 'user', userId: userA } } as const, household: await factory('households', gymId) };
     }
     const stored = async (gymId: string) => (await database.forGym(gymId, (tx) => tx.select().from(gyms)))[0];
+    it('reports a stale revision before the currency lock', async () => {
+      const { gymId, context } = await setupGym();
+      await factory('plans', gymId);
+      await expect(service.gym(context, { ...details, revision: 2, currency: 'CAD' })).rejects.toBeInstanceOf(RevisionConflictError);
+      expect(await stored(gymId)).toMatchObject({ currency: 'USD', revision: 1 });
+      await expect(service.gym(context, { ...details, revision: 1, currency: 'CAD' }))
+        .rejects.toMatchObject({ code: 'conflict', message: 'Currency cannot change after billing records exist' });
+      expect(await stored(gymId)).toMatchObject({ currency: 'USD', revision: 1 });
+    });
     it('refuses changing currency while an active bank account of the current currency exists', async () => {
       const { gymId, context, household } = await setupGym();
       await factory('paymentMethods', gymId, { householdId: household.id, type: 'us_bank_account', last4: '6789' });

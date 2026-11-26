@@ -72,6 +72,7 @@ export function createSettingsService(options: { scope?: typeof forGym; clock?: 
         return await scope(context.gymId, async (tx) => {
           const [before] = await tx.select(projection).from(gyms).where(eq(gyms.id, context.gymId)).for('update');
           if (!before) throw new AppError('not_found', 'Gym not found');
+          assertRevised(before.revision === revision ? [before] : []);
           if (kind === 'currency' && 'currency' in changes && changes.currency !== before.currency) {
             await assertCurrencyChangeable(tx, context.gymId, before.currency);
           }

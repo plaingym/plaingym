@@ -103,6 +103,10 @@ class Sweep {
 
   /** The revision a body must carry to edit the record at the route's path, read by the gym that owns it. */
   async revisionOf(route: Route, owner: Context, pathTarget: Target) {
+    // The drop-in save edits the caller's own gym row and checks its revision before the charge type, so only the current
+    // revision gets the other gym's charge type as far as the gym boundary. Its path has no read of its own.
+    if (routeKey(route) === 'PATCH /api/settings/drop-in')
+      return (await this.from.owner.json<{ data: { revision: number } }>('/api/settings')).data.revision;
     const path = pathFor(route, pathTarget);
     if (!this.document.paths[route.path]?.get || route.kind === 'signed_link') return 1;
     if (!this.revisions.has(path)) {

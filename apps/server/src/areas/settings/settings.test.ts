@@ -185,6 +185,25 @@ describe('settings service and routes', () => {
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
     expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
   });
+  it('reports a stale revision before the currency lock', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId, { currency: 'CAD' });
+    await factory('plans', gymId);
+    await service.update({ ...mutation, gymId }, 'general', { revision: 1, name: 'Academy' });
+    await expect(service.update({ ...mutation, gymId }, 'currency', { revision: 1, currency: 'USD' })).rejects.toBeInstanceOf(RevisionConflictError);
+    await expect(service.update({ ...mutation, gymId }, 'currency', { revision: 2, currency: 'USD' }))
+      .rejects.toMatchObject({ code: 'conflict', message: 'Currency cannot change after billing records exist' });
+    expect(await service.get(gymId)).toMatchObject({ currency: 'CAD', revision: 2 });
+  });
+  it('reports a stale revision before an archived drop-in charge type', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId);
+    const archived = await factory('chargeTypes', gymId, { active: false });
+    await service.update({ ...mutation, gymId }, 'general', { revision: 1, name: 'Academy' });
+    await expect(service.update({ ...mutation, gymId }, 'drop_in', { revision: 1, dropInChargeTypeId: archived.id }))
+      .rejects.toBeInstanceOf(RevisionConflictError);
+    await expect(service.update({ ...mutation, gymId }, 'drop_in', { revision: 2, dropInChargeTypeId: archived.id }))
+      .rejects.toMatchObject({ code: 'conflict', message: 'Choose an active charge type' });
+    expect(await service.get(gymId)).toMatchObject({ revision: 2 });
+  });
   it.each(['plans', 'chargeTypes', 'memberships', 'invoices', 'classPacks'] as const)('locks currency when %s exist', async (table) => {
     const gymId = uuidv7(); await factory('gyms', gymId);
     await service.update({ ...mutation, gymId }, 'currency', { revision: 1, currency: 'CAD' });
