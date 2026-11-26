@@ -6,28 +6,35 @@ import { classBookings, classSessions, members, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
+import { FakeJobs } from '../../infra/jobs/index.js';
 import type { RestoreNotice } from '../announcements/restored.js';
+import { promoteWaitlist } from '../bookings/bookings.js';
+import { createMembersService } from '../members/members.js';
 import { createScheduleService } from './schedule.js';
 
 // A restore reads every marked member `for share` before it locks the session, so an erasure that commits while the
 // restore runs is either read as erased or waits for the restore, and a check-in (member, then session) can't deadlock
-// with it. The test database allows two app connections: the holder and the restore.
+// with it. The test database allows two app connections: the holder and the restore, or (with the holder on the
+// system connection) the restore and the erasure.
 const db = useTestDatabase(), factory = createFactories(db);
 
-async function cancelledDate() {
+/** A cancelled session with A and B booked; `waitlist` makes it full at 2 with C first on its waitlist. */
+async function cancelledDate({ waitlist = false } = {}) {
   const gymId = uuidv7(), clock = new TestClock('2026-03-01T00:00:00Z');
   await factory('gyms', gymId, { timezone: 'America/New_York' });
   const user = await factory('authUser', gymId);
   await factory('staffRoles', gymId, { userId: user.id, role: 'owner' });
   const coach = await factory('staffProfiles', gymId, {});
-  const session = await factory('classSessions', gymId, { name: 'Restore lock test', coachId: coach.id, capacity: 3,
+  const session = await factory('classSessions', gymId, { name: 'Restore lock test', coachId: coach.id, capacity: waitlist ? 2 : 3,
     startsAt: new Date('2026-03-02T18:00:00Z'), endsAt: new Date('2026-03-02T19:00:00Z') });
   await factory('classSessionPrograms', gymId, { sessionId: session.id });
-  const ids: Record<'A' | 'B', string> = { A: '', B: '' };
-  for (const [name, minute] of [['A', 1], ['B', 2]] as const) {
+  const ids: Record<'A' | 'B' | 'C', string> = { A: '', B: '', C: '' };
+  const people = [['A', 1], ['B', 2], ...(waitlist ? [['C', 3]] as const : [])] as const;
+  for (const [name, minute] of people) {
     const member = await factory('members', gymId, { firstName: name });
     ids[name] = member.id;
-    await factory('classBookings', gymId, { sessionId: session.id, memberId: member.id, bookedBy: user.id, status: 'booked',
+    await factory('classBookings', gymId, { sessionId: session.id, memberId: member.id, bookedBy: user.id,
+      ...(name === 'C' ? { status: 'waitlisted', waitlistPosition: 1 } : { status: 'booked' }),
       createdAt: new Date(Date.UTC(2026, 1, 20, 12, minute)) });
   }
   const enqueue = vi.fn<RestoreNotice['enqueue']>(async () => {});
@@ -36,7 +43,7 @@ async function cancelledDate() {
   const revision = async () => (await db.forGym(gymId, tx => tx.select().from(classSessions).where(eq(classSessions.id, session.id))))[0]!.revision;
   await service.changeSession(actor, session.id, 'cancel', { revision: await revision() });
   const bookings = async () => Object.fromEntries((await db.forGym(gymId, tx => tx.select().from(classBookings)
-    .where(eq(classBookings.sessionId, session.id)))).map(row => [row.memberId === ids.A ? 'A' : row.memberId === ids.B ? 'B' : row.memberId, row]));
+    .where(eq(classBookings.sessionId, session.id)))).map(row => [(['A', 'B', 'C'] as const).find(name => ids[name] === row.memberId) ?? row.memberId, row]));
   return { gymId, clock, session, ids, enqueue, service, actor, revision, bookings };
 }
 
@@ -97,6 +104,64 @@ async function restoreWhileHeld(f: Fixture, change: Change) {
   return { held, restored: await restoring };
 }
 
+/**
+ * Runs the real erasure or deletion of member A while a notifying restore already holds A `for share`. A holder on the
+ * system connection locks the session, so the restore stops right after its member locks; the erasure then waits for
+ * the restore. After both commit, the freed places go to the waitlist, as the members routes do after commit.
+ */
+async function eraseDuringRestore(f: Fixture, change: 'erase' | 'delete') {
+  const revision = await f.revision();
+  const [member] = await db.forGym(f.gymId, tx => tx.select({ revision: members.revision }).from(members).where(eq(members.id, f.ids.A)));
+  const service = createMembersService({ scope: db.forGym, clock: f.clock });
+  const context = { gymId: f.gymId, actor: { kind: 'system' as const } };
+  const cleanup = { jobs: new FakeJobs(f.clock), timezone: 'America/New_York' };
+  let restoring: ReturnType<Fixture['service']['restoreSession']> | undefined;
+  let erasing: Promise<{ freedSessionIds: string[] }> | undefined;
+  type Waits = { onHolder: number; onRestore: number; waiting: number };
+  const seen: Waits[] = [];
+  // Until the backends waiting on a lock in this database are the expected ones, or 5 s pass. `onRestore` counts the
+  // backends blocked by one that the holder blocks: the restore, paused before its session lock.
+  const waitFor = async (tx: { execute: typeof db.system.db.execute }, expected: Waits) => {
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      // eslint-disable-next-line database/system-tables -- The lock-wait probe, run by the holder.
+      const [row] = await tx.execute<Waits>(sql`select
+        (count(*) filter (where pg_backend_pid() = any(pg_blocking_pids(a.pid))))::int as "onHolder",
+        (count(*) filter (where exists (select 1 from pg_stat_activity r where pg_backend_pid() = any(pg_blocking_pids(r.pid))
+          and r.pid = any(pg_blocking_pids(a.pid)))))::int as "onRestore",
+        (count(*) filter (where a.wait_event_type = 'Lock'))::int as waiting
+        from pg_stat_activity a where a.datname = current_database()`);
+      if (row!.onHolder === expected.onHolder && row!.onRestore === expected.onRestore && row!.waiting === expected.waiting) {
+        seen.push(row!); return;
+      }
+      if (Date.now() > deadline) throw new Error(`Expected lock waits ${JSON.stringify(expected)}, saw ${JSON.stringify(row)}`);
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  };
+  // The holder is on the system connection: the app pool's two connections run the restore and the erasure.
+  const holder = db.system.db.transaction(async tx => {
+    // System context sees no gym rows; the gym setting lets the holder find and lock this gym's session.
+    // eslint-disable-next-line database/system-tables -- The holder scopes its system connection to this gym.
+    await tx.execute(sql`select set_config('app.gym_id', ${f.gymId}, true)`);
+    expect(await tx.select({ id: classSessions.id }).from(classSessions).where(eq(classSessions.id, f.session.id)).for('update')).toHaveLength(1);
+    restoring = f.service.restoreSession(f.actor, f.session.id, { revision, notify: true, channels: ['email'] });
+    // Handled here so a refusal while the probe runs isn't reported as unhandled; the caller still sees it.
+    restoring.catch(() => {});
+    // The restore has its member share locks and waits for the session.
+    await waitFor(tx, { onHolder: 1, onRestore: 0, waiting: 1 });
+    erasing = change === 'erase' ? service.eraseMember(context, f.ids.A, { revision: member!.revision }, cleanup)
+      : service.deleteMember(context, f.ids.A, member!.revision, cleanup);
+    erasing.catch(() => {});
+    // The erasure waits too, and not on the holder: on the restore, whose only row locks are its member share locks.
+    await waitFor(tx, { onHolder: 1, onRestore: 1, waiting: 2 });
+  });
+  // The holder commits (or rolls back on a failed probe) and so releases the session; both calls then finish.
+  try { await holder; } finally { await Promise.allSettled([restoring, erasing]); }
+  const restored = await restoring!, { freedSessionIds } = await erasing!;
+  for (const sessionId of freedSessionIds) await promoteWaitlist(f.gymId, sessionId, { scope: db.forGym, clock: f.clock });
+  return { restored, freedSessionIds, seen };
+}
+
 describe('restoring a cancelled date while a marked member is being erased', () => {
   it('waits for the erasure, then leaves the erased member cancelled and out of the notice', async () => {
     const f = await cancelledDate();
@@ -149,5 +214,39 @@ describe('restoring a cancelled date while a marked member is being erased', () 
     const rows = await f.bookings();
     expect(rows.A).toMatchObject({ status: 'cancelled', sessionCancelStatus: 'booked' });
     expect(f.enqueue).not.toHaveBeenCalled();
+  });
+});
+
+describe('erasing or deleting a marked member while a restore already holds the marked members', () => {
+  it('waits for the restore, then frees the erased member’s restored place for the waitlist', async () => {
+    const f = await cancelledDate({ waitlist: true });
+    const { restored, freedSessionIds, seen } = await eraseDuringRestore(f, 'erase');
+    expect(seen).toEqual([{ onHolder: 1, onRestore: 0, waiting: 1 }, { onHolder: 1, onRestore: 1, waiting: 2 }]);
+    // Everyone came back (A and B booked, C waitlisted) before the erasure ran.
+    expect(restored).toMatchObject({ status: 'scheduled', restoredBookings: 3 });
+    expect(f.enqueue).toHaveBeenCalledTimes(1);
+    expect(f.enqueue.mock.calls[0]![1]).toEqual({ sessionId: f.session.id, memberIds: [f.ids.A, f.ids.B, f.ids.C].sort(), channels: ['email'], round: 1 });
+    expect(freedSessionIds).toEqual([f.session.id]);
+    const rows = await f.bookings();
+    expect(rows.A).toMatchObject({ status: 'cancelled', cancelledAt: f.clock.now(), waitlistPosition: null, sessionCancelStatus: null });
+    expect(rows.B).toMatchObject({ status: 'booked', cancelledAt: null, sessionCancelStatus: null });
+    expect(rows.C).toMatchObject({ status: 'booked', cancelledAt: null, waitlistPosition: null, sessionCancelStatus: null });
+    const [erased] = await db.forGym(f.gymId, tx => tx.select({ anonymizedAt: members.anonymizedAt }).from(members).where(eq(members.id, f.ids.A)));
+    expect(erased!.anonymizedAt).toEqual(f.clock.now());
+  });
+
+  it('waits for the restore, then deletes the member with the restored booking and promotes the waitlist', async () => {
+    const f = await cancelledDate({ waitlist: true });
+    const { restored, freedSessionIds, seen } = await eraseDuringRestore(f, 'delete');
+    expect(seen).toEqual([{ onHolder: 1, onRestore: 0, waiting: 1 }, { onHolder: 1, onRestore: 1, waiting: 2 }]);
+    expect(restored).toMatchObject({ status: 'scheduled', restoredBookings: 3 });
+    expect(f.enqueue).toHaveBeenCalledTimes(1);
+    expect(f.enqueue.mock.calls[0]![1]).toEqual({ sessionId: f.session.id, memberIds: [f.ids.A, f.ids.B, f.ids.C].sort(), channels: ['email'], round: 1 });
+    expect(freedSessionIds).toEqual([f.session.id]);
+    const rows = await f.bookings();
+    expect(rows.A).toBeUndefined();
+    expect(rows.B).toMatchObject({ status: 'booked', cancelledAt: null, sessionCancelStatus: null });
+    expect(rows.C).toMatchObject({ status: 'booked', cancelledAt: null, waitlistPosition: null, sessionCancelStatus: null });
+    expect(await db.forGym(f.gymId, tx => tx.select({ id: members.id }).from(members).where(eq(members.id, f.ids.A)))).toEqual([]);
   });
 });
