@@ -7,7 +7,8 @@ import { auditEvents, households, invoices, paymentAttempts, payments, refunds, 
 import type { ChargeOutcome, CheckoutSession, PaymentObject, PaymentObjectReference, Payments } from '../../../infra/payments/index.js';
 import { invoiceLateProcessing, invoiceProcessing } from '../transitions/bank.js';
 import { applyChargeOutcome } from '../transitions/outcomes.js';
-import { createAbandoned, effectCreated, terminal, terminalInvoiceStatuses } from '../transitions/store.js';
+import { knownRefundRelease, refundEffectSearch } from '../transitions/refunds.js';
+import { createAbandoned, terminal, terminalInvoiceStatuses } from '../transitions/store.js';
 import { createDisputeRefundWriter } from '../disputes-refunds.js';
 import { testModeDispute } from '../alerts/disputes.query.js';
 import { assertStripeSnapshot, latestTestSwitchId, stripeSwitchSnapshot, stripeWriteScope, StripeTestModeSwitched,
@@ -41,18 +42,17 @@ type Options = Omit<RunnerOptions, 'jobs'> & Required<Pick<RunnerOptions, 'scope
 type CheckoutDebit = { invoiceId: string; paymentIntentId: string; late: boolean };
 /**
  * Of the processor refund IDs the processor answered don't exist, those billing has since released as missing: the row
- * is `failed` and its `refund_missing` staff notice was created. A row still pending, or failed any other way, still
- * needs the owner.
+ * is `failed` and its failure released it as missing, as its failure or provenance audit records, or for an older failure
+ * with neither, as its `refund_missing` staff notice shows. A row still pending, or failed any other way, still needs the
+ * owner. Reads only; the refund transitions record provenance. Exported for its tests.
  */
-async function releasedAsMissing(tx: Transaction, processorIds: ReadonlySet<string>) {
+export async function releasedAsMissing(tx: Transaction, gymId: string, processorIds: ReadonlySet<string>) {
   const released = new Set<string>();
   for (const processorId of processorIds) {
     const [row] = await tx.select({ id: refunds.id, status: refunds.status, paymentId: refunds.paymentId, invoiceId: payments.invoiceId })
       .from(refunds).innerJoin(payments, eq(payments.id, refunds.paymentId)).where(eq(refunds.processorId, processorId));
     if (row?.status !== 'failed') continue;
-    const notice = { kind: 'staff_notice', notice: 'refund_missing', invoiceId: row.invoiceId, paymentId: row.paymentId, refundId: row.id };
-    if ((await tx.select({ id: auditEvents.id }).from(auditEvents)
-      .where(and(eq(auditEvents.action, effectCreated), eq(auditEvents.after, notice))).limit(1)).length) released.add(processorId);
+    if (await knownRefundRelease(tx, gymId, row) ?? await refundEffectSearch(tx, gymId, row.invoiceId, row)) released.add(processorId);
   }
   return released;
 }
@@ -60,9 +60,10 @@ async function releasedAsMissing(tx: Transaction, processorIds: ReadonlySet<stri
  * The open disputes restore reads with the gym's key. One on a Stripe test-mode payment (marked by a switch to live) is in
  * the test account, which the live key can't read; the switch closed those it found. A dispute's own payment is recorded
  * with it (`paymentId` in its `billing.invoice.disputed` audit), so it is skipped when that payment is marked, whatever
- * else paid the invoice. One recorded without it is skipped only when every payment on its invoice is marked.
+ * else paid the invoice. One recorded without it is skipped only when every payment on its invoice is marked. Exported for
+ * its tests.
  */
-async function restorableDisputes(tx: Transaction, gymId: string) {
+export function restorableDisputes(tx: Transaction, gymId: string) {
   return tx.select({ id: invoices.id, disputeId: invoices.disputeId }).from(invoices)
     .where(and(eq(invoices.disputeStatus, 'open'), not(testModeDispute(tx, gymId))));
 }
@@ -461,7 +462,7 @@ export function createReconciliation(options: Options) {
         for (const row of settling) if (!unresolvedInvoices.has(row.id)) issues.push({ kind: 'invoice', id: row.id, reason: 'unresolved' });
         const pendingRefunds = await scope(gymId, tx => tx.select({ id: refunds.id }).from(refunds).where(eq(refunds.status, 'pending')));
         issues.push(...pendingRefunds.map(row => ({ kind: 'refund', id: row.id, reason: 'unresolved' })));
-        const released = missingRefunds.size ? await scope(gymId, tx => releasedAsMissing(tx, missingRefunds)) : new Set<string>();
+        const released = missingRefunds.size ? await scope(gymId, tx => releasedAsMissing(tx, gymId, missingRefunds)) : new Set<string>();
         const kept = issues.filter(issue =>
           !(issue.kind === 'refund' && issue.reason === 'manual_resolution_required' && released.has(issue.id)));
         const unique = [...new Map(kept.map(issue => [`${issue.kind}:${issue.id}`, issue])).values()];

@@ -12,7 +12,7 @@ import { isAssignmentInvoice } from '../assignment-invoices.js';
 import { bankAttemptsExhausted, invoiceLateProcessing, invoiceProcessing, processingIntents, retriesStopped, revokeBankMethod } from './bank.js';
 import { logError, logWarn } from '../../../core/log.js';
 import { readBillingRules } from '../../settings/settings.js';
-import { applyProcessorRefund, applyRefund, type RefundWarning } from './refunds.js';
+import { applyProcessorRefund, applyRefund, provenanceProcessorIds, recordRefundProvenance, type RefundWarning } from './refunds.js';
 import { createInvoiceVoid } from './void.js';
 import { latestTestSwitchId, stripeWriteScope } from '../stripe-writes.js';
 import { accepted, audit, canceledAttempt, confirmAbandoned, effect, lockInvoice, paymentRecorded, recorded, result, snapshot, terminal,
@@ -227,6 +227,11 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Billi
     },
     async processorRefund(context: MutationContext, request: ProcessorRefundTransition) {
       let warnings: RefundWarning[] = [];
+      // Older failures' provenance commits on its own, so a report that then fails with a conflict doesn't search again.
+      await scope(context.gymId, async tx => {
+        const invoice = await lockInvoice(tx, request.invoiceId);
+        await recordRefundProvenance(tx, context, clock, invoice.id, provenanceProcessorIds(request));
+      });
       const value = await scope(context.gymId, async tx => {
         warnings = [];
         const invoice = await lockInvoice(tx, request.invoiceId);

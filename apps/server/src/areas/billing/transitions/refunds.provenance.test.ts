@@ -66,16 +66,22 @@ beforeAll(async () => {
   try { await admin.sql`analyze audit_events`; } finally { await admin.close(); }
 });
 
-async function measure(request: ProcessorRefundTransition) {
+/** The `audit_events` tuples a processor refund report reads across all its transactions, including one that throws. */
+async function measureReport(request: ProcessorRefundTransition) {
   let tuples = 0;
   const scope: typeof db.forGym = (gymId, work) => db.forGym(gymId, async tx => {
     const before = await auditTuplesRead(tx);
-    const value = await work(tx);
-    tuples = (await auditTuplesRead(tx)) - before;
-    return value;
+    try { return await work(tx); } finally { tuples += (await auditTuplesRead(tx)) - before; }
   });
-  const value = await createInvoiceTransitions({ scope, clock: measured.clock }).processorRefund(measured.context, request);
-  expect(value.outcome).toBe('ignored');
+  const report = createInvoiceTransitions({ scope, clock: measured.clock }).processorRefund(measured.context, request);
+  const settled = await report.then(value => ({ value, error: undefined }), (error: unknown) => ({ value: undefined, error }));
+  return { tuples, ...settled };
+}
+
+async function measure(request: ProcessorRefundTransition) {
+  const { tuples, value, error } = await measureReport(request);
+  if (error !== undefined) throw error;
+  expect(value!.outcome).toBe('ignored');
   return tuples;
 }
 
@@ -90,8 +96,8 @@ it('reads at most 50 audit tuples for success and failure reports on an ordinary
   expect(await events(refundProvenance, failed.refundId)).toHaveLength(0);
 });
 
-async function legacyFailure(processorId: string, releasedMissing: boolean) {
-  const { gymId, clock, report } = measured;
+async function legacyFailure(processorId: string, releasedMissing: boolean,
+  { gymId, clock, report }: Pick<typeof measured, 'gymId' | 'clock' | 'report'> = measured) {
   const request = report(processorId, 2000), resolvedAt = clock.now();
   const after = { paymentId: request.paymentId, processorId, amountCents: 2000, currency: 'USD', status: 'failed', resolvedAt };
   await factory('refunds', gymId, { id: request.refundId, ...after });
@@ -143,6 +149,57 @@ it('finds a legacy release once, records provenance for older failures, and skip
   expect(await events(refundProvenance, ordinary.refundId)).toHaveLength(1);
   expect(await events(refundProvenance, found.refundId)).toHaveLength(1);
   expect(await events(refundProvenance, failedFirst.refundId)).toHaveLength(1);
+});
+
+/** Another paid 10000 invoice in the measured gym, with its own charge. */
+async function paidInvoice(name: string) {
+  const { gymId, household, clock, context } = measured;
+  const paymentId = uuidv7(), chargeId = `ch_${name}`;
+  const { id: invoiceId } = await factory('invoices', gymId, { householdId: household.id, status: 'open', number: 2, amountCents: 10000, currency: 'USD' });
+  await createInvoiceTransitions({ scope: db.forGym, clock }).cardSucceeded(context, { invoiceId, paymentId, paymentIntentId: `pi_${name}`,
+    chargeId, amountCents: 10000, currency: 'USD', paidAt: clock.now().toISOString(), method: 'card' });
+  const refund = (id: string, amount: number, status: ProcessorRefundTransition['processorRefund']['status']):
+  ProcessorRefundTransition['processorRefund'] => ({ id, amount, status, chargeId, currency: 'usd', metadata: { gymId } });
+  return { invoiceId, paymentId, refund };
+}
+
+it('keeps an older failure\'s provenance when the report then conflicts, so a retry skips the effect scan', async () => {
+  const { gymId, clock, events } = measured;
+  const { invoiceId, paymentId, refund } = await paidInvoice('conflict');
+  const legacyId = uuidv7(), resolvedAt = clock.now();
+  const after = { paymentId, processorId: 're_conflict_legacy', amountCents: 2000, currency: 'USD', status: 'failed', resolvedAt };
+  await factory('refunds', gymId, { id: legacyId, ...after });
+  await factory('auditEvents', gymId, { action: refundRecorded, targetType: 'refund', targetId: legacyId, after, occurredAt: resolvedAt });
+  // A pending refund the report reads nothing for keeps its room, so the external refund that needs it conflicts.
+  await factory('refunds', gymId, { id: uuidv7(), paymentId, processorId: 're_conflict_unread', amountCents: 5000, currency: 'USD',
+    status: 'pending' });
+  const external: ProcessorRefundTransition = { invoiceId, paymentId, refundId: uuidv7(),
+    pendingRefunds: [refund('re_conflict_legacy', 2000, 'failed')], processorRefund: refund('re_conflict_external', 6000, 'succeeded') };
+  const conflictMessage = 'Pending refund must be reconciled before recording an external refund';
+
+  const first = await measureReport(external);
+  expect(first.error).toBeInstanceOf(Error);
+  expect((first.error as Error).message).toBe(conflictMessage);
+  expect(first.tuples).toBeGreaterThan(10_000);
+  expect(await events(refundProvenance, legacyId)).toMatchObject([
+    { targetType: 'refund', targetId: legacyId, after: { releasedMissing: false } },
+  ]);
+
+  const second = await measureReport(external);
+  expect((second.error as Error).message).toBe(conflictMessage);
+  expect(second.tuples).toBeLessThanOrEqual(50);
+  expect(await events(refundProvenance, legacyId)).toHaveLength(1);
+});
+
+it('leaves one provenance audit per older failure when two reports for the invoice race', async () => {
+  const f = await fixture();
+  const found = await legacyFailure('re_race_found', true, f), ordinary = await legacyFailure('re_race_ordinary', false, f);
+  // Both reports' pending reads show the older failures, so both ask about them.
+  const pendingRefunds = [f.report('re_race_found', 2000, 'failed').processorRefund, f.report('re_race_ordinary', 2000, 'failed').processorRefund];
+  const results = await Promise.all(['re_race_a', 're_race_b'].map(id => f.apply({ ...f.report(id, 1000), pendingRefunds })));
+  expect(results.map(value => value.outcome)).toEqual(['applied', 'applied']);
+  expect(await f.events(refundProvenance, found.refundId)).toMatchObject([{ after: { releasedMissing: true } }]);
+  expect(await f.events(refundProvenance, ordinary.refundId)).toMatchObject([{ after: { releasedMissing: false } }]);
 });
 
 it('links the missing notice from the failure audit and records false on ordinary failures and reversals', async () => {

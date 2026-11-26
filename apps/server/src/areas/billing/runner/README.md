@@ -180,7 +180,8 @@ charge's own recheck and the reservation's comparison stay for a provider resolv
 after a switch committed: it holds the live key, so it runs outside the guard.
 Restore excludes test disputes with the same `testModeDispute` query as alerts:
 the latest matching dispute audit identifies its payment, with the invoice-level
-fallback used only when that audit has no payment ID.
+fallback used only when that audit has no payment ID. The query reads that latest
+audit once per invoice.
 
 Each charge commits immutable amount, currency, customer and saved-method fields
 before adopting the stored customer or creating an unconfirmed PaymentIntent. A
@@ -335,7 +336,10 @@ results and pending refunds stay in the review report. A stored refund Stripe
 reported missing during a check no longer needs action once the same pass records
 its release as missing (the row `failed` with its `refund_missing` staff notice,
 when an external refund needs its room); one still pending, read uncertainly, or
-failed any other way stays in the report. Enumeration errors fail
+failed any other way stays in the report. The check reads the release from the
+refund's failure audit (`releasedMissing`), then its `billing.refund.provenance`
+audit, and only for an older failure with neither searches the gym's effects for its
+`refund_missing` notice; it writes no provenance itself. Enumeration errors fail
 the pass. There is no search-based outcome inference or automatic billing resume.
 Refunds and disputes are recorded by the writer shared with webhook processing
 (`../disputes-refunds.ts`): another dispute already attached to the invoice is a

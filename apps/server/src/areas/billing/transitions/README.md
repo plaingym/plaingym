@@ -346,11 +346,17 @@ queues none. A missing row the external refund fits beside stays `pending`. A re
 throws fails the whole write, so a network error never releases anything.
 
 New failure audits on the refund record `releasedMissing` and, for a release as missing,
-the notice's `missingEffectId`. Success and verified failure reports check the found and
-failure-first markers before looking up provenance. They read the indexed refund audits
+the notice's `missingEffectId`. Inside their write, success and verified failure reports check
+the found and failure-first markers before looking up provenance. They read the indexed refund audits
 for new failures; for an older failure, the first report searches for the matching
 `refund_missing` effect and records the answer as a `billing.refund.provenance` audit,
-which later reports read instead.
+which later reports read instead. A processor refund report records that provenance
+in its own short transaction under the invoice lock before its write, for the failed
+refunds it may ask about (its own processor ID and those its pending reads show failed),
+so a report that then fails with a conflict keeps it and a retry doesn't search again.
+Every writer rereads under the invoice lock, so a refund gets at most one provenance
+audit. `knownRefundRelease` and `refundEffectSearch` in `refunds.ts` are the same
+reads the restore check uses.
 
 A release as missing stands if Stripe later reports the released refund `succeeded`: the row stays `failed`
 and the invoice keeps its status and refunded total, even when the two refunds together

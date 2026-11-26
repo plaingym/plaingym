@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, desc, eq, exists, gt, inArray, isNotNull, isNull, ne, not, notExists, or } from 'drizzle-orm';
-// eslint-disable-next-line database/system-tables -- The scoped Drizzle anti-join needs one isolated JSON text extraction to match the recorded dispute ID.
+// eslint-disable-next-line database/system-tables -- The scoped Drizzle anti-join needs one isolated JSON text extraction to match the recorded dispute ID, and one derived row to read the latest dispute audit once.
 import { sql } from 'drizzle-orm';
 import { auditEvents, invoices, payments, type Transaction } from '@plaingym/db';
 import { stripeTestPaymentReference } from '@plaingym/shared/contracts';
@@ -22,11 +22,17 @@ export function testModeDispute(tx: Transaction, gymId: string) {
     eq(auditEvents.gymId, gymId), eq(auditEvents.action, 'billing.invoice.disputed'), eq(auditEvents.targetType, 'invoice'),
     eq(auditEvents.targetId, invoices.id), eq(sql<string>`${auditEvents.after}->>'disputeId'`, invoices.disputeId)))
     .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id)).limit(1);
+  // The latest audit's payment ID is read once per invoice, as the one row of `latest` (null when it has none, or when
+  // the invoice has no dispute audit). `offset 0` keeps PostgreSQL from pulling the row up into the condition, which
+  // would copy the subquery into each use.
+  const latest = sql<string | null>`latest.payment_id`;
   const recordedTest = tx.select({ id: payments.id }).from(payments).where(and(eq(payments.invoiceId, invoices.id),
-    eq(sql<string>`${payments.id}::text`, recorded), eq(payments.reference, stripeTestPaymentReference)));
+    eq(sql<string>`${payments.id}::text`, latest), eq(payments.reference, stripeTestPaymentReference)));
   const other = tx.select({ id: payments.id }).from(payments)
     .where(and(eq(payments.invoiceId, invoices.id), or(isNull(payments.reference), ne(payments.reference, stripeTestPaymentReference))));
-  return or(exists(closed), exists(recordedTest), and(isNull(recorded), exists(marked), notExists(other)))!;
+  const fromLatest = sql`(select 1 from (select ${recorded} as payment_id offset 0) latest
+    where ${or(exists(recordedTest), and(isNull(latest), exists(marked), notExists(other)))})`;
+  return or(exists(closed), exists(fromLatest))!;
 }
 
 /** Called inside forGym. The isolated SQL fragment only extracts the audit JSON's dispute identity. */

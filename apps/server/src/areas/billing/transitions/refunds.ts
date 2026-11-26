@@ -219,27 +219,58 @@ export async function applyProcessorRefund(tx: Transaction, context: MutationCon
 
 const refundProvenance = 'billing.refund.provenance';
 
-/** Whether the row's failure released it because the processor couldn't find the refund: read from the row's own
- * failure audit, or for an older failure without that flag, from its recorded provenance audit or a one-time search
- * for the row's `refund_missing` effect under the invoice lock. */
-async function releasedAsMissing(tx: Transaction, context: MutationContext, clock: Clock, invoiceId: string,
-  row: typeof refunds.$inferSelect): Promise<boolean> {
+/** Whether the row's failure released it because the processor couldn't find the refund, as recorded: the row's own
+ * failure audit, then for an older failure without that flag, its provenance audit. `null` when neither records it. Both
+ * reads go through the audits' gym, action and target index. */
+export async function knownRefundRelease(tx: Transaction, gymId: string, row: Pick<typeof refunds.$inferSelect, 'id'>):
+Promise<boolean | null> {
   const events = await tx.select({ after: auditEvents.after }).from(auditEvents)
-    .where(and(eq(auditEvents.gymId, row.gymId), inArray(auditEvents.action, ['billing.refund.recorded', 'billing.refund.reversed']),
+    .where(and(eq(auditEvents.gymId, gymId), inArray(auditEvents.action, ['billing.refund.recorded', 'billing.refund.reversed']),
       eq(auditEvents.targetId, row.id)))
     .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id));
   const failure = events.map(event => event.after as { status?: string; releasedMissing?: boolean } | null)
     .find(after => after?.status === 'failed');
   if (typeof failure?.releasedMissing === 'boolean') return failure.releasedMissing;
   const [provenance] = await tx.select({ after: auditEvents.after }).from(auditEvents)
-    .where(and(eq(auditEvents.gymId, row.gymId), eq(auditEvents.action, refundProvenance), eq(auditEvents.targetId, row.id)))
+    .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.action, refundProvenance), eq(auditEvents.targetId, row.id)))
     .limit(1);
   const cached = (provenance?.after as { releasedMissing?: boolean } | null)?.releasedMissing;
-  if (typeof cached === 'boolean') return cached;
-  // Older failures record a release only in the staff notice effect; record the answer once so later reports skip the scan.
+  return typeof cached === 'boolean' ? cached : null;
+}
+
+/** Older failures record a release only in their `refund_missing` staff notice effect: search the gym's effects for it.
+ * This reads the gym's whole effect history, so a writer records the answer as provenance once. */
+export async function refundEffectSearch(tx: Transaction, gymId: string, invoiceId: string,
+  row: Pick<typeof refunds.$inferSelect, 'id' | 'paymentId'>): Promise<boolean> {
   const work: TransitionEffect = { kind: 'staff_notice', notice: 'refund_missing', invoiceId, paymentId: row.paymentId, refundId: row.id };
-  const releasedMissing = (await tx.select({ id: auditEvents.id }).from(auditEvents)
-    .where(and(eq(auditEvents.gymId, row.gymId), eq(auditEvents.action, effectCreated), eq(auditEvents.after, work))).limit(1)).length > 0;
+  return (await tx.select({ id: auditEvents.id }).from(auditEvents)
+    .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.action, effectCreated), eq(auditEvents.after, work))).limit(1)).length > 0;
+}
+
+/** Record the provenance of the invoice's failed refunds with these processor IDs that have none yet, so a processor
+ * refund report that then fails keeps it. The report passes the IDs it may ask about: its own and those its pending reads
+ * show failed. The caller holds the invoice lock, which every provenance writer takes and then rereads under, so a refund
+ * gets at most one provenance audit. */
+export async function recordRefundProvenance(tx: Transaction, context: MutationContext, clock: Clock, invoiceId: string,
+  processorIds: readonly string[]) {
+  const failed = await tx.select({ refund: refunds }).from(refunds).innerJoin(payments, eq(payments.id, refunds.paymentId))
+    .where(and(eq(payments.invoiceId, invoiceId), eq(refunds.status, 'failed'), inArray(refunds.processorId, [...processorIds])));
+  for (const { refund } of failed) await releasedAsMissing(tx, context, clock, invoiceId, refund);
+}
+
+/** The processor IDs a processor refund report may ask `releasedAsMissing` about: its own, and other refunds its pending
+ * reads show failed. */
+export function provenanceProcessorIds(input: ProcessorRefundTransition) {
+  return [input.processorRefund.id, ...input.pendingRefunds.filter(refund => refund.status === 'failed').map(refund => refund.id)];
+}
+
+/** Whether the row's failure released it because the processor couldn't find the refund: as recorded, or for an older
+ * failure with no record, from a one-time effect search under the invoice lock whose answer is recorded as provenance. */
+async function releasedAsMissing(tx: Transaction, context: MutationContext, clock: Clock, invoiceId: string,
+  row: typeof refunds.$inferSelect): Promise<boolean> {
+  const known = await knownRefundRelease(tx, row.gymId, row);
+  if (known !== null) return known;
+  const releasedMissing = await refundEffectSearch(tx, row.gymId, invoiceId, row);
   await audit(tx, context, clock, refundProvenance, 'refund', row.id, { releasedMissing });
   return releasedMissing;
 }
