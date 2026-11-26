@@ -64,7 +64,8 @@ the address bar. With password login it asks for a password; without it, accepti
 emails a sign-in link to the invited address. That link, and the one sent by an
 onboarding claim, returns to `/portal/claim?claim=<code>`, which completes the
 claim for the signed-in user, removes the code from the address bar and opens the
-portal. Signing out clears the query cache before returning to login.
+portal. Signing out clears the query cache before returning to login. While the
+sign-out is being sent, the household picker and the header switcher can't be used.
 The root layout supplies the source-code footer.
 
 The home page summarizes the next booked, scheduled class within 30 days (not a

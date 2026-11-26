@@ -311,7 +311,7 @@ function AuthenticatedPortal() {
   if (!current) {
     if (!households.data.households.length) return failed(() => void households.refetch());
     return <PortalLayout name={bootstrap.data.gym.name} person={person} entries={[]} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending}>
-      <PortalRecoveryNotice />{signOutError}<HouseholdPicker households={households.data.households} onChoose={id => { clearSignOutError(); choose.mutate(id); }} pending={choose.isPending} failed={choose.isError} />
+      <PortalRecoveryNotice />{signOutError}<HouseholdPicker households={households.data.households} onChoose={id => { clearSignOutError(); choose.mutate(id); }} pending={choose.isPending || signOut.isPending} failed={choose.isError} />
     </PortalLayout>;
   }
   // A context read that failed waits only for the lists being read again; if they still name this household, it is an error.
@@ -320,7 +320,7 @@ function AuthenticatedPortal() {
     return failed(() => { void households.refetch(); void context.refetch(); });
   }
   const switcher = households.data.households.length > 1
-    ? <HouseholdSwitcher households={households.data.households} current={current} onChoose={id => { if (id !== current) { clearSignOutError(); choose.mutate(id); } }} disabled={choose.isPending} /> : undefined;
+    ? <HouseholdSwitcher households={households.data.households} current={current} onChoose={id => { if (id !== current) { clearSignOutError(); choose.mutate(id); } }} disabled={choose.isPending || signOut.isPending} /> : undefined;
   return <PortalLayout name={bootstrap.data.gym.name} person={person} scope={context.data.role} entries={portalNavigation(createRegistries().portalNav.all(), context.data.role, bootstrap.data.gym.enabledModules)} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending} switcher={switcher} account>
     {context.isError && !households.isFetching && <ErrorState message={text('failed')} onRetry={() => { clearSignOutError(); void households.refetch(); void context.refetch(); }} />}
     <PortalRecoveryNotice />{signOutError}{choose.isError && <Alert variant="error">{text('chooseFailed')}</Alert>}<Outlet key={current} />
