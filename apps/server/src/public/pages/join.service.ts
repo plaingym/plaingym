@@ -365,10 +365,11 @@ export function createJoinService(options: JoinOptions) {
   }
   /** Passwordless: a login link to the address entered. The payer login is created on its callback, for the user it names.
    * The job checks again when it runs (each retry too): password mode, a join no longer active, or a household or address
-   * that's gone sends nothing and logs the skip. */
+   * that's gone sends nothing and logs the skip. The completion ran passwordless, so in password mode a join still active
+   * with an address asks staff to confirm it instead, as a completion in password mode does. */
   async function signIn(gymId: string, householdId: string) {
     const skipped = (reason: 'password_mode' | 'not_active' | 'missing') => { logInfo('public.join.sign_in_skipped', { gymId, householdId, reason }); };
-    if (await options.invitations.passwordRequired(gymId)) return skipped('password_mode');
+    const password = await options.invitations.passwordRequired(gymId);
     const found = await scope(gymId, async tx => {
       const [home] = await tx.select({ email: households.email, name: households.name }).from(households).where(eq(households.id, householdId));
       if (!home?.email) return 'missing' as const;
@@ -377,8 +378,10 @@ export function createJoinService(options: JoinOptions) {
       const [bill] = await tx.select({ status: invoices.status }).from(invoices)
         .where(and(eq(invoices.id, record.invoiceId), eq(invoices.householdId, householdId)));
       if (!bill || await completedStatus(tx, householdId, record, bill) !== 'active') return 'not_active' as const;
+      if (password) { await requestPortalConfirmation(tx, gymId, householdId, clock); return 'password_mode' as const; }
       return { email: home.email, name: home.name };
     });
+    if (password) return skipped('password_mode');
     if (typeof found === 'string') return skipped(found);
     const invitation = await invite(gymId, householdId, found.email, found.name);
     if (invitation.status === 'invited') await options.invitations.accept(gymId, { token: invitation.token }, clock);

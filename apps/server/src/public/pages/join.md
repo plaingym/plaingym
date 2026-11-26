@@ -322,7 +322,11 @@ completed join; a delivery that fails all five is logged (`public.join.sign_in_f
 job checks again each time it runs: once the gym is in password mode, the join is no longer
 active (its recorded memberships ended, as on the ended page), or the household or its address
 is gone, it sends nothing and logs the skip with its reason (`public.join.sign_in_skipped`).
-A retry's invitation replaces the earlier attempt's, so one stays live. If the address belongs to a staff login, the job leaves it without a portal
+In password mode a join still active with an address also awaits portal confirmation by
+staff, since no mail proves the address: its **Portal access** tab shows it at once. A skipped
+retry leaves the invitation the failed attempt issued, never sent, until it expires; staff can
+revoke it on that tab. While it is outstanding the dashboard leaves the household out of
+**Households awaiting portal confirmation**, as for any household with a payer invitation. A retry's invitation replaces the earlier attempt's, so one stays live. If the address belongs to a staff login, the job leaves it without a portal
 invitation or login and records the refusal. Both public pages use the same text for every
 address. Staff see the refusal in the household's **Portal access** tab and can invite the
 member using another address. Password mode queues no sign-in job, and `/join/sign-in` is refused.

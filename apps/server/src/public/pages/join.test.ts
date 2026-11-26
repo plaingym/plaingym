@@ -36,7 +36,7 @@ import { registerBillingWebhookHandlers } from '../../areas/billing/webhooks/han
 import type { WebhookHandler } from '../../areas/billing/webhooks/inbox.js';
 import { createChargeRunner } from '../../areas/billing/runner/index.js';
 import { createPortalInvitationService, type PortalLoginLinkSender } from '../../areas/members/household-users.invitations.js';
-import { createHouseholdUsersService } from '../../areas/members/household-users.js';
+import { awaitingConfirmationCondition, createHouseholdUsersService } from '../../areas/members/household-users.js';
 import { createPortalPrincipalLoader } from '../../areas/members/household-users.context.js';
 import { createAccountService } from '../../infra/auth/accounts.js';
 import { authConfig } from '../../infra/auth/config.js';
@@ -2126,6 +2126,58 @@ describe('the passwordless sign-in leaves the request', () => {
     expect(accept).toHaveBeenCalledTimes(1);
     expect(f.sent).toEqual([]);
     expect(await invited(f, home.id)).toHaveLength(1);
+  });
+
+  const confirmationRequests = async (f: Fixture, householdId: string) => (await f.rows()).audits
+    .filter(a => a.action === 'household_user.confirmation_requested' && a.targetId === householdId);
+  const awaitingConfirmation = (f: Fixture) => db.forGym(f.gymId, async tx => (await tx.select({ id: households.id }).from(households)
+    .where(awaitingConfirmationCondition(tx, f.gymId))).map(row => row.id));
+  const ended = (f: Fixture, householdId: string) => db.forGym(f.gymId, tx => tx.update(memberships)
+    .set({ status: 'cancelled', cancelledAt: f.clock.now() }).where(eq(memberships.householdId, householdId)));
+
+  it('asks staff to confirm the address on a retry after the gym switched to password mode', async () => {
+    const f = await fixture(), { home, accept } = await failedOnce(f, 'password-confirm@example.invalid');
+    expect(await confirmationRequests(f, home.id)).toEqual([]);
+    vi.spyOn(f.invitations, 'passwordRequired').mockResolvedValue(true);
+    await logged(async lines => {
+      f.clock.advance(1000);
+      await f.drain();
+      expect(lines).toEqual([expect.objectContaining({ event: 'public.join.sign_in_skipped', gymId: f.gymId, householdId: home.id, reason: 'password_mode' })]);
+    });
+    expect(signInJobs(f)).toMatchObject([{ status: 'completed', attempt: 2 }]);
+    expect(accept).toHaveBeenCalledTimes(1);
+    expect(f.sent).toEqual([]);
+    expect(await invited(f, home.id)).toHaveLength(1);
+    expect(await confirmationRequests(f, home.id)).toMatchObject([{ actorKind: 'system', targetType: 'household' }]);
+    expect(await awaitingConfirmation(f)).toEqual([home.id]);
+  });
+
+  it('asks for no confirmation on a password-mode retry after the join ended', async () => {
+    const f = await fixture(), { home, accept } = await failedOnce(f, 'password-ended@example.invalid');
+    await ended(f, home.id);
+    vi.spyOn(f.invitations, 'passwordRequired').mockResolvedValue(true);
+    await logged(async lines => {
+      f.clock.advance(1000);
+      await f.drain();
+      expect(lines).toEqual([expect.objectContaining({ event: 'public.join.sign_in_skipped', gymId: f.gymId, householdId: home.id, reason: 'password_mode' })]);
+    });
+    expect(signInJobs(f)).toMatchObject([{ status: 'completed', attempt: 2 }]);
+    expect(accept).toHaveBeenCalledTimes(1);
+    expect(f.sent).toEqual([]);
+    expect(await confirmationRequests(f, home.id)).toEqual([]);
+    expect(await awaitingConfirmation(f)).toEqual([]);
+  });
+
+  it('leaves the failed attempt\'s invitation until it expires when a retry skips', async () => {
+    const f = await fixture(), { home } = await failedOnce(f, 'skipped-invitation@example.invalid');
+    await ended(f, home.id);
+    await logged(async lines => {
+      f.clock.advance(1000);
+      await f.drain();
+      expect(lines).toEqual([expect.objectContaining({ event: 'public.join.sign_in_skipped', householdId: home.id, reason: 'not_active' })]);
+    });
+    expect(await createPortalInvitationStore(() => db.system.db).outstanding(f.gymId, home.id, f.clock)).toHaveLength(1);
+    expect(await confirmationRequests(f, home.id)).toEqual([]);
   });
 
   it('completes without sending for a household whose address or row is gone', async () => {
