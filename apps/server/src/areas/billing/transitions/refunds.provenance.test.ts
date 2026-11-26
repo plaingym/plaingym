@@ -15,6 +15,7 @@ import { effectCreated, missingFailedBeforeFound, missingFound, systemContext } 
 
 const db = useTestDatabase(), factory = createFactories(db);
 const refundRecorded = 'billing.refund.recorded', refundReversed = 'billing.refund.reversed';
+const refundProvenance = 'billing.refund.provenance';
 
 async function fixture() {
   const gymId = uuidv7(), paymentId = uuidv7();
@@ -86,6 +87,7 @@ it('reads at most 50 audit tuples for success and failure reports on an ordinary
   expect(await measure(failed)).toBeLessThanOrEqual(50);
   expect(await events(missingFound, failed.refundId)).toHaveLength(0);
   expect(await events(missingFailedBeforeFound, failed.refundId)).toHaveLength(0);
+  expect(await events(refundProvenance, failed.refundId)).toHaveLength(0);
 });
 
 async function legacyFailure(processorId: string, releasedMissing: boolean) {
@@ -101,7 +103,7 @@ async function legacyFailure(processorId: string, releasedMissing: boolean) {
   return request;
 }
 
-it('finds a legacy release by its effect and skips even the legacy search once a marker exists', async () => {
+it('finds a legacy release once, records provenance for older failures, and skips the effect scan on later reports', async () => {
   const { gymId, events, notice, report } = measured;
   const found = await legacyFailure('re_legacy_found', true);
   const failedFirst = await legacyFailure('re_legacy_failed_first', true);
@@ -110,20 +112,37 @@ it('finds a legacy release by its effect and skips even the legacy search once a
   expect(await measure(found)).toBeGreaterThan(10_000);
   expect(await events(missingFound, found.refundId)).toHaveLength(1);
   expect(await notice('refund_found', found.refundId)).toHaveLength(1);
-  await measure(ordinary);
+  expect(await events(refundProvenance, found.refundId)).toMatchObject([
+    { targetType: 'refund', targetId: found.refundId, after: { releasedMissing: true } },
+  ]);
+
+  // First report on an ordinary legacy failure searches once and records false provenance.
+  expect(await measure(ordinary)).toBeGreaterThan(10_000);
   expect(await events(missingFound, ordinary.refundId)).toHaveLength(0);
   expect(await notice('refund_found', ordinary.refundId)).toHaveLength(0);
+  expect(await events(refundProvenance, ordinary.refundId)).toMatchObject([
+    { targetType: 'refund', targetId: ordinary.refundId, after: { releasedMissing: false } },
+  ]);
 
   const failure = report('re_legacy_failed_first', 2000, 'failed');
   await measure(failure);
   expect(await events(missingFailedBeforeFound, failedFirst.refundId)).toHaveLength(1);
-  // These rows require the full effect search without the markers, so the tuple limit proves it was skipped.
+  expect(await events(refundProvenance, failedFirst.refundId)).toMatchObject([
+    { targetType: 'refund', targetId: failedFirst.refundId, after: { releasedMissing: true } },
+  ]);
+
+  // Later reports read the markers or the indexed provenance audit instead of scanning effects, and write no audits.
   const auditCount = async () => (await db.forGym(gymId, tx => tx.select({ total: count() }).from(auditEvents)))[0]!.total;
   const before = await auditCount();
   expect(await measure(found)).toBeLessThanOrEqual(50);
   expect(await measure(failedFirst)).toBeLessThanOrEqual(50);
   expect(await measure(failure)).toBeLessThanOrEqual(50);
+  expect(await measure(ordinary)).toBeLessThanOrEqual(50);
+  expect(await measure(report('re_legacy_ordinary', 2000, 'failed'))).toBeLessThanOrEqual(50);
   expect(await auditCount()).toBe(before);
+  expect(await events(refundProvenance, ordinary.refundId)).toHaveLength(1);
+  expect(await events(refundProvenance, found.refundId)).toHaveLength(1);
+  expect(await events(refundProvenance, failedFirst.refundId)).toHaveLength(1);
 });
 
 it('links the missing notice from the failure audit and records false on ordinary failures and reversals', async () => {
@@ -139,6 +158,9 @@ it('links the missing notice from the failure audit and records false on ordinar
   expect(pending?.after).toMatchObject({ status: 'pending' });
   expect(pending?.after).not.toHaveProperty('releasedMissing');
   expect(release?.after).toMatchObject({ status: 'failed', releasedMissing: true, missingEffectId: missingNotices[0]!.targetId });
+  await apply(report('re_missing', 2000, 'succeeded'));
+  expect(await events(missingFound, missing.refundId)).toHaveLength(1);
+  expect(await events(refundProvenance, missing.refundId)).toHaveLength(0);
   const [succeeded] = await events(refundRecorded, external.refundId);
   expect(succeeded?.after).toMatchObject({ status: 'succeeded' });
   expect(succeeded?.after).not.toHaveProperty('releasedMissing');
@@ -149,8 +171,12 @@ it('links the missing notice from the failure audit and records false on ordinar
   const [failure] = await events(refundRecorded, failed.refundId);
   expect(failure?.after).toMatchObject({ status: 'failed', releasedMissing: false });
   expect(failure?.after).not.toHaveProperty('missingEffectId');
+  await apply(report('re_failed', 1000, 'succeeded'));
+  expect(await events(refundProvenance, failed.refundId)).toHaveLength(0);
   await apply(report('re_external', 9000, 'failed'));
   const [reversed] = await events(refundReversed, external.refundId);
   expect(reversed?.after).toMatchObject({ status: 'failed', releasedMissing: false });
   expect(reversed?.after).not.toHaveProperty('missingEffectId');
+  await apply(report('re_external', 9000, 'succeeded'));
+  expect(await events(refundProvenance, external.refundId)).toHaveLength(0);
 });

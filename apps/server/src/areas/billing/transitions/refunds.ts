@@ -41,7 +41,7 @@ export async function applyRefund(tx: Transaction, context: MutationContext, clo
   if (previous?.status === 'failed' && previous.processorId !== null && previous.processorId === request.processorId
     && request.status === 'succeeded') {
     if (await recorded(tx, missingFound, previous.id) || await recorded(tx, missingFailedBeforeFound, previous.id)
-      || !await releasedAsMissing(tx, invoice.id, previous))
+      || !await releasedAsMissing(tx, context, clock, invoice.id, previous))
       return result('ignored', invoice);
     await audit(tx, context, clock, missingFound, 'refund', previous.id,
       { processorId: previous.processorId, amountCents: previous.amountCents, currency: previous.currency });
@@ -70,7 +70,7 @@ export async function applyRefund(tx: Transaction, context: MutationContext, clo
   if (verified && previous?.status === 'failed' && previous.processorId !== null && previous.processorId === request.processorId
     && request.status === 'failed') {
     if (await recorded(tx, missingFailedBeforeFound, previous.id)) return result('ignored', invoice);
-    if (await releasedAsMissing(tx, invoice.id, previous))
+    if (await releasedAsMissing(tx, context, clock, invoice.id, previous))
       await audit(tx, context, clock, missingFailedBeforeFound, 'refund', previous.id,
         { processorId: previous.processorId, amountCents: previous.amountCents, currency: previous.currency });
     return result('ignored', invoice);
@@ -217,9 +217,13 @@ export async function applyProcessorRefund(tx: Transaction, context: MutationCon
   return applyRefund(tx, context, clock, invoice, request, { appCreated }, warnings);
 }
 
+const refundProvenance = 'billing.refund.provenance';
+
 /** Whether the row's failure released it because the processor couldn't find the refund: read from the row's own
- * failure audit, or for a failure written before that audit recorded it, from the row's `refund_missing` effect. */
-async function releasedAsMissing(tx: Transaction, invoiceId: string, row: typeof refunds.$inferSelect): Promise<boolean> {
+ * failure audit, or for an older failure without that flag, from its recorded provenance audit or a one-time search
+ * for the row's `refund_missing` effect under the invoice lock. */
+async function releasedAsMissing(tx: Transaction, context: MutationContext, clock: Clock, invoiceId: string,
+  row: typeof refunds.$inferSelect): Promise<boolean> {
   const events = await tx.select({ after: auditEvents.after }).from(auditEvents)
     .where(and(eq(auditEvents.gymId, row.gymId), inArray(auditEvents.action, ['billing.refund.recorded', 'billing.refund.reversed']),
       eq(auditEvents.targetId, row.id)))
@@ -227,10 +231,17 @@ async function releasedAsMissing(tx: Transaction, invoiceId: string, row: typeof
   const failure = events.map(event => event.after as { status?: string; releasedMissing?: boolean } | null)
     .find(after => after?.status === 'failed');
   if (typeof failure?.releasedMissing === 'boolean') return failure.releasedMissing;
-  // Older failures record a release only in the staff notice effect.
+  const [provenance] = await tx.select({ after: auditEvents.after }).from(auditEvents)
+    .where(and(eq(auditEvents.gymId, row.gymId), eq(auditEvents.action, refundProvenance), eq(auditEvents.targetId, row.id)))
+    .limit(1);
+  const cached = (provenance?.after as { releasedMissing?: boolean } | null)?.releasedMissing;
+  if (typeof cached === 'boolean') return cached;
+  // Older failures record a release only in the staff notice effect; record the answer once so later reports skip the scan.
   const work: TransitionEffect = { kind: 'staff_notice', notice: 'refund_missing', invoiceId, paymentId: row.paymentId, refundId: row.id };
-  return (await tx.select({ id: auditEvents.id }).from(auditEvents)
-    .where(and(eq(auditEvents.action, effectCreated), eq(auditEvents.after, work))).limit(1)).length > 0;
+  const releasedMissing = (await tx.select({ id: auditEvents.id }).from(auditEvents)
+    .where(and(eq(auditEvents.gymId, row.gymId), eq(auditEvents.action, effectCreated), eq(auditEvents.after, work))).limit(1)).length > 0;
+  await audit(tx, context, clock, refundProvenance, 'refund', row.id, { releasedMissing });
+  return releasedMissing;
 }
 
 async function createdInApp(tx: Transaction, row: typeof refunds.$inferSelect): Promise<boolean> {

@@ -348,7 +348,9 @@ throws fails the whole write, so a network error never releases anything.
 New failure audits on the refund record `releasedMissing` and, for a release as missing,
 the notice's `missingEffectId`. Success and verified failure reports check the found and
 failure-first markers before looking up provenance. They read the indexed refund audits
-for new failures and search for the matching `refund_missing` effect for older failures.
+for new failures; for an older failure, the first report searches for the matching
+`refund_missing` effect and records the answer as a `billing.refund.provenance` audit,
+which later reports read instead.
 
 A release as missing stands if Stripe later reports the released refund `succeeded`: the row stays `failed`
 and the invoice keeps its status and refunded total, even when the two refunds together
