@@ -242,7 +242,7 @@ it('loads one deferred phone menu script from the entry host with immutable cach
   const readAsset = vi.fn(readLandingAsset);
   const app = appFor(true, { readAsset });
   const page = await app.request(origin + '/');
-  const scripts = [...(await page.text()).matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
+  const scripts = [...(await page.text()).matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script[^>]*>/gi)];
   expect(scripts).toHaveLength(1);
   const [, attributes, inline] = scripts[0]!;
   expect(attributes).toMatch(/\bdefer(?:="")?(?:\s|$)/);
