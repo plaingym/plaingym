@@ -235,7 +235,7 @@ export function createGoLiveService(options: {
           // between the two can't clear a check that ran without Stripe.
           const recovery = await reconciliation(tx, Boolean(payments) || Boolean(before.stripeConfigured));
           if (recovery.restored && !recovery.ready)
-            throw new AppError('conflict', t('settings/go-live:check.reconciliation_complete.needs_attention'));
+            throw new AppError('conflict', t('settings/go-live:check.reconciliation_complete.needs_attention'), { billingEnabled: ['reconciliation_needed'] });
           const overdue = await pastDue(tx, localDate(clock.now(), before.timezone), true);
           if (overdue.length) {
             confirmed = dates(overdue);

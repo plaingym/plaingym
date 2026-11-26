@@ -43,7 +43,7 @@ export function GoLiveSettings() {
   const [ownRead, setOwnRead] = useState<'pending' | 'failed' | null>(null);
   const [saving, setBusy] = useState(false);
   const [message, setMessage] = useState<'error' | 'timeout' | 'changed' | 'justSaved' | 'smsProviderRequired'
-    | 'smsProviderReadFailed' | 'paymentsReadFailed' | null>(null);
+    | 'smsProviderReadFailed' | 'paymentsReadFailed' | 'reconciliationNeeded' | null>(null);
   // The shared settings revision a refusal was answered at: a later revision may have changed what it says.
   const [messageRevision, setMessageRevision] = useState<number | null>(null);
   // The tick is kept as the past-due list it was given for, so it never counts for a list that has since changed.
@@ -103,7 +103,8 @@ export function GoLiveSettings() {
   // A refusal, a timed-out save or an unchecked Stripe whose follow-up read failed says what became of the save, in the read
   // failure's own alert.
   const refusedUnread = readFailed && (message === 'changed' || message === 'justSaved' || message === 'timeout'
-    || message === 'paymentsReadFailed' || message === 'smsProviderRequired' || message === 'smsProviderReadFailed') ? message : null;
+    || message === 'paymentsReadFailed' || message === 'smsProviderRequired' || message === 'smsProviderReadFailed'
+    || message === 'reconciliationNeeded') ? message : null;
   // Read while rendering, before the read alert is replaced, so it tells whether that alert held the focus.
   if (shownRead !== readFailed) {
     setShownRead(readFailed);
@@ -190,6 +191,11 @@ export function GoLiveSettings() {
       const smsReasons = details?.memberSmsEnabled, billingReasons = details?.billingEnabled;
       if (result.status === 409 && Array.isArray(smsReasons) && smsReasons.includes('no_provider')) {
         setMessage('smsProviderRequired'); setQuietMessage(false); setMessageRevision(result.settings.revision); reloadChecklist(); return;
+      }
+      // A restored gym's payments need checking in the current Stripe mode first: say so, not that settings changed.
+      if (result.status === 409 && Array.isArray(billingReasons) && billingReasons.includes('reconciliation_needed')) {
+        setConfirmBilling(false); setConfirmedKey(null);
+        setMessage('reconciliationNeeded'); setQuietMessage(false); setMessageRevision(result.settings.revision); reloadChecklist(); return;
       }
       if (result.status === 409) { conflict(result, checklist.revision); return; }
       if (result.status === 503 && Array.isArray(smsReasons) && smsReasons.includes('read_failed')) {

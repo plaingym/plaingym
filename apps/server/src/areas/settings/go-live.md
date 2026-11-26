@@ -69,8 +69,10 @@ the newest check's result. A check that ran without a payments provider
 counting once Stripe is connected: the item needs attention again until a check
 with Stripe is clear. Without Stripe, the item is not applicable when nothing is
 pending and the restore's check found no payment objects. Restored gyms
-cannot enable billing until that check is clear; turning it on is the manager's
-explicit confirmation after reconciliation. The remaining readiness checks advise
+cannot enable billing until that check is clear: the PATCH returns 409 with
+`details.billingEnabled: ["reconciliation_needed"]`, and the page says to check
+restored payments again rather than that the settings changed. Turning it on is the
+manager's explicit confirmation after reconciliation. The remaining readiness checks advise
 the manager. Viewing the checklist does not require a live Stripe request.
 The restore detail returns the last check's `stripeMode` (null when unavailable), and the `reconciliation_complete` item carries `modeChanged: true` when it appends the mode-change notice, so Go live and Payments mark the note by that flag while keeping the earlier counts visible.
 

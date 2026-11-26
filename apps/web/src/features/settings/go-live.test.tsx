@@ -81,6 +81,23 @@ describe('go-live settings', () => {
     await user.click(await screen.findByRole('button', { name: 'Turn on: Member texts' }));
     expect((await screen.findByRole('alert')).textContent).toContain('Save a working SMS provider');
   });
+  it('says to check restored payments again when that refuses billing, not that settings changed', async () => {
+    const user = userEvent.setup(); start();
+    client.PATCH.mockResolvedValue({ response: { ok: false, status: 409 },
+      error: { error: { code: 'conflict', details: { billingEnabled: ['reconciliation_needed'] } } } });
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe('Billing stays off until the restored payments are checked in the current Stripe mode. '
+      + 'Choose Check restored payments again below, then turn billing on.');
+    expect(alert.textContent).not.toContain('changed elsewhere');
+    await waitFor(() => expect(live).toHaveBeenCalledTimes(2));
+  });
+  it('still reports a plain conflict on turning billing on as a change made elsewhere', async () => {
+    const user = userEvent.setup(); start();
+    client.PATCH.mockResolvedValue(reply(409));
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('These settings changed elsewhere. The latest values are shown; try again.');
+  });
   it.each([
     { name: 'Member texts', details: { memberSmsEnabled: ['read_failed'] }, message: 'The SMS provider could not be checked. Try turning member texts on again.' },
     { name: 'Billing', details: { billingEnabled: ['read_failed'] }, message: 'Stripe could not be checked. Try turning billing on again.' },
@@ -719,6 +736,8 @@ describe('go-live settings', () => {
     noProvider,
     { refusal: 'a change elsewhere', name: 'Billing', status: 409, details: undefined,
       plain: 'These settings changed elsewhere. The latest values are shown; try again.' },
+    { refusal: 'restored payments not yet checked', name: 'Billing', status: 409, details: { billingEnabled: ['reconciliation_needed'] },
+      plain: 'Billing stays off until the restored payments are checked in the current Stripe mode. Choose Check restored payments again below, then turn billing on.' },
     { refusal: 'an unchecked SMS provider', name: 'Member texts', status: 503, details: { memberSmsEnabled: ['read_failed'] },
       plain: 'The SMS provider could not be checked. Try turning member texts on again.' },
     { refusal: 'an unchecked Stripe', name: 'Billing', status: 503, details: { billingEnabled: ['read_failed'] },

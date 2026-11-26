@@ -75,7 +75,9 @@ describe.each(['settings', 'setup'] as const)('connecting Stripe through %s afte
       { actorKind: 'user', actorUserId: f.context.actor.userId, before: { billingEnabled: true },
         after: { billingEnabled: false, restoreId: f.restoreId }, occurredAt: clock.now() },
     ]);
-    await expect(f.service.update(f.context, { revision: saved.gym.revision, billingEnabled: true })).rejects.toMatchObject({ code: 'conflict' });
+    // The refusal names its reason, so the page can say to check restored payments again.
+    await expect(f.service.update(f.context, { revision: saved.gym.revision, billingEnabled: true })).rejects.toMatchObject({
+      code: 'conflict', details: { billingEnabled: ['reconciliation_needed'] } });
     const list = vi.spyOn(f.provider, 'listChangesSince');
     await f.service.rerunReconciliation(f.context, { revision: saved.gym.revision, restoreId: f.restoreId! });
     expect(list).toHaveBeenCalledWith(new Date(snapshotAt.getTime() - 5 * 60_000), {});
@@ -131,6 +133,7 @@ it('refuses to turn billing on when Stripe settings were saved after the request
   const saved = await f.read();
   expect(saved.gym).toMatchObject({ billingEnabled: false });
   expect(saved.gym.stripeConfig).not.toBeNull();
-  await expect(f.service.update(f.context, { revision: saved.gym.revision, billingEnabled: true })).rejects.toMatchObject({ code: 'conflict' });
+  await expect(f.service.update(f.context, { revision: saved.gym.revision, billingEnabled: true })).rejects.toMatchObject({
+    code: 'conflict', details: { billingEnabled: ['reconciliation_needed'] } });
   expect((await f.read()).gym.billingEnabled).toBe(false);
 });
