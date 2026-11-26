@@ -18,7 +18,7 @@ import { autoMatch, csvLine, parseCsv } from '../pipeline.csv.js';
 import { createImportPipeline } from '../pipeline.js';
 import { createPeopleMapper, peopleMapper } from './people.js';
 import { familyExport, minimalExport } from './people.fixtures.js';
-import type { MapperContext } from './registry.js';
+import { ImportPreparationChanged, type MapperContext } from './registry.js';
 import type { SmsChangeSource, SmsSource } from '../../members/member-write.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
@@ -645,14 +645,24 @@ describe('people mapper through the real import pipeline', () => {
     }
   });
 
-  async function planMemberUpdate(memberId: string) {
-    const rows = parseCsv('First Name,Last Name,Email,Phone,Billing Day\nJo,Fields,jo@example.test,+447700900222,12\n').rows;
+  async function planMemberUpdate(memberId: string, extra?: { stripeCustomerId?: string; stripePaymentMethodId?: string }) {
+    const { context, analyzed } = await analyzeMemberRow(extra);
+    expect(analyzed[0]?.duplicateIds).toEqual([memberId]);
+    expect(analyzed[0]?.issues).toEqual([]);
+    return { context, planned: analyzed.map(row => ({ ...row, action: 'update' as const })) };
+  }
+
+  async function analyzeMemberRow(extra?: { stripeCustomerId?: string; stripePaymentMethodId?: string }) {
+    const columns = ['First Name', 'Last Name', 'Email', 'Phone', 'Billing Day'];
+    const values = ['Jo', 'Fields', 'jo@example.test', '+447700900222', '12'];
+    if (extra?.stripeCustomerId !== undefined) { columns.push('Stripe Customer ID'); values.push(extra.stripeCustomerId); }
+    if (extra?.stripePaymentMethodId !== undefined) { columns.push('Stripe Payment Method ID'); values.push(extra.stripePaymentMethodId); }
+    const rows = parseCsv(`${columns.join(',')}\n${values.join(',')}\n`).rows;
     const plan: ImportPlanRequest = { uploadId: uuidv7(), mapper: 'people', duplicatePolicy: 'update',
       mapping: autoMatch(Object.keys(rows[0]!.values)) };
     const context: MapperContext = { gymId: gymA, actor: { kind: 'system' }, runId: uuidv7(), clock, timezone: 'UTC', sourceRows: rows };
     const analyzed = await database.forGym(gymA, tx => peopleMapper.analyze(tx, rows, plan, context));
-    expect(analyzed[0]?.duplicateIds).toEqual([memberId]);
-    return { context, planned: analyzed.map(row => ({ ...row, action: 'update' as const })) };
+    return { context, analyzed };
   }
 
   it('follows a member moved to another household while waiting on the household lock', async () => {
@@ -686,6 +696,80 @@ describe('people mapper through the real import pipeline', () => {
       moveMember.resolve();
       await holder.catch(() => undefined);
     }
+  });
+
+  it.each([
+    { label: 'a Stripe customer and card', extra: { stripeCustomerId: 'cus_A', stripePaymentMethodId: 'pm_Card1' } },
+    { label: 'only a Stripe customer', extra: { stripeCustomerId: 'cus_A' } },
+    { label: 'only a Stripe payment method', extra: { stripePaymentMethodId: 'pm_Card1' } },
+  ])('stops with ImportPreparationChanged when a moved member row carries $label', async ({ extra }) => {
+    const homeA = await factory('households', gymA, { billingDay: 5, stripeCustomerId: 'cus_A' });
+    const homeB = await factory('households', gymA, { billingDay: 6 });
+    const member = await factory('members', gymA, { householdId: homeA.id, firstName: 'Jo', lastName: 'Fields',
+      email: 'jo@example.test', phone: '+447700900111' });
+    const { context, planned } = await planMemberUpdate(member.id, extra);
+
+    const homeLocked = Promise.withResolvers<void>(), moveMember = Promise.withResolvers<void>();
+    const holder = database.forGym(gymA, async tx => {
+      await tx.select({ id: households.id }).from(households).where(eq(households.id, homeA.id)).for('update');
+      homeLocked.resolve();
+      await moveMember.promise;
+      await tx.update(members).set({ householdId: homeB.id }).where(eq(members.id, member.id));
+    });
+    try {
+      await homeLocked.promise;
+      const committing = database.forGym(gymA, tx => peopleMapper.commit(tx, planned, context));
+      void committing.catch(() => undefined);
+      await waitingOnLock('households');
+      moveMember.resolve();
+      await holder;
+      await expect(committing).rejects.toThrow(ImportPreparationChanged);
+      await expect(committing).rejects.toThrow('Member moved to another household after analysis');
+      const [afterMember] = await database.forGym(gymA, tx => tx.select().from(members).where(eq(members.id, member.id)));
+      const [afterHomeA] = await database.forGym(gymA, tx => tx.select().from(households).where(eq(households.id, homeA.id)));
+      const [afterHomeB] = await database.forGym(gymA, tx => tx.select().from(households).where(eq(households.id, homeB.id)));
+      const data = await snapshot();
+      expect(data.methods).toEqual([]);
+      expect(data.audits).toEqual([]);
+      expect(afterMember).toMatchObject({ householdId: homeB.id, phone: '+447700900111' });
+      expect(afterHomeA).toMatchObject({ stripeCustomerId: 'cus_A', billingDay: 5 });
+      expect(afterHomeB).toMatchObject({ stripeCustomerId: null, billingDay: 6 });
+    } finally {
+      moveMember.resolve();
+      await holder.catch(() => undefined);
+    }
+  });
+
+  it('stores a card on the member household when the member does not move', async () => {
+    const homeA = await factory('households', gymA, { billingDay: 5, stripeCustomerId: 'cus_A' });
+    const member = await factory('members', gymA, { householdId: homeA.id, firstName: 'Jo', lastName: 'Fields',
+      email: 'jo@example.test', phone: '+447700900111' });
+    const { context, planned } = await planMemberUpdate(member.id, { stripeCustomerId: 'cus_A', stripePaymentMethodId: 'pm_Card1' });
+
+    expect(await database.forGym(gymA, tx => peopleMapper.commit(tx, planned, context))).toBe(1);
+    const [afterMember] = await database.forGym(gymA, tx => tx.select().from(members).where(eq(members.id, member.id)));
+    const [afterHomeA] = await database.forGym(gymA, tx => tx.select().from(households).where(eq(households.id, homeA.id)));
+    expect((await snapshot()).methods).toMatchObject([{ householdId: homeA.id, processorId: 'pm_Card1', isDefault: true }]);
+    expect(afterMember).toMatchObject({ householdId: homeA.id, phone: '+447700900222' });
+    expect(afterHomeA).toMatchObject({ stripeCustomerId: 'cus_A', billingDay: 12 });
+  });
+
+  it.each([
+    // The saved customer's household and the member's disagree (an ambiguous family), and the customer belongs to the old one.
+    { label: 'a Stripe customer and card', extra: { stripeCustomerId: 'cus_A', stripePaymentMethodId: 'pm_Card1' },
+      codes: ['null:conflict', 'Stripe Customer ID:conflict'] },
+    { label: 'only a Stripe customer', extra: { stripeCustomerId: 'cus_A' }, codes: ['null:conflict', 'Stripe Customer ID:conflict'] },
+    // The new household has no customer for the card.
+    { label: 'only a Stripe payment method', extra: { stripePaymentMethodId: 'pm_Card1' }, codes: ['null:missing_required'] },
+  ])('flags a moved member row carrying $label when analyzed again against the new household', async ({ extra, codes }) => {
+    await factory('households', gymA, { billingDay: 5, stripeCustomerId: 'cus_A' });
+    const homeB = await factory('households', gymA, { billingDay: 6 });
+    const member = await factory('members', gymA, { householdId: homeB.id, firstName: 'Jo', lastName: 'Fields',
+      email: 'jo@example.test', phone: '+447700900111' });
+    const { analyzed } = await analyzeMemberRow(extra);
+    expect(analyzed[0]?.duplicateIds).toEqual([member.id]);
+    expect(analyzed[0]?.values.householdId).toBe(homeB.id);
+    expect(analyzed[0]?.issues.map(issue => `${issue.column}:${issue.code}`)).toEqual(codes);
   });
 
   it('fails an update row when the member is anonymized while waiting on the household lock', async () => {

@@ -59,8 +59,12 @@ its new household for up to three rounds, always locking each household before
 taking the member lock; once the household matches, it locks the member and
 checks that the member is still in that household and not anonymized before
 checking revisions and writing (an anonymized, missing, or repeatedly moved
-member still fails). Household updates take the same household lock and check its
-revision. Created
+member still fails). When the followed household differs from the household
+analyzed for the row and the row carries a Stripe customer or payment method,
+the job rolls back the chunk and analyzes it again against the member's new
+household on retry, where that row gets an error instead of storing the Stripe
+values; rows without Stripe values follow the member as above. Household
+updates take the same household lock and check its revision. Created
 members and households store their phone normalized with the gym's country,
 without SMS consent. A changed member phone is normalized the same way. If its
 normalized number changes, the update clears the member's notices and

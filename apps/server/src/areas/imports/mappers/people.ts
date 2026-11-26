@@ -293,6 +293,8 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
         throw new Error('Import target member is unavailable');
       })();
       householdId = current.householdId;
+      if (current.householdId !== value.householdId && (value.stripeCustomerId || value.stripePaymentMethodId))
+        throw new ImportPreparationChanged('Member moved to another household after analysis');
       const changes = Object.fromEntries(Object.entries({ firstName: value.firstName, lastName: value.lastName, email: value.email,
         phone: value.phone, dateOfBirth: value.dateOfBirth, status: value.status, emailOptOut: value.emailOptOut })
         .filter(([key, next]) => next !== null && current[key as keyof typeof current] !== next));
