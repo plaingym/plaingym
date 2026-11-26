@@ -162,6 +162,29 @@ try {
   compose(['restart', 'postgres', 'app']);
   compose(['up', '-d', '--wait', '--wait-timeout', '90']);
   compose(['exec', '-T', 'app', 'node', '/app/deploy/healthcheck.mjs']);
+  // The worker re-claims a job whose lease expired and finishes it, fails one whose lease expired at its last attempt,
+  // and finishes that one once it is reset for a retry.
+  const retried = randomUUID(), exhausted = randomUUID(), jobKey = 'image-smoke-' + randomUUID();
+  const stuckJob = (id, maxAttempts) => `('${id}', NULL, 'intake-rate-limits.sweep', '{"version":1,"timezone":"UTC","value":{}}'::jsonb,
+    now(), 1, ${maxAttempts}, 'running', now() - interval '1 minute', '${randomUUID()}', '${jobKey}:${id}')`;
+  sql(`INSERT INTO jobs (id, gym_id, name, payload, run_at, attempts, max_attempts, status, locked_until, lock_token, idempotency_key)
+    VALUES ${stuckJob(retried, 3)}, ${stuckJob(exhausted, 1)}`);
+  const jobState = (id) => sql(`SELECT status || ':' || coalesce(last_error, '') FROM jobs WHERE id = '${id}'`).trim();
+  const waitForJobs = async (expected) => {
+    const deadline = Date.now() + 60_000;
+    for (;;) {
+      const states = [jobState(retried), jobState(exhausted)];
+      if (states.every((state, index) => state === expected[index])) return;
+      if (Date.now() > deadline) assert.fail(`Smoke jobs reached ${states.join(', ')}, expected ${expected.join(', ')}`);
+      await new Promise((resolveWait) => setTimeout(resolveWait, 1000));
+    }
+  };
+  await waitForJobs(['succeeded:', 'failed:Lease expired after final attempt']);
+  sql(`UPDATE jobs SET status = 'pending', attempts = 0, run_at = now(), finished_at = NULL, locked_until = NULL,
+    lock_token = NULL, last_error = NULL, acknowledged_at = NULL WHERE id = '${exhausted}'`);
+  await waitForJobs(['succeeded:', 'succeeded:']);
+  sql(`DELETE FROM jobs WHERE id IN ('${retried}', '${exhausted}')`);
+  assert.equal(sql(`SELECT count(*) FROM jobs WHERE idempotency_key LIKE '${jobKey}:%'`).trim(), '0');
   // Rollback availability is read-only and must terminate with Postgres down, including pool startup/cleanup.
   compose(['stop', 'postgres']);
   const checkStarted = Date.now();
@@ -172,7 +195,7 @@ try {
   assert.equal(snapshotCheck.status, 1, snapshotCheck.stderr);
   assert.ok(Date.now() - checkStarted < 40_000, 'snapshot-check must stop within its deadline with Postgres down');
   assert.match(snapshotCheck.stderr, /Snapshot availability check timed out|Maintenance command failed/);
-  console.log('PASS: HTTPS, redirect, roles, boot migrations, forced RLS, image assets, first-boot shell and pack catalog, source link, gym-app CLI, hardening, memory caps, restart.');
+  console.log('PASS: HTTPS, redirect, roles, boot migrations, forced RLS, image assets, first-boot shell and pack catalog, source link, gym-app CLI, hardening, memory caps, restart, job retry.');
 } catch (error) {
   try { console.error(compose(['logs', '--no-color', '--tail', '30', 'app'])); }
   catch { /* Preserve the original failure if diagnostics are unavailable. */ }

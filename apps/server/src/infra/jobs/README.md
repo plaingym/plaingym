@@ -106,7 +106,9 @@ adds `failure_count`, so the restore checks for the column first: it passes
 migration that follows gives those rows `failure_count` 0. It does the same for
 `finished_at`: `failInterrupted` runs on a queue built with `finishedAtColumn` set to
 whether the column exists, and without it records the failure time in `run_at` as
-releases before the column did.
+releases before the column did. A queue built with either option false can only enqueue
+and fail interrupted jobs: its claim names every column, so its `start()` and
+`runNext()` throw before touching the database.
 
 Install-level work uses `enqueueSystem` and `handleSystem`, with `gymId: null` in
 the handler context. These separate methods keep the gym-required `Jobs` contract

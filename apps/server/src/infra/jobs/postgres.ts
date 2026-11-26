@@ -84,7 +84,8 @@ export interface PostgresJobsOptions {
   /**
    * Whether `jobs.failure_count` exists. Default true. False makes enqueueing name only the columns it sets, which a
    * restore resume uses whatever the restored schema (a newer release can resume before its normal migration), and
-   * `failInterrupted` then leaves the counter out unless told otherwise.
+   * `failInterrupted` then leaves the counter out unless told otherwise. Such a queue can only enqueue and fail
+   * interrupted jobs: its claim names every column, so `start()` and `runNext()` throw before touching the database.
    */
   readonly failureCountColumn?: boolean;
   /**
@@ -92,6 +93,8 @@ export interface PostgresJobsOptions {
    * that finishes a job record the time in `run_at` as releases before the column did, and every read of a finished
    * row's time use `run_at`, for a restore resume on a restored schema without the column. Never set it false on a
    * schema that has the column: `PostgresJobStatsQuery` always reads it, so that queue's failed versions wouldn't match.
+   * Such a queue can only enqueue and fail interrupted jobs: its claim names every column, so `start()` and `runNext()`
+   * throw before touching the database.
    */
   readonly finishedAtColumn?: boolean;
 }
@@ -368,6 +371,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
   }
   /** Runs one due job; useful for deterministic command-line drains and tests. */
   async runNext(): Promise<boolean> {
+    this.#assertCanClaim();
     const row = await this.#claim();
     if (!row) return false;
     await this.#execute(row);
@@ -580,7 +584,13 @@ export class PostgresJobs implements Jobs, JobRecovery {
     }
     return deleted;
   }
+  /** A queue without either column can't claim: the claim selects and returns every schema column. */
+  #assertCanClaim(): void {
+    if (!this.#failureCountColumn || !this.#finishedAtColumn)
+      throw new Error('A job queue built with finishedAtColumn or failureCountColumn false can only enqueue and fail interrupted jobs');
+  }
   start(options: WorkerOptions = {}): JobWorker {
+    this.#assertCanClaim();
     assertNoTransaction('jobs.start');
     if (this.#started) throw new Error('Worker already started');
     const concurrency = positive(options.concurrency ?? 4, 'concurrency');
