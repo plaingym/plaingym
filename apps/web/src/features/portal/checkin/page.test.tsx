@@ -211,6 +211,51 @@ describe('portal check-in code', () => {
     expect(client.checkinCode).toHaveBeenCalledTimes(reads + 1);
     expect(client.regenerateCheckin).toHaveBeenCalledTimes(1);
   });
+  const made = async (memberId: string) => answer({ memberId, code: 'pgci1_' + 'b'.repeat(43), version: 2, revision: 5 });
+  it('drops the failed creation message, and moves its focus to the button, once the re-read finds a code', async () => {
+    client.regenerateCheckin.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const user = userEvent.setup(); page();
+    await user.selectOptions(await screen.findByLabelText('Code for'), child);
+    const create = await screen.findByRole('button', { name: 'Create a code' });
+    let read!: () => void;
+    client.checkinCode.mockImplementationOnce((memberId: string) => new Promise(resolve => { read = () => resolve(made(memberId)); }));
+    await user.click(create);
+    const message = await screen.findByRole('alert');
+    expect(message.textContent).toBe(createError);
+    expect(document.activeElement).toBe(message);
+    await act(async () => read());
+    await screen.findByAltText('QR check-in code for Casey Parent');
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(screen.queryByText(createError)).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Replace this code' }));
+  });
+  it('drops the failed creation message without moving the focus held elsewhere', async () => {
+    client.regenerateCheckin.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const user = userEvent.setup(); page();
+    await user.selectOptions(await screen.findByLabelText('Code for'), child);
+    const create = await screen.findByRole('button', { name: 'Create a code' });
+    client.checkinCode.mockImplementationOnce(made);
+    onlineManager.setOnline(false);
+    await user.click(create);
+    expect((await screen.findByRole('alert')).textContent).toBe(createError);
+    const picker = screen.getByLabelText('Code for');
+    act(() => picker.focus());
+    act(() => onlineManager.setOnline(true));
+    await screen.findByAltText('QR check-in code for Casey Parent');
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(document.activeElement).toBe(picker);
+  });
+  it('keeps the failed replacement message when the re-read answers with the same code', async () => {
+    client.regenerateCheckin.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const user = userEvent.setup(); page();
+    await user.click(await screen.findByRole('button', { name: 'Replace this code' }));
+    await user.click(replace());
+    await waitFor(() => expect(replace().disabled).toBe(false));
+    expect(client.checkinCode).toHaveBeenCalledTimes(2);
+    await user.click(screen.getAllByRole('button', { name: 'Keep the current code' }).at(-1)!);
+    await screen.findByAltText('QR check-in code for Pat Parent');
+    expect(screen.getByRole('alert').textContent).toBe(replaceError);
+  });
   it('reads the code again from the dialog after a failed re-read', async () => {
     client.regenerateCheckin.mockRejectedValueOnce(new ApiError(409, 'request_failed'));
     const user = userEvent.setup(); page();

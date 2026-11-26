@@ -37,6 +37,14 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
   // The page can move to another member by itself, when a list read drops the chosen one. The confirmation closes then; while
   // a replacement is being sent, it waits for the answer.
   useEffect(() => { if (confirming !== null && confirming !== memberId && !busy) setConfirming(null); }, [confirming, memberId, busy]);
+  // A creation that failed but made the code is no longer news once the re-read shows it. If the message held the focus, the
+  // section's button takes it.
+  const errorBox = useRef<HTMLDivElement>(null), action = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (error !== 'createError' || waiting || !code.data?.code) return;
+    if (errorBox.current?.contains(document.activeElement)) action.current?.focus();
+    setError('');
+  }, [error, waiting, code.data?.code]);
   async function regenerate() {
     if (!code.data || code.isError || rereading.has(memberId) || locked.current) return;
     const id = memberId, creating = !code.data.code;
@@ -72,8 +80,8 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
           {active ? waiting ? <Alert>{text('rereading')}</Alert>
             : <><CodeImage code={active} name={member?.name ?? ''} /><p className="text-center text-sm text-muted-foreground">{text('help')}</p></>
             : <Alert>{text(waiting ? 'createRereading' : 'inactive')}</Alert>}
-          {error && confirming !== memberId && <Alert variant="error" focusOnReveal role="alert">{errorText}</Alert>}
-          <Button variant={active ? 'outline' : 'default'} className="w-full sm:w-auto" disabled={busy || waiting} onClick={() => { setError(''); if (active) setConfirming(memberId); else void regenerate(); }}>
+          {error && confirming !== memberId && <Alert ref={errorBox} variant="error" focusOnReveal role="alert">{errorText}</Alert>}
+          <Button ref={action} variant={active ? 'outline' : 'default'} className="w-full sm:w-auto" disabled={busy || waiting} onClick={() => { setError(''); if (active) setConfirming(memberId); else void regenerate(); }}>
             {text(active ? 'regenerate' : 'create')}</Button>
         </section>}
     {confirming !== null && confirming === memberId && <Dialog title={text('confirmTitle')} closeLabel={text('keep')} onClose={() => setConfirming(null)} dismissible={!busy}>
