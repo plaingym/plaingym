@@ -22,7 +22,7 @@ import { CustomerCardImport } from './customer-cards.js';
 import { CardList } from './card-list.js';
 
 export interface InvoiceAccess { record: boolean; refund: boolean; links: boolean }
-type Action = { kind: 'cash' | 'charge' | 'link' | 'receipt' | 'viewReceipt' | 'releaseHold' | 'voidInvoice' } | { kind: 'refund'; payment: Payment };
+type Action = { kind: 'cash' | 'charge' | 'link' | 'receipt' | 'viewReceipt' | 'releaseHold' | 'releaseProcessing' | 'voidInvoice' } | { kind: 'refund'; payment: Payment };
 export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClient, onCreditChange, showCardImport = true }: {
   gymId: string; invoiceId: string; access: InvoiceAccess; client?: InvoiceClient; onCreditChange?: () => void; showCardImport?: boolean;
 }) {
@@ -55,6 +55,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
         creditChanged = true;
       }
       if (action.kind === 'releaseHold') { await client.releaseHold(invoiceId); setMessage(text(allCards.data === false ? 'holdReleasedNoCard' : 'holdReleased')); }
+      if (action.kind === 'releaseProcessing') { await client.releaseProcessing(invoiceId); setMessage(text('processingReleased')); }
       if (action.kind === 'voidInvoice') {
         await client.call('voidInvoice', { reason: String(form.get('reason') ?? '') }, { invoiceId });
         setMessage(text('invoiceVoided'));
@@ -114,6 +115,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
       <div className="flex flex-col flex-wrap gap-2 sm:flex-row">
         {collectible && access.record && <><Button onClick={() => open({ kind: 'cash' })}>{text('recordCash')}</Button><Button variant="outline" disabled={invoice.needsReview || allCards.data !== true} onClick={() => open({ kind: 'charge' })}>{text('charge')}</Button></>}
         {collectible && invoice.needsReview && access.refund && <Button variant="outline" onClick={() => open({ kind: 'releaseHold' })}>{text('releaseHold')}</Button>}
+        {invoice.status === 'processing' && access.refund && <Button variant="outline" onClick={() => open({ kind: 'releaseProcessing' })}>{text('releaseProcessing')}</Button>}
         {collectible && access.refund && <Button variant="destructive" onClick={() => open({ kind: 'voidInvoice' })}>{text('voidInvoice')}</Button>}
         {collectible && invoice.amountCents > 0 && access.links && <Button variant="outline" onClick={() => open({ kind: 'link' })}>{text('payLink')}</Button>}
         {invoice.paidAt && <Button variant="outline" onClick={() => open({ kind: 'viewReceipt' })}>{text('viewReceipt')}</Button>}
@@ -149,8 +151,9 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
       {action.kind === 'viewReceipt' ? <Receipt data={data}/> : <form onSubmit={event => void submit(event)} onChangeCapture={() => setDraft(true)} className="space-y-4">
         {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
         <fieldset disabled={busy} className="space-y-4">
-          {action.kind !== 'releaseHold' && <p>{action.kind === 'refund' && text('remainingRefundable') + ': '}{money(action.kind === 'refund' ? refundable(data, action.payment) : invoice.amountCents, invoice.currency)}</p>}
+          {action.kind !== 'releaseHold' && action.kind !== 'releaseProcessing' && <p>{action.kind === 'refund' && text('remainingRefundable') + ': '}{money(action.kind === 'refund' ? refundable(data, action.payment) : invoice.amountCents, invoice.currency)}</p>}
           {action.kind === 'releaseHold' && <p>{text(allCards.data === false ? 'releaseHoldHelpNoCard' : 'releaseHoldHelp')}</p>}
+          {action.kind === 'releaseProcessing' && <p>{text('releaseProcessingHelp')}</p>}
           {action.kind === 'cash' && <>
             <Label className="block">{text('method')}<Select name="method"><option value="cash">{text('cash')}</option><option value="check">{text('check')}</option></Select></Label>
             <Label className="block">{text('reference')}<Input name="reference"/></Label>

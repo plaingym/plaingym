@@ -43,6 +43,25 @@ action, which clears `needsReview` under the invoice lock and records the staff
 confirmation. It never charges by itself, but makes the invoice eligible for the
 next daily run unless staff charge or record a payment first. The runner never
 holds a released invoice again.
+
+Owners and admins may also stop waiting for a Checkout bank debit through
+`POST /api/billing/invoices/{invoiceId}/release-processing` (`refunds.create`). It
+applies only to a `processing` invoice whose latest processing intent the hourly
+sweep flagged (`billing.runner.checkout_debit_unresolved`); otherwise it refuses
+`not_processing` or `debit_not_stuck` without calling Stripe. Outside any
+transaction it reads that intent from Stripe: a failed or cancelled debit releases
+the invoice, `succeeded` refuses `debit_paid`, `processing` refuses
+`debit_processing`, a pending or action-needed intent refuses `debit_open` (staff
+cancel it in the Stripe Dashboard first), an intent whose ID, gym or invoice
+metadata differs refuses `debit_mismatch`, and an unknown answer or unavailable
+Stripe is 503 `payments_unavailable`. The release transition takes the invoice
+lock, makes a cycle or assignment invoice `past_due` and any other `open`, clears
+the Checkout session fields and writes one `billing.invoice.processing_released`
+audit with the intent and failure code. It makes no Stripe write, sends no notice,
+starts no dunning or retries, leaves payments, attempts and saved methods as they
+are, and doesn't count toward failed bank attempts. A later failure for that
+intent finds the invoice no longer processing and is ignored.
+
 They may also void an open or past-due invoice through
 `POST /api/billing/invoices/{invoiceId}/void` (`refunds.create`) with a required
 reason. The transition refuses unresolved payment attempts and reserved Checkout,

@@ -28,8 +28,12 @@ export interface TransitionOptions {
 type PaymentRow = typeof payments.$inferSelect;
 type CheckoutFailureCode = Extract<ChargeOutcome, { status: 'failed' }>['code'];
 type CheckoutProcessingFailure = Omit<ProcessingFailure, 'code'> & { code: CheckoutFailureCode };
+/** Staff stop waiting for a Checkout debit that Stripe, read after their click, reports failed. */
+export interface ProcessingRelease { invoiceId: string; paymentIntentId: string; code: CheckoutFailureCode }
+export const processingReleased = 'billing.invoice.processing_released';
 export type BillingInvoiceTransitions = Omit<InvoiceTransitions, 'processingFailed'> & {
   processingFailed: (context: MutationContext, request: CheckoutProcessingFailure) => Promise<InvoiceTransitionResult>;
+  releaseProcessing: (context: MutationContext, request: ProcessingRelease) => Promise<InvoiceTransitionResult>;
 };
 export function createInvoiceTransitions(options: TransitionOptions = {}): BillingInvoiceTransitions {
   const scope = stripeWriteScope(options.scope ?? forGym), clock = options.clock ?? defaultClock;
@@ -161,6 +165,23 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Billi
           return result('ignored', invoice);
         if (await attempt(tx, invoice, request.paymentIntentId)) conflict('Runner failure requires its attempt');
         return failedInvoice(tx, context, invoice, undefined, request.code, processorId);
+      });
+    },
+    // The caller read the failed intent from Stripe. Unlike processingFailed, the invoice only becomes collectible again:
+    // no notice, dunning or retries, and payments, attempts and saved methods stay as they are.
+    async releaseProcessing(context, request) {
+      idSchema.parse(request.invoiceId);
+      return scope(context.gymId, async tx => {
+        const invoice = await lockInvoice(tx, request.invoiceId);
+        if (invoice.status !== 'processing' || (await processingIntents(tx, invoice.id)).at(-1) !== request.paymentIntentId)
+          return result('ignored', invoice);
+        const next = { ...invoice, status: invoice.kind === 'cycle' || await isAssignmentInvoice(tx, invoice.id) ? 'past_due' : 'open',
+          checkoutSessionId: null, checkoutExpiresAt: null };
+        await tx.update(invoices).set({ status: next.status, checkoutSessionId: null, checkoutExpiresAt: null })
+          .where(eq(invoices.id, invoice.id));
+        await audit(tx, context, clock, processingReleased, 'invoice', invoice.id,
+          { ...snapshot(next), paymentIntentId: request.paymentIntentId, code: request.code }, snapshot(invoice));
+        return result('applied', next);
       });
     },
     voidInvoice: createInvoiceVoid(scope, clock),
@@ -301,6 +322,7 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Billi
     voidInvoice: (context, request) => published(context, service.voidInvoice(context, request)),
     paymentProcessing: (context, request) => published(context, service.paymentProcessing(context, request)),
     processingFailed: (context, request) => published(context, service.processingFailed(context, request)),
+    releaseProcessing: (context, request) => published(context, service.releaseProcessing(context, request)),
     settleZero: (context, request) => published(context, service.settleZero(context, request)),
     cardSucceeded: (context, request) => published(context, service.cardSucceeded(context, request)),
     manualPayment: (context, request) => published(context, service.manualPayment(context, request)),

@@ -1162,6 +1162,7 @@
   {"method": "POST", "path": "/api/billing/invoices/{invoiceId}/payments", "permission": {"kind": "staff", "capability": "payments.record"}},
   {"method": "POST", "path": "/api/billing/invoices/{invoiceId}/receipt", "permission": {"kind": "staff", "capability": "payments.record"}},
   {"method": "POST", "path": "/api/billing/invoices/{invoiceId}/release-hold", "permission": {"kind": "staff", "capability": "refunds.create"}},
+  {"method": "POST", "path": "/api/billing/invoices/{invoiceId}/release-processing", "permission": {"kind": "staff", "capability": "refunds.create"}},
   {"method": "POST", "path": "/api/billing/invoices/{invoiceId}/void", "permission": {"kind": "staff", "capability": "refunds.create"}},
   {"method": "POST", "path": "/api/billing/invoices/one-off", "permission": {"kind": "staff", "capability": "payments.record"}},
   {"method": "GET", "path": "/api/billing/memberships", "permission": {"kind": "staff", "capability": "billing.read"}},

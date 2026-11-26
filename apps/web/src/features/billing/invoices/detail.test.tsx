@@ -120,3 +120,45 @@ it.each([
   expect(alert.textContent).toContain(expected);
   expect(alert.textContent).not.toContain('Could not save. Reload the invoice and check for a pending payment before trying again.');
 });
+
+const processing: InvoiceDetail = { ...detail, invoice: { ...invoice, status: 'processing' } };
+function startProcessing(refund: boolean, release?: () => Response) {
+  const calls: string[] = [];
+  const processingClient = createInvoiceClient(async (path, init) => {
+    const url = new URL(String(path), 'http://gym.test');
+    if (url.pathname === '/api/billing/invoices/' + invoice.id) return Response.json({ data: processing });
+    if (url.pathname === `/api/billing/invoices/${invoice.id}/release-processing` && init?.method === 'POST') {
+      calls.push(url.pathname);
+      return release?.() ?? Response.json({ data: { ...invoice, status: 'open' } });
+    }
+    return fetcher(path);
+  });
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}>
+    <ShellServicesContext.Provider value={createShellServices(async () => bootstrap)}>
+      <InvoiceDetails gymId={gymId} invoiceId={invoice.id} client={processingClient} access={{ record: true, refund, links: true }}/>
+    </ShellServicesContext.Provider></QueryClientProvider>);
+  return calls;
+}
+
+it('offers to stop waiting for a bank debit on a processing invoice only to staff who can refund', async () => {
+  startProcessing(false);
+  await screen.findByRole('heading', { name: 'Invoice items' });
+  expect(screen.queryByRole('button', { name: 'Stop waiting for this bank debit' })).toBeNull();
+  cleanup();
+  const calls = startProcessing(true);
+  fireEvent.click(await screen.findByRole('button', { name: 'Stop waiting for this bank debit' }));
+  await screen.findByText(/Stripe is checked first: the invoice can be collected again only if Stripe reports the debit failed or cancelled/);
+  expect(screen.queryByText('$25.00', { selector: 'form p' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+  await screen.findByText('The invoice no longer waits for the bank debit. Collect it, send a pay link or void it.');
+  expect(calls).toEqual([`/api/billing/invoices/${invoice.id}/release-processing`]);
+});
+
+it('shows why a bank debit release was refused in the form', async () => {
+  startProcessing(true, () => Response.json({ error: { code: 'conflict', message: 'Stripe still shows this debit as open',
+    details: { reason: ['debit_open'] } } }, { status: 409 }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Stop waiting for this bank debit' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Confirm' }));
+  const alert = await screen.findByRole('alert');
+  expect(alert.textContent).toContain('Stripe still shows this debit as open. Cancel the payment in the Stripe Dashboard, then try again.');
+});

@@ -133,6 +133,16 @@ export const releaseInvoiceHoldContract = {
   params: z.strictObject({ invoiceId: idSchema }), body: z.strictObject({}),
   response: invoiceResponseSchema, successStatus: 200,
 } as const satisfies EndpointContract;
+/**
+ * Staff stop waiting for a flagged Checkout bank debit. The server reads the debit from Stripe first and makes the
+ * invoice collectible again only when Stripe reports it failed or cancelled.
+ */
+export const releaseInvoiceProcessingContract = {
+  method: 'post', path: '/api/billing/invoices/{invoiceId}/release-processing',
+  permission: { kind: 'staff', capability: 'refunds.create' },
+  params: z.strictObject({ invoiceId: idSchema }), body: z.strictObject({}),
+  response: invoiceResponseSchema, successStatus: 200,
+} as const satisfies EndpointContract;
 export const invoiceDetailResponseSchema = z.strictObject({ data: invoiceDetailSchema });
 export const invoiceListResponseSchema = listResponseSchema(invoiceSchema);
 export const terminalDisputeStatuses = ['won', 'lost', 'closed', 'warning_closed'] as const;

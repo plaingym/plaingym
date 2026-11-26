@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { linksContracts, membersContracts, releaseInvoiceHoldContract } from '@plaingym/shared/contracts';
+import { linksContracts, membersContracts, releaseInvoiceHoldContract, releaseInvoiceProcessingContract } from '@plaingym/shared/contracts';
 import type { CreateSignedLinkRequest, InvoiceStatus, Member } from '@plaingym/shared/contracts';
 import { billingRequest, createBillingClient } from '../catalog/api.js';
 import { readRefusal } from '../../../lib/api.js';
@@ -27,6 +27,7 @@ export function createInvoiceClient(fetcher: typeof fetch = fetch) {
   const client = createBillingClient(checked);
   return { ...client,
     releaseHold: (invoiceId: string) => billingRequest(releaseInvoiceHoldContract, {}, { invoiceId }, {}, checked),
+    releaseProcessing: (invoiceId: string) => billingRequest(releaseInvoiceProcessingContract, {}, { invoiceId }, {}, checked),
     invoices: (query: { householdId?: string; status?: InvoiceStatus; offset?: number }) => client.call('listInvoices', undefined, {}, { ...query, limit: 25 }),
     invoice: async (invoiceId: string) => (await client.call('getInvoice', undefined, { invoiceId })).data,
     cards: (householdId: string, offset = 0) => client.call('listPaymentMethods', undefined, { householdId }, { limit: 25, offset }),

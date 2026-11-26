@@ -251,6 +251,9 @@ hourly job completes for these findings and can check the intent again on its
 next run. An intent Stripe still reports as `processing` continues settling.
 Staff with billing access see the affected invoices in the dashboard's bank
 payment count. A restore still counts an unsettled invoice as unresolved.
+Owners and admins can stop waiting for a flagged debit (`release-processing`,
+`payments.README.md`) once Stripe reports it failed or cancelled; the invoice is then
+no longer processing, so the sweep and the count skip it.
 
 When a Checkout debit starts processing on an already closed invoice, the
 transition records the intent in `billing.invoice.late_processing`. After ten

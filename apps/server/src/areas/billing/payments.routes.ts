@@ -36,6 +36,7 @@ export function createPaymentRoutes(service?: PaymentService) {
     }, [customAmountGuard]),
     billingRoute(c.billingContracts.chargeInvoice, async (ctx, p) => ({ data: await read().charge(billingMutation(ctx), p.invoiceId!) })),
     billingRoute(c.releaseInvoiceHoldContract, async (ctx, p) => ({ data: await read().releaseHold(billingMutation(ctx), p.invoiceId!) })),
+    billingRoute(c.releaseInvoiceProcessingContract, async (ctx, p) => ({ data: await read().releaseProcessing(billingMutation(ctx), p.invoiceId!) })),
     billingRoute(c.voidInvoiceContract, async (ctx, p, _q, b) => ({ data: await read().voidInvoice(billingMutation(ctx), p.invoiceId!, c.voidInvoiceRequestSchema.parse(b)) })),
     billingRoute(c.billingContracts.recordManualPayment, async (ctx, p, _q, b) => ({ data: await read().manualPayment(billingMutation(ctx), p.invoiceId!, c.recordManualPaymentRequestSchema.parse(b)) })),
     billingRoute(c.billingContracts.listPayments, (ctx, _p, q) => read().listPayments(ctx.gym.gymId, q)),

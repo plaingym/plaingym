@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, notInArray, or } from 'drizzle-orm';
-import { allocateInvoiceNumber, forGym, households, invoices, invoiceLineItems, payments, refunds,
+import { allocateInvoiceNumber, auditEvents, forGym, households, invoices, invoiceLineItems, payments, refunds,
   paymentAttempts, chargeTypes, chargeTypeTaxRates, taxRates, uuidv7, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
@@ -8,14 +8,15 @@ import { clock as defaultClock } from '../../core/clock.js';
 import { logError } from '../../core/log.js';
 import { notFound, type MutationContext } from '../../core/interfaces/common.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
-import type { DetachOptions, Payments } from '../../infra/payments/index.js';
+import type { ChargeOutcome, DetachOptions, Payments } from '../../infra/payments/index.js';
 import type { JobRecovery, Jobs } from '../../infra/jobs/index.js';
 import { gymSettingsAccessor } from '../settings/settings.js';
 import { catalogAudit } from './catalog.js';
 import { calculateOneOffInvoice } from './invoicing/index.js';
 import { createInvoiceTransitions, type BillingInvoiceTransitions } from './transitions/index.js';
 import { releaseActionNeeded, releaseCheckout, type ChargeRunner } from './runner/index.js';
-import { createReconciliation } from './runner/reconciliation.js';
+import { checkoutReviewAction, createReconciliation } from './runner/reconciliation.js';
+import { processingIntents } from './transitions/bank.js';
 import { hasOpenDispute } from './disputes-refunds.js';
 import { chargeSkipped, paymentConflict, paymentUnavailable } from './payments.errors.js';
 import { createPaymentMutations } from './payments.mutations.js';
@@ -63,6 +64,7 @@ export async function requireCollectible(tx: Transaction, invoice: typeof invoic
   if ((await tx.select({ id: paymentAttempts.id }).from(paymentAttempts).where(and(eq(paymentAttempts.invoiceId, invoice.id),
     inArray(paymentAttempts.status, ['pending', 'processing', 'requires_action']))).limit(1)).length) chargeSkipped('pending_attempt');
 }
+const notProcessing = () => paymentConflict('not_processing', 'Invoice is no longer waiting for a bank debit');
 const presentAttempt = (r: typeof paymentAttempts.$inferSelect) => c.paymentAttemptSchema.parse({
   id: r.id, createdAt: r.createdAt.toISOString(), invoiceId: r.invoiceId, attemptNumber: r.attemptNumber,
   amountCents: r.amountCents, currency: r.currency, status: r.status, declineCode: r.declineCode,
@@ -149,6 +151,39 @@ export function createPaymentService(options: PaymentOptions = {}) {
           { needsReview: true }, { needsReview: false });
         return presentInvoice(changed);
       });
+    },
+    /**
+     * Stops waiting for a Checkout bank debit the sweep flagged for checking. Stripe is read after the click, and only an
+     * intent it reports failed or cancelled releases the invoice; nothing is written to Stripe.
+     */
+    async releaseProcessing(context: MutationContext, invoiceId: string) {
+      const paymentIntentId = await scope(context.gymId, async tx => {
+        const row = await loadInvoice(tx, invoiceId, true);
+        if (row.status !== 'processing') notProcessing();
+        const latest = (await processingIntents(tx, row.id)).at(-1);
+        const findings = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
+          eq(auditEvents.targetType, 'invoice'), eq(auditEvents.targetId, row.id), eq(auditEvents.action, checkoutReviewAction)));
+        if (latest === undefined || !findings.some(event => (event.after as { paymentIntentId?: unknown } | null)?.paymentIntentId === latest))
+          paymentConflict('debit_not_stuck', 'This bank debit has not been flagged for checking');
+        return latest;
+      });
+      let current: ChargeOutcome;
+      try { current = await (await providerFor(context.gymId)).findCharge({ kind: 'charge', id: paymentIntentId }); }
+      catch { return paymentUnavailable('payments_unavailable', 'Stripe is unavailable; check the bank debit again shortly'); }
+      if (current.status === 'unknown') paymentUnavailable('payments_unavailable', 'Stripe is unavailable; check the bank debit again shortly');
+      if (current.id !== paymentIntentId || current.metadata.gymId !== context.gymId
+        || (current.metadata.invoiceId !== undefined && current.metadata.invoiceId !== invoiceId))
+        paymentConflict('debit_mismatch', "Stripe's record of this debit does not match this invoice");
+      switch (current.status) {
+        case 'succeeded': return paymentConflict('debit_paid', 'Stripe reports this debit as paid');
+        case 'processing': return paymentConflict('debit_processing', 'Stripe reports this debit as still processing');
+        case 'pending': case 'action_required': return paymentConflict('debit_open', 'Stripe still shows this debit as open');
+        case 'failed': break;
+        default: { const exhaustive: never = current; return exhaustive; }
+      }
+      const released = await transitions.releaseProcessing(context, { invoiceId, paymentIntentId, code: current.code });
+      if (released.outcome === 'ignored') notProcessing();
+      return scope(context.gymId, async tx => presentInvoice(await loadInvoice(tx, invoiceId)));
     },
     async listInvoices(gymId: string, input: unknown) {
       const q = c.invoiceListQuerySchema.parse(input);

@@ -22,7 +22,7 @@ import {
 } from './billing/memberships.js';
 import {
   createOneOffInvoiceRequestSchema, invoiceDetailResponseSchema, invoiceListQuerySchema,
-  invoiceListResponseSchema, invoiceResponseSchema, releaseInvoiceHoldContract, voidInvoiceContract,
+  invoiceListResponseSchema, invoiceResponseSchema, releaseInvoiceHoldContract, releaseInvoiceProcessingContract, voidInvoiceContract,
 } from './billing/invoices.js';
 import {
   billingEmptyRequestSchema, billingPaymentListQuerySchema, billingPaymentMethodListQuerySchema,
@@ -87,6 +87,7 @@ export const billingContracts = {
   updateClassPack: { method: 'patch', path: '/api/billing/class-packs/{packId}', permission: catalog,
     params: billingClassPackParamsSchema, body: updateClassPackRequestSchema, response: classPackResponseSchema, successStatus: 200 },
   releaseInvoiceHold: releaseInvoiceHoldContract,
+  releaseInvoiceProcessing: releaseInvoiceProcessingContract,
   voidInvoice: voidInvoiceContract,
   listTaxRates: { method: 'get', path: '/api/billing/tax-rates', permission: read,
     query: billingTaxRateListQuerySchema, response: taxRateListResponseSchema, successStatus: 200 },

@@ -78,11 +78,19 @@ invoice's stopped-retry audit also cancels work already queued. `processingFaile
 handles a reported failure or cancellation for the current processing Checkout
 intent. It records the normalized failure code in the invoice audit. For an
 unusable Checkout method it retrieves the failed intent before starting the
-transaction.
+transaction. `releaseProcessing` is the staff release of a flagged Checkout
+debit, called after the payments service read the intent from Stripe as failed
+or cancelled. Under the invoice lock it is ignored unless the invoice is still
+processing that intent; otherwise it makes a cycle or assignment invoice past due
+and any other open, clears the Checkout session fields and records
+`billing.invoice.processing_released` with the intent and failure code. It sends
+no notice, starts no dunning or retries and changes no payment, attempt or saved
+method.
 
 `createInvoiceTransitions({ scope?, clock?, paymentsFor? })` implements the frozen
 `InvoiceTransitions` interface. Its billing-local type, `BillingInvoiceTransitions`,
-widens `processingFailed` to accept every normalized Checkout failure code. Issued invoices are locked for every payment,
+widens `processingFailed` to accept every normalized Checkout failure code and
+adds `releaseProcessing`. Issued invoices are locked for every payment,
 failure and refund. Processor intent/Charge IDs and local payment/refund UUIDs
 deduplicate commands. Reusing an identity with different money or ownership is
 a conflict. Payment timestamps can differ between a runner result and a webhook;

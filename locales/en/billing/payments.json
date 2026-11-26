@@ -107,6 +107,9 @@
   "holdReleased": "Review hold released. The next billing run will charge the saved payment method unless you charge it now or record a payment first.",
   "releaseHoldHelpNoCard": "Confirm collection of this overdue invoice. This household has no active default payment method, so the billing run won’t charge it. Send a pay link or record a payment.",
   "holdReleasedNoCard": "Review hold released. This household has no active default payment method, so the billing run won’t charge it. Send a pay link or record a payment.",
+  "releaseProcessing": "Stop waiting for this bank debit",
+  "releaseProcessingHelp": "Use this when the dashboard counts this invoice under bank debits to check. Stripe is checked first: the invoice can be collected again only if Stripe reports the debit failed or cancelled, so no money can arrive.",
+  "processingReleased": "The invoice no longer waits for the bank debit. Collect it, send a pay link or void it.",
   "remainingRefundable": "Remaining refundable amount",
   "errors.billing_disabled": "Billing is disabled. Enable billing before charging a saved payment method.",
   "errors.not_payable": "This invoice is no longer available for collection. Reload it to see its status.",
@@ -186,5 +189,11 @@
   "voidReason": "Reason",
   "voidHelp": "This invoice will no longer be owed. Dunning and retries stop, and its pay links are revoked. This does not cancel a membership or change future invoices. Give a reason for the audit record.",
   "invoiceVoided": "Invoice voided. No payment is owed on this invoice.",
-  "errors.checkout_reserved": "A Checkout payment is reserved for this invoice. Resolve it before voiding the invoice."
+  "errors.checkout_reserved": "A Checkout payment is reserved for this invoice. Resolve it before voiding the invoice.",
+  "errors.not_processing": "This invoice is no longer waiting for a bank debit. Reload it to see its status.",
+  "errors.debit_not_stuck": "This bank debit hasn't been flagged for checking. Bank debits can take several days; the dashboard counts it if it needs you.",
+  "errors.debit_paid": "Stripe reports this debit as paid, so the invoice keeps waiting for it. Check the payment in the Stripe Dashboard.",
+  "errors.debit_processing": "Stripe reports this debit as still processing. Wait for it to settle.",
+  "errors.debit_open": "Stripe still shows this debit as open. Cancel the payment in the Stripe Dashboard, then try again.",
+  "errors.debit_mismatch": "Stripe's record of this debit doesn't match this invoice. Check it in the Stripe Dashboard."
 }
