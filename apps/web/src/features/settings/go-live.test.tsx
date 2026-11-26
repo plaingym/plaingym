@@ -818,6 +818,105 @@ describe('go-live settings', () => {
     expect(screen.getByRole('alert').textContent).toContain('No working SMS provider');
     expect(document.activeElement).toBe(screen.getByRole('alert'));
   });
+  it('drops a kept reason on a later move made with the focus elsewhere', async () => {
+    const queryClient = await refuse(noProvider);
+    const alert = screen.getByRole('alert');
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    live.mockResolvedValue(reply(200, checklist(4)));
+    moveSettings(queryClient);
+    await waitFor(() => expect(live).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.getByRole('alert').textContent).toBe(noProvider.plain);
+    expect(document.activeElement).toBe(screen.getByRole('alert'));
+    leaveAlert();
+    live.mockResolvedValue(reply(500));
+    moveSettings(queryClient, 5);
+    await waitFor(() => expect(live).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('The request failed. Please try again.'));
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    const text = screen.getByRole('alert').textContent!;
+    expect(text.indexOf('The request failed. Please try again.')).toBe(0);
+    expect(text).not.toContain('No working SMS provider');
+  });
+  it.each([
+    { held: 'does not take the focus when it is elsewhere', leave: true },
+    { held: 'keeps the focus the read alert held', leave: false },
+  ])('brings the plain alert back after a good re-read, and $held', async ({ leave }) => {
+    const { queryClient } = await refuseUnread();
+    if (leave) leaveAlert();
+    else expect(document.activeElement).toBe(screen.getByRole('alert'));
+    live.mockResolvedValue(reply(200, checklist()));
+    await act(() => queryClient.refetchQueries({ type: 'active' }));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(noProvider.plain));
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(document.activeElement).toBe(leave ? document.body : screen.getByRole('alert'));
+  });
+  it('gives a new refusal the focus after the plain alert came back without it', async () => {
+    const { queryClient } = await refuseUnread();
+    leaveAlert();
+    live.mockResolvedValue(reply(200, checklist()));
+    await act(() => queryClient.refetchQueries({ type: 'active' }));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(noProvider.plain));
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Turn on: Member texts' }));
+    await waitFor(() => expect(client.PATCH).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('alert')));
+    expect(screen.getByRole('alert').textContent).toBe(noProvider.plain);
+  });
+  /** Confirms the past-due dates with Stripe unreadable, so the dialog shows why billing stayed off. */
+  const refuseInDialog = async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } });
+    live.mockResolvedValue(reply(200, overdue()));
+    client.PATCH.mockResolvedValue({ response: { ok: false, status: 503 },
+      error: { error: { code: 'unavailable', details: { billingEnabled: ['read_failed'] } } } });
+    const user = userEvent.setup(); start(queryClient);
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
+    const dialog = screen.getByRole('dialog', { name: 'Review past billing dates' });
+    await user.click(within(dialog).getByRole('checkbox'));
+    await user.click(within(dialog).getByRole('button', { name: 'Confirm dates and turn billing on' }));
+    const alert = await within(dialog).findByRole('alert');
+    expect(alert.textContent).toBe('Stripe could not be checked. Try turning billing on again.');
+    await waitFor(() => expect(live).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    return { queryClient, user, dialog, alert };
+  };
+  it('puts the old message away when a press opens the past-due dialog', async () => {
+    const { user, dialog } = await refuseInDialog();
+    const message = 'Stripe could not be checked. Try turning billing on again.';
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.getByRole('alert').textContent).toBe(message);
+    await user.click(screen.getByRole('button', { name: 'Turn on: Billing' }));
+    const reopened = screen.getByRole('dialog', { name: 'Review past billing dates' });
+    expect(within(reopened).queryByRole('alert')).toBeNull();
+    await user.click(within(reopened).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+  it('keeps the reason of a focused past-due dialog alert when the settings move', async () => {
+    const { queryClient, dialog, alert } = await refuseInDialog();
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    live.mockResolvedValue(reply(200, { data: { ...overdue().data, revision: 4 } }));
+    moveSettings(queryClient);
+    await waitFor(() => expect(live).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(screen.getByRole('dialog')).toBe(dialog);
+    expect(within(dialog).getByRole('alert').textContent).toBe('Stripe could not be checked. Try turning billing on again.');
+    expect(document.activeElement).toBe(within(dialog).getByRole('alert'));
+    // Kept only while it is read: a later move made with the focus elsewhere drops it.
+    leaveAlert();
+    live.mockResolvedValue(reply(200, { data: { ...overdue().data, revision: 5 } }));
+    moveSettings(queryClient, 5);
+    await waitFor(() => expect(live).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(screen.getByRole('dialog')).toBe(dialog);
+  });
   it('keeps switches locked through overlapping explicit reloads until the latest read answers', async () => {
     let resolveFirst!: (value: unknown) => void, resolveSecond!: (value: unknown) => void;
     live.mockResolvedValueOnce(reply(200, checklist()))

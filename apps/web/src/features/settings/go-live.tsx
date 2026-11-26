@@ -52,6 +52,10 @@ export function GoLiveSettings() {
   const [readAlertFocus, setReadAlertFocus] = useState(false);
   // The page's alert: the plain one, or the read alert in its place.
   const messageBox = useRef<HTMLDivElement>(null);
+  // The past-due dialog's own alert.
+  const dialogBox = useRef<HTMLDivElement>(null);
+  // Set when the plain alert takes the read alert's place while the focus is elsewhere, so it doesn't take the focus then.
+  const [quietMessage, setQuietMessage] = useState(false), [shownRead, setShownRead] = useState(false);
   const [checking, setChecking] = useState(false), [checkError, setCheckError] = useState<'reconcileError' | 'reconcileTimeout' | 'reconcileBusy' | null>(null);
   // The switches save the gym revision that every section of the page shares, so another section's save doesn't stale them.
   const gym = useGymSettings(), settings = gym.settings;
@@ -94,12 +98,20 @@ export function GoLiveSettings() {
   // failure's own alert.
   const refusedUnread = readFailed && (message === 'changed' || message === 'justSaved' || message === 'timeout'
     || message === 'paymentsReadFailed' || message === 'smsProviderRequired' || message === 'smsProviderReadFailed') ? message : null;
+  // Read while rendering, before the read alert is replaced, so it tells whether that alert held the focus.
+  if (shownRead !== readFailed) {
+    setShownRead(readFailed);
+    if (!readFailed) setQuietMessage(!messageBox.current?.contains(document.activeElement));
+  }
   useEffect(() => { if (behind) void query.refetch(); }, [behind, settings?.revision, query.refetch]);
-  // A reason whose alert holds the focus is kept until the next press or Retry, since the owner is reading it; otherwise
-  // any move of the revision, back too, may have changed what it says.
+  // A reason whose alert holds the focus (the page's, or the past-due dialog's) is kept, since the owner is reading it,
+  // and dated to the revision it was kept at, so a later move made with the focus elsewhere drops it; otherwise any move
+  // of the revision, back too, may have changed what it says.
   useEffect(() => {
     if (messageRevision === null || !settings || settings.revision === messageRevision) return;
-    if (messageBox.current?.contains(document.activeElement)) { setMessageRevision(null); return; }
+    if (messageBox.current?.contains(document.activeElement) || dialogBox.current?.contains(document.activeElement)) {
+      setMessageRevision(settings.revision); return;
+    }
     setMessage(null); setMessageRevision(null);
   }, [messageRevision, settings?.revision]);
   // The past-due dialog is modal, so it closes once no save is running if a read failed (the page's retry is behind it),
@@ -123,7 +135,7 @@ export function GoLiveSettings() {
   function conflict(result: SaveResult, read: number) {
     setConfirmBilling(false); setConfirmedKey(null);
     // A save refused unsent because another section of this page saved first is not another user's change.
-    setMessage(result.refused === 'saved' ? 'justSaved' : 'changed'); setMessageRevision(result.settings.revision);
+    setMessage(result.refused === 'saved' ? 'justSaved' : 'changed'); setQuietMessage(false); setMessageRevision(result.settings.revision);
     if (result.settings.revision <= read) reloadChecklist();
   }
   /** Retries every read that failed: the shared settings, and the checklist. */
@@ -135,6 +147,9 @@ export function GoLiveSettings() {
   async function toggle(name: keyof GoLiveSwitches, confirmDates = false) {
     if (!checklist || !settings || locked) return;
     if (name === 'billingEnabled' && !checklist.billingEnabled && checklist.pastDueMemberships.length && !confirmDates) {
+      // Opening the dialog is a press, so an old message is put away: the dialog never opens showing it, and Cancel
+      // doesn't bring it back.
+      setMessage(null); setMessageRevision(null);
       setConfirmedKey(null); setConfirmBilling(true); return;
     }
     setBusy(true); setMessage(null); setMessageRevision(null);
@@ -147,19 +162,19 @@ export function GoLiveSettings() {
       const details = (result.error as { error?: { details?: { memberSmsEnabled?: unknown; billingEnabled?: unknown } } } | undefined)?.error?.details;
       const smsReasons = details?.memberSmsEnabled, billingReasons = details?.billingEnabled;
       if (result.status === 409 && Array.isArray(smsReasons) && smsReasons.includes('no_provider')) {
-        setMessage('smsProviderRequired'); setMessageRevision(result.settings.revision); reloadChecklist(); return;
+        setMessage('smsProviderRequired'); setQuietMessage(false); setMessageRevision(result.settings.revision); reloadChecklist(); return;
       }
       if (result.status === 409) { conflict(result, checklist.revision); return; }
       if (result.status === 503 && Array.isArray(smsReasons) && smsReasons.includes('read_failed')) {
-        setMessage('smsProviderReadFailed'); setMessageRevision(result.settings.revision); reloadChecklist(); return;
+        setMessage('smsProviderReadFailed'); setQuietMessage(false); setMessageRevision(result.settings.revision); reloadChecklist(); return;
       }
       if (result.status === 503 && Array.isArray(billingReasons) && billingReasons.includes('read_failed')) {
-        setMessage('paymentsReadFailed'); setMessageRevision(result.settings.revision); reloadChecklist(); return;
+        setMessage('paymentsReadFailed'); setQuietMessage(false); setMessageRevision(result.settings.revision); reloadChecklist(); return;
       }
       if (result.status >= 300) throw new Error();
       setChecklist(parseChecklist(result.data));
       setConfirmBilling(false); setConfirmedKey(null);
-    } catch (error) { setMessage(error instanceof SaveTimeoutError ? 'timeout' : 'error'); setMessageRevision(null); }
+    } catch (error) { setMessage(error instanceof SaveTimeoutError ? 'timeout' : 'error'); setQuietMessage(false); setMessageRevision(null); }
     finally { setBusy(false); }
   }
   async function rerunReconciliation() {
@@ -185,7 +200,7 @@ export function GoLiveSettings() {
     <p className="text-sm text-muted-foreground">{label('help')}</p>
     {readFailed ? <Alert ref={messageBox} variant="error" focusOnReveal={readAlertFocus}>{refusedUnread && label(refusedUnread + 'Unread') + ' '}{label('error')}
       <Button variant="outline" className="mt-3 sm:ml-3 sm:mt-0" onClick={retry}>{label('retry')}</Button></Alert>
-      : message && <Alert ref={messageBox} variant="error" focusOnReveal={!confirmBilling && !leftBehind}>{label(message)}</Alert>}
+      : message && <Alert ref={messageBox} variant="error" focusOnReveal={!confirmBilling && !leftBehind && !quietMessage}>{label(message)}</Alert>}
     {!checklist || !settings ? (busy || gym.loading) && <LoadingState label={label('loading')}/> : <>
       <ul className="space-y-3">{(['billingEnabled', 'memberEmailsEnabled', 'memberSmsEnabled'] as const).map((name) => {
         const on = checklist[name], action = label(on ? 'turnOff' : 'turnOn');
@@ -232,7 +247,7 @@ export function GoLiveSettings() {
             onChange={(event) => setConfirmedKey(event.target.checked ? pastDueKey : null)}/>
           {/* The dialog is modal: the page's alert behind it can't be seen, so a failed save shows here too. */}
           {(message === 'error' || message === 'paymentsReadFailed' || message === 'timeout')
-            && <Alert variant="error" focusOnReveal>{label(message)}</Alert>}
+            && <Alert ref={dialogBox} variant="error" focusOnReveal>{label(message)}</Alert>}
           <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
             <Button variant="outline" disabled={busy} onClick={() => setConfirmBilling(false)}>{label('cancel')}</Button>
             <Button disabled={locked || !confirmed} onClick={() => void toggle('billingEnabled', true)}>{label('confirmEnable')}</Button>
