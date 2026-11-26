@@ -37,6 +37,14 @@ households never loses track of who is signed in; a long name truncates, the sco
 The **Account** menu has sign-out and a per-browser theme choice (**System**, **Light**, or **Dark**).
 With a household open, **Your account** in the menu opens `/portal/account` (`features/account`), where the login
 sees its sign-in email, methods and households and changes its email.
+The header stays at the top while the page scrolls. On a phone, **Menu** opens the navigation as a panel under it, with
+the page behind locked; **Menu** again, a link, Escape, another navigation or a wider window closes it. On a wider screen
+the navigation stays beside the page, under the header, and scrolls on its own.
+While the browser says it is offline, reads wait instead of failing, and an open portal shows a banner saying so. A
+section whose code is already loaded shows its loading state when opened then, and its reads run once the browser is
+online again; opening a section for the first time can still need a connection to load its code. Before the portal has
+opened, only the loading state shows, without the banner. The open portal also checks the browser's answer on each
+navigation, in case it changed without an event.
 The portal then reads the authenticated context and renders enabled `portalNav`
 contributions using the current member role. The shared login page handles sign-in.
 The invitation page consumes its fragment token in memory and removes it from

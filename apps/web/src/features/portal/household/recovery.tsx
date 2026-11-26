@@ -41,10 +41,10 @@ export function PortalRecovery({ moving, children }: { moving: boolean; children
   const notice = useMemo(() => !moving && failed ? <ErrorState onRetry={retry} /> : undefined, [moving, failed, retry]);
   const recovery = useMemo(() => ({ suspended: moving, notice, registerDialog }), [moving, notice, registerDialog]);
   return <DialogRecoveryContext.Provider value={recovery}><div>
-    {moving && <div className="sticky top-4 z-10 h-0"><LoadingState /></div>}
+    {moving && <div className="sticky top-[calc(var(--portal-header-height,0px)+1rem)] z-10 h-0"><LoadingState /></div>}
     <div ref={content} className="space-y-6" style={moving ? { visibility: 'hidden' } : undefined} inert={moving}
       onFocusCapture={event => { lastFocused.current = event.target; }}>
-      {notice && !dialogs && <div className="sticky top-4 z-10 bg-background">{notice}</div>}{children}
+      {notice && !dialogs && <div className="sticky top-[calc(var(--portal-header-height,0px)+1rem)] z-10 bg-background">{notice}</div>}{children}
     </div>
   </div></DialogRecoveryContext.Provider>;
 }

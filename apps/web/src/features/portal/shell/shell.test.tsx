@@ -2,7 +2,7 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
-import { focusManager, QueryClientProvider } from '@tanstack/react-query';
+import { focusManager, onlineManager, QueryClientProvider } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router';
 import type { NavigationEntry } from '@plaingym/shared';
@@ -19,6 +19,8 @@ vi.mock('./home.js', () => ({ PortalHome: () => <h1>Welcome to your member porta
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  onlineManager.setOnline(true);
   localStorage.removeItem(themeStorageKey);
   document.documentElement.classList.remove('theme-system', 'light', 'dark');
 });
@@ -505,6 +507,94 @@ it('shows a generic label, never an ID, for a session the server could not name'
   render(<App services={services} router={createAppRouter(createMemoryHistory({ initialEntries: ['/portal'] }))} />);
   await waitFor(() => expect(screen.getByTestId('signed-in-identity').textContent).toBe('Signed in · Account holder'));
   expect(document.body.textContent).not.toContain(ids.user);
+});
+/** The browser's own answer; the returned function changes it, with the event a browser sends unless told to stay quiet. */
+function browserConnection() {
+  let online = true;
+  vi.spyOn(navigator, 'onLine', 'get').mockImplementation(() => online);
+  return (next: boolean, { event = true }: { event?: boolean } = {}) => {
+    online = next;
+    if (event) act(() => { window.dispatchEvent(new Event(next ? 'online' : 'offline')); });
+  };
+}
+it('holds a section\'s reads while offline, under the banner, and runs them once the browser is online', async () => {
+  const connect = browserConnection(), f = portal(ids.first);
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  const answer = f.fetcher.getMockImplementation()!;
+  f.fetcher.mockImplementation(async (path, init) => {
+    if (!navigator.onLine) throw new TypeError('Failed to fetch');
+    return answer(path, init);
+  });
+  connect(false);
+  const before = f.fetcher.mock.calls.length;
+  await act(async () => { await f.router.navigate({ to: '/portal/billing' }); });
+  expect(await screen.findByRole('heading', { name: 'Billing' })).toBeDefined();
+  expect(screen.getByText('You are offline. Connect to the internet to use the member portal.')).toBeDefined();
+  expect(f.fetcher.mock.calls.slice(before).map(([path]) => path).filter(path => path.startsWith('/api/portal/'))).toEqual([]);
+  expect(bodyText()).not.toContain('Something went wrong');
+  expect(screen.queryByRole('alert')).toBeNull();
+  connect(true);
+  await waitFor(() => expect(bodyText()).toContain('11 classes left'));
+  expect(fetchCount(f, '/api/portal/credits')).toBe(1);
+  expect(screen.queryByText(/You are offline/)).toBeNull();
+});
+it.each([false, true])('checks the browser again on navigation when no event announced the change (online: %s)', async next => {
+  const connect = browserConnection(), f = portal(ids.first);
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  if (next) connect(false);
+  connect(next, { event: false });
+  expect(onlineManager.isOnline()).toBe(!next);
+  const before = f.fetcher.mock.calls.length;
+  await act(async () => { await f.router.navigate({ to: '/portal/billing' }); });
+  await waitFor(() => expect(onlineManager.isOnline()).toBe(next));
+  if (next) await waitFor(() => expect(bodyText()).toContain('11 classes left'));
+  else expect(f.fetcher.mock.calls.slice(before).map(([path]) => path).filter(path => path.startsWith('/api/portal/'))).toEqual([]);
+  expect(!!screen.queryByText(/You are offline/)).toBe(!next);
+});
+it('starts offline when the browser already was before anything listened', async () => {
+  const connect = browserConnection();
+  connect(false, { event: false });
+  // The listener is set up again when the next client subscribes, and reads the browser's answer then.
+  const client = createShellQueryClient();
+  client.mount();
+  try { expect(onlineManager.isOnline()).toBe(false); } finally { client.unmount(); }
+});
+it('docks the header and opens the phone menu as a panel under it, closed by a link, Escape or the backdrop', async () => {
+  portal(ids.first);
+  const user = userEvent.setup();
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  const header = screen.getByRole('banner');
+  for (const name of ['sticky', 'top-0', 'z-30', 'bg-background']) expect(header.classList).toContain(name);
+  const menu = screen.getByRole('button', { name: 'Menu' }), nav = screen.getByRole('navigation', { name: 'Member navigation' });
+  const backdrop = () => document.querySelector<HTMLElement>('div[aria-hidden="true"].fixed');
+  const open = async () => {
+    await user.click(menu);
+    expect(menu.getAttribute('aria-expanded')).toBe('true');
+    expect(nav.classList).toContain('fixed');
+    expect(backdrop()).not.toBeNull();
+    expect(document.documentElement.style.overflow).toBe('hidden');
+    expect(document.body.style.overflow).toBe('clip');
+  };
+  const closed = () => {
+    expect(menu.getAttribute('aria-expanded')).toBe('false');
+    expect(nav.classList).not.toContain('fixed');
+    expect(nav.classList).toContain('hidden');
+    expect(backdrop()).toBeNull();
+    expect(document.documentElement.style.overflow).toBe('');
+    expect(document.body.style.overflow).toBe('');
+  };
+  closed();
+  // A link to the page already open changes no pathname, and still closes the menu.
+  await open(); await user.click(within(nav).getByRole('link', { name: 'Home' })); closed();
+  await open(); await user.keyboard('{Escape}'); closed();
+  await open(); await user.click(backdrop()!); closed();
+  await open(); await user.click(menu); closed();
+  await open(); await user.click(within(nav).getByRole('link', { name: 'Billing' }));
+  await screen.findByRole('heading', { name: 'Billing' }); closed();
+  // Leaving the portal layout with the menu open releases the page.
+  await open(); cleanup();
+  expect(document.documentElement.style.overflow).toBe('');
+  expect(document.body.style.overflow).toBe('');
 });
 it('completes a claim from the login-link callback and removes its code from the address bar', async () => {
   vi.stubGlobal('scrollTo', vi.fn());

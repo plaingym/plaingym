@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react';
 import { Link, Navigate, Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
-import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { onlineManager, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { canMember, type NavigationEntry } from '@plaingym/shared';
 import { portalContracts, type PortalContext, type PortalHouseholdChoice as HouseholdChoice } from '@plaingym/shared/contracts';
 import { AccountMenu } from '../../../app/account-menu.js';
@@ -16,6 +16,7 @@ import { PortalRecoveryNotice } from '../household/recovery.js';
 import { Button } from '../../../components/ui/button.js';
 import { Alert } from '../../../components/ui/alert.js';
 import { Select } from '../../../components/ui/select.js';
+import { lockPageScroll } from '../../../components/ui/dialog.js';
 import { ErrorState, LoadingState } from '../../../components/ui/states.js';
 import { Page, PageHeader } from '../../../components/ui/page.js';
 
@@ -106,15 +107,52 @@ export function PortalLayout({ name, person, scope, entries, children, onSignOut
     /** Shows the link to the login's own account page; the household picker has no page to show it in. */
     account?: boolean }) {
   const [open, setOpen] = useState(false), [online, setOnline] = useState(navigator.onLine);
+  const header = useRef<HTMLElement>(null);
+  const [headerHeight, setHeaderHeight] = useState(0), [menuTop, setMenuTop] = useState<number>();
   const pathname = useRouterState({ select: state => state.location.pathname });
+  // The banner and React Query's reads follow the same answer.
+  const update = useCallback(() => { setOnline(navigator.onLine); onlineManager.setOnline(navigator.onLine); }, []);
   useEffect(() => setOpen(false), [pathname]);
+  // Navigation checks again, in case an event was missed. A layout effect runs before the new page's reads start.
+  useLayoutEffect(update, [pathname, update]);
   useEffect(() => {
-    const update = () => setOnline(navigator.onLine), escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false); };
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false); };
     window.addEventListener('online', update); window.addEventListener('offline', update); window.addEventListener('keydown', escape);
     return () => { window.removeEventListener('online', update); window.removeEventListener('offline', update); window.removeEventListener('keydown', escape); };
-  }, []);
-  return <div className="flex min-h-dvh min-w-0 flex-col">
-    <header className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
+  }, [update]);
+  // The desktop sidebar starts below the header, and so does the phone menu, whose top is where the header ends on screen
+  // (below anything above the portal, until the header docks).
+  useLayoutEffect(() => {
+    const measure = () => {
+      setHeaderHeight(header.current?.offsetHeight ?? 0);
+      setMenuTop(open ? header.current?.getBoundingClientRect().bottom : undefined);
+    };
+    measure();
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
+    if (header.current) observer?.observe(header.current);
+    window.addEventListener('resize', measure);
+    return () => { observer?.disconnect(); window.removeEventListener('resize', measure); };
+  }, [open]);
+  // Tailwind's `md` breakpoint shows the sidebar, so the phone menu is no longer open.
+  useEffect(() => {
+    if (!open) return;
+    const desktop = typeof window.matchMedia === 'function' ? window.matchMedia('(min-width: 48rem)') : null;
+    const closeOnDesktop = () => { if (desktop?.matches) setOpen(false); };
+    closeOnDesktop();
+    desktop?.addEventListener('change', closeOnDesktop);
+    return () => desktop?.removeEventListener('change', closeOnDesktop);
+  }, [open]);
+  // The page behind the menu must not scroll. Clip the body instead of hiding it: hiding it makes the body a scroll
+  // container, which breaks the sticky header.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const body = document.body, previousBodyOverflow = body.style.overflow;
+    const release = lockPageScroll();
+    body.style.overflow = 'clip';
+    return () => { body.style.overflow = previousBodyOverflow; release(); };
+  }, [open]);
+  return <div className="flex min-h-dvh min-w-0 flex-col" style={{ '--portal-header-height': `${headerHeight}px` } as CSSProperties}>
+    <header ref={header} className="sticky top-0 z-30 flex flex-wrap items-center gap-2 border-b border-border bg-background px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
       <Button variant="outline" className="md:hidden" aria-expanded={open} aria-controls="portal-navigation" onClick={() => setOpen(!open)}>{text('menu')}</Button>
       {/* Reserve space for the gym and the person before the household switcher. */}
       <div className="min-w-0 flex-1 basis-40">
@@ -128,8 +166,11 @@ export function PortalLayout({ name, person, scope, entries, children, onSignOut
       <AccountMenu accountPath={account ? '/portal/account' : undefined} onSignOut={onSignOut} signingOut={signingOut} />
     </header>
     <div className="flex min-w-0 flex-1 flex-col md:flex-row">
-      <nav id="portal-navigation" aria-label={text('navigation')} className={`${open ? 'block' : 'hidden'} border-b border-border p-3 md:block md:w-56 md:shrink-0 md:border-b-0 md:border-r`}>
-        <ul className="space-y-1">{entries.map(entry => <li key={entry.id}><Link to={entry.href} className="flex min-h-11 items-center rounded-md px-3 hover:bg-muted" activeOptions={{ exact: true }} activeProps={{ className: 'bg-muted font-semibold', 'aria-current': 'page' }}>{t(entry.labelKey)}</Link></li>)}</ul>
+      {open && <div aria-hidden="true" className="fixed inset-x-0 bottom-0 z-10 bg-foreground/20 md:hidden" style={{ top: menuTop }} onClick={() => setOpen(false)} />}
+      <nav id="portal-navigation" aria-label={text('navigation')} style={open ? { top: menuTop } : undefined}
+        className={`${open ? 'fixed inset-x-0 bottom-0 z-20 block overflow-y-auto overscroll-contain bg-background shadow-lg' : 'hidden'} border-b border-border p-3
+          md:sticky md:top-[var(--portal-header-height)] md:bottom-auto md:block md:max-h-[calc(100dvh-var(--portal-header-height))] md:w-56 md:shrink-0 md:self-start md:overflow-y-auto md:border-b-0 md:border-r md:shadow-none`}>
+        <ul className="space-y-1">{entries.map(entry => <li key={entry.id}><Link to={entry.href} onClick={() => setOpen(false)} className="flex min-h-11 items-center rounded-md px-3 hover:bg-muted" activeOptions={{ exact: true }} activeProps={{ className: 'bg-muted font-semibold', 'aria-current': 'page' }}>{t(entry.labelKey)}</Link></li>)}</ul>
       </nav>
       <main id="main-content" className="min-w-0 flex-1 px-4 py-6 sm:px-6">{!online && <Alert>{text('offline')}</Alert>}{children}</main>
     </div>

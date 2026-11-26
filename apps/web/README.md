@@ -16,7 +16,9 @@ still open, the next navigation or kiosk request can check again immediately.
 If reloading leaves the tablet on an older bundle, check-in remains available
 with a notice asking staff to reload the tablet. A fragment-only destination also reloads the bundle;
 removing a fragment replaces the URL before reloading, without leaving a trailing `#`.
-The portal worker keeps no offline page or API cache. Settings → Updates displays
+The portal worker keeps no offline page or API cache. In a loaded app, reads made through
+React Query wait while the browser says it is offline and run once it is online
+(`src/app.tsx`). Settings → Updates displays
 the same identity. See [versioning](../../docs/versioning.md).
 
 ## UI conventions

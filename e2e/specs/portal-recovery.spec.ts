@@ -77,8 +77,12 @@ for (const width of [360, 1280]) {
     expect(bounds).not.toBeNull(); expect(pageBounds).not.toBeNull();
     expect(bounds!.x).toBeCloseTo(pageBounds!.x, 0);
     expect(bounds!.width).toBeCloseTo(pageBounds!.width, 0);
-    expect(bounds!.y).toBeGreaterThanOrEqual(0);
-    expect(bounds!.y).toBeLessThan(40);
+    // The notice docks just below the portal header, which stays at the top while the page scrolls.
+    const headerBounds = await page.getByRole('banner').boundingBox();
+    expect(headerBounds).not.toBeNull();
+    expect(headerBounds!.y).toBe(0);
+    expect(bounds!.y).toBeGreaterThanOrEqual(headerBounds!.height);
+    expect(bounds!.y).toBeLessThan(headerBounds!.height + 40);
     await accessibleLayout(page, info, 'recovery-page');
     await info.attach('recovery-page-' + width, { body: await page.screenshot(), contentType: 'image/png' });
   });
