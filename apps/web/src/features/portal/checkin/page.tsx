@@ -34,6 +34,10 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
   // never drawn there, or given focus.
   const [shown, setShown] = useState(memberId);
   if (shown !== memberId) { setShown(memberId); setError(''); }
+  // A failed creation whose re-read failed too is no longer told once the read's own error replaces the section, so a later
+  // read that answers never brings it back or gives it the focus. It is kept while that re-read is still to answer: the read
+  // in error may be one made while the creation was being sent.
+  if (error === 'createError' && !waiting && code.isError) setError('');
   // The page can move to another member by itself, when a list read drops the chosen one. The confirmation closes then; while
   // a replacement is being sent, it waits for the answer.
   useEffect(() => { if (confirming !== null && confirming !== memberId && !busy) setConfirming(null); }, [confirming, memberId, busy]);

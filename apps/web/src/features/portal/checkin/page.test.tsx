@@ -245,6 +245,57 @@ describe('portal check-in code', () => {
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     expect(document.activeElement).toBe(picker);
   });
+  // A first code's creation fails, and so does the read that follows it.
+  const failedCreationAndRead = async () => {
+    const user = userEvent.setup(); page();
+    await user.selectOptions(await screen.findByLabelText('Code for'), child);
+    const create = await screen.findByRole('button', { name: 'Create a code' });
+    client.regenerateCheckin.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    client.checkinCode.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await user.click(create);
+    await screen.findByText("We couldn't load the check-in code. Please try again.");
+    expect(screen.queryByText(createError)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeDefined();
+    const picker = screen.getByLabelText('Code for');
+    act(() => picker.focus());
+    return picker;
+  };
+  const refocus = () => act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+  it('never brings back a failed creation message when a read after a failed one finds a code', async () => {
+    const picker = await failedCreationAndRead();
+    client.checkinCode.mockImplementationOnce(made);
+    refocus();
+    await screen.findByAltText('QR check-in code for Casey Parent');
+    expect(screen.queryByText(createError)).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(document.activeElement).toBe(picker);
+  });
+  it('never brings back a failed creation message when a read after a failed one finds no code', async () => {
+    const picker = await failedCreationAndRead();
+    client.checkinCode.mockImplementationOnce(async () => answer({ memberId: child, code: null, version: 1, revision: 4 }));
+    refocus();
+    await screen.findByText(inactive);
+    expect(screen.queryByText(createError)).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect((screen.getByRole('button', { name: 'Create a code' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(document.activeElement).toBe(picker);
+  });
+  it('reports a failed creation when the read that failed was made while it was being sent', async () => {
+    let fail!: (cause: unknown) => void;
+    client.regenerateCheckin.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+    const user = userEvent.setup(); page();
+    await user.selectOptions(await screen.findByLabelText('Code for'), child);
+    await user.click(await screen.findByRole('button', { name: 'Create a code' }));
+    client.checkinCode.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    refocus();
+    await screen.findByText("We couldn't load the check-in code. Please try again.");
+    let read!: () => void;
+    client.checkinCode.mockImplementationOnce((memberId: string) => new Promise(resolve => { read = () => resolve(answer({ memberId, code: null, version: 1, revision: 4 })); }));
+    await act(async () => fail(new TypeError('Failed to fetch')));
+    await act(async () => read());
+    await screen.findByText(inactive);
+    expect(screen.getByRole('alert').textContent).toBe(createError);
+  });
   it('keeps the failed replacement message when the re-read answers with the same code', async () => {
     client.regenerateCheckin.mockRejectedValueOnce(new TypeError('Failed to fetch'));
     const user = userEvent.setup(); page();
