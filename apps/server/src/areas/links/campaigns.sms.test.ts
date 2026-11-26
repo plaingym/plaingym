@@ -266,4 +266,17 @@ describe('card campaigns by text', () => {
     expect(f.sms.messages).toHaveLength(0);
     expect((await f.service.recipients(f.gymId, f.campaign.campaign.id)).data[0]).toMatchObject({ smsState: 'not_accepted' });
   });
+  it('texts a household at two phones with one provider resolution', async () => {
+    const f = await fixture(), second = '+12025550125';
+    await db.forGym(f.gymId, tx => tx.update(households).set({ smsNoticesConsentAt: null, smsNoticesConsentSource: null }).where(eq(households.id, f.home.id)));
+    await make('members', f.gymId, { householdId: f.home.id, email: f.home.email, phone: second, phoneE164: second,
+      smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' });
+    const resolve = vi.fn(f.resolver.resolve);
+    f.resolver.resolve = resolve;
+    await f.drain();
+    expect(f.sms.messages.map(message => message.to).sort()).toEqual([f.person.phoneE164, second].sort());
+    expect(resolve).toHaveBeenCalledTimes(1);
+    const rows = await db.forGym(f.gymId, tx => tx.select({ state: smsDeliveries.state }).from(smsDeliveries));
+    expect(rows).toEqual([{ state: 'accepted' }, { state: 'accepted' }]);
+  });
 });

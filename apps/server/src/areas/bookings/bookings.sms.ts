@@ -82,10 +82,15 @@ export function noticeWhen(startsAt: Date, timezone: string) {
     timeZone: timezone, hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
   }).format(startsAt) };
 }
+/**
+ * A class notice text's sender. A job sending many texts passes its own `resolver` (`onceResolver`) and a `settings`
+ * snapshot read at its start; the last check still reads the locked settings for every text.
+ */
 export function noticeSender(options: ClassNoticeDeliveryOptions, gymId: string, group: Awaited<ReturnType<typeof readNoticePhones>>[number],
-  recheck?: MemberSmsOptions['recheck']) {
+  recheck?: MemberSmsOptions['recheck'], run?: { readonly resolver?: SmsResolver; readonly settings?: GymSettingsAccessor }) {
   return new MemberSms({ gymId, kind: 'notices', memberIds: group.memberIds, householdIds: group.consentHouseholdIds,
-    resolver: options.sms!.resolver, settings: options.settings, scope: options.scope, clock: options.clock, ...(recheck ? { recheck } : {}) });
+    resolver: run?.resolver ?? options.sms!.resolver, settings: run?.settings ?? options.settings, scope: options.scope, clock: options.clock,
+    ...(recheck ? { recheck } : {}) });
 }
 
 interface PromotionNotice { memberId: string; session: { name: string; startsAt: Date } }

@@ -6,7 +6,7 @@ import type { Clock } from '@plaingym/shared';
 import { deliveryAcceptance, type Email } from '../../infra/email/index.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { householdNoticePhones } from '../members/sms-recipients.js';
-import { createSmsDeliveries, DeliveryError, MemberSms, type RecordedSmsResult } from '../../infra/sms/index.js';
+import { createSmsDeliveries, DeliveryError, MemberSms, onceResolver, type RecordedSmsResult } from '../../infra/sms/index.js';
 import { smsInFlightMs } from '../../infra/sms/deliveries.js';
 import { escapeLike } from '../../lib/escape-like.js';
 import { checkoutInProgress, credentialDisclosed, deliveryBlocked, deliveryHistory } from './campaigns.attempts.js';
@@ -139,6 +139,8 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
       const groups = await scope(gymId, tx => householdNoticePhones(tx, gymId, [row.householdId]));
       const deliveries = createSmsDeliveries({ scope, clock }), settings = createGymSettingsAccessor({ scope });
       const prefix = `links.campaign.sms:${campaignId}:${row.householdId}:${occurrence}:`;
+      // The household's texts share one provider resolution; each still binds its own consent holders.
+      const resolver = onceResolver(preparedSms.resolver, gymId);
       for (const group of groups) {
         let smsOutcome: 'sent' | 'unknown' | 'not_accepted' = 'not_accepted';
         try {
@@ -155,7 +157,7 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
             ? { status: 'skipped', state: previous.some(text => text.state === 'accepted') ? 'accepted' : 'unknown' }
             : await deliveries.send(gymId, prefix + recipientId,
               new MemberSms({ gymId, memberIds: group.consentMemberIds, householdIds: group.consentHouseholdIds,
-                kind: 'notices', resolver: householdBoundSmsResolver(preparedSms.resolver, scope, gymId, row.householdId, group.consentMemberIds, 'update_card'), settings, scope, clock }),
+                kind: 'notices', resolver: householdBoundSmsResolver(resolver, scope, gymId, row.householdId, group.consentMemberIds, 'update_card'), settings, scope, clock }),
               { to: group.phoneE164, body: `${preparedSms.t('links/service:update_card.subject')}: ${new URL(`/l/${token}`, preparedSms.origin).href} ${preparedSms.t('links/campaigns:smsReplacementNotice')}` });
           if (result.status === 'sent') keepCredential = true;
           smsOutcome = result.status === 'sent' ? 'sent' : result.status === 'skipped' ? result.state === 'accepted' ? 'sent' : 'unknown' : 'not_accepted';

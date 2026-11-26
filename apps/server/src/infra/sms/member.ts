@@ -79,6 +79,24 @@ export class SmsRecheckBusy extends Error {
   constructor() { super('SMS recipient rows are busy'); this.name = 'SmsRecheckBusy'; }
 }
 const recheckPauseMs = 50;
+/**
+ * A resolver for one job that sends several texts for one gym: the first `resolve` call's result, a provider or a
+ * rejection, is reused by every later call, so the credentials are read and decrypted once per job. Each text still
+ * runs its own switch, consent and cap checks. Resolving another gym throws; `status` and `configured` pass through.
+ */
+export function onceResolver(resolver: SmsResolver, gymId: string): SmsResolver {
+  let resolved: Promise<Awaited<ReturnType<SmsResolver['resolve']>>> | undefined;
+  return {
+    async resolve(id) {
+      if (id !== gymId) throw new Error('SMS gym mismatch');
+      // A cached result still refuses a caller inside a transaction, as the plain resolver does.
+      assertNoTransaction('sms.resolve');
+      return resolved ??= resolver.resolve(gymId);
+    },
+    status: id => resolver.status(id),
+    configured: id => resolver.configured(id),
+  };
+}
 export interface MemberSmsOptions {
   readonly gymId: string; readonly memberIds: readonly string[]; readonly householdIds: readonly string[];
   readonly kind: 'notices' | 'announcements'; readonly resolver: SmsResolver; readonly settings: GymSettingsAccessor;

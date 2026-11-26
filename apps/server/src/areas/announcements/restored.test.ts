@@ -13,7 +13,7 @@ import { setLogSink } from '../../core/log.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { FakeEmail } from '../../infra/email/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
-import { createSmsPhoneDigest, DeliveryError, FakeSms, SmsRecheckBusy } from '../../infra/sms/index.js';
+import { createSmsPhoneDigest, DeliveryError, FakeSms, SmsRecheckBusy, type Sms } from '../../infra/sms/index.js';
 import { createScheduleService } from '../schedule/schedule.js';
 import { createCancellationNotice } from './cancellation.js';
 import { forgetErasedAddressDigests } from './erasure.js';
@@ -44,7 +44,7 @@ async function fixture(scope: typeof db.forGym = db.forGym) {
     await factory('classBookings', gymId, { sessionId: session.id, memberId: member.id, bookedBy: user.id, status,
       waitlistPosition: status === 'waitlisted' ? 1 : null });
   const email = new FakeEmail(), sms = new FakeSms(), jobs = new FakeJobs(clock);
-  const resolver = { resolve: vi.fn(async (id: string) => { expect(isInTransaction()).toBe(false); return { gymId: id, name: 'Cedar Gym', sms }; }),
+  const resolver = { resolve: vi.fn(async (id: string) => { expect(isInTransaction()).toBe(false); return { gymId: id, name: 'Cedar Gym', sms: sms as Sms }; }),
     status: async () => ({ source: 'gym' as const, unreadable: false }), configured: async () => true };
   const options = { scope: db.forGym, clock, jobs, origin: async () => 'https://gym.example.test', demoMode: false,
     mailer: vi.fn(async () => { expect(isInTransaction()).toBe(false); return email; }), sms: { resolver, phoneDigest: digest } };
@@ -446,13 +446,15 @@ it('records whom a narrowed restore text named, so a first member it left out is
   await db.forGym(f.gymId, tx => tx.update(members).set({ householdId: otherHome.id }).where(eq(members.id, first!.id)));
   await consentedPhone(f, first!.id, phone);
   const payload = { sessionId: f.session.id, memberIds: [f.mia.id, f.noa.id, f.ari.id], round: 1, channels: ['sms'] as const };
-  // The shared phone sorts first: its first member drops out while it resolves; then Ari's text fails.
+  // The shared phone sorts first: its first member drops out while the run resolves; then Ari's text fails.
+  let sends = 0;
+  const failingSecond: Sms = { verifyAccount: () => f.sms.verifyAccount(), async sendSms(message) {
+    if (++sends === 2) throw new DeliveryError('not_accepted', 'Provider unavailable');
+    return f.sms.sendSms(message);
+  } };
   f.resolver.resolve.mockImplementationOnce(async id => {
     await consentedPhone(f, first!.id, null);
-    return { gymId: id, name: 'Cedar Gym', sms: f.sms };
-  }).mockImplementationOnce(async id => {
-    f.sms.respondNext(new DeliveryError('not_accepted', 'Provider unavailable'));
-    return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+    return { gymId: id, name: 'Cedar Gym', sms: failingSecond };
   });
   await expect(f.notice.run(payload, f.gymId)).rejects.toThrow();
   expect(f.sms.messages.map(message => message.to)).toEqual([phone]);

@@ -2,7 +2,7 @@
 import { and, asc, eq, inArray, isNotNull, isNull, like, ne, or } from 'drizzle-orm';
 import { classBookings, classSessions, members, smsDeliveries, type Transaction } from '@plaingym/db';
 import { AppError, createTranslator } from '@plaingym/shared';
-import { createSmsDeliveries, DeliveryError, type MemberSmsOptions, type Sms } from '../../infra/sms/index.js';
+import { createSmsDeliveries, DeliveryError, onceResolver, type MemberSmsOptions, type Sms } from '../../infra/sms/index.js';
 import { smsInFlightMs } from '../../infra/sms/deliveries.js';
 import { holdGymSettings, readGymSettings } from '../settings/settings.js';
 import { memberNoticePhones } from '../members/sms-recipients.js';
@@ -39,8 +39,12 @@ export function createRestoreSms(options: ClassNoticeDeliveryOptions) {
   return {
     async run(notice: Restore, gymId: string) {
       if (!options.sms) return;
-      const { memberSmsEnabled, timezone } = await settings.get(gymId);
+      const snapshot = await settings.get(gymId);
+      const { memberSmsEnabled, timezone } = snapshot;
       if (!memberSmsEnabled) return;
+      // Every text of this run reuses one provider resolution and this settings snapshot. Each text's last check
+      // still reads the locked settings, so a switch turned off mid-run stops the remaining texts.
+      const run = { resolver: onceResolver(options.sms.resolver, gymId), settings: { get: async () => snapshot } };
       const groups = await scope(gymId, async tx => {
         const [session] = await tx.select().from(classSessions).where(eq(classSessions.id, notice.sessionId));
         return restoreHolds(session, notice.round, clock.now()) ? phones(tx, gymId, notice, notice.memberIds) : [];
@@ -90,7 +94,7 @@ export function createRestoreSms(options: ClassNoticeDeliveryOptions) {
           if (!reservation) continue;
           let covered: readonly string[] | undefined;
           const guarded: Sms = {
-            verifyAccount: () => noticeSender(options, gymId, group).verifyAccount(),
+            verifyAccount: () => noticeSender(options, gymId, group, undefined, run).verifyAccount(),
             async sendSms() {
               const reread = await scope(gymId, async tx => {
                 const [session] = await tx.select().from(classSessions).where(eq(classSessions.id, notice.sessionId));
@@ -134,7 +138,7 @@ export function createRestoreSms(options: ClassNoticeDeliveryOptions) {
                 };
               };
               // Format all texts in the job's timezone. The last check locks the send settings and recipient.
-              const result = await noticeSender(options, gymId, current, lastCheck).sendSms({ to: current.phoneE164, body: bodyFor(selfNotice(current)) });
+              const result = await noticeSender(options, gymId, current, lastCheck, run).sendSms({ to: current.phoneE164, body: bodyFor(selfNotice(current)) });
               if (moved) throw new DeliveryError('not_accepted', 'Restore text recipients moved');
               return result;
             },

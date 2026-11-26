@@ -47,7 +47,7 @@ export { TwilioSms } from './twilio.js';
 export { smsDeadlineMs } from './constants.js';
 export type { TwilioConfig } from './twilio.js';
 export { OutboxSms } from './outbox.js';
-export { MemberSms, SmsRecheckBusy } from './member.js';
+export { MemberSms, onceResolver, SmsRecheckBusy } from './member.js';
 export type { MemberSmsOptions, SmsRecheckSettings, SmsSuppression } from './member.js';
 export { createSmsDeliveries, createSmsPhoneDigest } from './deliveries.js';
 export type { SmsDeliveries, SmsDeliveryState, SmsReservation, RecordedSmsResult } from './deliveries.js';

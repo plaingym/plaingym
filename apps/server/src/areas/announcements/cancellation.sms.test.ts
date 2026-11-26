@@ -13,7 +13,8 @@ import { setLogSink } from '../../core/log.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { FakeEmail } from '../../infra/email/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
-import { createSmsPhoneDigest, DeliveryError, FakeSms, SmsRecheckBusy } from '../../infra/sms/index.js';
+import { createSmsPhoneDigest, DeliveryError, FakeSms, SmsRecheckBusy, type Sms } from '../../infra/sms/index.js';
+import { createGymSettingsAccessor } from '../settings/settings.js';
 import { smsInFlightMs } from '../../infra/sms/deliveries.js';
 import { createScheduleService } from '../schedule/schedule.js';
 import { createMembersService } from '../members/members.js';
@@ -23,6 +24,7 @@ import { cancellationNoticeJob, cancellationNoticeJobPayload, createCancellation
 import { forgetErasedAddressDigests } from './erasure.js';
 import { createAnnouncementJobs } from './jobs.js';
 import { announcementRecoveryJob, createAnnouncementRecoveryJobs } from './recovery.js';
+import { createCancellationSms } from './cancellation.sms.js';
 
 const db = useTestDatabase(), factory = createFactories(db), phone = '+12025550123';
 const digest = createSmsPhoneDigest('class-notice-test');
@@ -42,7 +44,7 @@ async function fixture(recurring = false, channels?: ('email' | 'sms')[]) {
   await factory('classSessionPrograms', gymId, { sessionId: session.id });
   for (const child of children) await factory('classBookings', gymId, { memberId: child.id, sessionId: session.id, bookedBy: user.id });
   const email = new FakeEmail(), sms = new FakeSms(), jobs = new FakeJobs(clock);
-  const resolver = { resolve: vi.fn(async (id: string) => { expect(isInTransaction()).toBe(false); return { gymId: id, name: 'Cedar Gym', sms }; }),
+  const resolver = { resolve: vi.fn(async (id: string) => { expect(isInTransaction()).toBe(false); return { gymId: id, name: 'Cedar Gym', sms: sms as Sms }; }),
     status: async () => ({ source: 'gym' as const, unreadable: false }), configured: async () => true };
   const options = { scope: db.forGym, clock, jobs, mailer: async () => email, origin: async () => 'https://gym.example.test',
     demoMode: false, sms: { resolver, phoneDigest: digest } };
@@ -638,13 +640,15 @@ it('records whom a narrowed text named, so a first member it left out is texted 
   await db.forGym(f.gymId, tx => tx.update(members).set({ householdId: otherHome.id }).where(eq(members.id, first!.id)));
   await consentedPhone(f, first!.id, phone); await consentedPhone(f, ari.id, aris);
   const notice = { ...f.payload, memberIds: [first!.id, second!.id, ari.id], channels: ['sms'] as const };
-  // The shared phone sorts first: its first member drops out while it resolves; then the second phone's text fails.
+  // The shared phone sorts first: its first member drops out while the run resolves; then the second phone's text fails.
+  let sends = 0;
+  const failingSecond: Sms = { verifyAccount: () => f.sms.verifyAccount(), async sendSms(message) {
+    if (++sends === 2) throw new DeliveryError('not_accepted', 'Provider unavailable');
+    return f.sms.sendSms(message);
+  } };
   f.resolver.resolve.mockImplementationOnce(async id => {
     await consentedPhone(f, first!.id, null);
-    return { gymId: id, name: 'Cedar Gym', sms: f.sms };
-  }).mockImplementationOnce(async id => {
-    f.sms.respondNext(new DeliveryError('not_accepted', 'Provider unavailable'));
-    return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+    return { gymId: id, name: 'Cedar Gym', sms: failingSecond };
   });
   await expect(f.notice.run(notice, f.gymId)).rejects.toThrow();
   expect(f.sms.messages.map(message => message.to)).toEqual([phone]);
@@ -661,4 +665,67 @@ it('records whom a narrowed text named, so a first member it left out is texted 
   await db.forGym(f.gymId, tx => forgetErasedAddressDigests(tx, f.gymId, first!.id));
   const rows = await db.forGym(f.gymId, tx => tx.select().from(smsDeliveries));
   expect(rows.filter(row => row.key.startsWith(prefix + first!.id)).map(row => row.commandDigest)).toEqual([null, null]);
+});
+
+/** A cancelled class with `count` members, each at their own consented phone, sent by a run with counted dependencies. */
+async function crowd(count: number, sms?: (f: Awaited<ReturnType<typeof fixture>>) => Sms) {
+  const f = await fixture(), home = await factory('households', f.gymId);
+  const people = [];
+  for (let index = 0; index < count; index++) {
+    const own = `+120255501${String(30 + index)}`;
+    people.push(await factory('members', f.gymId, { householdId: home.id, firstName: `Member${index}`, phone: own, phoneE164: own,
+      smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }));
+  }
+  const provider = sms?.(f) ?? f.sms;
+  const resolver = { resolve: vi.fn(async (id: string) => ({ gymId: id, name: 'Cedar Gym', sms: provider })),
+    status: async () => ({ source: 'gym' as const, unreadable: false }), configured: async () => true };
+  const settings = createGymSettingsAccessor({ scope: db.forGym }), get = vi.spyOn(settings, 'get');
+  const sender = createCancellationSms({ scope: db.forGym, clock: f.clock, settings, sms: { resolver, phoneDigest: digest } });
+  const notice = { sessionId: f.session.id, memberIds: people.map(person => person.id) };
+  return { ...f, people, resolver, get, run: () => sender.run(notice, f.gymId) };
+}
+
+it('resolves the provider and reads the gym settings once for a run texting 30 phones, each text with its own checks', async () => {
+  const f = await crowd(30);
+  await f.run();
+  expect(f.sms.messages).toHaveLength(30);
+  expect(new Set(f.sms.messages.map(message => message.to)).size).toBe(30);
+  expect(f.resolver.resolve).toHaveBeenCalledTimes(1);
+  expect(f.resolver.resolve).toHaveBeenCalledWith(f.gymId);
+  // The last checks read the locked settings in their own transactions, not through the accessor.
+  expect(f.get).toHaveBeenCalledTimes(1);
+  expect(await usage(f.gymId)).toMatchObject([{ sent: 30 }]);
+  const rows = await db.forGym(f.gymId, tx => tx.select({ state: smsDeliveries.state }).from(smsDeliveries));
+  expect(rows).toHaveLength(30); expect(rows.every(row => row.state === 'accepted')).toBe(true);
+});
+
+it('stops a run\'s remaining texts through the last check when texts are turned off after the run starts', async () => {
+  const log = vi.fn(), previousSink = setLogSink(log);
+  try {
+    const f = await crowd(5, g => ({
+      verifyAccount: () => g.sms.verifyAccount(),
+      async sendSms(message) {
+        const result = await g.sms.sendSms(message);
+        await db.forGym(g.gymId, tx => tx.update(gyms).set({ memberSmsEnabled: false }).where(eq(gyms.id, g.gymId)));
+        return result;
+      },
+    }));
+    await f.run();
+    expect(f.sms.messages).toHaveLength(1);
+    expect(f.resolver.resolve).toHaveBeenCalledTimes(1);
+    expect(f.get).toHaveBeenCalledTimes(1);
+    expect(log.mock.calls.filter(([line]) => String(line).includes('"reason":"disabled"'))).toHaveLength(4);
+    expect(await usage(f.gymId)).toMatchObject([{ sent: 1 }]);
+  } finally { setLogSink(previousSink); }
+});
+
+it('fails every text of a run whose provider resolution rejects, resolving once and throwing the first failure', async () => {
+  const f = await crowd(3), failure = new DeliveryError('not_accepted', 'SMS provider unreadable');
+  f.resolver.resolve.mockImplementation(async () => { throw failure; });
+  await expect(f.run()).rejects.toMatchObject({ acceptance: 'not_accepted' });
+  expect(f.resolver.resolve).toHaveBeenCalledTimes(1);
+  expect(f.sms.messages).toHaveLength(0);
+  expect(await usage(f.gymId)).toEqual([]);
+  const rows = await db.forGym(f.gymId, tx => tx.select({ state: smsDeliveries.state }).from(smsDeliveries));
+  expect(rows).toHaveLength(3); expect(rows.every(row => row.state === 'not_accepted')).toBe(true);
 });

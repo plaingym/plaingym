@@ -74,6 +74,19 @@ preparation deadline leaves time for another try. One still busy after that is
 a `no_consent` suppression. The waitlist promotion, staff booking cancellation,
 class cancellation and class restore texts use it.
 
+`MemberSms` resolves the provider and reads the settings for every text. A job
+that sends several texts for one gym wraps its resolver in
+`onceResolver(resolver, gymId)`: the first `resolve` call's result, a provider or
+a rejection, is reused for the rest of the job, so the credentials are read and
+decrypted once (a rejection fails each later text the same way, and nothing is
+sent); resolving another gym throws, and `status` and `configured` pass through.
+The class cancellation and restore texts also pass each `MemberSms` the settings
+read once at the start of the run; their last check still reads the locked
+settings for every text, so texts switched off mid-run stop the remaining ones
+(`disabled`). A link campaign's texts to one household share one resolution and
+keep the live settings. Every text still runs its own consent checks, last check
+and cap slot. Single-text senders keep the plain resolver.
+
 Suppression reasons are `disabled`, `no_provider`, `no_consent`, `phone_changed`
 and `cap_reached`; logs hold event, gym ID, member IDs and reason only. A 21610
 clears both member consents and household notices consent at that E.164 number

@@ -16,7 +16,7 @@ import type { SmsResolver } from '../../areas/settings/sms.js';
 import { createMembersService } from '../../areas/members/members.js';
 import { readSmsOptedOut } from '../../areas/members/sms-opt-out.js';
 import { FakeJobs } from '../jobs/index.js';
-import { createSmsDeliveries, FakeSms, MemberSms, SmsDeliveryError, SmsRecheckBusy, type MemberSmsOptions, type Sms } from './index.js';
+import { createSmsDeliveries, FakeSms, MemberSms, onceResolver, SmsDeliveryError, SmsRecheckBusy, type MemberSmsOptions, type Sms } from './index.js';
 import { smsInFlightMs } from './deliveries.js';
 import { smsDeadlineMs } from './constants.js';
 
@@ -652,4 +652,36 @@ it('refuses a foreign member, household, provider or settings projection', async
   await expect(f.sender({ resolver: { ...other.resolver, async resolve() { return { gymId: other.gymId, name: 'Other', sms: other.sms }; } } }).sendSms(message)).rejects.toMatchObject({ acceptance: 'not_accepted' });
   await expect(f.sender({ settings: { get: () => other.settings.get(other.gymId) } }).sendSms(message)).rejects.toMatchObject({ acceptance: 'not_accepted' });
   expect(f.sms.messages).toEqual([]); expect(other.sms.messages).toEqual([]);
+});
+it('resolves a job\'s provider once, reusing its value or its rejection, and only for the job\'s gym', async () => {
+  const gymId = uuidv7(), otherGym = uuidv7(), sms = new FakeSms();
+  const counting = (resolve: SmsResolver['resolve']) => {
+    const calls: string[] = [];
+    const resolver: SmsResolver = {
+      async resolve(id) { calls.push(id); return resolve(id); },
+      async status() { return { source: 'gym', unreadable: false }; }, async configured() { return true; },
+    };
+    return { resolver, calls };
+  };
+  const found = counting(async id => ({ gymId: id, name: 'Gym', sms }));
+  const once = onceResolver(found.resolver, gymId);
+  const values = await Promise.all([once.resolve(gymId), once.resolve(gymId), once.resolve(gymId)]);
+  expect(found.calls).toEqual([gymId]);
+  expect(values[1]).toBe(values[0]); expect(values[2]).toBe(values[0]);
+  expect(values[0]).toMatchObject({ gymId, name: 'Gym' });
+  await expect(once.resolve(otherGym)).rejects.toThrow('SMS gym mismatch');
+  expect(found.calls).toEqual([gymId]);
+  expect(await once.configured(gymId)).toBe(true);
+  expect(await once.status(gymId)).toEqual({ source: 'gym', unreadable: false });
+  // A cached resolution still refuses a caller inside a transaction.
+  await make('gyms', gymId);
+  await expect(scope(gymId, () => once.resolve(gymId))).rejects.toThrow();
+  expect(found.calls).toEqual([gymId]);
+
+  const failure = new Error('SMS config unreadable');
+  const failing = counting(async () => { throw failure; });
+  const failingOnce = onceResolver(failing.resolver, gymId);
+  for (let attempt = 0; attempt < 3; attempt++) await expect(failingOnce.resolve(gymId)).rejects.toBe(failure);
+  expect(failing.calls).toEqual([gymId]);
+  await expect(failingOnce.resolve(otherGym)).rejects.toThrow('SMS gym mismatch');
 });
