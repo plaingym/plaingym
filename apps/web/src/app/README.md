@@ -26,7 +26,7 @@ check (`lib/api.sources.test.ts`) fails when a client outside `lib/api.ts` build
 from a non-literal status or calls `reportApiRefusal` outside the listed callers.
 Mapping an error does not open the demo copy prompt.
 
-The mobile-first admin shell (`admin-shell.tsx`) has a sticky two-line header with the gym name, then who is signed in (name and roles, the name truncating before the roles). Navigation opens in a menu on phones and moves focus into it. Escape, a press outside, or navigating closes it. Escape returns focus to the button. Navigation sits in a sticky sidebar from `md`, and the shell supplies the page gutters around `main`. Pages follow the UI conventions in [`../../README.md`](../../README.md).
+The mobile-first admin shell (`admin-shell.tsx`) has a sticky two-line header with the gym name, then who is signed in (name and roles, the name truncating before the roles). Navigation opens in a menu on phones and moves focus into it. The menu is as tall as its links, up to the space below the header, and a backdrop fills any room left below it. Escape, a press outside, or navigating closes it. Escape returns focus to the button. The page's scroll padding keeps a control focused while scrolling up from hiding under the header. Navigation sits in a sticky sidebar from `md`, and the shell supplies the page gutters around `main`. Pages follow the UI conventions in [`../../README.md`](../../README.md).
 
 The admin and member portal share `account-menu.tsx`. In the admin, **Your account** opens `/admin/account` from `features/account`. The **Account** menu also provides sign-out and a **System**, **Light**, or **Dark** choice saved in the browser.
 

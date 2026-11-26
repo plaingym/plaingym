@@ -4,7 +4,7 @@ import { Link, Navigate, Outlet, useNavigate, useRouterState } from '@tanstack/r
 import { onlineManager, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { canMember, type NavigationEntry } from '@plaingym/shared';
 import { portalContracts, type PortalContext, type PortalHouseholdChoice as HouseholdChoice } from '@plaingym/shared/contracts';
-import { AccountMenu } from '../../../app/account-menu.js';
+import { AccountMenu, useDismiss } from '../../../app/account-menu.js';
 import { bootstrapKey, useBootstrap, useShellServices } from '../../../app/context.js';
 import { sessionName } from '../../../app/identity.js';
 import { createRegistries } from '../../../lib/registries.js';
@@ -107,8 +107,13 @@ export function PortalLayout({ name, person, scope, entries, children, onSignOut
     /** Shows the link to the login's own account page; the household picker has no page to show it in. */
     account?: boolean }) {
   const [open, setOpen] = useState(false), [online, setOnline] = useState(navigator.onLine);
-  const header = useRef<HTMLElement>(null);
+  const root = useRef<HTMLDivElement>(null), header = useRef<HTMLElement>(null);
+  const menuButton = useRef<HTMLButtonElement>(null), nav = useRef<HTMLElement>(null), backdrop = useRef<HTMLDivElement>(null);
   const [headerHeight, setHeaderHeight] = useState(0), [menuTop, setMenuTop] = useState<number>();
+  // The backdrop closes the menu on its click: gone on the press instead, a tap would land on the page under it.
+  const [refs] = useState(() => [menuButton, nav, backdrop]);
+  const [close] = useState(() => () => setOpen(false));
+  useDismiss(open, close, refs, menuButton);
   const pathname = useRouterState({ select: state => state.location.pathname });
   // The banner and React Query's reads follow the same answer.
   const update = useCallback(() => { setOnline(navigator.onLine); onlineManager.setOnline(navigator.onLine); }, []);
@@ -116,23 +121,31 @@ export function PortalLayout({ name, person, scope, entries, children, onSignOut
   // Navigation checks again, in case an event was missed. A layout effect runs before the new page's reads start.
   useLayoutEffect(update, [pathname, update]);
   useEffect(() => {
-    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false); };
-    window.addEventListener('online', update); window.addEventListener('offline', update); window.addEventListener('keydown', escape);
-    return () => { window.removeEventListener('online', update); window.removeEventListener('offline', update); window.removeEventListener('keydown', escape); };
+    window.addEventListener('online', update); window.addEventListener('offline', update);
+    return () => { window.removeEventListener('online', update); window.removeEventListener('offline', update); };
   }, [update]);
-  // The desktop sidebar starts below the header, and so does the phone menu, whose top is where the header ends on screen
-  // (below anything above the portal, until the header docks).
+  // The desktop sidebar starts below the docked header. The phone menu starts where the header ends on screen (below
+  // anything above the portal, until the header docks). Content above the portal moves it, so the page is observed too.
   useLayoutEffect(() => {
     const measure = () => {
-      setHeaderHeight(header.current?.offsetHeight ?? 0);
-      setMenuTop(open ? header.current?.getBoundingClientRect().bottom : undefined);
+      const element = header.current;
+      // On a short screen the header scrolls away with the page, so it takes no room at the top.
+      setHeaderHeight(element && getComputedStyle(element).position === 'sticky' ? element.offsetHeight : 0);
+      setMenuTop(open ? Math.max(0, element?.getBoundingClientRect().bottom ?? 0) : undefined);
     };
     measure();
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
-    if (header.current) observer?.observe(header.current);
+    for (const element of [header.current, root.current, document.body]) if (element) observer?.observe(element);
     window.addEventListener('resize', measure);
-    return () => { observer?.disconnect(); window.removeEventListener('resize', measure); };
+    if (open) window.addEventListener('scroll', measure, { passive: true });
+    return () => { observer?.disconnect(); window.removeEventListener('resize', measure); window.removeEventListener('scroll', measure); };
   }, [open]);
+  // A control focused while scrolling up stops below the docked header instead of under it.
+  useLayoutEffect(() => {
+    const style = document.documentElement.style, previous = style.scrollPaddingTop;
+    if (headerHeight > 0) style.scrollPaddingTop = `${headerHeight + 8}px`;
+    return () => { style.scrollPaddingTop = previous; };
+  }, [headerHeight]);
   // Tailwind's `md` breakpoint shows the sidebar, so the phone menu is no longer open.
   useEffect(() => {
     if (!open) return;
@@ -151,9 +164,11 @@ export function PortalLayout({ name, person, scope, entries, children, onSignOut
     body.style.overflow = 'clip';
     return () => { body.style.overflow = previousBodyOverflow; release(); };
   }, [open]);
-  return <div className="flex min-h-dvh min-w-0 flex-col" style={{ '--portal-header-height': `${headerHeight}px` } as CSSProperties}>
-    <header ref={header} className="sticky top-0 z-30 flex flex-wrap items-center gap-2 border-b border-border bg-background px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
-      <Button variant="outline" className="md:hidden" aria-expanded={open} aria-controls="portal-navigation" onClick={() => setOpen(!open)}>{text('menu')}</Button>
+  useEffect(() => { if (open) nav.current?.querySelector<HTMLElement>('a')?.focus(); }, [open]);
+  return <div ref={root} className="flex min-h-dvh min-w-0 flex-col" style={{ '--portal-header-height': `${headerHeight}px` } as CSSProperties}>
+    {/* A docked header would take too much of a screen 500 px tall or less (a phone in landscape). */}
+    <header ref={header} className="sticky top-0 z-30 flex flex-wrap items-center gap-2 border-b border-border bg-background px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))] [@media(max-height:500px)]:static">
+      <Button ref={menuButton} variant="outline" className="md:hidden" aria-expanded={open} aria-controls="portal-navigation" onClick={() => setOpen(!open)}>{text('menu')}</Button>
       {/* Reserve space for the gym and the person before the household switcher. */}
       <div className="min-w-0 flex-1 basis-40">
         <p className="truncate font-semibold" title={name}>{name}</p>
@@ -166,15 +181,29 @@ export function PortalLayout({ name, person, scope, entries, children, onSignOut
       <AccountMenu accountPath={account ? '/portal/account' : undefined} onSignOut={onSignOut} signingOut={signingOut} />
     </header>
     <div className="flex min-w-0 flex-1 flex-col md:flex-row">
-      {open && <div aria-hidden="true" className="fixed inset-x-0 bottom-0 z-10 bg-foreground/20 md:hidden" style={{ top: menuTop }} onClick={() => setOpen(false)} />}
-      <nav id="portal-navigation" aria-label={text('navigation')} style={open ? { top: menuTop } : undefined}
-        className={`${open ? 'fixed inset-x-0 bottom-0 z-20 block overflow-y-auto overscroll-contain bg-background shadow-lg' : 'hidden'} border-b border-border p-3
+      {open && <div ref={backdrop} aria-hidden="true" className="fixed inset-x-0 bottom-0 z-10 bg-foreground/20 md:hidden" style={{ top: menuTop }} onClick={close} />}
+      {/* The open panel is as tall as its links, up to the space below the header, so the backdrop shows below it. */}
+      <nav ref={nav} id="portal-navigation" aria-label={text('navigation')} style={open && menuTop !== undefined ? { top: menuTop, maxHeight: `calc(100dvh - ${menuTop}px)` } : undefined}
+        className={`${open ? 'fixed inset-x-0 z-20 block overflow-y-auto overscroll-contain bg-background shadow-lg' : 'hidden'} border-b border-border p-3
           md:sticky md:top-[var(--portal-header-height)] md:bottom-auto md:block md:max-h-[calc(100dvh-var(--portal-header-height))] md:w-56 md:shrink-0 md:self-start md:overflow-y-auto md:border-b-0 md:border-r md:shadow-none`}>
         <ul className="space-y-1">{entries.map(entry => <li key={entry.id}><Link to={entry.href} onClick={() => setOpen(false)} className="flex min-h-11 items-center rounded-md px-3 hover:bg-muted" activeOptions={{ exact: true }} activeProps={{ className: 'bg-muted font-semibold', 'aria-current': 'page' }}>{t(entry.labelKey)}</Link></li>)}</ul>
       </nav>
-      <main id="main-content" className="min-w-0 flex-1 px-4 py-6 sm:px-6">{!online && <Alert>{text('offline')}</Alert>}{children}</main>
+      {/* The page the open panel covers takes no focus or presses. */}
+      <main id="main-content" inert={open} className="min-w-0 flex-1 px-4 py-6 sm:px-6">{!online && <Alert>{text('offline')}</Alert>}{children}</main>
     </div>
   </div>;
+}
+/** The loading state before the portal can open. Its reads wait while the browser says it is offline, so it says why. */
+function PortalLoading() {
+  const [online, setOnline] = useState(navigator.onLine);
+  useEffect(() => {
+    const update = () => setOnline(navigator.onLine);
+    // The browser may have changed between the first render and this listener.
+    update();
+    window.addEventListener('online', update); window.addEventListener('offline', update);
+    return () => { window.removeEventListener('online', update); window.removeEventListener('offline', update); };
+  }, []);
+  return <>{!online && <div className="px-4 pt-6 sm:px-6"><Alert>{text('offline')}</Alert></div>}<LoadingState /></>;
 }
 function AuthenticatedPortal() {
   const bootstrap = useBootstrap(), services = useShellServices(), cache = useQueryClient(), navigate = useNavigate();
@@ -252,7 +281,7 @@ function AuthenticatedPortal() {
     return () => manifest.remove();
   }, []);
   // A refetch that fails keeps the portal up: only a first load with nothing to show is an error page.
-  if (!bootstrap.data) return bootstrap.isError ? <ErrorState onRetry={() => void bootstrap.refetch()} /> : <LoadingState />;
+  if (!bootstrap.data) return bootstrap.isError ? <ErrorState onRetry={() => void bootstrap.refetch()} /> : <PortalLoading />;
   if (session?.roles.length) return <Navigate to="/admin" replace />;
   if (!session?.member) return <Navigate to="/login" replace />;
   // While the refetch after a change is pending, and after one that failed, the name is the previous household's (or an older
@@ -262,7 +291,7 @@ function AuthenticatedPortal() {
   const changed = loaded && settledFor !== undefined && settledFor !== current;
   const person = sessionName(bootstrap.isRefetchError || nameStale || changed ? { displayName: null } : session);
   const failed = (retry: () => void) => <Page><ErrorState message={text('failed')} onRetry={retry} /><Button onClick={() => signOut.mutate()} disabled={signOut.isPending}>{text('signOut')}</Button></Page>;
-  if (households.isPending || choose.isPending) return <LoadingState />;
+  if (households.isPending || choose.isPending) return <PortalLoading />;
   // A list load that fails while the portal has lists to show keeps it up, like the bootstrap: every key follows the lists.
   if (households.isError && !households.data) return failed(() => void households.refetch());
   if (!current) {
@@ -273,7 +302,7 @@ function AuthenticatedPortal() {
   }
   // A context read that failed waits only for the lists being read again; if they still name this household, it is an error.
   if (!context.data) {
-    if (context.isPending || households.isFetching) return <LoadingState />;
+    if (context.isPending || households.isFetching) return <PortalLoading />;
     return failed(() => { void households.refetch(); void context.refetch(); });
   }
   const switcher = households.data.households.length > 1

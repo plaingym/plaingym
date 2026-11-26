@@ -37,14 +37,19 @@ households never loses track of who is signed in; a long name truncates, the sco
 The **Account** menu has sign-out and a per-browser theme choice (**System**, **Light**, or **Dark**).
 With a household open, **Your account** in the menu opens `/portal/account` (`features/account`), where the login
 sees its sign-in email, methods and households and changes its email.
-The header stays at the top while the page scrolls. On a phone, **Menu** opens the navigation as a panel under it, with
-the page behind locked; **Menu** again, a link, Escape, another navigation or a wider window closes it. On a wider screen
-the navigation stays beside the page, under the header, and scrolls on its own.
-While the browser says it is offline, reads wait instead of failing, and an open portal shows a banner saying so. A
+The header stays at the top while the page scrolls, and the page's scroll padding keeps a control focused while
+scrolling up from hiding under it. On a screen 500 px tall or less (a phone in landscape) it scrolls away with the page
+instead. On a phone, **Menu** opens the navigation as a panel under the header, with the page behind locked and inert,
+and focus on the first link. The panel is as tall as its links, up to the space below the header, and a backdrop fills
+any room left below it. **Menu** again, a link, Escape (which returns focus to **Menu**), a press outside the panel, another navigation or a
+wider window closes it. On a wider screen the navigation stays beside the page, under the header, and scrolls on its own.
+While the browser says it is offline, the portal's reads wait instead of failing, and a banner says so (before the
+portal has opened, above the loading state). A
 section whose code is already loaded shows its loading state when opened then, and its reads run once the browser is
-online again; opening a section for the first time can still need a connection to load its code. Before the portal has
-opened, only the loading state shows, without the banner. The open portal also checks the browser's answer on each
-navigation, in case it changed without an event.
+online again; opening a section for the first time can still need a connection to load its code.
+Writes don't wait: one made while offline is sent at once and isn't sent later, and fails if the server can't be reached. The open portal also
+checks the browser's answer on each navigation, in case it changed without an event. The claim page (`/portal/claim`)
+has no banner, so its reads don't wait.
 The portal then reads the authenticated context and renders enabled `portalNav`
 contributions using the current member role. The shared login page handles sign-in.
 The invitation page consumes its fragment token in memory and removes it from

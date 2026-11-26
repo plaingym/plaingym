@@ -6,8 +6,8 @@ import { focusManager, onlineManager, QueryClientProvider } from '@tanstack/reac
 import userEvent from '@testing-library/user-event';
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router';
 import type { NavigationEntry } from '@plaingym/shared';
-import { App, createShellQueryClient } from '../../../app.js';
-import { ShellServicesContext } from '../../../app/context.js';
+import { App, createShellQueryClient, readsWait } from '../../../app.js';
+import { bootstrapKey, ShellServicesContext } from '../../../app/context.js';
 import { createAppRouter } from '../../../app/router.js';
 import type { ShellServices } from '../../../app/services.js';
 import { themeStorageKey } from '../../../lib/theme.js';
@@ -21,6 +21,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   onlineManager.setOnline(true);
+  window.history.replaceState(null, '', '/');
   localStorage.removeItem(themeStorageKey);
   document.documentElement.classList.remove('theme-system', 'light', 'dark');
 });
@@ -69,8 +70,8 @@ const gate = (): Gate => {
  * With `hold`, every bootstrap load after the first waits for its own gate (in `bootstrapGates`, in order); with `holdHouseholds`,
  * so does every household list load after the first. `release()` settles every gate, now and later.
  */
-function portal(initial: string | null, { path = '/portal', hold = false, holdHouseholds = false, holdCredits = false, holdInvoices = false }:
-  { path?: string; hold?: boolean; holdHouseholds?: boolean; holdCredits?: boolean; holdInvoices?: boolean } = {}) {
+function portal(initial: string | null, { path = '/portal', hold = false, holdHouseholds = false, holdCredits = false, holdInvoices = false, app = false }:
+  { path?: string; hold?: boolean; holdHouseholds?: boolean; holdCredits?: boolean; holdInvoices?: boolean; app?: boolean } = {}) {
   vi.stubGlobal('scrollTo', vi.fn());
   let current = initial, released = false;
   const bootstrapGates: Gate[] = [], householdGates: Gate[] = [], creditGates: Gate[] = [], invoiceGates: Gate[] = [];
@@ -115,9 +116,11 @@ function portal(initial: string | null, { path = '/portal', hold = false, holdHo
     return { gym: { id: ids.user, name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session, login: { password: true, magicLink: false } };
   }, signOut: vi.fn(async () => undefined), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
   const router = createAppRouter(createMemoryHistory({ initialEntries: [path] }));
-  // The same providers `App` supplies, with the cache in hand so a test can do what garbage collection does.
+  // The same providers `App` supplies, with the cache in hand so a test can do what garbage collection does. With `app`,
+  // `App` itself renders (with a cache of its own), so its router listener runs too.
   const cache = createShellQueryClient();
-  render(<QueryClientProvider client={cache}><ShellServicesContext.Provider value={services}><RouterProvider router={router} /></ShellServicesContext.Provider></QueryClientProvider>);
+  render(app ? <App services={services} router={router} />
+    : <QueryClientProvider client={cache}><ShellServicesContext.Provider value={services}><RouterProvider router={router} /></ShellServicesContext.Provider></QueryClientProvider>);
   const selections = () => fetcher.mock.calls.filter(([path]) => path === '/api/portal/households/current').map(([, init]) => JSON.parse(String(init!.body)));
   // What the server does on its own, such as falling back to another household when a link is revoked.
   const serverOpens = (householdId: string | null) => { current = householdId; };
@@ -508,6 +511,9 @@ it('shows a generic label, never an ID, for a session the server could not name'
   await waitFor(() => expect(screen.getByTestId('signed-in-identity').textContent).toBe('Signed in · Account holder'));
   expect(document.body.textContent).not.toContain(ids.user);
 });
+const offlineBanner = 'You are offline. Connect to the internet to use the member portal.';
+/** The loading state's own text; the offline banner is a status too, so the role doesn't tell them apart. */
+const loading = () => document.querySelector('[data-loading]')?.textContent;
 /** The browser's own answer; the returned function changes it, with the event a browser sends unless told to stay quiet. */
 function browserConnection() {
   let online = true;
@@ -551,13 +557,233 @@ it.each([false, true])('checks the browser again on navigation when no event ann
   else expect(f.fetcher.mock.calls.slice(before).map(([path]) => path).filter(path => path.startsWith('/api/portal/'))).toEqual([]);
   expect(!!screen.queryByText(/You are offline/)).toBe(!next);
 });
-it('starts offline when the browser already was before anything listened', async () => {
+it.each([['/portal', false], ['/admin', true], ['/portal/claim', true]])('starts offline when the browser already was before anything listened, in the portal only (%s)', async (path, online) => {
   const connect = browserConnection();
+  window.history.replaceState(null, '', path);
   connect(false, { event: false });
   // The listener is set up again when the next client subscribes, and reads the browser's answer then.
   const client = createShellQueryClient();
   client.mount();
-  try { expect(onlineManager.isOnline()).toBe(false); } finally { client.unmount(); }
+  try { expect(onlineManager.isOnline()).toBe(online); } finally { client.unmount(); }
+});
+it('holds reads only for paths in the portal, and only while offline', () => {
+  const connect = browserConnection(), inside = ['/portal', '/portal/', '/portal/billing', '/portal?tab=1', '/portal#top', '/portal/claims'];
+  for (const path of inside) expect(readsWait(path), path).toBe(false);
+  connect(false);
+  for (const path of inside) expect(readsWait(path), path).toBe(true);
+  for (const path of ['/', '/portals', '/admin', '/admin/portal', '/login', '/setup', '/kiosk', '/portal/claim', '/portal/claim/', '/portal/claim?claim=code', '/portal/claim#token'])
+    expect(readsWait(path), path).toBe(false);
+});
+it('answers again on each navigation between the portal and other pages while offline', async () => {
+  vi.stubGlobal('scrollTo', vi.fn()); vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: { mode: 'disabled' } })));
+  const connect = browserConnection();
+  window.history.replaceState(null, '', '/portal');
+  connect(false);
+  // A bootstrap that never answers keeps each page from redirecting away on what it would learn.
+  const services: ShellServices = { loadBootstrap: () => new Promise(() => undefined), signOut: vi.fn(), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
+  const router = createAppRouter(createMemoryHistory({ initialEntries: ['/portal'] }));
+  render(<App services={services} router={router} />);
+  await waitFor(() => expect(loading()).toContain('Loading'));
+  expect(onlineManager.isOnline()).toBe(false);
+  await act(() => router.navigate({ to: '/admin' }));
+  expect(onlineManager.isOnline()).toBe(true);
+  await act(() => router.navigate({ to: '/portal' }));
+  expect(onlineManager.isOnline()).toBe(false);
+});
+it('lets other pages read after leaving an open portal while offline', async () => {
+  const connect = browserConnection();
+  window.history.replaceState(null, '', '/portal');
+  const f = portal(ids.first, { app: true });
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  connect(false);
+  expect(onlineManager.isOnline()).toBe(false);
+  await act(() => f.router.navigate({ to: '/kiosk' }));
+  expect(screen.queryByRole('button', { name: 'Menu' })).toBeNull();
+  expect(onlineManager.isOnline()).toBe(true);
+});
+it('fails a household switch made while offline at once, under the header and banner, and never sends it later', async () => {
+  const connect = browserConnection(), f = portal(ids.first), user = userEvent.setup();
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  const answer = f.fetcher.getMockImplementation()!;
+  f.fetcher.mockImplementation(async (path, init) => {
+    if (!navigator.onLine) throw new TypeError('Failed to fetch');
+    return answer(path, init);
+  });
+  connect(false);
+  await user.selectOptions(screen.getByRole('combobox'), ids.second);
+  expect(await screen.findByText(/couldn’t open that household/)).toBeDefined();
+  expect(f.selections()).toEqual([{ householdId: ids.second }]);
+  expect(screen.getByRole('banner').textContent).toContain('Test Gym');
+  expect(screen.getByText(offlineBanner)).toBeDefined();
+  expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe(ids.first);
+  connect(true);
+  await waitFor(() => expect(screen.queryByText(offlineBanner)).toBeNull());
+  await act(() => f.cache.resumePausedMutations());
+  expect(f.selections()).toHaveLength(1);
+  expect(f.server()).toBe(ids.first);
+});
+it('runs a write at once while offline and never sends it again once online', async () => {
+  const connect = browserConnection();
+  window.history.replaceState(null, '', '/portal');
+  connect(false);
+  const client = createShellQueryClient();
+  client.mount();
+  try {
+    expect(onlineManager.isOnline()).toBe(false);
+    const mutationFn = vi.fn(async () => { throw new TypeError('Failed to fetch'); });
+    const mutation = client.getMutationCache().build(client, { mutationFn });
+    const outcome = mutation.execute(undefined).catch((error: unknown) => error);
+    await waitFor(() => expect(mutationFn).toHaveBeenCalledOnce());
+    expect(await outcome).toBeInstanceOf(TypeError);
+    expect(mutation.state).toMatchObject({ status: 'error', isPaused: false });
+    connect(true);
+    expect(onlineManager.isOnline()).toBe(true);
+    await client.resumePausedMutations();
+    expect(mutationFn).toHaveBeenCalledOnce();
+  } finally { client.unmount(); }
+});
+it('shows the offline banner with the loading state when the portal opens offline, and opens once online', async () => {
+  const connect = browserConnection();
+  window.history.replaceState(null, '', '/portal');
+  connect(false);
+  const f = portal(ids.first);
+  expect(await screen.findByText(offlineBanner)).toBeDefined();
+  expect(loading()).toContain('Loading');
+  // The gym's name isn't loaded yet, so there's no header.
+  expect(screen.queryByRole('banner')).toBeNull();
+  expect(f.cache.getQueryState(bootstrapKey)).toMatchObject({ status: 'pending', fetchStatus: 'paused' });
+  expect(f.fetcher.mock.calls.filter(([path]) => path.startsWith('/api/portal/'))).toEqual([]);
+  connect(true);
+  expect(await screen.findByRole('heading', { name: 'Welcome to your member portal' })).toBeDefined();
+  expect(screen.queryByText(offlineBanner)).toBeNull();
+});
+it.each(['/api/portal/households', '/api/portal/context'])('shows the offline banner while %s is still loading', async held => {
+  const connect = browserConnection(), f = portal(ids.first);
+  const answer = f.fetcher.getMockImplementation()!;
+  f.fetcher.mockImplementation((path, init) => path === held ? new Promise<Response>(() => undefined) : answer(path, init));
+  await waitFor(() => expect(fetchCount(f, held)).toBe(1));
+  expect(loading()).toContain('Loading');
+  expect(screen.queryByText(offlineBanner)).toBeNull();
+  connect(false);
+  expect(screen.getByText(offlineBanner)).toBeDefined();
+  expect(loading()).toContain('Loading');
+  expect(screen.queryByRole('banner')).toBeNull();
+  connect(true);
+  expect(screen.queryByText(offlineBanner)).toBeNull();
+});
+const portalMenu = async () => {
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  return { menu: screen.getByRole('button', { name: 'Menu' }), nav: screen.getByRole('navigation', { name: 'Member navigation' }),
+    backdrop: () => document.querySelector<HTMLElement>('div[aria-hidden="true"].fixed') };
+};
+it('moves focus into the open phone menu, back to Menu on Escape, and keeps the page behind it inert', async () => {
+  portal(ids.first);
+  const user = userEvent.setup(), { menu, nav } = await portalMenu(), main = screen.getByRole('main');
+  expect(main.hasAttribute('inert')).toBe(false);
+  await user.click(menu);
+  expect(document.activeElement).toBe(within(nav).getAllByRole('link')[0]);
+  expect(main.hasAttribute('inert')).toBe(true);
+  await user.keyboard('{Escape}');
+  expect(menu.getAttribute('aria-expanded')).toBe('false');
+  expect(document.activeElement).toBe(menu);
+  expect(main.hasAttribute('inert')).toBe(false);
+  // A press inside the panel keeps it open; one outside the panel and the button closes it.
+  await user.click(menu);
+  act(() => { within(nav).getByRole('list').dispatchEvent(new Event('pointerdown', { bubbles: true })); });
+  expect(menu.getAttribute('aria-expanded')).toBe('true');
+  act(() => { within(screen.getByRole('banner')).getByText('Test Gym').dispatchEvent(new Event('pointerdown', { bubbles: true })); });
+  expect(menu.getAttribute('aria-expanded')).toBe('false');
+  expect(main.hasAttribute('inert')).toBe(false);
+  // The backdrop stays through the press and closes on the click, so a tap can't land on the page under it.
+  await user.click(menu);
+  const backdrop = document.querySelector<HTMLElement>('div[aria-hidden="true"].fixed')!;
+  act(() => { backdrop.dispatchEvent(new Event('pointerdown', { bubbles: true })); });
+  expect(backdrop.isConnected).toBe(true);
+  expect(menu.getAttribute('aria-expanded')).toBe('true');
+  await user.click(backdrop);
+  expect(menu.getAttribute('aria-expanded')).toBe('false');
+});
+it('keeps the open phone menu under the header as the page around it resizes or scrolls', async () => {
+  const observers = new Set<{ callback: ResizeObserverCallback; observed: Set<Element> }>();
+  vi.stubGlobal('ResizeObserver', class {
+    private own: { callback: ResizeObserverCallback; observed: Set<Element> };
+    constructor(callback: ResizeObserverCallback) { this.own = { callback, observed: new Set() }; observers.add(this.own); }
+    observe(element: Element) { this.own.observed.add(element); }
+    unobserve(element: Element) { this.own.observed.delete(element); }
+    disconnect() { observers.delete(this.own); }
+  });
+  portal(ids.first);
+  const user = userEvent.setup(), { menu, nav, backdrop } = await portalMenu(), header = screen.getByRole('banner');
+  let bottom = 121;
+  vi.spyOn(header, 'getBoundingClientRect').mockImplementation(() => ({ bottom }) as DOMRect);
+  await user.click(menu);
+  const observed = () => [...observers].flatMap(observer => [...observer.observed]);
+  expect(observed()).toContain(document.body);
+  expect(observed()).toContain(header);
+  expect(observed()).toContain(header.parentElement);
+  const at = (top: number) => {
+    expect(nav.style.top).toBe(`${top}px`);
+    expect(backdrop()!.style.top).toBe(`${top}px`);
+    expect(nav.style.maxHeight).toBe(`calc(100dvh - ${top}px)`);
+  };
+  at(121);
+  expect(nav.classList).not.toContain('bottom-0');
+  expect(backdrop()!.classList).toContain('bottom-0');
+  // Content above the portal grows.
+  bottom = 161;
+  act(() => { for (const observer of observers) observer.callback([], {} as ResizeObserver); });
+  at(161);
+  // The page moves without anything resizing.
+  bottom = 121;
+  act(() => { window.dispatchEvent(new Event('scroll')); });
+  at(121);
+  bottom = 161;
+  act(() => { window.dispatchEvent(new Event('scroll')); });
+  at(161);
+  // A header scrolled off the screen leaves the panel at the top, not above it.
+  bottom = -40;
+  act(() => { window.dispatchEvent(new Event('scroll')); });
+  at(0);
+  await user.keyboard('{Escape}');
+  expect(nav.getAttribute('style') ?? '').toBe('');
+  const measured = vi.mocked(header.getBoundingClientRect).mock.calls.length;
+  act(() => { window.dispatchEvent(new Event('scroll')); });
+  expect(header.getBoundingClientRect).toHaveBeenCalledTimes(measured);
+});
+it('pads the page\'s scrolling by the docked header\'s height, and not once the header scrolls away', async () => {
+  const offsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get() { return this.tagName === 'HEADER' ? 121 : 0; } });
+  let position = 'sticky';
+  const computed = window.getComputedStyle.bind(window);
+  vi.spyOn(window, 'getComputedStyle').mockImplementation((element, pseudo) => {
+    const style = computed(element, pseudo);
+    if (element.tagName === 'HEADER') Object.defineProperty(style, 'position', { configurable: true, get: () => position });
+    return style;
+  });
+  const root = document.documentElement.style;
+  root.scrollPaddingTop = '3px';
+  try {
+    portal(ids.first);
+    await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+    const header = screen.getByRole('banner'), height = () => header.parentElement!.style.getPropertyValue('--portal-header-height');
+    expect(header.classList).toContain('[@media(max-height:500px)]:static');
+    await waitFor(() => expect(root.scrollPaddingTop).toBe('129px'));
+    expect(height()).toBe('121px');
+    // A screen turned to landscape stops docking the header.
+    position = 'static';
+    act(() => { window.dispatchEvent(new Event('resize')); });
+    expect(root.scrollPaddingTop).toBe('3px');
+    expect(height()).toBe('0px');
+    position = 'sticky';
+    act(() => { window.dispatchEvent(new Event('resize')); });
+    expect(root.scrollPaddingTop).toBe('129px');
+    cleanup();
+    expect(root.scrollPaddingTop).toBe('3px');
+  } finally {
+    root.scrollPaddingTop = '';
+    if (offsetHeight) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', offsetHeight);
+    else delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetHeight;
+  }
 });
 it('docks the header and opens the phone menu as a panel under it, closed by a link, Escape or the backdrop', async () => {
   portal(ids.first);

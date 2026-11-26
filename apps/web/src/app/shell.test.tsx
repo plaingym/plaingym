@@ -408,6 +408,52 @@ describe('admin shell', () => {
       else delete (window as unknown as Record<string, unknown>).scrollY;
     }
   });
+  it('pads the page\'s scrolling by the docked header while mounted, and restores it after', async () => {
+    const root = document.documentElement.style;
+    root.scrollPaddingTop = '3px';
+    try {
+      const state = { ...anonymous, session: { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false } };
+      const route = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });
+      render(<RouterProvider router={createRouter({ routeTree: route, history: createMemoryHistory({ initialEntries: ['/'] }) })} />);
+      await screen.findByRole('navigation', { name: 'Gym navigation' });
+      expect(root.scrollPaddingTop).toBe('calc(var(--spacing-header) + 0.5rem)');
+      cleanup();
+      expect(root.scrollPaddingTop).toBe('3px');
+    } finally {
+      root.scrollPaddingTop = '';
+    }
+  });
+  it('sizes the open phone menu to its links, up to the space below its top, so the backdrop shows', async () => {
+    const offsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get() { return this.tagName === 'HEADER' ? 56 : 0; } });
+    try {
+      const state = { ...anonymous, session: { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false } };
+      const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });
+      render(<RouterProvider router={createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) })} />);
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole('button', { name: 'Menu' }));
+      const navigation = screen.getByRole('navigation', { name: 'Gym navigation' });
+      await waitFor(() => expect(navigation.style.top).toBe('56px'));
+      expect(navigation.style.maxHeight).toBe('calc(100dvh - 56px)');
+      expect(navigation.classList).toContain('fixed');
+      expect(navigation.classList).not.toContain('bottom-0');
+      expect(navigation.classList).not.toContain('max-h-dvh');
+      const backdrop = document.querySelector<HTMLElement>('div[aria-hidden="true"].fixed')!;
+      expect(backdrop.classList).toContain('bottom-0');
+      expect(backdrop.style.top).toBe('56px');
+      // The backdrop stays through the press and closes on the click, so a tap can't land on the page under it.
+      const menu = screen.getByRole('button', { name: 'Close menu' });
+      fireEvent.pointerDown(backdrop);
+      expect(backdrop.isConnected).toBe(true);
+      expect(menu.getAttribute('aria-expanded')).toBe('true');
+      await user.click(backdrop);
+      expect(menu.getAttribute('aria-expanded')).toBe('false');
+      expect(navigation.getAttribute('style') ?? '').toBe('');
+    } finally {
+      if (offsetHeight) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', offsetHeight);
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetHeight;
+    }
+  });
   it('locks the page behind the phone menu without a scrollbar shift and releases it on Escape, outside press and navigation', async () => {
     const width = window.innerWidth;
     const clientWidth = Object.getOwnPropertyDescriptor(document.documentElement, 'clientWidth');

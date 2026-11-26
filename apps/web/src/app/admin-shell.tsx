@@ -42,7 +42,9 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
   const menuButton = useRef<HTMLButtonElement>(null), nav = useRef<HTMLElement>(null);
   const header = useRef<HTMLElement>(null), content = useRef<HTMLDivElement>(null), bannerRef = useRef<HTMLDivElement>(null);
   const [menuTop, setMenuTop] = useState<number>();
-  const [refs] = useState(() => [menuButton, nav]);
+  const backdrop = useRef<HTMLDivElement>(null);
+  // The backdrop closes the menu on its click: gone on the press instead, a tap would land on the page under it.
+  const [refs] = useState(() => [menuButton, nav, backdrop]);
   const [close] = useState(() => () => setOpen(false));
   useDismiss(open, close, refs, menuButton);
   // Any navigation, including back/forward, closes the phone menu.
@@ -97,6 +99,12 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
     };
   }, [open]);
   useEffect(() => { if (open) nav.current?.querySelector<HTMLElement>('a')?.focus(); }, [open]);
+  // A control focused while scrolling up stops below the docked header instead of under it.
+  useLayoutEffect(() => {
+    const style = document.documentElement.style, previous = style.scrollPaddingTop;
+    style.scrollPaddingTop = 'calc(var(--spacing-header) + 0.5rem)';
+    return () => { style.scrollPaddingTop = previous; };
+  }, []);
   const entriesToShow = visibleAdminNavigation(entries.map((entry) => entry.id === 'adminNav.outbox'
     ? { ...entry, enabled: demo } : entry), state.session, state.gym.enabledModules);
   return <div className="flex flex-1 flex-col">
@@ -123,10 +131,11 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
     </header>
     <div ref={bannerRef}>{banner}</div>
     <div ref={content} className="relative flex flex-1">
-      {open && <div aria-hidden="true" style={menuTop === undefined ? undefined : { top: menuTop }} className="fixed inset-x-0 bottom-0 z-10 bg-foreground/20 md:hidden" />}
+      {open && <div ref={backdrop} aria-hidden="true" onClick={close} style={menuTop === undefined ? undefined : { top: menuTop }} className="fixed inset-x-0 bottom-0 z-10 bg-foreground/20 md:hidden" />}
+      {/* The open panel is as tall as its links, up to the space below the header, so the backdrop shows below it. */}
       <nav ref={nav} id="admin-navigation" aria-label={t('shell/shell:navigation')}
-        style={open && menuTop !== undefined ? { top: menuTop } : undefined}
-        className={`${open ? 'fixed inset-x-0 bottom-0 z-20 block' : 'hidden'} overflow-y-auto overscroll-contain border-b border-border bg-background p-2 shadow-lg
+        style={open && menuTop !== undefined ? { top: menuTop, maxHeight: `calc(100dvh - ${menuTop}px)` } : undefined}
+        className={`${open ? `fixed inset-x-0 z-20 block${menuTop === undefined ? ' max-h-dvh' : ''}` : 'hidden'} overflow-y-auto overscroll-contain border-b border-border bg-background p-2 shadow-lg
           md:sticky md:top-header md:bottom-auto md:block md:max-h-[calc(100dvh-var(--spacing-header))] md:w-60 md:shrink-0 md:self-start md:border-b-0 md:border-r md:p-3 md:shadow-none`}>
         <div className="space-y-4">{adminNavigationGroups(entriesToShow).map(group => <section key={group.id} aria-labelledby={'nav-' + group.id}>
           <h2 id={'nav-' + group.id} className="hidden px-3 pb-1 text-xs font-semibold text-muted-foreground md:block">{t('shell/shell:nav.' + group.id)}</h2>
