@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, exists, gt, gte, ilike, inArray, isNotNull, isNull, lt, or, type SQL } from 'drizzle-orm';
+import { and, asc, eq, exists, gt, gte, ilike, inArray, isNull, lt, or, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { forGym, classBookings, members, classTags, classTemplates, classTemplatePrograms, classTemplateTags, classSessions, classSessionPrograms, classSessionTags, programs, staffProfiles, staffRoles, revisionGuard, assertRevised, writeAudit, RevisionConflictError, type Transaction } from '@plaingym/db';
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
@@ -380,6 +380,15 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
       const gym = value.notify ? await settings.get(context.gymId) : undefined;
       return safe(() => withJobTransaction(scope, context.gymId, async transaction => {
         const { tx } = transaction;
+        // The marked members are read `for share`, in ID order, before the session is locked: members then session, as
+        // erasure, member deletion, booking and check-in take them, so none of those can deadlock with a restore. An
+        // erasure or deletion running now either committed first (and its member is read as erased or gone) or waits
+        // for this restore and then frees the restored place.
+        const memberIdsOf = (bookings: readonly BookingRow[]) => [...new Set(bookings.map(booking => booking.memberId))];
+        const lockedIds = memberIdsOf(await cancelledBySession(tx, id));
+        const live = new Set(lockedIds.length ? (await tx.select({ id: members.id, anonymizedAt: members.anonymizedAt }).from(members)
+          .where(inArray(members.id, lockedIds)).orderBy(asc(members.id)).for('share'))
+          .flatMap(member => member.anonymizedAt ? [] : [member.id]) : []);
         // Restore, cancellation and every booking change serialize on this lock.
         const [row] = await tx.select().from(classSessions).where(eq(classSessions.id, id)).for('update'); if (!row) missing();
         if (row.status !== 'cancelled') throw new AppError('conflict', t('schedule/schedule:notCancelled'), { reason: ['not_cancelled'] });
@@ -390,8 +399,13 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
         const afterRow = assertRevised(await tx.update(classSessions).set({ status: 'scheduled', restoreCount: row.restoreCount + 1, revision: guard.next })
           .where(and(eq(classSessions.id, id), guard.matches)).returning());
         const marked = await cancelledBySession(tx, id), active = await activeBookings(tx, id);
-        const erased = new Set(marked.length ? (await tx.select({ id: members.id }).from(members).where(and(
-          inArray(members.id, [...new Set(marked.map(booking => booking.memberId))]), isNotNull(members.anonymizedAt)))).map(member => member.id) : []);
+        // Only a cancellation or a restore of this session sets or clears its markers, and both hold the session lock,
+        // so this read names a member the unlocked one didn't only when the session changed in between. Both bump the
+        // revision, so the revision check above refuses that first; this conflict is a safeguard for any other writer.
+        const markedIds = memberIdsOf(marked);
+        if (markedIds.some(memberId => !lockedIds.includes(memberId))) conflict();
+        // A member read as gone was deleted with their bookings; counting them as erased keeps the restore safe anyway.
+        const erased = new Set(markedIds.filter(memberId => !live.has(memberId)));
         const holders = new Set(active.map(booking => booking.memberId));
         let booked = active.filter(booking => booking.status === 'booked').length;
         let position = Math.max(0, ...active.flatMap(booking => booking.status === 'waitlisted' ? [booking.waitlistPosition!] : []));

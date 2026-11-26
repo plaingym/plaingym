@@ -95,7 +95,10 @@ session's highest position plus one. Each restored booking clears its cancellati
 and gets one `booking.restored` audit. A booking its member cancelled before the session was
 cancelled stays cancelled, as does a marked booking of a member erased while the class was
 cancelled or who already holds another place in the session; its marker is cleared too, so a
-cancellation's bookings come back at most once. A session cancelled before the release that marks
+cancellation's bookings come back at most once. Before it takes the session lock, a restore takes a
+share lock on each marked member, so it waits for an erasure or deletion of one of them that is
+running at the same time: the erased member's booking stays cancelled, and a deleted member's
+bookings don't come back. A session cancelled before the release that marks
 cancelled bookings has no markers, so it restores to `scheduled` with no bookings back, queues no
 notice, and reports `restoredBookings: 0` so members book again. A member whose membership changed
 meanwhile comes back like anyone else; only promotion from the waitlist checks eligibility, as
@@ -103,7 +106,8 @@ always. A free place then promotes the waitlist as a capacity change does, with 
 `booking.promoted` audits and promotion notices. The session gets a `schedule.session.restored`
 audit with both snapshots. Refusals change nothing: a session that isn't cancelled is a 409
 `conflict` with reason `not_cancelled`, one whose start time has been reached a 409 with reason
-`session_started`, and a stale revision the usual revision conflict. With notification, the same
+`session_started`, and a stale revision the usual revision conflict, which also refuses a session
+restored and cancelled again while the restore waited for its member locks. With notification, the same
 rule as cancelling applies (an owner, an admin or the session's coach), checked by the same helper;
 any coach may restore without it. When at least one booking came back, the "back on" notice job for
 those members commits with the restore.
