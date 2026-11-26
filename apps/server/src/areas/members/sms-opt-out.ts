@@ -46,7 +46,29 @@ export async function forgetUnheldSmsOptOut(tx: Transaction, phoneE164: string |
   const [row] = await tx.select({ phoneE164: smsOptedOutNumbers.phoneE164 }).from(smsOptedOutNumbers)
     .where(eq(smsOptedOutNumbers.phoneE164, phoneE164)).for('update');
   if (!row) return;
-  await tx.delete(smsOptedOutNumbers).where(and(eq(smsOptedOutNumbers.phoneE164, phoneE164),
+  await tx.delete(smsOptedOutNumbers).where(and(eq(smsOptedOutNumbers.phoneE164, phoneE164), unheld(tx, phoneE164)));
+}
+
+/**
+ * Drops every number on the gym's opted-out list that no current member and no household holds, whatever its age, and
+ * returns how many rows it deleted. The caller's transaction scopes the gym. Like `forgetUnheldSmsOptOut`, it locks the
+ * rows first and checks again in a later statement, so a holder committed before that statement starts (including one
+ * whose writer held a row it waited for) is seen. Writes that give a record a number don't lock its row, so like
+ * `forgetUnheldSmsOptOut` it doesn't see one that commits while its delete runs.
+ */
+export async function sweepUnheldSmsOptOuts(tx: Transaction): Promise<number> {
+  const locked = await tx.select({ id: smsOptedOutNumbers.id }).from(smsOptedOutNumbers)
+    .where(unheld(tx, smsOptedOutNumbers.phoneE164)).orderBy(smsOptedOutNumbers.id).for('update');
+  if (!locked.length) return 0;
+  const deleted = await tx.delete(smsOptedOutNumbers)
+    .where(and(inArray(smsOptedOutNumbers.id, locked.map(row => row.id)), unheld(tx, smsOptedOutNumbers.phoneE164)))
+    .returning({ id: smsOptedOutNumbers.id });
+  return deleted.length;
+}
+
+/** No current member (not anonymized) and no household holds the number: a value, or the list row's own column. */
+function unheld(tx: Transaction, phoneE164: string | typeof smsOptedOutNumbers.phoneE164) {
+  return and(
     notExists(tx.select({ id: members.id }).from(members).where(and(eq(members.phoneE164, phoneE164), isNull(members.anonymizedAt)))),
-    notExists(tx.select({ id: households.id }).from(households).where(eq(households.phoneE164, phoneE164)))));
+    notExists(tx.select({ id: households.id }).from(households).where(eq(households.phoneE164, phoneE164))));
 }

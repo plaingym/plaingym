@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { JobRegistration } from '../../core/registry.js';
-import type { forGym } from '@plaingym/db';
+import { forGym, writeAudit } from '@plaingym/db';
 import { idSchema } from '@plaingym/shared/contracts';
 import { createMembersService } from './members.js';
 import type { MemberUploads } from './photos.js';
 import { createErasureJobs } from './members.routes.js';
+import { sweepUnheldSmsOptOuts } from './sms-opt-out.js';
 
 /** Integration supplies the same gym-scoped uploads resolver used by the HTTP routes. */
 export function createMemberPhotoJobs(uploadsFor: MemberUploads, scope?: typeof forGym): readonly JobRegistration[] {
@@ -22,4 +23,17 @@ export function createMemberPhotoJobs(uploadsFor: MemberUploads, scope?: typeof 
   } }];
 }
 
-export const jobs: readonly JobRegistration[] = createErasureJobs();
+export const smsOptOutSweepJob = 'members.sms_opt_outs.sweep';
+
+/** Daily, numbers left on the gym's opted-out list that no current record holds are dropped; the audit holds only the count. */
+export function createSmsOptOutSweepJob(scope: typeof forGym = forGym): JobRegistration {
+  return { id: smsOptOutSweepJob, cron: '53 3 * * *', async handler(_payload, context) {
+    await scope(context.gymId, async tx => {
+      const count = await sweepUnheldSmsOptOuts(tx);
+      if (count > 0) await writeAudit(tx, { gymId: context.gymId, actorKind: 'system', action: 'members.sms_opt_outs.swept',
+        targetType: 'gym', targetId: context.gymId, after: { count }, occurredAt: context.clock.now() });
+    });
+  } };
+}
+
+export const jobs: readonly JobRegistration[] = [...createErasureJobs(), createSmsOptOutSweepJob()];

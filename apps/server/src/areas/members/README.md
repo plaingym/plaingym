@@ -34,7 +34,10 @@ consent for a number (staff or portal consent, or a `/join` SMS choice) removes 
 from the list in the same transaction. The number is also dropped from the list
 once no current member and no household holds it: after a phone change, a hard
 delete (member or household deletion, or abandoned join and drop-in cleanup), an
-erasure, or a refusal that found no holder. Staff list
+erasure, or a refusal that found no holder. A daily job,
+`members.sms_opt_outs.sweep` (`members.jobs.ts`), also removes every listed number
+that no current member and no household holds, whatever its age, and audits only
+the count (`members.sms_opt_outs.swept` on the gym, when it removed any). Staff list
 reads, the people export and imports omit the field. The staff and portal consent
 panels show the date in the gym's timezone; the staff panels also ask staff to
 confirm the person replied START before recording verbal consent again. When a member's
