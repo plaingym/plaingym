@@ -334,10 +334,10 @@ test('the Node base image pin check flags a stale digest and accepts a matching 
     [{ file: 'e2e/compose.yaml', image: stale, expected: matching }]);
 });
 
-test('the image build refuses a SOURCE_URL that is not an http(s) URL', () => {
+test('the image build refuses a SOURCE_URL the app would refuse', () => {
   const dockerfile = readFileSync(join(root, 'deploy/Dockerfile'), 'utf8');
   const identity = dockerfile.slice(0, dockerfile.indexOf('\nFROM ', dockerfile.indexOf(' AS identity')));
-  const lines = identity.split('\n').filter((line) => line.startsWith('RUN case "$SOURCE_URL"'));
+  const lines = identity.split('\n').filter((line) => line.startsWith('RUN node -e') && line.includes('SOURCE_URL'));
   assert.equal(lines.length, 1, 'the identity stage checks SOURCE_URL once');
   const check = lines[0].slice('RUN '.length);
   const run = (value) => {
@@ -345,12 +345,14 @@ test('the image build refuses a SOURCE_URL that is not an http(s) URL', () => {
     assert.equal(result.error, undefined, 'the check runs with sh from PATH');
     return result;
   };
-  for (const value of ['', 'github.com/me/gym', 'ftp://example.com/x', 'https://', 'http:/x']) {
+  const refused = ['', 'github.com/me/gym', 'ftp://example.com/x', 'https://', 'http:/x', 'https://user:token@github.com/me/gym',
+    'https://user@example.com/x', 'https://exa mple.com', 'https://['];
+  for (const value of refused) {
     const result = run(value);
     assert.notEqual(result.status, 0, `${JSON.stringify(value)} must fail`);
-    assert.match(result.stderr, /SOURCE_URL must be an http:\/\/ or https:\/\/ URL/);
+    assert.match(result.stderr, /^SOURCE_URL must be an http:\/\/ or https:\/\/ URL without a user name or password\. Leave it unset or empty for scripts\/release\/build-image\.mjs, or omit the build argument, to link to the project repository\.$/m);
   }
-  for (const value of ['https://github.com/plaingym/plaingym', 'https://github.com/me/gym/tree/abc', 'http://localhost/x']) {
+  for (const value of ['https://github.com/plaingym/plaingym', 'https://github.com/me/gym/tree/abc', 'http://localhost/x', 'HTTPS://github.com/me/gym']) {
     const result = run(value);
     assert.equal(result.status, 0, `${value} must pass: ${result.stderr}`);
   }

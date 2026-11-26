@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
-import { adaptPreviousSmoke, checkInterrupt, childInterruptCode, compatibilityAssertions, holdInterrupts, interruptExitCode, newerReleaseJobs, recordInterrupt, removeImage, removeSmokeProject, runChild, SmokeInterrupted, smokePreviousImage, withPreviousTree } from './previous-smoke.mjs';
+import { adaptPreviousSmoke, checkInterrupt, childInterruptCode, compatibilityAssertions, holdInterrupts, interruptExitCode, newerJobSteps, newerReleaseJobs, recordInterrupt, removeImage, removeSmokeProject, runChild, SmokeInterrupted, smokePreviousImage, withPreviousTree } from './previous-smoke.mjs';
 import { prereleaseFloor, smokePublished } from './previous-minor.mjs';
 import { previousCode } from './previous-code.mjs';
 import { runSmoke } from './run-smoke.mjs';
@@ -127,7 +127,7 @@ test('the newer release jobs are queued with unknown fields directly before the 
   }
 });
 
-test('the newer release job step deletes a finished job and fails on any other state at its deadline', async () => {
+test('the newer release job step deletes a finished job and fails on a job still waiting at its deadline', async () => {
   const [[, original]] = harnesses();
   const step = newerStep(adaptPreviousSmoke(original, '/previous', '/current', 'project'));
   const run = async states => {
@@ -148,8 +148,28 @@ test('the newer release job step deletes a finished job and fails on any other s
   assert.equal(queries.length, 5);
   const id = /previous-smoke-newer-([0-9a-f-]{36})/.exec(queries[0])[1];
   assert.equal(queries.at(-1), `DELETE FROM jobs WHERE id = '${id}'`);
-  await assert.rejects(run(['failed:{"name":"ZodError"}']),
-    { message: 'Newer release job intake-rate-limits.sweep did not succeed: failed:{"name":"ZodError"}' });
+  await assert.rejects(run(['running:']),
+    { message: 'Newer release job intake-rate-limits.sweep did not succeed: running:' });
+});
+
+test('the newer release job step fails at once on a failed job, an attempt error or a missing row', async () => {
+  const step = newerJobSteps();
+  const run = states => {
+    let reads = 0;
+    return runInNewContext(`(async () => {\n${step}})()`, {
+      assert, console, setTimeout,
+      sql: query => query.startsWith('SELECT') ? `${states[Math.min(reads++, states.length - 1)]}\n` : '',
+    });
+  };
+  const within = async (promise, check) => {
+    const started = Date.now();
+    await (check ? assert.rejects(promise, check) : promise);
+    assert.ok(Date.now() - started < 2000, `settled after ${Date.now() - started} ms`);
+  };
+  await within(run(['failed:Invalid job envelope']), { message: /failed: failed:Invalid job envelope$/ });
+  await within(run(['']), { message: 'Newer release job intake-rate-limits.sweep is missing' });
+  await within(run(['pending:boom']), { message: 'Newer release job intake-rate-limits.sweep failed: pending:boom' });
+  await within(run(['pending:', 'succeeded:']));
 });
 
 test('a harness without the rollback availability marker is refused', () => {

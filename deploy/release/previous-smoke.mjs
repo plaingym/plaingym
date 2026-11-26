@@ -171,14 +171,19 @@ export async function withPreviousTree(commit, operation, runGit = gitChild, war
 /**
  * Jobs a bare install runs, queued as this release writes them, plus fields the older release doesn't know. A change
  * to the payload of such a job adds it here, so the older worker proves it can still finish it after a rollback.
+ * `apps/server/src/infra/jobs/newer-release-envelope.test.ts` fails when an envelope here, without its
+ * `addedByNewerRelease` key, no longer has the keys and version the queue writes for that job.
  */
 export const newerReleaseJobs = [{
   name: 'intake-rate-limits.sweep',
   envelope: { version: 1, timezone: 'UTC', value: { addedByNewerRelease: true }, addedByNewerRelease: true },
 }];
 
-/** Harness source that queues each newer-release job as a pending system job and requires the older worker to finish it. */
-function newerJobSteps() {
+/**
+ * Harness source that queues each newer-release job as a pending system job and requires the older worker to finish
+ * it. A missing row, a failed job or an attempt's error fails the step at once instead of at its deadline.
+ */
+export function newerJobSteps() {
   const literal = (value) => `'${value.replaceAll("'", "''")}'`;
   return newerReleaseJobs.map(({ name, envelope }) => {
     const id = randomUUID();
@@ -191,6 +196,8 @@ function newerJobSteps() {
     const deadline = Date.now() + 60_000;
     for (;;) {
       const state = sql(${JSON.stringify(select)}).trim();
+      if (state === '') assert.fail(${JSON.stringify(`Newer release job ${name} is missing`)});
+      if (!/^(pending|running|succeeded):$/.test(state)) assert.fail(${JSON.stringify(`Newer release job ${name} failed: `)} + state);
       if (state === 'succeeded:') break;
       if (Date.now() > deadline) assert.fail(${JSON.stringify(`Newer release job ${name} did not succeed: `)} + state);
       await new Promise((resolveWait) => setTimeout(resolveWait, 1000));
