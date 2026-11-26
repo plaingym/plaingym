@@ -2,7 +2,7 @@
 import { expect, it, vi } from 'vitest';
 import { createApp } from './app.js';
 import { TestClock } from './clock.js';
-import { clientKey, contractRequest, failureBudget, RateBuckets, rateLimit, type RateLimitOptions, type SharedRateLimitStore } from './rate-limit.js';
+import { clientKey, contractRequest, failureBudget, type RateBucket, RateBuckets, rateLimit, type RateLimitOptions, type SharedRateLimitStore } from './rate-limit.js';
 
 // Multi-gym mode by default: the flood limit runs after gym resolution, so these tests see per-gym budgets.
 function fixture(options: RateLimitOptions = {}, tenancy: 'single' | 'multi' = 'multi') {
@@ -205,28 +205,85 @@ it('evicts ended windows and buckets within their limits first, and keeps the ke
   expect([buckets.get('blocked', 20), buckets.get('a', 20), buckets.get('b', 20)]).toEqual([expect.anything(), undefined, expect.anything()]);
 });
 
-it('makes room in a table full of over-limit buckets in one walk, evicting the first one not kept', () => {
-  const size = 10_000, buckets = new RateBuckets(size, (bucket) => bucket.count >= 1);
+// The cost of making room is measured in calls of the over-limit predicate: each walk asks it once per live bucket met.
+const overOne = () => vi.fn((bucket: RateBucket) => bucket.count >= 1);
+
+it('sets over-limit buckets aside, so a flood of refused keys costs no full walk per new key', () => {
+  const size = 10_000, blocked = overOne(), buckets = new RateBuckets(size, blocked);
   for (let i = 0; i < size; i++) buckets.add(`key-${i}`, { count: 1, resetAt: 100 }, 0);
-  // Every `for…of` over a Map steps its iterator: one step per bucket visited, and one to find the end.
-  const steps = vi.spyOn(Object.getPrototypeOf(new Map().entries()) as Iterator<unknown>, 'next');
-  let visits: number;
-  try { buckets.add('new', { count: 0, resetAt: 100 }, 0, ['key-0']); visits = steps.mock.calls.length; }
-  finally { steps.mockRestore(); }
-  expect(visits).toBe(size + 1);
-  expect([buckets.get('key-0', 0), buckets.get('key-1', 0), buckets.get('key-2', 0), buckets.get('new', 0)])
-    .toEqual([expect.anything(), undefined, expect.anything(), expect.anything()]);
+  const evictedTooSoon: number[] = [];
+  for (let i = 0; i < size; i++) {
+    buckets.add(`new-${i}`, { count: 0, resetAt: 100 }, 0).count = 1;
+    if (i + 1 < size && !buckets.get(`key-${i + 1}`, 0)) evictedTooSoon.push(i + 1);
+  }
+  // One walk of the table sets every refused key aside, then each new key costs one call [about 100,000,000 before].
+  expect(blocked.mock.calls.length).toBeLessThanOrEqual(40_000);
+  expect(evictedTooSoon).toEqual([]);
+  const keys = (prefix: string) => Array.from({ length: size }, (_, i) => buckets.get(`${prefix}-${i}`, 0) !== undefined);
+  expect(keys('key').every((held) => !held)).toBe(true);
+  expect(keys('new').every(Boolean)).toBe(true);
 });
 
-it('stops walking at the first ended or within-limit bucket', () => {
-  const buckets = new RateBuckets(4, (bucket) => bucket.count >= 1);
-  for (const [key, count] of [['a', 1], ['b', 0], ['c', 0], ['d', 1]] as const) buckets.add(key, { count, resetAt: 100 }, 0);
-  const steps = vi.spyOn(Object.getPrototypeOf(new Map().entries()) as Iterator<unknown>, 'next');
-  let visits: number;
-  try { buckets.add('e', { count: 0, resetAt: 100 }, 0); visits = steps.mock.calls.length; }
-  finally { steps.mockRestore(); }
-  expect(visits).toBe(2);
-  expect(['a', 'b', 'c', 'd', 'e'].map((key) => buckets.get(key, 0) !== undefined)).toEqual([true, false, true, true, true]);
+it('evicts the oldest within-limit bucket with one call per new key', () => {
+  const size = 10_000, blocked = overOne(), buckets = new RateBuckets(size, blocked);
+  for (let i = 0; i < size; i++) buckets.add(`key-${i}`, { count: 0, resetAt: 100 }, 0);
+  const wrong: number[] = [];
+  for (let i = 0; i < size; i++) {
+    buckets.add(`new-${i}`, { count: 0, resetAt: 100 }, 0);
+    if (buckets.get(`key-${i}`, 0) || (i + 1 < size && !buckets.get(`key-${i + 1}`, 0)) || !buckets.get(`new-${i}`, 0)) wrong.push(i);
+  }
+  expect(blocked).toHaveBeenCalledTimes(size);
+  expect(wrong).toEqual([]);
+});
+
+it('steps past kept keys at the front of a full table without asking about every bucket again', () => {
+  const size = 10_000, blocked = overOne(), buckets = new RateBuckets(size, blocked);
+  for (let i = 0; i < size; i++) buckets.add(`key-${i}`, { count: 1, resetAt: 100 }, 0);
+  const calls: number[] = [];
+  for (let i = 0; i < 100; i++) {
+    const before = blocked.mock.calls.length;
+    buckets.add(`new-${i}`, { count: 0, resetAt: 100 }, 0, ['key-0', 'key-1']).count = 1;
+    calls.push(blocked.mock.calls.length - before);
+  }
+  expect(Math.max(...calls.slice(1))).toBeLessThanOrEqual(5);
+  expect(['key-0', 'key-1', 'key-2', 'key-101', 'key-102', 'new-99'].map((key) => buckets.get(key, 0) !== undefined))
+    .toEqual([true, true, false, false, true, true]);
+});
+
+it('evicts within-limit buckets before over-limit ones, then the oldest set aside', () => {
+  const blocked = overOne(), buckets = new RateBuckets(4, blocked);
+  for (const [key, count] of [['a', 1], ['b', 0], ['c', 1], ['d', 0]] as const) buckets.add(key, { count, resetAt: 100 }, 0);
+  const held = () => ['a', 'b', 'c', 'd', 'e', 'f', 'g'].filter((key) => buckets.get(key, 0) !== undefined);
+  buckets.add('e', { count: 1, resetAt: 100 }, 0);
+  expect(held()).toEqual(['a', 'c', 'd', 'e']);
+  buckets.add('f', { count: 1, resetAt: 100 }, 0);
+  expect(held()).toEqual(['a', 'c', 'e', 'f']);
+  buckets.add('g', { count: 1, resetAt: 100 }, 0);
+  expect(held()).toEqual(['c', 'e', 'f', 'g']);
+  // Each walk stopped at the first within-limit bucket, or asked only about the buckets not yet set aside.
+  expect(blocked).toHaveBeenCalledTimes(6);
+});
+
+it('keeps a set-aside bucket in its over-limit order when its count drops, and evicts an ended one there first', () => {
+  const buckets = new RateBuckets(3, (bucket) => bucket.count >= 1);
+  for (const key of ['a', 'b', 'c']) buckets.add(key, { count: 1, resetAt: 100 }, 0);
+  buckets.add('d', { count: 1, resetAt: 100 }, 0);
+  buckets.get('c', 0)!.count = 0;
+  // `c` was set aside after `b`, so `b` goes first although `c` is within its limit now; then `c`, before `d`.
+  buckets.add('e', { count: 1, resetAt: 100 }, 0);
+  expect(['b', 'c', 'd', 'e'].map((key) => buckets.get(key, 0) !== undefined)).toEqual([false, true, true, true]);
+  buckets.add('f', { count: 1, resetAt: 100 }, 0);
+  expect(['c', 'd', 'e', 'f'].map((key) => buckets.get(key, 0) !== undefined)).toEqual([false, true, true, true]);
+
+  const windows = new RateBuckets(3, (bucket) => bucket.count >= 1);
+  const ending = windows.add('ending', { count: 1, resetAt: 50 }, 0);
+  windows.add('open', { count: 0, resetAt: 100 }, 0);
+  windows.add('later', { count: 1, resetAt: 100 }, 0);
+  windows.add('next', { count: 1, resetAt: 110 }, 10);
+  // `ending` is set aside; its window ends, and it goes before the live buckets set aside after it.
+  windows.add('last', { count: 1, resetAt: 160 }, 60);
+  expect(windows.holds('ending', ending)).toBe(false);
+  expect(['later', 'next', 'last'].map((key) => windows.get(key, 60) !== undefined)).toEqual([true, true, true]);
 });
 
 it('brings a table that kept keys held over its bound back to it, preferring within-limit buckets', () => {

@@ -94,46 +94,61 @@ function ipv6Groups(address: string): number[] {
 
 export interface RateBucket { count: number; resetAt: number }
 /**
- * Fixed-window buckets in creation order. A full table evicts buckets rather than refusing new keys, so a flood of
- * new keys can't lock out new visitors. Ended windows and the oldest buckets still within their limits go first;
- * a bucket over its limit (`blocked`) goes only once every other bucket is too, so lifting a refusal takes a flood
- * that fills the whole table with refused keys.
+ * Fixed-window buckets in two maps, each in insertion order: `#open` holds buckets in creation order until a walk
+ * making room finds them over their limit (`blocked`), and then sets them aside in `#blocked`, once, in the order
+ * found. A full table evicts buckets rather than refusing new keys, so a flood of new keys can't lock out new
+ * visitors. Ended windows and the oldest buckets still within their limits go first; a bucket over its limit goes
+ * only once every other bucket is too, so lifting a refusal takes a flood that fills the whole table with refused
+ * keys, and a table full of them costs no full walk per new key.
+ *
+ * A set-aside bucket stays in the over-limit order even if its count later drops below its limit or its window ends.
+ * A table's buckets share one window length, so `#blocked`'s oldest are usually the first to end and ended windows
+ * there still go first. The exception is a request's own bucket that a walk passed while it was within its limit: once
+ * over it, a later walk sets it aside behind the buckets set aside meanwhile, and they go before it even after its
+ * window ends.
  */
 export class RateBuckets<Bucket extends RateBucket = RateBucket> {
-  readonly #buckets = new Map<string, Bucket>();
+  readonly #open = new Map<string, Bucket>();
+  readonly #blocked = new Map<string, Bucket>();
   constructor(readonly maxBuckets: number, readonly blocked: (bucket: Bucket) => boolean) {}
   /** The key's bucket while its window is open. */
   get(key: string, now: number): Bucket | undefined {
-    const bucket = this.#buckets.get(key);
-    if (bucket && bucket.resetAt <= now) { this.#buckets.delete(key); return undefined; }
+    const map = this.#open.has(key) ? this.#open : this.#blocked, bucket = map.get(key);
+    if (bucket && bucket.resetAt <= now) { map.delete(key); return undefined; }
     return bucket;
   }
   /**
-   * Starts the key's bucket, first making room in a full table in one walk: the first ended or within-limit buckets
-   * found, else the first ones not kept. The buckets of `keep` (the request's own) stay, so they can hold the table
-   * over its bound until a later addition makes room for them as well.
+   * Starts the key's bucket, first making room in a full table: the first ended or within-limit buckets in `#open`
+   * (over-limit ones met on the way are set aside, kept ones too), else the oldest set aside and not kept. The
+   * buckets of `keep` (the request's own) stay, so they can hold the table over its bound until a later addition
+   * makes room for them as well.
    */
   add(key: string, bucket: Bucket, now: number, keep: readonly string[] = []): Bucket {
-    this.#buckets.delete(key);
-    let excess = this.#buckets.size - this.maxBuckets + 1;
+    this.delete(key);
+    let excess = this.#open.size + this.#blocked.size - this.maxBuckets + 1;
     if (excess > 0) {
-      // Over-limit buckets are remembered in table order, only as many as could still be needed.
-      const blocked: string[] = [];
-      for (const [id, value] of this.#buckets) {
-        if (keep.includes(id)) continue;
-        if (value.resetAt <= now || !this.blocked(value)) {
-          this.#buckets.delete(id);
-          if (--excess === 0) break;
-        } else if (blocked.length < excess) blocked.push(id);
+      for (const [id, value] of this.#open) {
+        const kept = keep.includes(id), ended = value.resetAt <= now;
+        if (kept && ended) continue;
+        if (!ended && this.blocked(value)) { this.#open.delete(id); this.#blocked.set(id, value); continue; }
+        if (kept) continue;
+        this.#open.delete(id);
+        if (--excess === 0) break;
       }
-      for (const id of blocked.slice(0, excess)) this.#buckets.delete(id);
+      if (excess > 0) {
+        for (const id of this.#blocked.keys()) {
+          if (keep.includes(id)) continue;
+          this.#blocked.delete(id);
+          if (--excess === 0) break;
+        }
+      }
     }
-    this.#buckets.set(key, bucket);
+    this.#open.set(key, bucket);
     return bucket;
   }
   /** Whether the key still holds this bucket (it may have expired, been evicted or been replaced). */
-  holds(key: string, bucket: Bucket): boolean { return this.#buckets.get(key) === bucket; }
-  delete(key: string): void { this.#buckets.delete(key); }
+  holds(key: string, bucket: Bucket): boolean { return (this.#open.get(key) ?? this.#blocked.get(key)) === bucket; }
+  delete(key: string): void { this.#open.delete(key); this.#blocked.delete(key); }
 }
 
 export interface RateLimitOptions extends ClientIpOptions {
