@@ -2002,4 +2002,49 @@ describe('setup wizard restore progress', () => {
     expect(screen.queryByText(changedText)).toBeNull();
     expect(screen.getByText('Could not save this step. Check the details and try again.')).toBeDefined();
   });
+
+  const saveFailedText = 'Could not save this step. Check the details and try again.';
+  /** Sends a restore request that answers 500, with the status read after it answering `reload` (the usual status when null). */
+  async function failRestoreRequest(reload: (() => Response | Promise<Response>) | null) {
+    const started = start(0);
+    const base = started.fetcher.getMockImplementation()!;
+    started.fetcher.mockImplementation((path, options) => String(path) === '/api/setup/restore'
+      ? Promise.resolve(serverError()) : base(path, options));
+    await fillRestore();
+    const before = statusReads(started.fetcher);
+    statusAnswer = reload;
+    await sendRestore();
+    return { ...started, before };
+  }
+  const alertOf = (text: string) => screen.getByText(text).closest('[role="alert"]');
+  it('keeps the focus on the save error when the restore request and the status read after it both fail', async () => {
+    // The status read answers only once the save error is on screen, as over a real connection.
+    const read = later();
+    const { fetcher, before } = await failRestoreRequest(() => read.response);
+    expect(await screen.findByText(saveFailedText)).toBeDefined();
+    await settle();
+    expect(document.activeElement).toBe(alertOf(saveFailedText));
+
+    statusAnswer = serverError;
+    await act(async () => { read.send(serverError()); });
+
+    expect(await screen.findByText(reloadText)).toBeDefined();
+    await settle();
+    expect(document.activeElement).toBe(alertOf(saveFailedText));
+    expect(statusReads(fetcher)).toBe(before + 1);
+
+    // A retry the owner asks for still takes the focus to the reload alert when it fails too.
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(document.activeElement).toBe(alertOf(reloadText)));
+    expect(statusReads(fetcher)).toBe(before + 2);
+  });
+  it('shows only the save error, focused, when the status read after a failed restore request works', async () => {
+    const { fetcher, before } = await failRestoreRequest(null);
+
+    expect(await screen.findByText(saveFailedText)).toBeDefined();
+    await settle();
+    expect(document.activeElement).toBe(alertOf(saveFailedText));
+    expect(statusReads(fetcher)).toBe(before + 1);
+    expect(screen.queryByText(reloadText)).toBeNull();
+  });
 });

@@ -295,7 +295,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
           const result = await client.call('restore', { choice: 'restore', source: destination(data), snapshotPrefix: text(data, 'snapshotPrefix'), privateKey: text(data, 'privateKey') });
           setRestoreFailure(null); setUnreachable(false); setThrottled(false); setPhase(null);
           restoreAnswer(result); setJobId(result.jobId); sessionStorage.setItem('setup.restore', result.jobId);
-        } catch (failure) { void readAgain(); throw failure; }
+        } catch (failure) { void status.refetch(); throw failure; }
         finally { setRestoreSending(false); }
       }} submit="restore" secondary={<Button type="button" variant="outline" disabled={busy} onClick={() => setRestore(false)}>{t('setup/setup:back')}</Button>}>
         <p>{t('setup/setup:restoreHint')}</p><Destination /><Field name="snapshotPrefix" /><Field name="privateKey" type="password" />
