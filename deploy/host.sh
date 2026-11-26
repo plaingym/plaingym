@@ -9,8 +9,22 @@ HOST_SOURCE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 [ "$(id -u)" -eq 0 ] || fail 'Run host setup as root.'
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl gnupg openssl ufw unattended-upgrades age
+# A new server often runs its own first-boot package updates for several minutes, holding the package locks.
+# DPkg::Lock::Timeout makes installs wait for the dpkg lock; `apt-get update` takes the package lists' lock, which it
+# may not wait for, so it is retried for as long.
+apt_failed='Installing system packages failed (see the apt output above). If the server was still installing its own updates, wait a few minutes and run the same install command again; running it again is safe.'
+apt_get() { apt-get -o DPkg::Lock::Timeout=600 "$@" || fail "$apt_failed"; }
+apt_update() {
+  attempt=1
+  until apt-get -o DPkg::Lock::Timeout=600 update; do
+    [ "$attempt" -lt 60 ] || fail "$apt_failed"
+    attempt=$((attempt + 1))
+    sleep 10
+  done
+}
+echo 'Installing system packages. If the server is still installing its own updates, this waits for them (up to 10 minutes).'
+apt_update
+apt_get install -y --no-install-recommends ca-certificates curl gnupg openssl ufw unattended-upgrades age
 if ! docker compose version >/dev/null 2>&1; then
   install -d -m 0755 /etc/apt/keyrings
   curl --fail --silent --show-error --location --proto '=https' https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
@@ -18,8 +32,8 @@ if ! docker compose version >/dev/null 2>&1; then
   # shellcheck source=/dev/null
   . /etc/os-release
   printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu %s stable\n' "$(dpkg --print-architecture)" "$VERSION_CODENAME" > /etc/apt/sources.list.d/docker.list
-  apt-get update
-  apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  apt_update
+  apt_get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 fi
 systemctl enable --now docker
 printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' > /etc/apt/apt.conf.d/20auto-upgrades

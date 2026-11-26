@@ -221,6 +221,23 @@ if sh "$source_dir/install.sh" --directory "$temporary/with space" --image plain
 grep -q 'Nothing was changed' "$temporary/output"
 [ ! -s "$CALLS" ] && [ ! -e "$temporary/with space" ]
 
+# A package command that still fails (a lock held past the wait) stops the install and says to run it again.
+: > "$CALLS"
+stub apt-get "printf 'apt-get %s\n' \"\$*\" >> \"\$CALLS\"; exit 100"
+if sh "$source_dir/install.sh" --directory "$temporary/apt-failed" --image plaingym:v0.0.0-local --image-archive "$temporary/image.tar" --hostname gym.localhost --email owner@example.org > "$temporary/output" 2>&1; then
+  echo 'A failed apt-get did not stop the install.' >&2; exit 1
+fi
+grep -qF 'run the same install command again; running it again is safe' "$temporary/output"
+# `apt-get update` may not wait for the package lists' lock itself, so it is tried 60 times, ten seconds apart, then given up.
+[ "$(grep -c '^apt-get -o DPkg::Lock::Timeout=600 update$' "$CALLS")" = 60 ] && [ "$(grep -c '^apt-get' "$CALLS")" = 60 ]
+if grep -Eq '^(ufw|docker load)' "$CALLS"; then echo 'The install went on after a failed apt-get.' >&2; exit 1; fi
+# An update that fails while the lock is held, then succeeds, goes on to install.
+: > "$CALLS"
+stub apt-get "printf 'apt-get %s\n' \"\$*\" >> \"\$CALLS\"; [ \"\$(grep -c update \"\$CALLS\")\" -gt 2 ] || exit 100"
+if ! sh "$source_dir/host.sh" > "$temporary/output" 2>&1; then echo 'host.sh gave up on an update that later succeeded.' >&2; exit 1; fi
+[ "$(grep -c ' update$' "$CALLS")" -ge 3 ] && grep -q '^apt-get -o DPkg::Lock::Timeout=600 install' "$CALLS"
+stub apt-get "printf 'apt-get %s\n' \"\$*\" >> \"\$CALLS\""
+
 : > "$CALLS"
 install_gym --hostname gym.localhost --email owner@example.org
 [ "$(stat -c %a "$root/.env")" = 600 ]
@@ -229,7 +246,10 @@ grep -qx GYM_HOSTNAME=gym.localhost "$root/.env"
 grep -qx RELEASE_REPOSITORY=plaingym/plaingym "$root/.env"
 # Backups use the setup wizard's key pair; nothing reads a BACKUP_RECIPIENT line.
 if grep -q BACKUP_RECIPIENT "$root/.env"; then echo 'A fresh .env names BACKUP_RECIPIENT.' >&2; exit 1; fi
-grep -q '^apt-get install' "$CALLS"
+grep -q '^apt-get -o DPkg::Lock::Timeout=600 install' "$CALLS"
+# Every package command waits for a lock held by the server's own first-boot updates.
+if grep '^apt-get' "$CALLS" | grep -qv '^apt-get -o DPkg::Lock::Timeout=600 '; then echo 'An apt-get call does not wait for the package lock.' >&2; exit 1; fi
+grep -q 'Installing system packages' "$temporary/output"
 grep -q '^docker load -i' "$CALLS"
 grep -q 'setup#token=fixture' "$temporary/output"
 # The nightly patch update timer runs this install's update.sh.

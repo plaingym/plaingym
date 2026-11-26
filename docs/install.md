@@ -141,6 +141,7 @@ They stay off until you do.
 
 | What you see | What to do |
 | :--- | :--- |
+| The installer stops at "Installing system packages failed", with "Could not get lock" above it | A new server installs its own updates in its first minutes, and the installer waits up to 10 minutes for them. Wait a few more minutes, then run the same command again. |
 | The installer says the name doesn't resolve, or points somewhere else | Check the A record in your DNS settings (the right name, the right address). Wait for it to spread, then run the same command again. If the server has no working IPv6, delete the AAAA record. The detail is in [DNS check](install-reference.md#the-dns-check). |
 | The installer says it couldn't confirm the server's address | The server couldn't look up its own public address: see [the DNS check](install-reference.md#the-dns-check). |
 | The certificate isn't issued | Check the firewall (ports 80 and 443) and the DNS record, then on the server run `cd /opt/plaingym` and `sudo docker compose logs caddy`. Don't delete the database volume to retry. |

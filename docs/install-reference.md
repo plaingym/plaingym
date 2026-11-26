@@ -54,7 +54,8 @@ In order, the installer:
 
 1. checks the hostname's DNS ([below](#the-dns-check));
 2. installs Docker, turns on the firewall (SSH, 80, 443), unattended OS security updates
-   and, when no swap is active, 1 GiB of swap;
+   and, when no swap is active, 1 GiB of swap. If the server is still installing its own
+   updates, as a new server does in its first minutes, it waits up to 10 minutes for them;
 3. writes `/opt/plaingym/.env` (mode 0600) with six independent random secrets;
 4. starts Caddy, the app and PostgreSQL, and waits for a valid certificate and
    `https://gym.example.org/healthz`;
