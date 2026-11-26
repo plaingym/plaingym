@@ -35,7 +35,7 @@ describe('maintenance credentials', () => {
     expect(() => assertMaintenanceCredentials({ NODE_ENV: 'development', TENANCY: 'multi', ...credentials })).not.toThrow();
   });
   it('rejects an unknown tenancy mode', () => {
-    expect(() => assertMaintenanceCredentials({ ...production, TENANCY: 'shared' })).toThrow('Invalid TENANCY mode');
+    expect(() => assertMaintenanceCredentials({ ...production, TENANCY: 'shared' })).toThrow('TENANCY must be single or multi (got "shared")');
   });
   it('keeps restore staging for single-gym apps only', () => {
     expect(restoreStagingDirectory({ BACKUP_STAGING_DIR: '/staging' })).toBe('/staging');

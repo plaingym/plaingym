@@ -153,7 +153,7 @@ for hosts-file names.
 
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |
-| `AUTH_PASSWORD_LOGIN` | `auto` | `auto`: password sign-in only for a gym with no email set up, magic links otherwise. `on`: always offer passwords. `off`: never (required in multi-gym mode); a single-gym install without email then has no way to sign in. |
+| `AUTH_PASSWORD_LOGIN` | `auto` | `auto`: password sign-in only for a gym with no email set up, magic links otherwise. `on`: always offer passwords. `off`: never (required in multi-gym mode); a single-gym install without email then has no way to sign in. The value is case-insensitive, and surrounding spaces are ignored. |
 | `RATE_LIMIT_PER_MINUTE` | `300` | Requests per minute per gym and client address before the app answers 429, from 1 to 100,000. A single-gym install counts them before looking the gym up, so requests that would get a 404 (before setup, say) count too. Sign-in, kiosk PINs and CSP reports keep their own limits; sign-in's, per client address and per account, have no setting (`security-model.md`, Sign-in). |
 | `UPDATE_CHECK` | `on` | `off` stops the app asking GitHub once a day for the newest release (the "Update available" banner and the Health page's update tile), for an install that must not call out; so does any value other than `on`, `true` or `1`. It sends no token and no data about the install. A multi-gym install never checks. The banner reads the releases of `RELEASE_REPOSITORY` (see [Automatic patch updates](#automatic-patch-updates)). |
 | `GOOGLE_CLIENT_ID` | unset | The client ID of a Google OAuth client. With `GOOGLE_CLIENT_SECRET`, turns on **Sign in with Google** for staff and members (see below), and wins over a client the owner entered in the app. Set both or neither; an empty value counts as unset. A malformed pair (only one set, a space or line break in a value, or a value over 512 characters) doesn't stop the app: it starts without them and says which variable is wrong and why (see below). Ignored in demo mode. |
@@ -215,7 +215,7 @@ sign in), or remove both variables and restart; people then sign in another way.
 
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |
-| `TENANCY` | `single` | `single` serves the one gym created in setup. `multi` serves several gyms, each created with `gym-app gyms create` and found by hostname; it requires S3 uploads, `SMTP_HOST` and `AUTH_PASSWORD_LOGIN=off`, and has no in-process backups. |
+| `TENANCY` | `single` | `single` serves the one gym created in setup. `multi` serves several gyms, each created with `gym-app gyms create` and found by hostname; it requires S3 uploads, `SMTP_HOST` and `AUTH_PASSWORD_LOGIN=off`, and has no in-process backups. The value must be exactly `single` or `multi`, in lower case. |
 | `GYM_INTEGRATIONS` | `operator` | Multi-gym only; a single-gym install ignores it. `operator` makes the email, SMS and payments parts of **Settings → Integrations** read-only for gym owners: gyms send through the install's `SMTP_*`, and the API refuses changes with a 403. `gym` lets owners set their own SMTP server, SMS provider and Stripe key, which is how a gym connects Stripe, since there is no install-wide Stripe key. Settings already stored stay in use under `operator`. |
 | `DEMO_MODE` | `false` | `true` turns on sandbox gyms for visitors (multi-gym only). See `apps/server/src/demo/README.md`. |
 | `DEMO_DOMAIN` | none | Demo mode: the domain sandboxes are created under. |

@@ -7,7 +7,7 @@ import { enabledModules } from './modules.js';
 import type { RequestEnvironment, GymContext } from './context.js';
 export type TenancyMode = 'single' | 'multi';
 export function tenancyMode(value = process.env.TENANCY ?? 'single'): TenancyMode {
-  if (value !== 'single' && value !== 'multi') throw new Error('Invalid TENANCY mode');
+  if (value !== 'single' && value !== 'multi') throw new Error(`TENANCY must be single or multi (got "${value.slice(0, 40)}")`);
   return value;
 }
 /**

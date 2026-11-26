@@ -144,7 +144,7 @@ it.each([
   ['SMTP port', { SMTP_PORT: '0' }, 'Invalid SMTP port'],
   ['SMTP credentials', { SMTP_USER: 'owner', SMTP_PASS: '' }, 'Incomplete SMTP credentials'],
   ['auth secret', { AUTH_SECRET: 'short' }, 'AUTH_SECRET must contain'],
-  ['auth mode', { AUTH_PASSWORD_LOGIN: 'invalid' }, 'Invalid AUTH_PASSWORD_LOGIN'],
+  ['auth mode', { AUTH_PASSWORD_LOGIN: 'invalid' }, 'AUTH_PASSWORD_LOGIN must be auto, on or off'],
 ] satisfies [string, NodeJS.ProcessEnv, string][])('drops a notice with invalid %s from the real configuration path', async (_path, invalid, message) => {
   const f = await fixture(false);
   const result = await notice(f.gymId, { env: { ...env, SMTP_HOST: 'smtp.example.test', SMTP_FROM: 'gym@example.test', ...invalid },

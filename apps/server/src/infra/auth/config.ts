@@ -17,9 +17,13 @@ export function authConfig(env: NodeJS.ProcessEnv = process.env, smtpConfigured 
   const secret = env.AUTH_SECRET;
   if (!secret || secret.length < 32) throw new Error('AUTH_SECRET must contain at least 32 characters');
   const tenancy = env.TENANCY ?? 'single';
-  if (tenancy !== 'single' && tenancy !== 'multi') throw new Error('Invalid TENANCY');
-  const mode = env.AUTH_PASSWORD_LOGIN || 'auto';
-  if (!['auto', 'on', 'off'].includes(mode)) throw new Error('Invalid AUTH_PASSWORD_LOGIN');
+  if (tenancy !== 'single' && tenancy !== 'multi') {
+    throw new Error(`TENANCY must be single or multi (got "${tenancy.slice(0, 40)}")`);
+  }
+  const mode = (env.AUTH_PASSWORD_LOGIN ?? '').trim().toLowerCase() || 'auto';
+  if (!['auto', 'on', 'off'].includes(mode)) {
+    throw new Error(`AUTH_PASSWORD_LOGIN must be auto, on or off (got "${env.AUTH_PASSWORD_LOGIN?.slice(0, 40)}")`);
+  }
   if (tenancy === 'multi' && mode !== 'off') throw new Error('TENANCY=multi requires AUTH_PASSWORD_LOGIN=off');
   if (tenancy === 'multi' && !smtpConfigured) throw new Error('TENANCY=multi requires SMTP');
   return { secret, tenancy, passwordEnabled: mode === 'on' || (mode === 'auto' && !smtpConfigured), smtpConfigured,
