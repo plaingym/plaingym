@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it, vi } from 'vitest';
 import { auditEvents, gyms, uuidv7, RevisionConflictError } from '@plaingym/db';
-import { eq } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- A test fixture stores a JSON null, which only a SQL literal can write.
+import { eq, sql } from 'drizzle-orm';
 import { AppError } from '@plaingym/shared';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -57,10 +58,33 @@ it('answers a stale save with the revision conflict without running its change',
 it('leaves stored branding it can\'t read untouched by a save that doesn\'t change branding', async () => {
   const gymId = uuidv7(), branding = { logoKey: `${gymId}/logo.png`, primaryColor: 'red' };
   await factory('gyms', gymId, { branding });
-  expect((await store.get(gymId, 'website')).branding).toEqual({});
+  expect((await store.get(gymId, 'website')).branding).toEqual({ logoKey: `${gymId}/logo.png` });
   await store.save({ gymId, actor: system }, 'website', 1, () => ({ value: { about: 'Hello' } }));
   const [row] = await db.forGym(gymId, (tx) => tx.select({ branding: gyms.branding }).from(gyms).where(eq(gyms.id, gymId)));
   expect(row!.branding).toEqual(branding);
+});
+
+it('drops only the unreadable value when a save changes branding, keeping the other stored keys', async () => {
+  const gymId = uuidv7(), logoKey = `${gymId}/logo.png`;
+  await factory('gyms', gymId, { branding: { logoKey, primaryColor: 'red', newerKey: 'kept' } });
+  await store.save({ gymId, actor: system }, 'website', 1,
+    (current) => ({ value: 1, branding: { ...current.branding, primaryColor: '#654321' } }));
+  const [row] = await db.forGym(gymId, (tx) => tx.select({ branding: gyms.branding }).from(gyms).where(eq(gyms.id, gymId)));
+  expect(row!.branding).toEqual({ logoKey, primaryColor: '#654321', newerKey: 'kept' });
+});
+
+it.each<{ stored: unknown; read: object }>([
+  { stored: { logoKey: '', primaryColor: '#123456' }, read: { primaryColor: '#123456' } },
+  // Names every object inherits are ordinary unknown keys.
+  { stored: { constructor: 'kept', toString: 'kept' }, read: { constructor: 'kept', toString: 'kept' } },
+  { stored: sql`'null'::jsonb`, read: {} },
+  { stored: [], read: {} },
+  { stored: 'text', read: {} },
+])('reads stored branding $stored without failing', async ({ stored, read }) => {
+  const gymId = uuidv7();
+  await factory('gyms', gymId);
+  await db.forGym(gymId, (tx) => tx.update(gyms).set({ branding: stored }).where(eq(gyms.id, gymId)));
+  expect((await store.get(gymId, 'website')).branding).toStrictEqual(read);
 });
 
 it('keeps branding keys a newer release stored, whether or not a save changes branding', async () => {

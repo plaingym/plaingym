@@ -15,14 +15,25 @@ export interface ModuleSettingsChange { readonly value: unknown; readonly brandi
 
 // A newer release may store more branding keys. A save writes back what it read, so this keeps them.
 const storedBrandingSchema = z.looseObject(gymBrandingSchema.shape);
+function storedBranding(value: unknown): GymBranding {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const shape = gymBrandingSchema.shape;
+  const entries = Object.entries(value).flatMap(([key, item]: [string, unknown]): [string, unknown][] => {
+    if (!Object.hasOwn(shape, key)) return [[key, item]];
+    const parsed = shape[key as keyof typeof shape].safeParse(item);
+    return parsed.success ? [[key, parsed.data]] : [];
+  });
+  return storedBrandingSchema.parse(Object.fromEntries(entries));
+}
 const modulesOf = (settings: unknown): Record<string, unknown> => {
   const modules = settings && typeof settings === 'object' ? (settings as { modules?: unknown }).modules : undefined;
   return modules && typeof modules === 'object' && !Array.isArray(modules) ? modules as Record<string, unknown> : {};
 };
 const read = (row: { settings: unknown; branding: unknown; revision: number }, moduleId: string): ModuleSettings => ({
   value: modulesOf(row.settings)[moduleId] ?? null,
-  // Stored branding was validated on save; anything else reads as none rather than failing a public page.
-  branding: storedBrandingSchema.catch({}).parse(row.branding), revision: row.revision,
+  // Stored branding was validated on save; a value that doesn't parse reads as unset and the other keys stay, so this
+  // read never fails on it.
+  branding: storedBranding(row.branding), revision: row.revision,
 });
 
 /** A module's settings, read inside a caller's gym scope so other reads share its transaction. */
@@ -63,7 +74,7 @@ export function createModuleSettings(options: { scope?: typeof forGym; clock?: C
         const settings = { ...(row.settings && typeof row.settings === 'object' ? row.settings : {}),
           modules: { ...modulesOf(row.settings), [moduleId]: next.value } };
         const guard = revisionGuard(gyms.revision, revision), now = clock.now();
-        // A save that leaves branding alone doesn't write it: stored branding that reads as none stays as it was.
+        // A save that leaves branding alone doesn't write it: stored values that read as unset stay as they were.
         const saved = assertRevised(await tx.update(gyms).set({ settings, ...(next.branding === undefined ? {} : { branding }), revision: guard.next, updatedAt: now })
           .where(and(eq(gyms.id, context.gymId), guard.matches)).returning({ revision: gyms.revision }));
         await writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,

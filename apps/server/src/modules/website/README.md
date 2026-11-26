@@ -101,8 +101,10 @@ The text and photo list live in the gym's settings under
 `modules.website`, through `areas/settings/module-settings.ts`. Each save takes the
 gym revision (a stale one answers 409) and writes a `settings.module.updated` audit
 event. The logo key and primary color stay in `gyms.branding`, so the core public
-pages use them too; the module saves them in the same revision. A stored value
-that doesn't parse reads as empty. No schema file, migration or job.
+pages use them too; the module saves them in the same revision. Stored text and
+photos that don't parse read as empty. In the website settings, a stored logo key
+or primary color that doesn't parse reads as unset on its own, and the other
+branding keys stay. No schema file, migration or job.
 
 ## Composition
 

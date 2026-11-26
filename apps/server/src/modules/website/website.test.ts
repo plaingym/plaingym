@@ -4,7 +4,9 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import '@hono/zod-openapi';
-import { auditEvents, uuidv7, RevisionConflictError } from '@plaingym/db';
+import { eq } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- A test fixture stores branding that no app write accepts.
+import { auditEvents, gyms, uuidv7, RevisionConflictError } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { staffRoles, type StaffRole } from '@plaingym/shared';
@@ -526,6 +528,27 @@ describe('follow-ups', () => {
     expect((await get('/public/pages/logo/' + 'f'.repeat(12))).status).toBe(404);
     expect((await get('/public/pages/logo/' + 'f'.repeat(12), app(gymB))).status).toBe(404);
     expect((await get(replaced, app(gymB))).status).toBe(404);
+  });
+
+  it('keeps the uploaded logo through a save beside a stored color it can\'t read, and releases it on removal', async () => {
+    const original = await service.settings(gymA);
+    expect((await uploadLogo()()).status).toBe(200);
+    const logoKey = (await settings.get(gymA)).branding.logoKey!;
+    const stored = async () => (await db.forGym(gymA, (tx) => tx.select({ branding: gyms.branding }).from(gyms).where(eq(gyms.id, gymA))))[0]!.branding;
+    try {
+      await db.forGym(gymA, (tx) => tx.update(gyms).set({ branding: { logoKey, primaryColor: 'red' } }).where(eq(gyms.id, gymA)));
+      // Saved through the service: this file's app resolves each gym from the whole settings, which refuse that color.
+      await service.update(system, { ...editable(await service.settings(gymA)), primaryColor: '#123456' });
+      expect(await stored()).toEqual({ logoKey, primaryColor: '#123456' });
+      expect((await uploads.get(gymA)!.head(logoKey))?.deletedAt).toBeFalsy();
+      expect(await logoUrlOn('/')).toBe(`/public/pages/logo/${logoVersion(logoKey)}`);
+      expect((await get('/public/pages/logo/' + logoVersion(logoKey))).status).toBe(200);
+      expect((await send('DELETE', '/api/website/logo', { revision: await revision() })).status).toBe(200);
+      expect((await uploads.get(gymA)!.head(logoKey))?.deletedAt).toBeTruthy();
+    } finally {
+      // Every later case reads the shared gym's whole settings, so the bad color mustn't outlive a failure here.
+      await service.update(system, { ...editable(await service.settings(gymA)), primaryColor: original.primaryColor });
+    }
   });
 
   it('answers a stored logo or photo that is over the size cap with 404', async () => {
