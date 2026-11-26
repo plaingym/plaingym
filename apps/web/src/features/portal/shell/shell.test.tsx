@@ -662,6 +662,73 @@ it('says a sign-out failed after a household switch failed too, and brings it in
   expect(document.activeElement).toBe(failure);
   expect(screen.getByText(/couldn’t open that household/)).toBeDefined();
 });
+it('closes the account menu for a failed sign-out, and a household choice clears its error', async () => {
+  const f = portal(null), user = userEvent.setup();
+  f.signOut.mockRejectedValue(new TypeError('Failed to fetch'));
+  await screen.findByRole('heading', { name: 'Choose a household' });
+  const account = screen.getByRole('button', { name: 'Account' });
+  await user.click(account);
+  await user.click(screen.getByRole('button', { name: 'Sign out' }));
+  const failure = (await screen.findByText(signOutFailed)).closest('[role="alert"]');
+  expect(account.getAttribute('aria-expanded')).toBe('false');
+  expect(document.activeElement).toBe(failure);
+  await user.click(screen.getByRole('button', { name: /Alder household/ }));
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  expect(screen.queryByText(signOutFailed)).toBeNull();
+});
+it('clears a failed sign-out when the household switcher chooses another household', async () => {
+  const f = portal(ids.first), user = userEvent.setup();
+  f.signOut.mockRejectedValue(new TypeError('Failed to fetch'));
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  await user.click(screen.getByRole('button', { name: 'Account' }));
+  await user.click(screen.getByRole('button', { name: 'Sign out' }));
+  await screen.findByText(signOutFailed);
+  await user.selectOptions(screen.getByRole('combobox'), ids.second);
+  await waitFor(() => expect(identity()).toBe('Noa Second · Member'));
+  expect(screen.queryByText(signOutFailed)).toBeNull();
+});
+it('still reports a sign-out that fails after a household was chosen while it was being sent', async () => {
+  const f = portal(null), user = userEvent.setup();
+  let fail!: (cause: unknown) => void;
+  f.signOut.mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
+  await screen.findByRole('heading', { name: 'Choose a household' });
+  await user.click(screen.getByRole('button', { name: 'Account' }));
+  await user.click(screen.getByRole('button', { name: 'Sign out' }));
+  await user.click(screen.getByRole('button', { name: /Alder household/ }));
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  await act(async () => fail(new TypeError('Failed to fetch')));
+  expect(await screen.findByText(signOutFailed)).toBeDefined();
+});
+it('clears a failed sign-out on a retry of the failed-load view', async () => {
+  const f = portal(ids.first), user = userEvent.setup();
+  const answer = f.fetcher.getMockImplementation()!;
+  let failing = true;
+  f.fetcher.mockImplementation(async (path, init) => failing && path === '/api/portal/households' ? new Response(null, { status: 500 }) : answer(path, init));
+  f.signOut.mockRejectedValue(new TypeError('Failed to fetch'));
+  await screen.findByText(/couldn.t load your portal/);
+  await user.click(screen.getByRole('button', { name: 'Sign out' }));
+  await screen.findByText(signOutFailed);
+  failing = false;
+  await user.click(screen.getByRole('button', { name: 'Try again' }));
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  expect(screen.queryByText(signOutFailed)).toBeNull();
+});
+it('clears a failed sign-out on a retry of an error inside the portal', async () => {
+  const f = portal(ids.first), user = userEvent.setup();
+  f.signOut.mockRejectedValue(new TypeError('Failed to fetch'));
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  const answer = f.fetcher.getMockImplementation()!;
+  f.fetcher.mockImplementation(async (path, init) => path === '/api/portal/context' ? new Response(null, { status: 500 }) : answer(path, init));
+  await act(() => f.cache.refetchQueries({ queryKey: [...household(ids.first), 'shell', 'context'] }));
+  const retry = await screen.findByRole('button', { name: 'Try again' });
+  await user.click(screen.getByRole('button', { name: 'Account' }));
+  await user.click(screen.getByRole('button', { name: 'Sign out' }));
+  await screen.findByText(signOutFailed);
+  f.fetcher.mockImplementation(answer);
+  await user.click(retry);
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull());
+  expect(screen.queryByText(signOutFailed)).toBeNull();
+});
 it('runs a write at once while offline and never sends it again once online', async () => {
   const connect = browserConnection();
   window.history.replaceState(null, '', '/portal');

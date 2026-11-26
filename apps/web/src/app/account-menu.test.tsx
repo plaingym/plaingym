@@ -7,9 +7,9 @@ import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } fr
 import { AccountMenu } from './account-menu.js';
 import { resetThemeChoice, themeStorageKey } from '../lib/theme.js';
 
-function renderMenu(shell: 'admin' | 'portal' = 'admin') {
+function renderMenu(shell: 'admin' | 'portal' = 'admin', onSignOut: () => void = vi.fn()) {
   const root = createRootRoute({ component: () => <AccountMenu
-    accountPath={shell === 'admin' ? '/admin/account' : '/portal/account'} onSignOut={vi.fn()} signingOut={false} /> });
+    accountPath={shell === 'admin' ? '/admin/account' : '/portal/account'} onSignOut={onSignOut} signingOut={false} /> });
   const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: [`/${shell}`] }) });
   render(<RouterProvider router={router} />);
   return router;
@@ -252,6 +252,19 @@ it('starts fresh page loads from stored Dark, or System with nothing stored', as
   await user.click(portalAccount);
   theme = within(screen.getByRole('group', { name: 'Theme' }));
   expect(theme.getByRole('radio', { name: 'System', checked: true })).toBeDefined();
+});
+
+it('closes the menu and returns focus to its button when Sign out is pressed', async () => {
+  const user = userEvent.setup(), onSignOut = vi.fn();
+  renderMenu('portal', onSignOut);
+  const account = await screen.findByRole('button', { name: 'Account' });
+  await user.click(account);
+  expect(account.getAttribute('aria-expanded')).toBe('true');
+  await user.click(screen.getByRole('button', { name: 'Sign out' }));
+  expect(onSignOut).toHaveBeenCalledOnce();
+  expect(account.getAttribute('aria-expanded')).toBe('false');
+  expect(document.getElementById('account-menu')?.hidden).toBe(true);
+  expect(document.activeElement).toBe(account);
 });
 
 it('applies the stored theme when the shell mounts, before the menu opens', async () => {

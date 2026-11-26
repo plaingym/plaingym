@@ -72,7 +72,7 @@ export function AccountMenu({ accountPath, identity, onSignOut, signingOut }:
         <Link to={accountPath} activeProps={{ 'aria-current': 'page' }} onClick={close}>{t('auth/account:menuLink')}</Link>
       </Button>}
       {open && <ThemeChoice choice={theme} onChoose={chooseTheme} />}
-      <Button variant="ghost" className="w-full justify-start" onClick={onSignOut} disabled={signingOut}>{t('shell/shell:signOut')}</Button>
+      <Button variant="ghost" className="w-full justify-start" onClick={() => { close(); trigger.current?.focus(); onSignOut(); }} disabled={signingOut}>{t('shell/shell:signOut')}</Button>
     </div>
   </div>;
 }
