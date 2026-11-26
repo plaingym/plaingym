@@ -3,6 +3,7 @@ import { and, eq, or } from 'drizzle-orm';
 import { auditEvents, forGym, households, invoices, paymentAttempts, payments, uuidv7 } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { clock as defaultClock } from '../../../../core/clock.js';
+import { logWarn } from '../../../../core/log.js';
 import type { BillingInvoiceTransitions } from '../../transitions/index.js';
 import type { ChargeOutcome, CheckoutSession, PaymentMetadata, Payments, PaymentObjectReference, Refund } from '../../../../infra/payments/index.js';
 import type { WebhookHandler, WebhookInbox } from '../inbox.js';
@@ -43,34 +44,57 @@ export function registerBillingWebhookHandlers(inbox: Pick<WebhookInbox, 'regist
   const system = (gymId: string) => ({ gymId, actor: { kind: 'system' as const } });
   const cards = createCardHandlers({ scope, clock });
   const writer = createDisputeRefundWriter({ ...options, scope, clock });
-  async function afterCheckoutRecorded(gymId: string, provider: Payments, metadata: PaymentMetadata,
-    reference: PaymentObjectReference, checkout?: CheckoutSession) {
+  type UnlinkedReason = 'Checkout link gym mismatch' | 'Webhook payment object is unresolved'
+    | 'Checkout link session is unresolved' | 'Checkout link session mismatch' | 'Checkout link association is unresolved';
+  async function linkCompletion(gymId: string, provider: Payments, metadata: PaymentMetadata,
+    reference: PaymentObjectReference, checkout?: CheckoutSession): Promise<{ status: 'done' } | { status: 'unlinked'; reason: UnlinkedReason }> {
     const linkId = metadata.linkId;
-    if (!linkId || !options.afterCheckoutRecorded) return; // Checkouts issued without link metadata retain their existing behavior.
-    if (metadata.gymId !== gymId) throw new Error('Checkout link gym mismatch');
+    if (!linkId || !options.afterCheckoutRecorded) return { status: 'done' }; // Checkouts issued without link metadata retain their existing behavior.
+    if (metadata.gymId !== gymId) return { status: 'unlinked', reason: 'Checkout link gym mismatch' };
     // Only the exact link's persisted Checkout-start association may locate a session.
     const starts = await scope(gymId, tx => tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
       eq(auditEvents.gymId, gymId), eq(auditEvents.targetType, 'signed_link'), eq(auditEvents.targetId, linkId),
       or(eq(auditEvents.action, 'billing.checkout.started'), eq(auditEvents.action, 'billing.card_setup.started')))));
     const ids = new Set(starts.flatMap(({ after }) => after !== null && typeof after === 'object'
       && 'sessionId' in after && typeof after.sessionId === 'string' ? [after.sessionId] : []));
+    let unresolved = false;
     for (const id of ids) {
       if (checkout && id !== checkout.id) continue;
-      const current = checkout ? { kind: 'checkout' as const, object: checkout } : await readCurrent(provider, { kind: 'checkout', id });
-      if (current.kind !== 'checkout') throw new Error('Checkout link session is unresolved');
+      let current;
+      if (checkout) current = { kind: 'checkout' as const, object: checkout };
+      else {
+        const result = await provider.readPaymentObject({ kind: 'checkout', id });
+        // Another recorded session of the same link may still be the one that completes it.
+        if (result.status === 'unknown') { unresolved = true; continue; }
+        current = result.value;
+      }
+      if (current.kind !== 'checkout') return { status: 'unlinked', reason: 'Checkout link session is unresolved' };
       const session = current.object;
       if ((reference.kind === 'setup' && session.setupId !== reference.id)
         || (reference.kind === 'charge' && session.chargeId !== reference.id)) continue;
       if (session.metadata.gymId !== gymId || session.metadata.linkId !== linkId)
-        throw new Error('Checkout link session mismatch');
+        return { status: 'unlinked', reason: 'Checkout link session mismatch' };
       // A successful intent can be visible before Checkout's terminal state. Its
       // session-completed event performs link completion after that state catches up.
-      if (reference.kind === 'charge' && session.status !== 'complete') return;
+      if (reference.kind === 'charge' && session.status !== 'complete') return { status: 'done' };
       if (session.status !== 'complete') throw new Error('Checkout link session mismatch');
       await options.afterCheckoutRecorded(gymId, linkId, session.id);
-      return;
+      return { status: 'done' };
     }
-    throw new Error('Checkout link association is unresolved');
+    return { status: 'unlinked', reason: unresolved ? 'Webhook payment object is unresolved' : 'Checkout link association is unresolved' };
+  }
+  async function afterCheckoutRecorded(gymId: string, provider: Payments, metadata: PaymentMetadata,
+    reference: PaymentObjectReference, checkout?: CheckoutSession) {
+    const outcome = await linkCompletion(gymId, provider, metadata, reference, checkout);
+    if (outcome.status === 'done') return;
+    // Keep literal fixed texts here so the inbox failure-reason check stays in sync with handler throws.
+    switch (outcome.reason) {
+      case 'Checkout link gym mismatch': throw new Error('Checkout link gym mismatch');
+      case 'Webhook payment object is unresolved': throw new Error('Webhook payment object is unresolved');
+      case 'Checkout link session is unresolved': throw new Error('Checkout link session is unresolved');
+      case 'Checkout link session mismatch': throw new Error('Checkout link session mismatch');
+      case 'Checkout link association is unresolved': throw new Error('Checkout link association is unresolved');
+    }
   }
   async function match(gymId: string, outcome: ChargeOutcome) {
     if (outcome.status === 'unknown') throw new Error('Webhook PaymentIntent is unresolved');
@@ -130,13 +154,26 @@ export function registerBillingWebhookHandlers(inbox: Pick<WebhookInbox, 'regist
       const found = await provider.readPaymentObject({ kind: expected, id: event.objectId });
       if (found.status === 'unknown') return;
       if (found.value.kind !== 'payment_method') throw new Error('Webhook object kind mismatch');
-      const collected = await cards.update(gymId, found.value.object, event.id);
+      const method = found.value.object;
+      const collected = await cards.update(gymId, method, event.id);
       if (collected) {
         const current = await readCurrent(provider, { kind: 'setup', id: collected.setupId });
-        if (current.kind === 'setup' && current.object.status === 'succeeded') {
-          await afterCheckoutRecorded(gymId, provider, current.object.metadata, { kind: 'setup', id: current.object.id });
-          const method = found.value.object;
-          await cards.markCollectionCompleted(gymId, method.customerId, method.id, collected.setupId);
+        if (current.kind === 'setup') {
+          let outcome: 'succeeded' | 'abandoned' | 'unlinked' | undefined;
+          if (current.object.status === 'succeeded') {
+            const completion = await linkCompletion(gymId, provider, current.object.metadata, { kind: 'setup', id: current.object.id });
+            outcome = completion.status === 'done' ? 'succeeded' : 'unlinked';
+          } else if (current.object.status === 'failed') {
+            outcome = 'abandoned';
+          }
+          if (outcome) {
+            const terminal = outcome === 'succeeded' ? undefined : outcome;
+            if (await cards.markCollectionCompleted(gymId, method.customerId, method.id, collected.setupId, terminal) && terminal) {
+              logWarn('billing.payment_method.deferred_collection_ended', {
+                gymId, paymentMethodId: method.id, setupId: collected.setupId, outcome: terminal,
+              });
+            }
+          }
         }
       }
       return;

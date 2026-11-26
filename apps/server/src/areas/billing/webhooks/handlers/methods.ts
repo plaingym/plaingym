@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, eq, gte, ne } from 'drizzle-orm';
+import { and, eq, gte, inArray, ne } from 'drizzle-orm';
 import { auditEvents, forGym, households, paymentMethods, uuidv7, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { logInfo, logWarn } from '../../../../core/log.js';
@@ -32,6 +32,8 @@ export function createCardHandlers(options: { scope: typeof forGym; clock: Clock
   async function defaultChangedSince(tx: Transaction, householdId: string, since: Date) {
     const rows = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
       eq(auditEvents.action, 'billing.card.default_changed'), eq(auditEvents.targetType, 'payment_method'),
+      inArray(auditEvents.targetId, tx.select({ id: paymentMethods.id }).from(paymentMethods)
+        .where(eq(paymentMethods.householdId, householdId))),
       gte(auditEvents.occurredAt, since)));
     return rows.some(({ after }) => (after as { householdId?: unknown } | null)?.householdId === householdId);
   }
@@ -57,10 +59,9 @@ export function createCardHandlers(options: { scope: typeof forGym; clock: Clock
         if (revocations.some(({ after }) => (after as { paymentMethodId?: unknown } | null)?.paymentMethodId === method.id)) return;
       }
       const skipped = method.type !== 'card' ? await findIncompleteBankSkip(tx, household.id, method.id) : undefined;
-      // The skipped setup's link completion runs until it has once succeeded.
+      // The skipped setup's link completion runs until it records a completion or terminal outcome.
       const collected = typeof skipped?.setupId === 'string' && !await collectionWasCompleted(tx, household.id, method.id)
         ? { setupId: skipped.setupId } : undefined;
-      const deferred = !collect && !existing && !!skipped;
       // An update can finish a bank collection previously skipped for missing digits.
       if (!collect && !existing) {
         if (!skipped) return;
@@ -78,8 +79,9 @@ export function createCardHandlers(options: { scope: typeof forGym; clock: Clock
       }
       const current = (await tx.select().from(paymentMethods).where(and(eq(paymentMethods.householdId, household.id),
         eq(paymentMethods.isDefault, true))))[0];
-      // A deferred collection never replaces a default chosen since its skip.
-      const chosenSinceSkip = deferred && !!current && await defaultChangedSince(tx, household.id, skipped!.skippedAt);
+      // A skipped bank collection never replaces a default chosen since its skip.
+      const chosenSinceSkip = !!skipped && !!current && current.id !== existing?.id
+        && await defaultChangedSince(tx, household.id, skipped.skippedAt);
       const newer = collect && !chosenSinceSkip && (!current || current.processorCreatedAt === null
         || current.processorCreatedAt < method.createdAt
         || (current.processorCreatedAt.getTime() === method.createdAt.getTime() && current.processorId < method.id));
@@ -136,13 +138,16 @@ export function createCardHandlers(options: { scope: typeof forGym; clock: Clock
     if (!setup.paymentMethodId) throw new Error('Successful SetupIntent has no payment method');
     await collect(gymId, provider, setup.customerId, setup.paymentMethodId, setup.mandateId, id);
   }
-  /** Records once that a deferred collection's setup link completion succeeded, so later updates skip it. */
-  async function markCollectionCompleted(gymId: string, customerId: string, methodId: string, setupId: string) {
-    await scope(gymId, async tx => {
+  /** Records once that a deferred collection's setup link completion ended, so later updates skip it. */
+  async function markCollectionCompleted(gymId: string, customerId: string, methodId: string, setupId: string,
+    outcome?: 'abandoned' | 'unlinked'): Promise<boolean> {
+    return scope(gymId, async tx => {
       const household = (await tx.select({ id: households.id }).from(households)
         .where(eq(households.stripeCustomerId, customerId)).for('update'))[0];
-      if (!household || await collectionWasCompleted(tx, household.id, methodId)) return;
-      await audit(tx, system(gymId), clock, collectionCompleted, 'household', household.id, { paymentMethodId: methodId, setupId });
+      if (!household || await collectionWasCompleted(tx, household.id, methodId)) return false;
+      await audit(tx, system(gymId), clock, collectionCompleted, 'household', household.id,
+        { paymentMethodId: methodId, setupId, ...(outcome ? { outcome } : {}) });
+      return true;
     });
   }
   return { collect, setup, markCollectionCompleted,
