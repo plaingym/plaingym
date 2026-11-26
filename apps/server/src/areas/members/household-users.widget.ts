@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, exists, inArray, isNull, not } from 'drizzle-orm';
+import { and, asc, eq, exists, gt, inArray, isNull, not, notExists } from 'drizzle-orm';
+import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import type { z } from '@hono/zod-openapi';
-import { forGym, households, members } from '@plaingym/db';
+import { auditEvents, forGym, households, members } from '@plaingym/db';
 import { AppError, canStaff } from '@plaingym/shared';
 import { extensionDashboardWidgetSchema } from '@plaingym/shared/contracts';
 import type { DashboardWidgetProvider } from '../../core/interfaces/extensions.js';
 import { createPortalInvitationStore, type PortalInvitationStore } from '../../infra/auth/portal-invitations.js';
-import { awaitingConfirmationCondition } from './household-users.js';
+import { awaitingConfirmationCondition, confirmationRequested } from './household-users.js';
 
 export const portalConfirmationWidgetId = 'members.portal-confirmations';
 const shown = 20;
@@ -15,8 +16,9 @@ const shown = 20;
  * `household-users.ts`), each linking to that household's Portal access tab. Password-mode installs have no mail to
  * tell them, so the dashboard does. With nothing waiting the provider returns null.
  * A household with no member left to open (all anonymized) has no tab and isn't listed, and nor
- * is one whose payer invitation is outstanding: staff have acted, and it returns if that invitation is revoked or expires
- * (its tab still shows the invitation). One query on the authentication pool finds and counts the shortlist (the invitations
+ * is one with an outstanding payer invitation issued at or after its latest confirmation request: staff have acted, and it
+ * returns if that invitation is revoked or expires (its tab still shows the invitation). An invitation issued before the
+ * latest request (a failed join sign-in's, say) doesn't count. One query on the authentication pool finds and counts the shortlist (the invitations
  * live there), and a second, on the app pool, picks each one's member. */
 export function createPortalConfirmationWidgetProvider(options: { scope?: typeof forGym; invitations?: Pick<PortalInvitationStore, 'withPayerInvitations'> } = {}):
 DashboardWidgetProvider<z.infer<typeof extensionDashboardWidgetSchema>> {
@@ -25,7 +27,11 @@ DashboardWidgetProvider<z.infer<typeof extensionDashboardWidgetSchema>> {
     async read(context) {
       if (!canStaff(context.roles, 'portal_access.manage')) throw new AppError('forbidden', 'Access denied');
       const rows = await invitations.withPayerInvitations(context.gymId, context.clock, (tx, payerInvited) => {
-        const waiting = and(awaitingConfirmationCondition(tx, context.gymId), not(payerInvited(households.id)),
+        // Only an invitation no confirmation request is later than counts as staff having acted.
+        const issuedSinceRequest = (createdAt: AnyPgColumn) => notExists(tx.select({ id: auditEvents.id }).from(auditEvents)
+          .where(and(eq(auditEvents.gymId, context.gymId), eq(auditEvents.action, confirmationRequested), eq(auditEvents.targetType, 'household'),
+            eq(auditEvents.targetId, households.id), gt(auditEvents.occurredAt, createdAt))));
+        const waiting = and(awaitingConfirmationCondition(tx, context.gymId), not(payerInvited(households.id, issuedSinceRequest)),
           exists(tx.select({ id: members.id }).from(members).where(and(eq(members.householdId, households.id), isNull(members.anonymizedAt)))));
         // The count is a scalar subquery of the same statement, so it covers every waiting household, not just the page.
         return tx.select({ id: households.id, name: households.name, count: tx.$count(households, waiting) })

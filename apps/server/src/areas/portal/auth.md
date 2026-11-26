@@ -131,9 +131,10 @@ Password-mode installs have no mail to tell staff, so the dashboard does: the
 twenty by name, each linking to the Portal access tab of its first member. It holds no
 address, and the dashboard hides it while nothing is waiting. A household with no
 member left to open, such as one whose members were all anonymized, isn't listed.
-Neither is one whose payer invitation is outstanding, since staff have acted; it
-returns if that invitation is revoked or expires, and its Portal access tab still
-lists the invitation.
+Neither is one with an outstanding payer invitation issued at or after its latest
+confirmation request, since staff have acted; it returns if that invitation is revoked
+or expires, and its Portal access tab still lists the invitation. An invitation issued
+before the latest request, such as the one a failed join sign-in left, doesn't count.
 
 ## Onboarding links
 

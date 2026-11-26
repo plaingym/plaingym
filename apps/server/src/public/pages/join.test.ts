@@ -38,6 +38,7 @@ import { createChargeRunner } from '../../areas/billing/runner/index.js';
 import { createPortalInvitationService, type PortalLoginLinkSender } from '../../areas/members/household-users.invitations.js';
 import { awaitingConfirmationCondition, createHouseholdUsersService } from '../../areas/members/household-users.js';
 import { createPortalPrincipalLoader } from '../../areas/members/household-users.context.js';
+import { createPortalConfirmationWidgetProvider } from '../../areas/members/household-users.widget.js';
 import { createAccountService } from '../../infra/auth/accounts.js';
 import { authConfig } from '../../infra/auth/config.js';
 import { createPortalInvitationStore } from '../../infra/auth/portal-invitations.js';
@@ -2150,6 +2151,11 @@ describe('the passwordless sign-in leaves the request', () => {
     expect(await invited(f, home.id)).toHaveLength(1);
     expect(await confirmationRequests(f, home.id)).toMatchObject([{ actorKind: 'system', targetType: 'household' }]);
     expect(await awaitingConfirmation(f)).toEqual([home.id]);
+    // The dashboard lists it too: the failed attempt's invitation, still outstanding, predates the request.
+    const store = createPortalInvitationStore(() => db.system.db);
+    expect(await store.outstanding(f.gymId, home.id, f.clock)).toHaveLength(1);
+    expect(await createPortalConfirmationWidgetProvider({ scope: db.forGym, invitations: store }).read({ gymId: f.gymId, roles: ['owner'], clock: f.clock }))
+      .toMatchObject({ count: 1, items: [{ label: home.name }] });
   });
 
   it('asks for no confirmation on a password-mode retry after the join ended', async () => {

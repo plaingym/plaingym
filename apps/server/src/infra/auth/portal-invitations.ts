@@ -185,17 +185,18 @@ export function createPortalInvitationStore(database = systemDatabase) {
       });
     },
     /** Runs `read` in one transaction of this gym, with `payerInvited(household)`: a condition that holds while that household
-     * has an unexpired payer invitation (the dashboard's confirmation shortlist leaves them out). The transaction is on this
-     * module's pool, so it has system context as well as the gym: business tables are scoped to the gym as in any `forGym`
-     * transaction, but system tables aren't. Keep `read` to gym tables and short (the pool has two connections); the lint rule
+     * has an unexpired payer invitation (the dashboard's confirmation shortlist leaves them out). The caller can limit it to
+     * invitations issued after a point it names: `issuedAfter(createdAt)` gets the invitation's creation instant and returns a
+     * condition joined to the rest. The transaction is on this module's pool, so it has system context as well as the gym:
+     * business tables are scoped to the gym as in any `forGym` transaction, but system tables aren't. Keep `read` to gym tables and short (the pool has two connections); the lint rule
      * already keeps system tables out of area code. */
-    async withPayerInvitations<T>(gymId: string, clock: Clock, read: (tx: Transaction, payerInvited: (household: AnyPgColumn) => SQL) => Promise<T>) {
+    async withPayerInvitations<T>(gymId: string, clock: Clock, read: (tx: Transaction, payerInvited: (household: AnyPgColumn, issuedAfter?: (createdAt: AnyPgColumn) => SQL) => SQL) => Promise<T>) {
       assertNoTransaction('auth.payerInvitations');
-      return forGym(gymId, tx => read(tx, household => exists(tx.select({ id: authVerification.id }).from(authVerification)
+      return forGym(gymId, tx => read(tx, (household, issuedAfter) => exists(tx.select({ id: authVerification.id }).from(authVerification)
         // Served by `auth_verification_portal_invitation_idx`. A row a process on the previous release wrote after the upgrade has
         // no scope, so its value decides; `issue` writes it with JSON.stringify of the strict binding, so this is the exact text.
         .where(and(invitationsOf(gymId), eq(authVerification.householdId, household), gt(authVerification.expiresAt, clock.now()),
-          or(eq(authVerification.scope, 'payer'), and(isNull(authVerification.scope), like(authVerification.value, '%"scope":"payer"%'))))))));
+          or(eq(authVerification.scope, 'payer'), and(isNull(authVerification.scope), like(authVerification.value, '%"scope":"payer"%'))), issuedAfter?.(authVerification.createdAt))))));
     },
     /** Deletes one of the household's unexpired invitations, so accepting it fails, and the identity it provisioned if nothing
      * else holds it (`removeOrphanedInvitees`). `revoked` runs in the same transaction (the audit); the invitation must belong to

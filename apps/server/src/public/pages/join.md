@@ -325,8 +325,9 @@ is gone, it sends nothing and logs the skip with its reason (`public.join.sign_i
 In password mode a join still active with an address also awaits portal confirmation by
 staff, since no mail proves the address: its **Portal access** tab shows it at once. A skipped
 retry leaves the invitation the failed attempt issued, never sent, until it expires; staff can
-revoke it on that tab. While it is outstanding the dashboard leaves the household out of
-**Households awaiting portal confirmation**, as for any household with a payer invitation. A retry's invitation replaces the earlier attempt's, so one stays live. If the address belongs to a staff login, the job leaves it without a portal
+revoke it on that tab. The dashboard's **Households awaiting portal confirmation** lists the
+household anyway, since only a payer invitation issued at or after its latest confirmation
+request counts as staff having acted. A retry's invitation replaces the earlier attempt's, so one stays live. If the address belongs to a staff login, the job leaves it without a portal
 invitation or login and records the refusal. Both public pages use the same text for every
 address. Staff see the refusal in the household's **Portal access** tab and can invite the
 member using another address. Password mode queues no sign-in job, and `/join/sign-in` is refused.

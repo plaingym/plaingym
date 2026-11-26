@@ -97,6 +97,33 @@ describe('portal confirmation widget', () => {
     expect(await provider().read({ gymId: other, roles: ['owner'], clock: expired })).toMatchObject({ count: 1, items: [{ label: 'Their household' }] });
   });
 
+  it('lists a household again when a confirmation request follows its payer invitation, until staff invite after it', async () => {
+    const gymId = await gym(), other = await gym(), origin = 'https://gym.example.test';
+    const owner = await factory('staffRoles', gymId, { role: 'owner' }), theirOwner = await factory('staffRoles', other, { role: 'owner' });
+    const at = (time: string) => new TestClock(`2026-10-30T${time}:00Z`), printed = { scope: 'payer' as const, delivery: 'print' as const };
+    const readAt = (id: string, time: string) => provider().read({ gymId: id, roles: ['owner'], clock: at(time) });
+    const retried = await waiting(gymId, 'Retried household');
+    // Another gym's household, invited after its request, is left out there and never counts here.
+    const theirs = await waiting(other, 'Their household');
+    await invitations.invite({ gymId: other, userId: theirOwner.userId, clock: at('12:03') }, theirs.home.id, { ...printed, email: `${uuidv7()}@example.test` }, origin);
+    // The invitation at 12:00 shares the request's instant, so staff have acted.
+    await invitations.invite({ gymId, userId: owner.userId, clock: at('12:00') }, retried.home.id, { ...printed, email: `${uuidv7()}@example.test` }, origin);
+    expect(await readAt(gymId, '12:00')).toBeNull();
+    // A later request (a sign-in retry that asks for confirmation) lists it despite that invitation.
+    await database.forGym(gymId, (tx) => requestPortalConfirmation(tx, gymId, retried.home.id, at('12:01')));
+    expect(await readAt(gymId, '12:02')).toEqual({ id: portalConfirmationWidgetId, titleKey: 'portal/access:waitingTitle', status: 'ready', kind: 'count', count: 1,
+      items: [{ label: 'Retried household', href: href(retried.member.id) }] });
+    expect(await readAt(other, '12:02')).toBeNull();
+    // Staff inviting after the request take it off the list again.
+    await invitations.invite({ gymId, userId: owner.userId, clock: at('12:03') }, retried.home.id, { ...printed, email: `${uuidv7()}@example.test` }, origin);
+    expect(await readAt(gymId, '12:04')).toBeNull();
+    // Another gym's later request, even one naming this household, never brings it back.
+    await database.forGym(other, (tx) => requestPortalConfirmation(tx, other, theirs.home.id, at('12:05')));
+    await database.forGym(other, (tx) => requestPortalConfirmation(tx, other, retried.home.id, at('12:05')));
+    expect(await readAt(gymId, '12:06')).toBeNull();
+    expect(await readAt(other, '12:06')).toMatchObject({ count: 1, items: [{ label: 'Their household' }] });
+  });
+
   it('leaves out a thousand payer-invited households in one statement, never sending their list back', async () => {
     const gymId = await gym(), size = 1000;
     const homes = Array.from({ length: size + 2 }, (_, index) => ({ id: uuidv7(), gymId, name: `Household ${String(index).padStart(4, '0')}`,
