@@ -41,10 +41,13 @@ of `undefined`, `null`, `void 0`, `[]` or `...[]` (an array of only holes, such 
 counts as `[]`), also wrapped in `as`, `satisfies`, `<T>` or `!`. The constructors are also
 matched as `globalThis.Intl.X`, `window.Intl.X` and `self.Intl.X`, with `Intl` or its object
 also wrapped in `as`, `satisfies`, `<T>` or `!`. Those wrappers also apply to the callee, and
-optional chains (`globalThis?.Intl`) are matched. It doesn't follow aliases (`const I = Intl`),
-nested global paths (`window.globalThis.Intl.X`), destructuring, computed access
-(`Intl['Collator']`) or `.call` / `.apply`. It allows every other spread, since lint can't see
-whether it carries a locale. CI also runs the suite with a German system locale.
+optional chains (`globalThis?.Intl`) are matched. A locale-less constructor whose
+`resolvedOptions()` result is read only for `.timeZone`, or not used at all (the call is a
+whole statement), is allowed; any other read of that result, `.locale` included, is refused.
+It doesn't follow aliases (`const I = Intl`), nested global paths
+(`window.globalThis.Intl.X`), destructuring, computed access (`Intl['Collator']`) or
+`.call` / `.apply`. It allows every other spread, since lint can't see whether it carries a
+locale. CI also runs the suite with a German system locale.
 
 **Mobile-first.** Build every screen for a 360 px wide phone first, then scale
 up: Tailwind base classes are the phone layout, and `sm:` / `md:` / `lg:` add

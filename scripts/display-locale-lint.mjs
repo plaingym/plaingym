@@ -52,16 +52,41 @@ function isEmptyLocaleArg(node) {
   return false;
 }
 
-/** @param {Syntax} node @returns {boolean} */
-function isResolvedOptionsObject(node) {
+/**
+ * The outermost type wrapper or optional chain around `node` (or `node` itself), and its parent.
+ * @param {Syntax} node @returns {{ child: Syntax, parent: Syntax | undefined }}
+ */
+function climb(node) {
   let child = node, parent = syntax(node.parent);
   while (parent && (typeWrappers.has(parent.type) || parent.type === 'ChainExpression') && parent.expression === child) {
     child = parent;
     parent = syntax(parent.parent);
   }
-  if (!parent || parent.type !== 'MemberExpression' || parent.object !== child || parent.computed) return false;
-  const prop = syntax(parent.property);
-  return prop?.type === 'Identifier' && prop.name === 'resolvedOptions';
+  return { child, parent };
+}
+
+/** @param {Syntax | undefined} node @param {string} name @returns {boolean} */
+function readsProperty(node, name) {
+  if (node?.type !== 'MemberExpression' || node.computed) return false;
+  const prop = syntax(node.property);
+  return prop?.type === 'Identifier' && prop.name === name;
+}
+
+/**
+ * Whether the constructed object only has `resolvedOptions()` called on it, and the result is read
+ * for `.timeZone` or not used at all (the call is a whole statement).
+ * @param {Syntax} node @returns {boolean}
+ */
+function isTimeZoneRead(node) {
+  const object = climb(node);
+  const member = object.parent;
+  if (!member || member.object !== object.child || !readsProperty(member, 'resolvedOptions')) return false;
+  const method = climb(member);
+  const call = method.parent;
+  if (call?.type !== 'CallExpression' || call.callee !== method.child) return false;
+  const result = climb(call);
+  if (result.parent?.type === 'ExpressionStatement') return true;
+  return result.parent?.object === result.child && readsProperty(result.parent, 'timeZone');
 }
 
 /**
@@ -88,7 +113,7 @@ function isTarget(node) {
   if (node.type === 'CallExpression' && localeStringMethods.has(prop.name)) return true;
   return isIntlObject(syntax(callee.object))
     && intlConstructors.has(prop.name)
-    && !isResolvedOptionsObject(node);
+    && !isTimeZoneRead(node);
 }
 
 /** @type {import('eslint').Rule.RuleModule} */

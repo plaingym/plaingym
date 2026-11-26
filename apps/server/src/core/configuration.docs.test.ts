@@ -169,9 +169,11 @@ function serverVariables(): Set<string> {
   cachedServerVariables = scanVariables(new Map(files.map((file) => [resolve(root, file), read(file)])));
   return cachedServerVariables;
 }
+/** The image's start-up scripts. */
+const containerScripts = () => globSync('deploy/container/*.sh', { cwd: root });
 /** Variables the deployment Compose file interpolates, and those the image's start-up scripts read. */
 function composeVariables(): Set<string> {
-  const sources = ['deploy/compose.yaml', ...globSync('deploy/container/*.sh', { cwd: root })];
+  const sources = ['deploy/compose.yaml', ...containerScripts()];
   return new Set(sources.flatMap((file) => [...read(file).matchAll(/\$\{([A-Z][A-Z0-9_]+)/g)].map(([, name]) => name!)));
 }
 /** Variables the host scripts (installer and updater) read from the install's `.env`. */
@@ -287,6 +289,7 @@ describe('docs/configuration.md', () => {
   });
   it('lists every variable the deployment Compose file uses', () => {
     const documented = documentedVariables();
+    expect(containerScripts().length).toBeGreaterThan(0);
     expect(composeVariables()).toContain('APP_IMAGE');
     expect(documented.size).toBeGreaterThan(40);
     expect([...composeVariables()].filter((name) => !documented.has(name)).sort()).toEqual([]);
@@ -302,10 +305,12 @@ describe('docs/configuration.md', () => {
     beforeAll(() => { serverVariables(); }, 120_000);
     it('lists every variable the server reads', () => {
       const documented = documentedVariables();
+      expect(serverVariables()).toContain('APP_ENCRYPTION_KEY');
       expect([...serverVariables()].filter((name) => !documented.has(name)).sort()).toEqual([]);
     });
     it('lists only variables something still reads', () => {
       const used = new Set([...serverVariables(), ...composeVariables(), ...hostVariables()]);
+      expect(documentedVariables().size).toBeGreaterThan(40);
       expect([...documentedVariables()].filter((name) => !used.has(name)).sort()).toEqual([]);
     });
     it('finds the variables it checks', () => {

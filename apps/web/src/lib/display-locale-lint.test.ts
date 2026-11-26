@@ -59,6 +59,12 @@ describe('display locale lint rule', () => {
     'new (globalThis?.Intl).NumberFormat();',
     'Intl.NumberFormat?.();',
     '(Intl.DateTimeFormat?.()).format(date);',
+    'new Intl.NumberFormat().resolvedOptions().locale;',
+    'Intl.DateTimeFormat().resolvedOptions()?.locale;',
+    "Intl.DateTimeFormat().resolvedOptions()['timeZone'];",
+    'const { locale } = new Intl.NumberFormat().resolvedOptions();',
+    'const options = Intl.DateTimeFormat().resolvedOptions();',
+    'new Intl.DateTimeFormat().resolvedOptions;',
   ])('refuses %s', async code => {
     expect(await restricted(code)).toHaveLength(1);
   });
@@ -94,6 +100,9 @@ describe('display locale lint rule', () => {
     '(Intl?.DateTimeFormat())!.resolvedOptions();',
     '((Intl.DateTimeFormat?.()) as Intl.DateTimeFormat).resolvedOptions();',
     "Intl.NumberFormat!('en');",
+    'Intl.DateTimeFormat().resolvedOptions()?.timeZone;',
+    'const zone = new Intl.DateTimeFormat().resolvedOptions().timeZone;',
+    '(Intl.DateTimeFormat().resolvedOptions() as Intl.ResolvedDateTimeFormatOptions).timeZone;',
     // Nested global paths aren't followed.
     'new window.globalThis.Intl.NumberFormat();',
   ])('allows %s', async code => {
