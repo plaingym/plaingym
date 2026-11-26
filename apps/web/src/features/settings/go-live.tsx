@@ -50,6 +50,9 @@ export function GoLiveSettings() {
   const [confirmBilling, setConfirmBilling] = useState(false), [confirmedKey, setConfirmedKey] = useState<string | null>(null);
   // Set when a failed read closed the dialog: the read alert then takes the focus the dialog would return to a disabled switch.
   const [readAlertFocus, setReadAlertFocus] = useState(false);
+  // The heading acts on nothing, so it takes the focus when billing turned on elsewhere removes what held it.
+  const heading = useRef<HTMLHeadingElement>(null);
+  const [headingFocus, setHeadingFocus] = useState(false);
   // The page's alert: the plain one, or the read alert in its place.
   const messageBox = useRef<HTMLDivElement>(null);
   // The past-due dialog's own alert.
@@ -116,15 +119,28 @@ export function GoLiveSettings() {
   }, [messageRevision, settings?.revision]);
   // The past-due dialog is modal, so it closes once no save is running if a read failed (the page's retry is behind it),
   // billing is already on (a save that timed out may have turned it on, leaving nothing to confirm), or the list it asks
-  // about is empty. A refusal that asks to turn billing on is put away once billing is on.
+  // about is empty. Closing for billing on moves the focus off the opener, which now turns billing off, to the heading,
+  // unless a message stays to take it.
   useEffect(() => {
     if (confirmBilling && !busy && (readFailed || checklist?.billingEnabled || !checklist?.pastDueMemberships.length)) {
       setConfirmBilling(false); setConfirmedKey(null);
       if (readFailed) setReadAlertFocus(true);
-      if (!readFailed && checklist?.billingEnabled && message === 'paymentsReadFailed') { setMessage(null); setMessageRevision(null); }
+      if (!readFailed && checklist?.billingEnabled && (message === null || message === 'paymentsReadFailed')) setHeadingFocus(true);
     }
   }, [confirmBilling, busy, readFailed, checklist, message]);
   useEffect(() => { if (!readFailed) setReadAlertFocus(false); }, [readFailed]);
+  // A refusal that asks to turn billing on is put away once billing is on, with or without the dialog.
+  useEffect(() => {
+    if (message !== 'paymentsReadFailed' || busy || readFailed || !checklist?.billingEnabled) return;
+    if (messageBox.current?.contains(document.activeElement) || dialogBox.current?.contains(document.activeElement)) setHeadingFocus(true);
+    setMessage(null); setMessageRevision(null);
+  }, [message, busy, readFailed, checklist]);
+  // Runs after a closing dialog has returned the focus to its opener.
+  useEffect(() => {
+    if (!headingFocus) return;
+    setHeadingFocus(false);
+    heading.current?.focus();
+  }, [headingFocus]);
   // Read while rendering, before a swap between the two alerts can move the focus: a reason the settings have moved past,
   // with the owner working elsewhere, is about to be dropped, so the plain alert must not take the focus for it first.
   const leftBehind = messageRevision !== null && settings?.revision !== messageRevision
@@ -197,7 +213,7 @@ export function GoLiveSettings() {
     finally { setBusy(false); setChecking(false); }
   }
   return <section className="space-y-4" aria-label={label('title')}>
-    <h2 className="text-lg font-semibold">{label('title')}</h2>
+    <h2 ref={heading} tabIndex={-1} className="text-lg font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">{label('title')}</h2>
     <p className="text-sm text-muted-foreground">{label('help')}</p>
     {readFailed ? <Alert ref={messageBox} variant="error" focusOnReveal={readAlertFocus}>{refusedUnread && label(refusedUnread + 'Unread') + ' '}{label('error')}
       <Button variant="outline" className="mt-3 sm:ml-3 sm:mt-0" onClick={retry}>{label('retry')}</Button></Alert>

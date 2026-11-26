@@ -589,6 +589,9 @@ describe('go-live settings', () => {
       await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
       expect(await screen.findByRole('button', { name: 'Turn off: Billing' })).toBeDefined();
       expect(screen.getByRole('alert').textContent).toContain('The save took too long to answer and may still have gone through');
+      await act(async () => { await Promise.resolve(); });
+      expect(document.activeElement).not.toBe(screen.getByRole('heading', { level: 2 }));
+      expect(document.activeElement).toBe(screen.getByRole('alert'));
       expect(client.PATCH.mock.calls.length).toBeGreaterThan(0);
       for (const [, init] of client.PATCH.mock.calls as [string, { body: UpdateGoLiveRequest }][]) expect(init.body.billingEnabled).not.toBe(false);
     } finally { timers.restore(); }
@@ -927,6 +930,58 @@ describe('go-live settings', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(screen.getByRole('button', { name: 'Turn off: Billing' })).toBeDefined();
     expect(screen.queryByRole('alert')).toBeNull();
+    const heading = screen.getByRole('heading', { level: 2 });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+    // The heading acts on nothing: an unlooked Enter or Space never turns billing off.
+    const sent = client.PATCH.mock.calls.length;
+    const user = userEvent.setup();
+    await user.keyboard('{Enter}');
+    await user.keyboard(' ');
+    expect(client.PATCH).toHaveBeenCalledTimes(sent);
+  });
+  it('focuses the heading when the open past-due dialog, with no message, closes because billing is already on', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } });
+    live.mockResolvedValue(reply(200, overdue()));
+    const user = userEvent.setup(); start(queryClient);
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
+    expect(screen.getByRole('dialog', { name: 'Review past billing dates' })).toBeDefined();
+    live.mockResolvedValue(reply(200, { data: { ...overdue().data, revision: 4, billingEnabled: true } }));
+    moveSettings(queryClient);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { level: 2 })));
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+  it('puts a focused Stripe refusal away once billing is on with no past-due dialog, and focuses the heading', async () => {
+    const queryClient = await refuse({ name: 'Billing', status: 503, details: { billingEnabled: ['read_failed'] },
+      plain: 'Stripe could not be checked. Try turning billing on again.' });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('alert')));
+    live.mockResolvedValue(reply(200, checklist(4, true)));
+    moveSettings(queryClient);
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(screen.getByRole('button', { name: 'Turn off: Billing' })).toBeDefined();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { level: 2 })));
+  });
+  it('puts a cancelled Stripe refusal away once billing is on, without moving the focus', async () => {
+    const { queryClient, user, dialog } = await refuseInDialog();
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    leaveAlert();
+    live.mockResolvedValue(reply(200, { data: { ...overdue().data, revision: 4, billingEnabled: true } }));
+    moveSettings(queryClient);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Turn off: Billing' })).toBeDefined());
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(document.activeElement).toBe(document.body);
+  });
+  it('puts a cancelled Stripe refusal away when only the checklist shows billing on', async () => {
+    const { user, dialog } = await refuseInDialog();
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    leaveAlert();
+    // The settings revision stays, so nothing but billing being on drops the message.
+    live.mockResolvedValue(reply(200, { data: { ...overdue().data, billingEnabled: true } }));
+    act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+    await screen.findByRole('button', { name: 'Turn off: Billing' });
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(document.activeElement).toBe(document.body);
   });
   it('keeps a Stripe refusal when the past-due dialog closes because the list emptied with billing off', async () => {
     const { queryClient, alert } = await refuseInDialog();
