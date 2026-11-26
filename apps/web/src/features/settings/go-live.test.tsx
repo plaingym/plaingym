@@ -477,6 +477,34 @@ describe('go-live settings', () => {
       },
     });
   });
+  it('unticks the past-due confirmation when a focus read changes one membership revision', async () => {
+    const initial = overdue();
+    const changed = overdue();
+    changed.data.pastDueMemberships[0]!.revision = 3;
+    changed.data.items = changed.data.items.map(item => item.id === 'smtp_ready' ? { ...item, message: 'Read again with a new revision' } : item);
+    live.mockResolvedValueOnce(reply(200, initial)).mockResolvedValueOnce(reply(200, changed));
+    const user = userEvent.setup(); start();
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
+    const dialog = screen.getByRole('dialog', { name: 'Review past billing dates' });
+    const box = within(dialog).getByRole<HTMLInputElement>('checkbox');
+    const confirm = within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Confirm dates and turn billing on' });
+    await user.click(box);
+    expect(box.checked).toBe(true);
+    expect(confirm.disabled).toBe(false);
+    // Read at each DOM change, so a tick an effect clears only after the changed list has rendered is caught too.
+    const changedRenders: { ticked: boolean; disabled: boolean }[] = [];
+    const observer = new MutationObserver(() => {
+      if (screen.queryByText('Read again with a new revision')) changedRenders.push({ ticked: box.checked, disabled: confirm.disabled });
+    });
+    observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+    act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+    await screen.findByText('Read again with a new revision');
+    observer.disconnect();
+    expect(changedRenders[0]).toEqual({ ticked: false, disabled: true });
+    expect(box.checked).toBe(false);
+    expect(confirm.disabled).toBe(true);
+    expect(client.PATCH).not.toHaveBeenCalled();
+  });
   it('keeps switches locked through overlapping explicit reloads until the latest read answers', async () => {
     let resolveFirst!: (value: unknown) => void, resolveSecond!: (value: unknown) => void;
     live.mockResolvedValueOnce(reply(200, checklist()))

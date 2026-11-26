@@ -44,7 +44,8 @@ export function GoLiveSettings() {
   const [saving, setBusy] = useState(false);
   const [message, setMessage] = useState<'error' | 'timeout' | 'changed' | 'justSaved' | 'smsProviderRequired'
     | 'smsProviderReadFailed' | 'paymentsReadFailed' | null>(null);
-  const [confirmBilling, setConfirmBilling] = useState(false), [confirmed, setConfirmed] = useState(false);
+  // The tick is kept as the past-due list it was given for, so it never counts for a list that has since changed.
+  const [confirmBilling, setConfirmBilling] = useState(false), [confirmedKey, setConfirmedKey] = useState<string | null>(null);
   const [checking, setChecking] = useState(false), [checkError, setCheckError] = useState<'reconcileError' | 'reconcileTimeout' | 'reconcileBusy' | null>(null);
   // The switches save the gym revision that every section of the page shares, so another section's save doesn't stale them.
   const gym = useGymSettings(), settings = gym.settings;
@@ -55,7 +56,7 @@ export function GoLiveSettings() {
   const busy = saving || (query.isFetching && !background);
   const readError = query.isError && (query.data === undefined || ownRead === 'failed');
   const pastDueKey = (checklist?.pastDueMemberships ?? []).map(({ id, revision, nextDueOn }) => id + ':' + revision + ':' + nextDueOn).join('|');
-  useEffect(() => { setConfirmed(false); }, [pastDueKey]);
+  const confirmed = confirmedKey !== null && confirmedKey === pastDueKey;
   useEffect(() => { if (query.data) rememberChecklist(query.data); }, [query.data]);
   useEffect(() => { setOwnRead(null); }, [query.dataUpdatedAt]);
   useEffect(() => { if (ownRead === 'pending' && !query.isFetching) setOwnRead(query.isError ? 'failed' : null); }, [query.isFetching]);
@@ -91,7 +92,7 @@ export function GoLiveSettings() {
    * settings did not move past it (their reload failed, or the server's revision went back), nothing else will.
    */
   function conflict(result: SaveResult, read: number) {
-    setConfirmBilling(false); setConfirmed(false);
+    setConfirmBilling(false); setConfirmedKey(null);
     // A save refused unsent because another section of this page saved first is not another user's change.
     setMessage(result.refused === 'saved' ? 'justSaved' : 'changed');
     if (result.settings.revision <= read) reloadChecklist();
@@ -105,7 +106,7 @@ export function GoLiveSettings() {
   async function toggle(name: keyof GoLiveSwitches, confirmDates = false) {
     if (!checklist || !settings || locked) return;
     if (name === 'billingEnabled' && !checklist.billingEnabled && checklist.pastDueMemberships.length && !confirmDates) {
-      setConfirmed(false); setConfirmBilling(true); return;
+      setConfirmedKey(null); setConfirmBilling(true); return;
     }
     setBusy(true); setMessage(null);
     try {
@@ -126,7 +127,7 @@ export function GoLiveSettings() {
       }
       if (result.status >= 300) throw new Error();
       setChecklist(parseChecklist(result.data));
-      setConfirmBilling(false); setConfirmed(false);
+      setConfirmBilling(false); setConfirmedKey(null);
     } catch (error) { setMessage(error instanceof SaveTimeoutError ? 'timeout' : 'error'); }
     finally { setBusy(false); }
   }
@@ -193,11 +194,11 @@ export function GoLiveSettings() {
       </div>}
       {confirmBilling && <Dialog title={label('confirmTitle')} description={label('pastDueHelp')} closeLabel={label('close')}
         dismissible={!busy}
-        onClose={() => { if (!busy) { setConfirmBilling(false); setConfirmed(false); } }}>
+        onClose={() => { if (!busy) { setConfirmBilling(false); setConfirmedKey(null); } }}>
         <div className="space-y-4">
           <PastDueList memberships={checklist.pastDueMemberships}/>
           <CheckboxField label={label('confirmDates')} checked={confirmed} disabled={busy}
-            onChange={(event) => setConfirmed(event.target.checked)}/>
+            onChange={(event) => setConfirmedKey(event.target.checked ? pastDueKey : null)}/>
           {/* The dialog is modal: the page's alert behind it can't be seen, so a failed save shows here too. */}
           {(message === 'error' || message === 'paymentsReadFailed' || message === 'timeout')
             && <Alert variant="error" focusOnReveal>{label(message)}</Alert>}
