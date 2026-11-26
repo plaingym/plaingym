@@ -65,13 +65,32 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
   // Whether the focus was last inside the loading, error or section view. When one view replaces another and takes the
   // focused control with it, the new view's button takes the focus.
   const held = useRef(false);
-  // A closing dialog gives the focus back to its opener while React reports no focus events, so that return is marked here.
-  useEffect(() => { if (confirming === null && document.activeElement === action.current) held.current = true; }, [confirming]);
+  const views = useRef<HTMLDivElement>(null), keep = useRef<HTMLButtonElement>(null), asked = useRef(false);
+  // A closing dialog gives the focus back to its opener while React reports no focus events, or can't because that button is
+  // off, so the focus is marked as the views' here.
   useEffect(() => {
+    if (confirming !== null) { asked.current = true; return; }
+    if (!asked.current) return;
+    asked.current = false;
+    if (document.activeElement === document.body || views.current?.contains(document.activeElement)) held.current = true;
+  }, [confirming]);
+  useEffect(() => {
+    if (confirming !== null) return;
     if (!held.current || document.activeElement !== document.body) return;
     if (view === 'error') errorState.current?.querySelector('button')?.focus();
     else if (view === 'section') action.current?.focus();
-  }, [view, waiting]);
+  }, [view, waiting, busy, confirming, scope.moving]);
+  // A focus anywhere else on the page takes the mark away, even after a press on empty space had left it set.
+  useEffect(() => {
+    const focused = (event: FocusEvent) => { if (!views.current?.contains(event.target as Node)) held.current = false; };
+    document.addEventListener('focusin', focused);
+    return () => document.removeEventListener('focusin', focused);
+  }, []);
+  // The dialog's retry goes away once its read works. The button that closes the dialog takes the focus, never the one
+  // that replaces the code.
+  useEffect(() => {
+    if (confirming !== null && !code.isError && document.activeElement === document.body) keep.current?.focus();
+  }, [code.isError]);
   async function regenerate() {
     if (!code.data || code.isError || rereading.has(memberId) || locked.current) return;
     const id = memberId, creating = !code.data.code;
@@ -117,7 +136,7 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
     <PageHeader title={text('title')} description={text('description')} />
     <MemberPicker label={text('member')} members={members.data} value={memberId} onChange={id => { setError(''); setConfirming(null); choose(id); }} />
     {/* A focused control removed with its view sends no blur that names another element, so the mark stays. */}
-    <div onFocus={() => { held.current = true; }} onBlur={event => { if (event.relatedTarget) held.current = false; }}>
+    <div ref={views} onFocus={() => { held.current = true; }} onBlur={event => { if (event.relatedTarget) held.current = false; }}>
       {view === 'loading' ? <LoadingState label={text('loading')} />
         : view === 'error' ? <div ref={errorState}><ErrorState message={text(code.error instanceof ApiError && code.error.status === 503 ? 'unavailable' : 'error')} onRetry={() => void code.refetch()} /></div>
           : <section className="space-y-4" aria-label={text('codeFor', { name: member?.name ?? '' })}>
@@ -136,7 +155,7 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
         {/* The dialog covers the page's own retry. */}
         {code.isError && <Button variant="outline" className="w-full sm:w-auto" disabled={code.isFetching} onClick={() => void code.refetch()}>{text('retry')}</Button>}
         <div className="flex flex-col gap-3 sm:flex-row"><Button disabled={busy || unread} onClick={() => void regenerate()}>{text(busy ? 'saving' : 'confirm')}</Button>
-          <Button variant="outline" disabled={busy} onClick={dismiss}>{text('keep')}</Button></div></div>
+          <Button ref={keep} variant="outline" disabled={busy} onClick={dismiss}>{text('keep')}</Button></div></div>
     </Dialog>}
   </PortalRecovery></Page>;
 }
