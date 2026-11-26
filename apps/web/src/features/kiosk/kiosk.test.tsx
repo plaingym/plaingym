@@ -635,6 +635,63 @@ describe('kiosk check-in screen', () => {
       act(() => name.focus());
       expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: 'center' });
     });
+    /** Types the name and PIN, focuses the name field, puts the form at the given position and sends the form as Enter does. */
+    async function sendWithEnter(height: number, formTop: number) {
+      const { name } = open(height, 100);
+      fill();
+      act(() => name.focus());
+      const form = name.closest('form')!;
+      rect(form, formTop);
+      scroll.mockClear();
+      // jsdom has no implicit submission, so request it from the form while the name field keeps the focus.
+      await act(async () => { form.requestSubmit(); });
+      expect(document.activeElement).toBe(name);
+      return form;
+    }
+    it('brings the not found note into view after a search sent with Enter', async () => {
+      vi.mocked(kioskApi.lookup).mockResolvedValueOnce({ status: 'see_front_desk' });
+      const form = await sendWithEnter(400, -40);
+      expect(screen.getByRole('status').textContent).not.toBe('');
+      expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: 'start' });
+      expect(scroll.mock.contexts[0]).toBe(form);
+    });
+    it('leaves a tall screen where it is after a search sent with Enter', async () => {
+      vi.mocked(kioskApi.lookup).mockResolvedValueOnce({ status: 'see_front_desk' });
+      await sendWithEnter(800, -40);
+      expect(screen.getByRole('status').textContent).not.toBe('');
+      expect(scroll).not.toHaveBeenCalled();
+    });
+    it('leaves a visible note and field where they are after a search sent with Enter', async () => {
+      vi.mocked(kioskApi.lookup).mockResolvedValueOnce({ status: 'see_front_desk' });
+      await sendWithEnter(400, 0);
+      expect(screen.getByRole('status').textContent).not.toBe('');
+      expect(scroll).not.toHaveBeenCalled();
+    });
+    it('does not scroll for a note when the search button sent the search', async () => {
+      vi.mocked(kioskApi.lookup).mockResolvedValueOnce({ status: 'see_front_desk' });
+      const { name } = open(400, 100);
+      fill();
+      rect(name.closest('form')!, -40);
+      const find = screen.getByRole('button', { name: 'Find me' });
+      act(() => find.focus());
+      scroll.mockClear();
+      await act(async () => { fireEvent.click(find); });
+      expect(screen.getByRole('status').textContent).not.toBe('');
+      expect(scroll).not.toHaveBeenCalled();
+    });
+    it('leaves an error note its own focus and scroll after a search sent with Enter', async () => {
+      vi.mocked(kioskApi.lookup).mockRejectedValueOnce(new Error('offline'));
+      const { name } = open(400, 100);
+      fill();
+      act(() => name.focus());
+      rect(name.closest('form')!, -40);
+      scroll.mockClear();
+      await act(async () => { name.closest('form')!.requestSubmit(); });
+      const alert = screen.getByRole('alert');
+      expect(document.activeElement).toBe(alert);
+      expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: 'center' });
+      expect(scroll.mock.contexts[0]).toBe(alert);
+    });
   });
   it('takes the name field focus without a visual viewport', () => {
     vi.stubGlobal('visualViewport', undefined);

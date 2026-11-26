@@ -206,6 +206,8 @@ function Search({ busy, message, onSearch }: { busy: boolean; message?: 'not_fou
     viewport.addEventListener('resize', resized);
     return () => viewport.removeEventListener('resize', resized);
   }, [scrollName]);
+  // A search sent with Enter keeps the focus and the keyboard, so no focus or resize event shows the note.
+  useEffect(() => { if (message && document.activeElement === nameRef.current) scrollName(); }, [message, scrollName]);
   function submit(event: FormEvent) { event.preventDefault(); if (name.trim() && pin.length >= 4 && !busy) { onSearch(name.trim(), pin); setPin(''); } }
   return <form ref={form} className="space-y-4 sm:space-y-6" onSubmit={submit}>
     {message && <Alert variant={message === 'error' ? 'error' : 'info'} focusOnReveal>{text(message === 'error' ? 'error' : 'notFound')}</Alert>}
