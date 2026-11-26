@@ -127,6 +127,66 @@ describe('settings service and routes', () => {
     expect((audit!.before as { branding: unknown }).branding).toStrictEqual({ logoKey });
     expect((audit!.after as { branding: unknown }).branding).toStrictEqual({ logoKey });
   });
+  it('leaves a stored address value that doesn\'t parse out of the whole read and the module read', async () => {
+    const gymId = uuidv7();
+    await factory('gyms', gymId, { address: { line1: '1 Main', country: 'usa', newerKey: 'kept' } });
+    expect((await database.forGym(gymId, (tx) => readGymSettings(tx, gymId))).address).toStrictEqual({ line1: '1 Main' });
+    const both = await database.forGym(gymId, (tx) => readGymAndModuleSettings(tx, gymId, 'website'));
+    expect(both.gym.address).toStrictEqual({ line1: '1 Main' });
+  });
+  it.each<{ name: string; stored: unknown }>([
+    { name: 'null', stored: sql`'null'::jsonb` },
+    { name: 'an array', stored: [] },
+    { name: 'a string', stored: 'text' },
+    { name: 'an object with a null city', stored: { city: null } },
+  ])('reads stored address that is $name as empty through both reads', async ({ stored }) => {
+    const gymId = uuidv7();
+    await factory('gyms', gymId);
+    await database.forGym(gymId, (tx) => tx.update(gyms).set({ address: stored }).where(eq(gyms.id, gymId)));
+    expect((await database.forGym(gymId, (tx) => readGymSettings(tx, gymId))).address).toStrictEqual({});
+    const both = await database.forGym(gymId, (tx) => readGymAndModuleSettings(tx, gymId, 'website'));
+    expect(both.gym.address).toStrictEqual({});
+  });
+  it('keeps a stored address value that doesn\'t parse until a save writes the address, which keeps only newer keys', async () => {
+    const gymId = uuidv7(), context = { gymId, actor: { kind: 'system' } } as const;
+    const address = { city: 'North', country: 'usa', newerKey: 'kept' };
+    await factory('gyms', gymId, { address });
+    const read = () => database.forGym(gymId, (tx) => tx.select({ address: gyms.address }).from(gyms).where(eq(gyms.id, gymId)));
+    const { revision } = await service.get(gymId);
+    const renamed = await service.update(context, 'general', { revision, name: 'Renamed' });
+    expect((await read())[0]!.address).toStrictEqual(address);
+    await service.update(context, 'general', { revision: renamed.revision, address: { city: 'South' } });
+    expect((await read())[0]!.address).toStrictEqual({ city: 'South', newerKey: 'kept' });
+    const audits = await database.forGym(gymId, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'settings.general.updated')));
+    const audit = audits.find((item) => (item.after as { address: { city?: string } }).address.city === 'South')!;
+    expect((audit.before as { address: unknown }).address).toStrictEqual({ city: 'North' });
+  });
+  it.each<{ name: string; stored: unknown }>([
+    { name: 'null', stored: sql`'null'::jsonb` },
+    { name: 'a string', stored: 'text' },
+    { name: 'an array', stored: ['a', 'b'] },
+  ])('replaces stored branding that is $name with what a save sends', async ({ stored }) => {
+    const gymId = uuidv7();
+    await factory('gyms', gymId);
+    await database.forGym(gymId, (tx) => tx.update(gyms).set({ branding: stored }).where(eq(gyms.id, gymId)));
+    const { revision } = await service.get(gymId);
+    await service.update({ gymId, actor: { kind: 'system' } }, 'general', { revision, branding: { primaryColor: '#123456' } });
+    const [row] = await database.forGym(gymId, (tx) => tx.select({ branding: gyms.branding }).from(gyms).where(eq(gyms.id, gymId)));
+    expect(row!.branding).toStrictEqual({ primaryColor: '#123456' });
+  });
+  it.each<{ name: string; stored: unknown }>([
+    { name: 'null', stored: sql`'null'::jsonb` },
+    { name: 'a string', stored: 'text' },
+    { name: 'an array', stored: ['a'] },
+  ])('replaces a stored address that is $name with what a save sends', async ({ stored }) => {
+    const gymId = uuidv7();
+    await factory('gyms', gymId);
+    await database.forGym(gymId, (tx) => tx.update(gyms).set({ address: stored }).where(eq(gyms.id, gymId)));
+    const { revision } = await service.get(gymId);
+    await service.update({ gymId, actor: { kind: 'system' } }, 'general', { revision, address: { city: 'South' } });
+    const [row] = await database.forGym(gymId, (tx) => tx.select({ address: gyms.address }).from(gyms).where(eq(gyms.id, gymId)));
+    expect(row!.address).toStrictEqual({ city: 'South' });
+  });
   it('compares revisions, audits safe fields in the same transaction and reads the injected clock', async () => {
     const before = await service.get(gymA);
     const after = await service.update(mutation, 'general', { revision: before.revision, websiteEnabled: true });

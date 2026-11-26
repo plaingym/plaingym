@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { households, members, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
+import { readGymSettings } from '../settings/settings.js';
 import { householdNoticePhones, memberNoticePhones } from './sms-recipients.js';
 
 const db = useTestDatabase(), make = createFactories(db), at = new Date('2026-11-16T12:00:00Z');
@@ -39,8 +40,11 @@ it('prefers consent on the billing phone, else uses only consented members at it
   await db.forGym(f.gymId, tx => tx.update(members).set({ email: 'someone-else@example.test' }).where(eq(members.id, child.id)));
   expect(await db.forGym(f.gymId, tx => householdNoticePhones(tx, f.gymId, [f.home.id]))).toEqual([]);
 });
-async function billingFixture(country?: string) {
-  const gymId = uuidv7(); await make('gyms', gymId, country ? { address: { country } } : {});
+// A stored site address the settings schema rejects fails every whole settings read.
+const unreadableSettings = { existingSiteUrl: 'ftp://example.org' };
+const readSettings = (gymId: string) => db.forGym(gymId, tx => readGymSettings(tx, gymId));
+async function billingFixture(country?: string, gym: { existingSiteUrl?: string } = {}) {
+  const gymId = uuidv7(); await make('gyms', gymId, { ...(country ? { address: { country } } : {}), ...gym });
   const home = await make('households', gymId, { email: 'payer@example.test', phone: '202 555 0123', phoneE164: '+12025550123', ...consent });
   const child = await make('members', gymId, { householdId: home.id, email: 'payer@example.test', phone: '+12025550199', phoneE164: '+12025550199', ...consent });
   return { gymId, home, child };
@@ -66,15 +70,17 @@ it('falls back to no phone when the member phone is stale for the country', asyn
   expect(await db.forGym(f.gymId, tx => householdNoticePhones(tx, f.gymId, [f.home.id]))).toEqual([]);
 });
 it('keeps an E.164 billing phone without reading the gym country', async () => {
-  // A stored country the settings schema would reject proves the read is skipped.
-  const f = await billingFixture('gb');
+  // The settings read would fail for this gym, so a result proves it is skipped.
+  const f = await billingFixture('GB', unreadableSettings);
+  await expect(readSettings(f.gymId)).rejects.toThrow();
   await db.forGym(f.gymId, tx => tx.update(households).set({ phone: '+12025550123' }).where(eq(households.id, f.home.id)));
   expect(await db.forGym(f.gymId, tx => householdNoticePhones(tx, f.gymId, [f.home.id]))).toEqual([{
     phoneE164: '+12025550123', memberIds: [f.child.id], householdIds: [f.home.id], consentMemberIds: [], consentHouseholdIds: [f.home.id],
   }]);
 });
-async function classFixture(country: string, member: { phone: string | null; phoneE164: string | null }, billing = { phone: '+12025550123', phoneE164: '+12025550123' }) {
-  const gymId = uuidv7(); await make('gyms', gymId, { address: { country } });
+async function classFixture(country: string, member: { phone: string | null; phoneE164: string | null }, billing = { phone: '+12025550123', phoneE164: '+12025550123' },
+  gym: { existingSiteUrl?: string } = {}) {
+  const gymId = uuidv7(); await make('gyms', gymId, { address: { country }, ...gym });
   const home = await make('households', gymId, { ...billing, ...consent });
   // Notices consent needs a phone to consent for.
   const child = await make('members', gymId, { householdId: home.id, ...member, ...(member.phone ? consent : {}) });
@@ -98,8 +104,9 @@ it('keeps a national member phone that is current for the country', async () => 
   }]);
 });
 it('chooses class notice phones without reading the gym country when every phone is E.164', async () => {
-  // A stored country the settings schema would reject proves the read is skipped.
-  const f = await classFixture('gb', { phone: '+12025550199', phoneE164: '+12025550199' });
+  // The settings read would fail for this gym, so a result proves it is skipped.
+  const f = await classFixture('GB', { phone: '+12025550199', phoneE164: '+12025550199' }, undefined, unreadableSettings);
+  await expect(readSettings(f.gymId)).rejects.toThrow();
   expect((await db.forGym(f.gymId, tx => memberNoticePhones(tx, f.gymId, [f.child.id]))).map(group => group.phoneE164)).toEqual(['+12025550199']);
 });
 it('never substitutes announcements consent, anonymized members, or another gym', async () => {
