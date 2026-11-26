@@ -14,7 +14,7 @@ import { localDate } from '@plaingym/shared/time';
 import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
 import { readPublicBranding } from './service.js';
-import { logError, logWarn } from '../../core/log.js';
+import { logError, logInfo, logWarn } from '../../core/log.js';
 import { createGymSettingsAccessor, readGymSettings } from '../../areas/settings/settings.js';
 import { addsTaxOnTop } from '../../areas/billing/invoicing/adds-tax-on-top.js';
 import { signedLinkWaiversComplete, type WaiversService } from '../../areas/waivers/waivers.js';
@@ -34,7 +34,7 @@ import { createPortalInvitationStore } from '../../infra/auth/portal-invitations
 import type { Uploads } from '../../infra/storage/index.js';
 import type { Payments } from '../../infra/payments/index.js';
 import { createJoinCleanup } from './join.cleanup.js';
-import { joinSignInJob } from './join.jobs.js';
+import { joinSignInAttempts, joinSignInJob } from './join.jobs.js';
 import { withJobTransaction, type Jobs } from '../../infra/jobs/index.js';
 import { reservePublicIntake } from '../../core/rate-limit-intake.js';
 import { createInvoiceTransitions } from '../../areas/billing/transitions/index.js';
@@ -127,6 +127,15 @@ async function recorded<T extends z.ZodType>(tx: Transaction, action: string, ho
 }
 const marked = async (tx: Transaction, action: string, householdId: string) => (await tx.select({ id: auditEvents.id }).from(auditEvents)
   .where(and(eq(auditEvents.action, action), eq(auditEvents.targetId, householdId))).limit(1)).length > 0;
+/** A completed join by the memberships it recorded that still exist (a removed row never leaves the join confirming):
+ * a live one, or a pending one with a settled bill, is `active`; none pending is `ended`; otherwise `null` (still confirming). */
+async function completedStatus(tx: Transaction, householdId: string, record: { membershipIds: readonly string[] }, bill: { status: string }): Promise<'active' | 'ended' | null> {
+  const rows = await tx.select({ status: memberships.status }).from(memberships)
+    .where(and(eq(memberships.householdId, householdId), inArray(memberships.id, [...record.membershipIds])));
+  if (rows.some(row => row.status === 'trial' || row.status === 'active' || row.status === 'frozen')) return 'active';
+  if (rows.some(row => row.status === 'pending')) return settled.includes(bill.status) ? 'active' : null;
+  return 'ended';
+}
 
 export interface JoinFieldProblem { path: (string | number)[]; kind: 'field' | 'birthDate' | 'guardian' }
 /** The service and native form use the same applicant and signer rules, including field locations. */
@@ -354,19 +363,30 @@ export function createJoinService(options: JoinOptions) {
     });
     return result;
   }
-  async function household(gymId: string, householdId: string) {
-    const [home] = await scope(gymId, tx => tx.select({ id: households.id, email: households.email, name: households.name }).from(households).where(eq(households.id, householdId)));
-    return home?.email ? { ...home, email: home.email } : missing();
-  }
-  /** Passwordless: a login link to the address entered. The payer login is created on its callback, for the user it names. */
+  /** Passwordless: a login link to the address entered. The payer login is created on its callback, for the user it names.
+   * The job checks again when it runs (each retry too): password mode, a join no longer active, or a household or address
+   * that's gone sends nothing and logs the skip. */
   async function signIn(gymId: string, householdId: string) {
-    const home = await household(gymId, householdId), invitation = await invite(gymId, householdId, home.email, home.name);
+    const skipped = (reason: 'password_mode' | 'not_active' | 'missing') => { logInfo('public.join.sign_in_skipped', { gymId, householdId, reason }); };
+    if (await options.invitations.passwordRequired(gymId)) return skipped('password_mode');
+    const found = await scope(gymId, async tx => {
+      const [home] = await tx.select({ email: households.email, name: households.name }).from(households).where(eq(households.id, householdId));
+      if (!home?.email) return 'missing' as const;
+      const record = await recorded(tx, 'public.join.received', householdId, receivedRead);
+      if (!record || !await marked(tx, 'public.join.completed', householdId)) return 'not_active' as const;
+      const [bill] = await tx.select({ status: invoices.status }).from(invoices)
+        .where(and(eq(invoices.id, record.invoiceId), eq(invoices.householdId, householdId)));
+      if (!bill || await completedStatus(tx, householdId, record, bill) !== 'active') return 'not_active' as const;
+      return { email: home.email, name: home.name };
+    });
+    if (typeof found === 'string') return skipped(found);
+    const invitation = await invite(gymId, householdId, found.email, found.name);
     if (invitation.status === 'invited') await options.invitations.accept(gymId, { token: invitation.token }, clock);
     if (invitation.status === 'refused') logWarn('public.join.sign_in_refused', { gymId, householdId });
   }
   /** Every passwordless sign-in leaves the request through this job, so a staff and an ordinary address answer after the same work. */
   const signInJob = (gymId: string, timezone: string, householdId: string, key: string) => ({ name: joinSignInJob, payload: { householdId },
-    options: { gymId, timezone, idempotencyKey: `join-sign-in:${householdId}:${key}`, maxAttempts: 5 } });
+    options: { gymId, timezone, idempotencyKey: `join-sign-in:${householdId}:${key}`, maxAttempts: joinSignInAttempts } });
   /** Once the join's invoice is paid, the joined prospects become trial or active members and the join completes, once.
    * Passwordless, the payer's sign-in link is queued with it; in password mode the address awaits staff confirmation. */
   async function complete(gymId: string, find: (tx: Transaction) => Promise<{ householdId: string; invoiceId?: string } | undefined>) {
@@ -637,14 +657,9 @@ export function createJoinService(options: JoinOptions) {
           ...(bill?.status === 'processing' ? { processing: true } : {}) };
         // Completion can outlast the first payment's processing state or the join link's availability for payment.
         if (bill && await marked(tx, 'public.join.completed', link.householdId)) {
-          const rows = await tx.select({ status: memberships.status }).from(memberships)
-            .where(and(eq(memberships.householdId, link.householdId), inArray(memberships.id, record.membershipIds)));
-          // Classify by the memberships that still exist: a removed row never leaves the join confirming.
-          if (rows.some(row => row.status === 'trial' || row.status === 'active' || row.status === 'frozen'))
-            return { status: 'active', ...view };
-          if (rows.some(row => row.status === 'pending') && settled.includes(bill.status))
-            return { status: 'active', ...view };
-          if (!rows.some(row => row.status === 'pending')) return { status: 'ended' };
+          const status = await completedStatus(tx, link.householdId, record, bill);
+          if (status === 'active') return { status: 'active', ...view };
+          if (status === 'ended') return { status: 'ended' };
         }
         if (!bill || !settled.includes(bill.status))
           return bill?.status === 'void' || link.revokedAt ? { status: 'closed' }

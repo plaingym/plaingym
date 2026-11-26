@@ -318,7 +318,11 @@ the previous one. The job runs after the request answers, for every address, so 
 does the same work whether or not the address belongs to a staff login. The completion's job
 has a fixed key (`join-sign-in:<household>:completed`), so a join queues it once; each resend
 queues its own. A failed delivery retries in the job (five attempts) and never undoes the
-completed join. If the address belongs to a staff login, the job leaves it without a portal
+completed join; a delivery that fails all five is logged (`public.join.sign_in_failed`). The
+job checks again each time it runs: once the gym is in password mode, the join is no longer
+active (its recorded memberships ended, as on the ended page), or the household or its address
+is gone, it sends nothing and logs the skip with its reason (`public.join.sign_in_skipped`).
+A retry's invitation replaces the earlier attempt's, so one stays live. If the address belongs to a staff login, the job leaves it without a portal
 invitation or login and records the refusal. Both public pages use the same text for every
 address. Staff see the refusal in the household's **Portal access** tab and can invite the
 member using another address. Password mode queues no sign-in job, and `/join/sign-in` is refused.

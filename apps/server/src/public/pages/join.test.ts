@@ -2072,6 +2072,100 @@ describe('the passwordless sign-in leaves the request', () => {
     expect(signInJobs(f)).toMatchObject([{ status: 'completed', attempt: 2 }]);
     expect(f.sent).toEqual([expect.objectContaining({ gymId: f.gymId, email })]);
     expect(await completions(f, home.id)).toHaveLength(1);
+    // One live payer invitation stays: the retry's replaced the first attempt's.
+    expect(await createPortalInvitationStore(() => db.system.db).outstanding(f.gymId, home.id, f.clock)).toHaveLength(1);
+  });
+
+  /** The sign-in job's skip and failure logs while `run` runs. */
+  async function logged<T>(run: (lines: Record<string, unknown>[]) => Promise<T>) {
+    const { setLogSink } = await import('../../core/log.js'), lines: Record<string, unknown>[] = [];
+    const restore = setLogSink(line => {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      if (parsed.event === 'public.join.sign_in_skipped' || parsed.event === 'public.join.sign_in_failed') lines.push(parsed);
+    });
+    try { return await run(lines); } finally { setLogSink(restore); }
+  }
+  const invited = async (f: Fixture, householdId: string) => (await f.rows()).audits
+    .filter(a => a.action === 'household_user.invited' && a.targetId === householdId);
+  /** A completion whose first sign-in attempt fails, leaving the job queued for its retry. */
+  async function failedOnce(f: Fixture, email: string) {
+    const accept = vi.spyOn(f.invitations, 'accept').mockRejectedValueOnce(new Error('SMTP unavailable'));
+    const { home } = await complete(f, email);
+    await f.drain();
+    expect(accept).toHaveBeenCalledTimes(1);
+    expect(signInJobs(f)).toMatchObject([{ status: 'queued', attempt: 1 }]);
+    expect(await invited(f, home.id)).toHaveLength(1);
+    return { home, accept };
+  }
+
+  it('sends nothing on a retry after the join ended', async () => {
+    const f = await fixture(), { home, accept } = await failedOnce(f, 'ended-retry@example.invalid');
+    await db.forGym(f.gymId, tx => tx.update(memberships).set({ status: 'cancelled', cancelledAt: f.clock.now() }).where(eq(memberships.householdId, home.id)));
+    const [link] = (await f.rows()).links.filter(l => l.householdId === home.id);
+    expect(await f.join.state(f.gymId, link!.id)).toEqual({ status: 'ended' });
+    await logged(async lines => {
+      f.clock.advance(1000);
+      await f.drain();
+      expect(lines).toEqual([expect.objectContaining({ event: 'public.join.sign_in_skipped', level: 'info', gymId: f.gymId, householdId: home.id, reason: 'not_active' })]);
+    });
+    expect(signInJobs(f)).toMatchObject([{ status: 'completed', attempt: 2 }]);
+    expect(accept).toHaveBeenCalledTimes(1);
+    expect(f.sent).toEqual([]);
+    expect(await invited(f, home.id)).toHaveLength(1);
+  });
+
+  it('sends nothing on a retry after the gym switched to password mode', async () => {
+    const f = await fixture(), { home, accept } = await failedOnce(f, 'password-retry@example.invalid');
+    vi.spyOn(f.invitations, 'passwordRequired').mockResolvedValue(true);
+    await logged(async lines => {
+      f.clock.advance(1000);
+      await f.drain();
+      expect(lines).toEqual([expect.objectContaining({ event: 'public.join.sign_in_skipped', gymId: f.gymId, householdId: home.id, reason: 'password_mode' })]);
+    });
+    expect(signInJobs(f)).toMatchObject([{ status: 'completed', attempt: 2 }]);
+    expect(accept).toHaveBeenCalledTimes(1);
+    expect(f.sent).toEqual([]);
+    expect(await invited(f, home.id)).toHaveLength(1);
+  });
+
+  it('completes without sending for a household whose address or row is gone', async () => {
+    const f = await fixture(), { home } = await complete(f, 'gone-join@example.invalid'), gone = uuidv7();
+    await db.forGym(f.gymId, tx => tx.update(households).set({ email: null }).where(eq(households.id, home.id)));
+    await f.jobs.enqueue(joinSignInJob, { householdId: gone }, { gymId: f.gymId, timezone });
+    await logged(async lines => {
+      await f.drain();
+      expect(lines).toEqual([
+        expect.objectContaining({ event: 'public.join.sign_in_skipped', gymId: f.gymId, householdId: home.id, reason: 'missing' }),
+        expect.objectContaining({ event: 'public.join.sign_in_skipped', gymId: f.gymId, householdId: gone, reason: 'missing' })]);
+    });
+    expect(signInJobs(f)).toMatchObject([{ status: 'completed', attempt: 1 }, { status: 'completed', attempt: 1 }]);
+    expect(f.sent).toEqual([]);
+    expect(await invited(f, home.id)).toEqual([]);
+  });
+
+  it('logs a delivery that fails every attempt once, on the last', async () => {
+    const f = await fixture(), accept = vi.spyOn(f.invitations, 'accept').mockRejectedValue(new Error('SMTP unavailable'));
+    const { home } = await complete(f, 'always-failing@example.invalid');
+    await logged(async lines => {
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        await f.drain();
+        expect(signInJobs(f)).toMatchObject([{ attempt, status: attempt < 5 ? 'queued' : 'failed' }]);
+        expect(lines).toEqual(attempt < 5 ? [] : [expect.objectContaining({ event: 'public.join.sign_in_failed', level: 'warn', gymId: f.gymId, householdId: home.id, attempt: 5 })]);
+        f.clock.advance(60_000);
+      }
+    });
+    expect(accept).toHaveBeenCalledTimes(5);
+    expect(f.sent).toEqual([]);
+  });
+
+  it('runs a sign-in whose payload carries a key this release does not know', async () => {
+    const f = await fixture(), email = 'extra-key@example.invalid', { home } = await complete(f, email);
+    await f.drain();
+    expect(f.sent).toHaveLength(1);
+    await f.jobs.enqueue(joinSignInJob, { householdId: home.id, extra: 1 }, { gymId: f.gymId, timezone, idempotencyKey: 'extra-key' });
+    await f.drain();
+    expect(signInJobs(f)).toMatchObject([{ status: 'completed' }, { status: 'completed', attempt: 1 }]);
+    expect(f.sent).toEqual([expect.objectContaining({ email }), expect.objectContaining({ gymId: f.gymId, email })]);
   });
 });
 
