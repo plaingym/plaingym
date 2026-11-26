@@ -11,7 +11,7 @@ import type { PaymentsResolver } from '../webhooks/inbox.js';
 import { isAssignmentInvoice } from '../assignment-invoices.js';
 import { bankAttemptsExhausted, invoiceLateProcessing, invoiceProcessing, processingIntents, retriesStopped, revokeBankMethod } from './bank.js';
 import { logError, logWarn } from '../../../core/log.js';
-import { readBillingRules } from '../../settings/settings.js';
+import { holdGymSettings, readBillingRules } from '../../settings/settings.js';
 import { applyProcessorRefund, applyRefund, provenanceNeeded, recordRefundProvenance, type RefundWarning } from './refunds.js';
 import { createInvoiceVoid } from './void.js';
 import { latestTestSwitchId, stripeWriteScope } from '../stripe-writes.js';
@@ -154,6 +154,8 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Billi
         processorId = current.paymentMethodId;
       }
       return scope(context.gymId, async tx => {
+        // The gym first, as the Stripe key switch's clear takes the gym before invoices.
+        if (request.code === 'payment_method_unusable') await holdGymSettings(tx, context.gymId);
         const invoice = await lockInvoice(tx, request.invoiceId);
         if (invoice.status !== 'processing' || (await processingIntents(tx, invoice.id)).at(-1) !== request.paymentIntentId)
           return result('ignored', invoice);
@@ -185,6 +187,8 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Billi
       idSchema.parse(request.attemptId);
       if (!['failed', 'requires_action', 'canceled', 'insufficient_funds', 'payment_method_unusable'].includes(request.outcome)) conflict('Invalid payment outcome');
       return scope(context.gymId, async tx => {
+        // The gym first, as the Stripe key switch's clear takes the gym before invoices.
+        if (request.outcome === 'payment_method_unusable') await holdGymSettings(tx, context.gymId);
         const invoice = await lockInvoice(tx, request.invoiceId);
         const row = await attempt(tx, invoice, request.paymentIntentId, request.attemptId) ?? notFound();
         // A terminal invoice never moves, and an attempt already resolved on it stays as recorded. One still unresolved

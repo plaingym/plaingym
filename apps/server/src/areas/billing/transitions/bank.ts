@@ -30,9 +30,9 @@ export async function bankAttemptsExhausted(tx: Transaction, invoice: InvoiceRow
 }
 
 export async function revokeBankMethod(tx: Transaction, context: MutationContext, clock: Clock, invoice: InvoiceRow, processorId: string) {
-  // Lock order: invoice (caller), gym settings (key share), household, as staff default changes, card removal and the
-  // Stripe key switch take the gym before households. Under a live provider, the invoice taken first meets the test-to-live
-  // clear's gym-then-invoices order the other way round; PostgreSQL detects that deadlock and the job retries.
+  // Lock order: gym settings (key share; the caller takes them before the invoice for an unusable method, so this is a
+  // second take), invoice (caller), household, as staff default changes, card removal and the Stripe key switch take the
+  // gym before households, and the key switch's test-to-live clear takes the gym before invoices.
   await holdGymSettings(tx, context.gymId);
   await tx.select({ id: households.id }).from(households).where(eq(households.id, invoice.householdId)).for('update');
   const [removed] = await tx.update(paymentMethods).set({ revokedAt: clock.now(), isDefault: false }).where(and(
