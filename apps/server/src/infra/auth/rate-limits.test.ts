@@ -13,6 +13,9 @@ import { sessionMiddleware } from './middleware.js';
 import { passwordAdapter } from './password.js';
 import { clientIp, type ClientIpOptions } from '../../core/rate-limit.js';
 import { TestClock } from '../../core/clock.js';
+import { setLogSink } from '../../core/log.js';
+// Imported rather than read, so a change to the server's manifest selects this file in verification.
+import serverManifest from '../../../package.json' with { type: 'json' };
 import type { RequestEnvironment } from '../../core/context.js';
 
 const database = useTestDatabase();
@@ -140,6 +143,37 @@ describe('per-account sign-in limit', () => {
     expect((await f.signIn(address())).status).toBe(429);
   });
 
+  it('counts only the failing one of two concurrent passwords through one binding', async () => {
+    const f = await fixture({ rateLimit: { window: 60, max: 100 }, accountRateLimit: { window: 600, max: 3 } });
+    const bound = f.from(address());
+    let finish!: () => void;
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    const verify = vi.spyOn(passwordAdapter, 'verify').mockImplementation(async ({ password: attempt }) => { await gate; return attempt === password; });
+    const send = (attempt: string) => bound.handler(f.request('/sign-in/email', { email: f.user.email, password: attempt }));
+    const attempts = Promise.all([send(password), send('wrong-password-123')]);
+    try {
+      await vi.waitFor(() => expect(verify).toHaveBeenCalledTimes(2), { timeout: 10_000 });
+      finish();
+      expect(statuses(await attempts)).toEqual([200, 401]);
+    } finally { finish(); await attempts.finally(() => verify.mockRestore()); }
+    // One slot of three is held: two more failures fit, and the window then closes.
+    expect(statuses([await f.signIn(address(), f.user.email, 'wrong-password-123'), await f.signIn(address(), f.user.email, 'wrong-password-123'),
+      await f.signIn(address())])).toEqual([401, 401, 429]);
+  });
+
+  it('limits a request carrying its own attempt header exactly like one without it', async () => {
+    const f = await fixture({ accountRateLimit: { window: 600, max: 2 } });
+    const supplied = (clientIp: string, id: string, attempt = 'wrong-password-123') => f.from(clientIp)
+      .handler(f.request('/sign-in/email', { email: f.user.email, password: attempt }, { 'x-plaingym-account-attempt': id }));
+    expect(statuses([await supplied(address(), crypto.randomUUID()), await supplied(address(), '')])).toEqual([401, 401]);
+    const refused = await supplied(address(), crypto.randomUUID(), password);
+    expect(refused.status).toBe(429);
+    expect(refused.headers.get('retry-after')).toBe('600');
+    // Login links count the same way, apart from passwords.
+    const link = (id: string) => f.from(address()).handler(f.request('/sign-in/magic-link', { email: f.user.email }, { 'x-plaingym-account-attempt': id }));
+    expect(statuses([await link(crypto.randomUUID()), await link(crypto.randomUUID()), await link(crypto.randomUUID())])).toEqual([200, 200, 429]);
+  });
+
   it('never refunds a newer window when an old password finishes late', async () => {
     const f = await fixture(), rule = { window: 600, max: 1 }, now = Date.now();
     const old = await reserveAccountAttempt(database.system.db, '/sign-in/email', f.user.email, rule, now);
@@ -251,6 +285,44 @@ describe('gym isolation of sign-in limits', () => {
       expect(await database.system.db.select().from(authRateLimit).where(eq(authRateLimit.key, `expired|${gymId}`))).toEqual([]);
       expect((await reserveAccountAttempt(database.system.db, '/sign-in/magic-link', `${gymId}@example.test`, { window: 600, max: 1 }, now + 90_000)).retryAfter).toBe(510);
     } finally { time.mockRestore(); }
+  });
+
+  it('admits a request whose prune fails in multi mode and logs the failure with the gym and no address', async () => {
+    let failures = 1;
+    const db = database.system.db;
+    // The system handle, except that its first delete from auth_rate_limit (the address storage's prune) rejects.
+    const failing = new Proxy(db, { get(target, property) {
+      if (property === 'delete') return (table: unknown) => {
+        if (table !== authRateLimit || failures === 0) return target.delete(table as typeof authRateLimit);
+        failures--;
+        // Shaped like Drizzle's query error: the driver's error, with its SQLSTATE, is the cause.
+        return { where: () => Promise.reject(new Error('Failed query: prune for 198.51.100.1', { cause: Object.assign(new Error('canceling statement'), { code: '57014' }) })) };
+      };
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+    } });
+    const f = await fixture({ config: multi, database: () => failing });
+    const lines: string[] = [], previous = setLogSink(line => { lines.push(line); });
+    const shared = address();
+    try {
+      expect((await f.askLink(shared)).status).toBe(200);
+    } finally { setLogSink(previous); }
+    expect(failures).toBe(0);
+    expect(f.delivered).toEqual([f.user.email.toLowerCase()]);
+    const logged = lines.map(line => JSON.parse(line) as Record<string, unknown>).filter(line => line.event === 'auth.rate_limit_prune_failed');
+    expect(logged).toEqual([expect.objectContaining({ level: 'warn', gymId: f.gymId, error: 'Error', code: '57014' })]);
+    const line = lines.find(entry => entry.includes('auth.rate_limit_prune_failed'))!;
+    expect(line).not.toContain(shared);
+    expect(line).not.toContain('198.51.100.1');
+    expect(line).not.toContain(f.user.email);
+  });
+});
+
+describe('the Better Auth pin', () => {
+  it('stays at the version the gym address storage was checked against', () => {
+    const dependencies: Readonly<Record<string, string>> = serverManifest.dependencies;
+    expect(dependencies['better-auth'], 'Better Auth changed: recheck gymAddressStorage against createDatabaseStorageWrapper in '
+      + 'better-auth/dist/api/rate-limiter, then update this pin').toBe('1.7.12');
   });
 });
 

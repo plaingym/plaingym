@@ -5,6 +5,7 @@ import { and, eq, gt, inArray, lt, sql } from 'drizzle-orm';
 import { authRateLimit, uuidv7 } from '@plaingym/db';
 import { systemDatabase, type Database } from '@plaingym/db/client';
 import { normalizeAddress } from '../email/deliveries.js';
+import { describeError, logWarn } from '../../core/log.js';
 
 /** At most `max` attempts in `window` seconds. Account windows are fixed; address windows roll. */
 export interface SignInRule { readonly window: number; readonly max: number }
@@ -70,6 +71,8 @@ export async function clearAccountAttempts(email: string): Promise<void> {
 /**
  * Better Auth's custom storage keeps its normalized address/path key under the bound gym. Its rolling window semantics
  * stay the same: allowed requests advance last_request, refusals do not. Single-gym installs use its built-in storage.
+ * It follows Better Auth's own database storage (`createDatabaseStorageWrapper` in `better-auth/dist/api/rate-limiter`) at
+ * the pinned version; `rate-limits.test.ts` fails when that pin changes, as a reminder to recheck the two.
  */
 export function gymAddressStorage(database: () => Database, gymId: string) {
   let longestWindow = 600;
@@ -83,9 +86,16 @@ export function gymAddressStorage(database: () => Database, gymId: string) {
       }, setWhere: sql`${ended} or ${authRateLimit.count} < ${rule.max}` })
       .returning({ count: authRateLimit.count });
     if (row) {
-      // As in Better Auth, prune on a new window only, and never fail the admitted request over it. Account rows hold
-      // their future window end and remain safe.
-      if (row.count === 1) await db.delete(authRateLimit).where(lt(authRateLimit.lastRequest, now - longestWindow * 1000)).catch(() => undefined);
+      // Prune whenever an address window starts (Better Auth's storage prunes only when an existing row's window restarts),
+      // log a failed prune (the gym, the error's class and its database code, never the address), and never fail the
+      // admitted request over it. Account rows hold their future window end and remain safe.
+      if (row.count === 1) await db.delete(authRateLimit).where(lt(authRateLimit.lastRequest, now - longestWindow * 1000))
+        .catch((error: unknown) => {
+          // Drizzle wraps the driver's error, so its SQLSTATE is on the cause.
+          const { name, code, cause } = describeError(error);
+          const sqlState = typeof code === 'string' ? code : (cause as { code?: unknown } | undefined)?.code;
+          logWarn('auth.rate_limit_prune_failed', { gymId, error: String(name), ...(typeof sqlState === 'string' ? { code: sqlState } : {}) });
+        });
       return { allowed: true, retryAfter: null };
     }
     const [current] = await db.select({ lastRequest: authRateLimit.lastRequest }).from(authRateLimit).where(eq(authRateLimit.key, key));

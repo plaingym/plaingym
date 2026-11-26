@@ -3,7 +3,7 @@ import { betterAuth, type BetterAuthPlugin } from 'better-auth';
 import { magicLink } from 'better-auth/plugins';
 import { APIError } from 'better-auth/api';
 import { drizzleAdapter } from '@better-auth/drizzle-adapter';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
 import { systemDatabase, validateUuid, type Database } from '@plaingym/db/client';
 import { authUser, authSession, authAccount, authVerification, authRateLimit } from '@plaingym/db';
@@ -85,6 +85,10 @@ export interface BoundSession extends Session {
    */
   readonly userName: string;
 }
+/** Internal header naming one HTTP call's account attempt for the account-limit plugin; stripped from callers' requests. */
+const accountAttemptHeader = 'x-plaingym-account-attempt';
+/** One password or login-link call's account, and the reservation the plugin made for it. */
+interface AccountAttempt { readonly email: string; readonly path: string; reservation: AccountReservation | null }
 export const authEndpoints = [
   'POST /sign-in/email', 'POST /sign-in/magic-link', 'GET /magic-link/verify', 'GET /get-session', 'POST /sign-out',
 ] as const;
@@ -108,8 +112,24 @@ export function createAuthService(options: AuthServiceOptions) {
       const passwordEnabled = gym.smtpConfigured === undefined ? config.passwordEnabled : passwordLogin(config, smtpConfigured);
       const magicLinkEnabled = Boolean(options.sendMagicLink) && (gym.smtpConfigured ?? true);
       const addressStorage = config.tenancy === 'multi' ? gymAddressStorage(database, gym.gymId) : undefined;
-      // HTTP account requests add a request-local reservation plugin; Google adds the gym's current provider.
-      const build = (google: { clientId: string; clientSecret: string } | null, accountLimit?: BetterAuthPlugin) => betterAuth({
+      // Each HTTP password or login-link call through this binding, under the random ID `handler` sends in the internal
+      // attempt header. Its own entry holds its own reservation, so concurrent calls never release each other's.
+      const attempts = new Map<string, AccountAttempt>();
+      // Better Auth runs onRequest plugins after its atomic address check, so a reservation is made only for a call the
+      // address limit admitted. A request without a known attempt ID (provisioning, sessions, Google) reserves nothing.
+      const accountLimit: BetterAuthPlugin = {
+        id: 'account-sign-in-limit',
+        async onRequest(request) {
+          const id = request.headers.get(accountAttemptHeader);
+          const attempt = id === null ? undefined : attempts.get(id);
+          if (!attempt) return;
+          const result = await reserveAccountAttempt(database(), attempt.path, attempt.email, accountRule, now(), config.tenancy === 'multi' ? gym.gymId : undefined);
+          attempt.reservation = result.reservation;
+          if (result.retryAfter !== null) return { response: tooManyRequests(result.retryAfter) };
+        },
+      };
+      // One instance serves every call but Google's, which builds its own with the gym's current provider.
+      const build = (google: { clientId: string; clientSecret: string } | null) => betterAuth({
         secret: config.secret, baseURL: origin.origin, basePath: '/api/auth', trustedOrigins: [origin.origin],
         database: drizzleAdapter(database(), { provider: 'pg', schema: {
           user: authUser, session: authSession, account: authAccount, verification: authVerification, rateLimit: authRateLimit,
@@ -162,12 +182,13 @@ export function createAuthService(options: AuthServiceOptions) {
               throw new APIError('SERVICE_UNAVAILABLE', { code: emailUnavailableCode, message: 'Email unavailable', cause: error });
             }
           },
-        }), ...(accountLimit ? [accountLimit] : []), ...(google ? options.google?.plugins?.(gym) ?? [] : [])],
+        }), accountLimit, ...(google ? options.google?.plugins?.(gym) ?? [] : [])],
       });
       const auth = build(null);
       function headers(request: Request) {
         const result = new Headers(request.headers);
-        for (const key of [...result.keys()]) if (/^(?:forwarded$|x-forwarded-|x-real-ip$|cf-connecting-ip$|x-plaingym-client-ip$|host$)/i.test(key)) result.delete(key);
+        // Callers never supply the client address or an attempt ID: both are set here or by `handler`.
+        for (const key of [...result.keys()]) if (/^(?:forwarded$|x-forwarded-|x-real-ip$|cf-connecting-ip$|x-plaingym-client-ip$|x-plaingym-account-attempt$|host$)/i.test(key)) result.delete(key);
         result.set('x-plaingym-client-ip', gym.clientIp);
         return result;
       }
@@ -252,22 +273,17 @@ export function createAuthService(options: AuthServiceOptions) {
             // The extension owns provider state and callback parameters after validating the gym binding.
             safeUrl.search = url.search;
           }
-          // A holder rather than a `let`, so the release below stays type-checked (TypeScript doesn't see closure writes).
-          const held: { reservation: AccountReservation | null } = { reservation: null };
-          // Better Auth runs onRequest plugins after its atomic address check. Each HTTP call owns its plugin closure,
-          // so concurrent calls through the same binding cannot refund one another's account reservations.
-          const email = accountEmail;
-          const accountLimit: BetterAuthPlugin | undefined = email === undefined ? undefined : {
-            id: 'account-sign-in-limit',
-            async onRequest() {
-              const attempt = await reserveAccountAttempt(database(), path, email, accountRule, now(), config.tenancy === 'multi' ? gym.gymId : undefined);
-              held.reservation = attempt.reservation;
-              if (attempt.retryAfter !== null) return { response: tooManyRequests(attempt.retryAfter) };
-            },
-          };
-          const response = await (google || accountLimit ? build(google, accountLimit) : auth).handler(new Request(safeUrl, { method: request.method, headers: headers(request), ...(body ? { body } : {}) }));
+          // This call's own entry for the account-limit plugin, found by a fresh ID only this call knows.
+          const forwarded = headers(request);
+          const attempt: AccountAttempt | undefined = accountEmail === undefined ? undefined : { email: accountEmail, path, reservation: null };
+          const attemptId = attempt ? randomUUID() : undefined;
+          if (attempt && attemptId) { attempts.set(attemptId, attempt); forwarded.set(accountAttemptHeader, attemptId); }
+          let response: Response;
+          try {
+            response = await (google ? build(google) : auth).handler(new Request(safeUrl, { method: request.method, headers: forwarded, ...(body ? { body } : {}) }));
+          } finally { if (attemptId) attempts.delete(attemptId); }
           // Best effort: the session already exists, so a failed release only leaves this success counted like a failure.
-          if (path === '/sign-in/email' && response.status === 200 && held.reservation) await releaseAccountAttempt(database(), held.reservation).catch(() => undefined);
+          if (path === '/sign-in/email' && response.status === 200 && attempt?.reservation) await releaseAccountAttempt(database(), attempt.reservation).catch(() => undefined);
           response.headers.set('cache-control', 'no-store');
           const retryAfter = response.status === 429 ? response.headers.get('x-retry-after') : null;
           if (retryAfter && /^\d+$/.test(retryAfter)) response.headers.set('retry-after', retryAfter);
