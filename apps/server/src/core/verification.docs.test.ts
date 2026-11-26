@@ -82,7 +82,7 @@ describe('verification discovery', () => {
     expect(uncovered, 'Add source scanners to scripts/verify.mjs; classify fixture-only reads explicitly here').toEqual([]);
     for (const file of scanning) expect(files).toContain(file);
     for (const file of fixtureReaders) expect(files).toContain(file);
-  });
+  }, 120_000); // Globbing every test specification and reading its imports can pass 30 s on a slow Windows runner.
   it.each([
     "import { globSync as files } from 'node:fs';",
     "import { createReadStream } from 'node:fs';",

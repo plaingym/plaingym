@@ -2,7 +2,7 @@
 import { globSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import ts from 'typescript';
 
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
@@ -186,6 +186,8 @@ function documentedVariables(): Set<string> {
 }
 
 describe('docs/configuration.md', () => {
+  // The whole-source scan can pass 30 s on a slow Windows runner; later calls read the cache.
+  beforeAll(() => { serverVariables(); }, 120_000);
   it('scans TSX and JavaScript, both bracket quotes, and dynamic reads through helpers and arrays', () => {
     const sources = new Map([
       [resolve(root, 'scan-fixture.tsx'), `

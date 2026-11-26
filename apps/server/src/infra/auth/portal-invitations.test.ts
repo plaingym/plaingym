@@ -146,7 +146,7 @@ describe('portal invitations', () => {
     const stranger = await factory('authUser', f.gymId);
     await expect(emailOnly.completeClaim(f.gymId, stranger.id, { claim }, clock)).rejects.toMatchObject({ code: 'not_found' });
     await expect(emailOnly.completeClaim(f.otherGymId, existing.id, { claim }, clock)).rejects.toMatchObject({ code: 'not_found' });
-    await expect(emailOnly.completeClaim(f.gymId, existing.id, { claim: claim.slice(0, -2) + 'AA' }, clock)).rejects.toThrow();
+    await expect(emailOnly.completeClaim(f.gymId, existing.id, { claim: claim.slice(0, -2) + (claim.endsWith('AA') ? 'BB' : 'AA') }, clock)).rejects.toMatchObject({ code: 'not_found' });
     expect(await emailOnly.completeClaim(f.gymId, existing.id, { claim }, clock)).toBe(f.home.id);
     expect((await links(f.gymId, existing.id)).map(row => row.householdId).sort()).toEqual([f.home.id, f.other.id].sort());
     await expect(emailOnly.completeClaim(f.gymId, existing.id, { claim }, clock)).rejects.toMatchObject({ code: 'not_found' });
