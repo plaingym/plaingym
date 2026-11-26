@@ -649,7 +649,7 @@ describe('staff booking panels', () => {
     expect(client.cancel).toHaveBeenCalledOnce();
     expect(client.cancel.mock.calls[0]).toEqual(notice ? ['booking', notice] : ['booking', undefined]);
     expect(screen.queryByRole('form', { name: 'Cancel this booking?' })).toBeNull();
-    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Bookings and check-ins' }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Bookings and check-ins' })));
   });
   it('sends a note only with Email and only shows the note while Email is ticked', async () => {
     const user = userEvent.setup(); render(<BookingRosterPanel sessionId={sessionId}/>);
