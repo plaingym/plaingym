@@ -374,7 +374,8 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
     expect(await f.read()).toEqual(before);
     await f.run('setup_intent.succeeded', { kind: 'setup', id: 'seti_bank' });
     const [saved] = (await f.read()).methods;
-    expect(saved).toMatchObject({ type: method.type, bankName: details.bank_name, last4: '6789', isDefault: true,
+    // The fixture gym charges in USD, so a Canadian debit is saved but can't become the default.
+    expect(saved).toMatchObject({ type: method.type, bankName: details.bank_name, last4: '6789', isDefault: method.type === 'us_bank_account',
       expiryMonth: null, expiryYear: null, mandateId: 'mandate_setup' });
     Object.assign(details, { last4: '0123', bank_name: 'Example Bank' });
     await f.run('payment_method.updated', { kind: 'payment_method', id });

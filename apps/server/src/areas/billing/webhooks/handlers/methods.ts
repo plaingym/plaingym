@@ -4,6 +4,8 @@ import { auditEvents, forGym, households, paymentMethods, uuidv7, type Transacti
 import type { Clock } from '@plaingym/shared';
 import { logInfo, logWarn } from '../../../../core/log.js';
 import type { PaymentMethod, Payments } from '../../../../infra/payments/index.js';
+import { holdGymSettings, readGymSettings } from '../../../settings/settings.js';
+import { defaultRefusal } from '../../payments.mutations.js';
 import { unsavedBankRevoked } from '../../transitions/bank.js';
 import { audit } from '../../transitions/store.js';
 
@@ -41,6 +43,10 @@ export function createCardHandlers(options: { scope: typeof forGym; clock: Clock
     eventId?: string): Promise<{ setupId: string } | undefined> {
     if (!Number.isFinite(method.createdAt.getTime())) throw new Error('Payment method creation time is unresolved');
     return scope(gymId, async tx => {
+      // Lock order: gym settings (key share), then household, as staff default changes and the Stripe key switch take
+      // the gym before households. The held currency decides whether a collected method may become default.
+      await holdGymSettings(tx, gymId);
+      const { currency } = await readGymSettings(tx, gymId);
       const household = (await tx.select().from(households).where(eq(households.stripeCustomerId, method.customerId)).for('update'))[0];
       if (!household) {
         // A collection must find its household, so it fails for retry. An update for a customer no household is
@@ -82,7 +88,9 @@ export function createCardHandlers(options: { scope: typeof forGym; clock: Clock
       // A skipped bank collection never replaces a default chosen since its skip.
       const chosenSinceSkip = !!skipped && !!current && current.id !== existing?.id
         && await defaultChangedSince(tx, household.id, skipped.skippedAt);
-      const newer = collect && !chosenSinceSkip && (!current || current.processorCreatedAt === null
+      // A method the gym's currency can't charge automatically is saved but never made default here.
+      const chargeable = defaultRefusal({ type: method.type, mandateId: mandateId ?? existing?.mandateId ?? null }, currency) === null;
+      const newer = collect && !chosenSinceSkip && chargeable && (!current || current.processorCreatedAt === null
         || current.processorCreatedAt < method.createdAt
         || (current.processorCreatedAt.getTime() === method.createdAt.getTime() && current.processorId < method.id));
       const rowId = existing?.id ?? uuidv7();

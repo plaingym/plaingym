@@ -88,6 +88,28 @@ it('hides Make default and shows the note when canBeDefault is false, and shows 
   expect(within(defaultBankItem).queryByRole('button', { name: 'Make default' })).toBeNull();
   expect(within(defaultBankItem).queryByText("This bank account can't be used for automatic charges at this gym, so it can't be the default.")).toBeNull();
 });
+it('warns on a default row that canBeDefault false marks, and on no other default row', async () => {
+  const warning = "This bank account can't be used for automatic charges at this gym. Make another payment method the default.";
+  const bank: MaskedPaymentMethod = { ...base, id: '00000000-0000-7000-8000-000000000007', type: 'us_bank_account',
+    bankName: 'Test Bank', brand: null, last4: '6789', expiryMonth: null, expiryYear: null, isDefault: true, canBeDefault: false };
+  const eligible: MaskedPaymentMethod = { ...base, id: '00000000-0000-7000-8000-000000000008', last4: '1111', isDefault: true, canBeDefault: true };
+  const omitted: MaskedPaymentMethod = { ...base, isDefault: true };
+  // A household has one default, so each default row is its own list.
+  start([bank, base]);
+  const bankItem = (await screen.findByText('Test Bank account ending 6789')).closest('li')!;
+  expect(within(bankItem).getByText(warning)).toBeDefined();
+  expect(within(bankItem).getByText('Default payment method')).toBeDefined();
+  expect(within(bankItem).queryByRole('button', { name: 'Make default' })).toBeNull();
+  expect(screen.getAllByText(warning)).toHaveLength(1);
+  cleanup();
+  for (const [card, label] of [[eligible, 'Visa · 1111 · 12/2035'], [omitted, 'Visa · 4242 · 12/2035']] as const) {
+    start([card]);
+    const item = (await screen.findByText(label)).closest('li')!;
+    expect(within(item).getByText('Default payment method')).toBeDefined();
+    expect(screen.queryByText(warning)).toBeNull();
+    cleanup();
+  }
+});
 it('shows the currency and mandate refusal texts when setting default returns 409', async () => {
   for (const [reason, expected] of [
     ['payment_method_currency', "This bank account can't be charged in this gym's currency. Choose a card or another account."],

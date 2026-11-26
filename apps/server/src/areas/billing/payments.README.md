@@ -165,7 +165,9 @@ clear, which locks the gym row and then households. It refuses a bank type the c
 `payment_method_mandate`, leaving the default and audit log unchanged. The staff
 payment-methods list (`listPaymentMethods`) reports this eligibility as `canBeDefault`
 on each active row (omitted on revoked rows) so the UI hides Make default and explains
-why.
+why, and warns on a default row the currency can no longer charge. A method collected by
+a Stripe webhook follows the same rule: it becomes default only when the currency can
+charge it (`webhooks/handlers/README.md`).
 
 Removing a payment method first revokes it locally and clears its default flag.
 Removing the default promotes the household's newest active method the gym's current

@@ -46,7 +46,7 @@ export function transientFailure(error: unknown): boolean {
   });
 }
 /** Matches `promoteDefaultCard`'s eligibility rule: cards are always eligible; bank accounts require the gym currency's type, and Canadian PADs require a stored mandate. */
-function defaultRefusal(row: { type: string; mandateId: string | null }, currency: string): 'currency' | 'mandate' | null {
+export function defaultRefusal(row: { type: string; mandateId: string | null }, currency: string): 'currency' | 'mandate' | null {
   if (row.type === 'card') return null;
   if (row.type !== bankAccountType(currency)) return 'currency';
   if (row.type === 'acss_debit' && row.mandateId === null) return 'mandate';

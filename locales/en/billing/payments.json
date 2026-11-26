@@ -76,6 +76,7 @@
   "removed": "Removed",
   "makeDefault": "Make default",
   "cannotBeDefault": "This bank account can't be used for automatic charges at this gym, so it can't be the default.",
+  "defaultCannotCharge": "This bank account can't be used for automatic charges at this gym. Make another payment method the default.",
   "removeCard": "Remove payment method",
   "retryRemoval": "Retry payment method removal",
   "method": "Payment method",

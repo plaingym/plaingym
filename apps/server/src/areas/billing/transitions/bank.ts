@@ -3,7 +3,7 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { auditEvents, households, paymentAttempts, paymentMethods, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import type { MutationContext } from '../../../core/interfaces/common.js';
-import { readGymSettings } from '../../settings/settings.js';
+import { holdGymSettings, readGymSettings } from '../../settings/settings.js';
 import { promoteDefaultCard } from '../payments.mutations.js';
 import { abandonedAttempt, audit, canceledAttempt, type InvoiceRow } from './store.js';
 
@@ -30,6 +30,9 @@ export async function bankAttemptsExhausted(tx: Transaction, invoice: InvoiceRow
 }
 
 export async function revokeBankMethod(tx: Transaction, context: MutationContext, clock: Clock, invoice: InvoiceRow, processorId: string) {
+  // Lock order: invoice (caller), gym settings (key share), household, as staff default changes, card removal and the
+  // Stripe key switch take the gym before households.
+  await holdGymSettings(tx, context.gymId);
   await tx.select({ id: households.id }).from(households).where(eq(households.id, invoice.householdId)).for('update');
   const [removed] = await tx.update(paymentMethods).set({ revokedAt: clock.now(), isDefault: false }).where(and(
     eq(paymentMethods.householdId, invoice.householdId), eq(paymentMethods.processorId, processorId),
