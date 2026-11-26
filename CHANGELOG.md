@@ -6,6 +6,15 @@ and [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-26
+
+The first stable release of PlainGym. One install runs a gym's staff admin, members and
+households, classes and booking, attendance, ranks and promotions, a check-in kiosk, an
+installable member portal, billing through the gym's own Stripe account, waivers and an
+optional public website. Install it on a new server with the one-command installer
+(docs/install.md). From 1.0.0, patch releases (1.0.Z) carry fixes only and no database
+changes, and installs apply them each night with automatic rollback (docs/versioning.md).
+
 ### Added
 
 - A server-rendered product page on the demo entry host, with direct showcase and
@@ -33,3 +42,9 @@ and [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
   Any other `SOURCE_URL` is still used.
 - Private demo start pages show their current deletion time and how activity extends it;
   the product page and read-only showcase show no deletion notice.
+
+### Upgrade notes
+
+- Migrations: initial schema (fresh installation).
+- Rollback floor: 1.0.0.
+- Manual steps: none.
