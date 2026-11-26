@@ -93,34 +93,39 @@ function ipv6Groups(address: string): number[] {
 }
 
 export interface RateBucket { count: number; resetAt: number }
+interface SetAside<Bucket> { readonly key: string; readonly bucket: Bucket; readonly seq: number }
+const windowOrder = <Bucket extends RateBucket>(a: SetAside<Bucket>, b: SetAside<Bucket>) =>
+  a.bucket.resetAt - b.bucket.resetAt || a.seq - b.seq;
 /**
- * Fixed-window buckets in two maps, each in insertion order: `#open` holds buckets in creation order until a walk
- * making room finds them over their limit (`blocked`), and then sets them aside in `#blocked`, once, in the order
- * found. A full table evicts buckets rather than refusing new keys, so a flood of new keys can't lock out new
- * visitors. Ended windows and the oldest buckets still within their limits go first; a bucket over its limit goes
- * only once every other bucket is too, so lifting a refusal takes a flood that fills the whole table with refused
- * keys, and a table full of them costs no full walk per new key.
+ * Fixed-window buckets in two maps: `#open` holds buckets in creation order until a walk making room finds them
+ * over their limit (`blocked`), and then sets them aside in `#blocked`, once. A full table evicts buckets rather
+ * than refusing new keys, so a flood of new keys can't lock out new visitors. Ended windows and the oldest buckets
+ * still within their limits go first; a bucket over its limit goes only once every other bucket is too, so lifting a
+ * refusal takes a flood that fills the whole table with refused keys, and a table full of them costs no full walk
+ * per new key.
  *
- * A set-aside bucket stays in the over-limit order even if its count later drops below its limit or its window ends.
- * A table's buckets share one window length, so `#blocked`'s oldest are usually the first to end and ended windows
- * there still go first. The exception is a request's own bucket that a walk passed while it was within its limit: once
- * over it, a later walk sets it aside behind the buckets set aside meanwhile, and they go before it even after its
- * window ends.
+ * Set-aside buckets go in window order: the one whose window ends first goes first, ties in the order set aside, and
+ * a bucket keeps that place even if its count later drops below its limit. A min-heap beside `#blocked` holds that
+ * order. A bucket that leaves `#blocked` some other way (its window ended on a read, its key was deleted or started
+ * a new bucket) leaves its heap entry behind, skipped when it reaches the front; once those outnumber the live
+ * entries, the heap is rebuilt from the live ones. A bucket's `resetAt` never changes once it is in the table.
  */
 export class RateBuckets<Bucket extends RateBucket = RateBucket> {
   readonly #open = new Map<string, Bucket>();
-  readonly #blocked = new Map<string, Bucket>();
+  readonly #blocked = new Map<string, SetAside<Bucket>>();
+  #heap: SetAside<Bucket>[] = [];
+  #seq = 0;
   constructor(readonly maxBuckets: number, readonly blocked: (bucket: Bucket) => boolean) {}
   /** The key's bucket while its window is open. */
   get(key: string, now: number): Bucket | undefined {
-    const map = this.#open.has(key) ? this.#open : this.#blocked, bucket = map.get(key);
-    if (bucket && bucket.resetAt <= now) { map.delete(key); return undefined; }
+    const bucket = this.#open.get(key) ?? this.#blocked.get(key)?.bucket;
+    if (bucket && bucket.resetAt <= now) { this.delete(key); return undefined; }
     return bucket;
   }
   /**
    * Starts the key's bucket, first making room in a full table: the first ended or within-limit buckets in `#open`
-   * (over-limit ones met on the way are set aside, kept ones too), else the oldest set aside and not kept. The
-   * buckets of `keep` (the request's own) stay, so they can hold the table over its bound until a later addition
+   * (over-limit ones met on the way are set aside, kept ones too), else the set-aside ones not kept, in window order.
+   * The buckets of `keep` (the request's own) stay, so they can hold the table over its bound until a later addition
    * makes room for them as well.
    */
   add(key: string, bucket: Bucket, now: number, keep: readonly string[] = []): Bucket {
@@ -130,25 +135,66 @@ export class RateBuckets<Bucket extends RateBucket = RateBucket> {
       for (const [id, value] of this.#open) {
         const kept = keep.includes(id), ended = value.resetAt <= now;
         if (kept && ended) continue;
-        if (!ended && this.blocked(value)) { this.#open.delete(id); this.#blocked.set(id, value); continue; }
+        if (!ended && this.blocked(value)) { this.#open.delete(id); this.#setAside(id, value); continue; }
         if (kept) continue;
         this.#open.delete(id);
         if (--excess === 0) break;
       }
-      if (excess > 0) {
-        for (const id of this.#blocked.keys()) {
-          if (keep.includes(id)) continue;
-          this.#blocked.delete(id);
-          if (--excess === 0) break;
-        }
+      const passed: SetAside<Bucket>[] = [];
+      while (excess > 0 && this.#heap.length > 0) {
+        const entry = this.#pop();
+        if (this.#blocked.get(entry.key) !== entry) continue;
+        if (keep.includes(entry.key)) { passed.push(entry); continue; }
+        this.#blocked.delete(entry.key);
+        excess--;
       }
+      for (const entry of passed) this.#push(entry);
     }
     this.#open.set(key, bucket);
     return bucket;
   }
   /** Whether the key still holds this bucket (it may have expired, been evicted or been replaced). */
-  holds(key: string, bucket: Bucket): boolean { return (this.#open.get(key) ?? this.#blocked.get(key)) === bucket; }
-  delete(key: string): void { this.#open.delete(key); this.#blocked.delete(key); }
+  holds(key: string, bucket: Bucket): boolean { return (this.#open.get(key) ?? this.#blocked.get(key)?.bucket) === bucket; }
+  delete(key: string): void {
+    this.#open.delete(key);
+    if (!this.#blocked.delete(key) || this.#heap.length <= 2 * this.#blocked.size) return;
+    this.#heap = [...this.#blocked.values()];
+    for (let index = (this.#heap.length >> 1) - 1; index >= 0; index--) this.#down(index);
+  }
+  #setAside(key: string, bucket: Bucket): void {
+    const entry = { key, bucket, seq: this.#seq++ };
+    this.#blocked.set(key, entry);
+    this.#push(entry);
+  }
+  #push(entry: SetAside<Bucket>): void {
+    const heap = this.#heap;
+    let index = heap.push(entry) - 1;
+    while (index > 0) {
+      const parent = (index - 1) >> 1;
+      if (windowOrder(heap[parent]!, entry) <= 0) break;
+      heap[index] = heap[parent]!;
+      index = parent;
+    }
+    heap[index] = entry;
+  }
+  #pop(): SetAside<Bucket> {
+    const heap = this.#heap, top = heap[0]!, last = heap.pop()!;
+    if (heap.length > 0) { heap[0] = last; this.#down(0); }
+    return top;
+  }
+  #down(start: number): void {
+    const heap = this.#heap, entry = heap[start]!;
+    let index = start;
+    for (;;) {
+      let child = 2 * index + 1;
+      if (child >= heap.length) break;
+      if (child + 1 < heap.length && windowOrder(heap[child + 1]!, heap[child]!) < 0) child++;
+      if (windowOrder(heap[child]!, entry) >= 0) break;
+      heap[index] = heap[child]!;
+      index = child;
+    }
+    heap[index] = entry;
+  }
 }
 
 export interface RateLimitOptions extends ClientIpOptions {

@@ -286,6 +286,58 @@ it('keeps a set-aside bucket in its over-limit order when its count drops, and e
   expect(['later', 'next', 'last'].map((key) => windows.get(key, 60) !== undefined)).toEqual([true, true, true]);
 });
 
+it('evicts set-aside buckets in window order, so a kept bucket set aside late goes before newer ones once it ends', () => {
+  const b = new RateBuckets(5, (bucket) => bucket.count >= 1);
+  const kept = b.add('kept', { count: 0, resetAt: 100 }, 0);
+  b.add('x', { count: 1, resetAt: 110 }, 10);
+  b.add('y', { count: 1, resetAt: 120 }, 20);
+  b.add('u1', { count: 0, resetAt: 125 }, 25);
+  b.add('u2', { count: 0, resetAt: 126 }, 26);
+  // The walk passes `kept` while it is within its limit, sets `x` and `y` aside and evicts `u1`.
+  b.add('z', { count: 1, resetAt: 130 }, 30, ['kept']);
+  kept.count = 1;
+  // Now over its limit, `kept` is set aside after `x` and `y`; `u2` goes.
+  b.add('v', { count: 1, resetAt: 140 }, 40);
+  // Every bucket is over its limit: `kept`'s window ended first, so it goes, not `x`.
+  b.add('w', { count: 1, resetAt: 150 }, 105);
+  expect(b.holds('kept', kept)).toBe(false);
+  expect(['x', 'y', 'z', 'v', 'w'].map((key) => b.get(key, 105) !== undefined)).toEqual([true, true, true, true, true]);
+});
+
+it('keeps window order through expiry, deletion and re-adding of set-aside keys', () => {
+  const b = new RateBuckets(4, (bucket) => bucket.count >= 1);
+  for (const [key, resetAt] of [['a', 100], ['b', 110], ['c', 120], ['d', 130]] as const) b.add(key, { count: 1, resetAt }, 0);
+  // Sets all four aside and evicts `a`, the first to end.
+  b.add('e', { count: 1, resetAt: 140 }, 0);
+  // `b` leaves, and `c` starts a new bucket that ends last: the old entries for both no longer count.
+  b.delete('b');
+  const c = b.add('c', { count: 1, resetAt: 200 }, 0);
+  b.add('f', { count: 1, resetAt: 150 }, 0);
+  // `e`, `c` and `f` are set aside in that order; `d` ends first and goes.
+  b.add('g', { count: 1, resetAt: 160 }, 0);
+  expect(['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((key) => b.get(key, 0) !== undefined)).toEqual([false, false, true, false, true, true, true]);
+  b.add('h', { count: 1, resetAt: 170 }, 0);
+  b.add('i', { count: 1, resetAt: 180 }, 0);
+  // `e`, then `f`: `c` was set aside before `f`, but its window ends after every other one.
+  expect(['c', 'e', 'f', 'g', 'h', 'i'].map((key) => b.get(key, 0) !== undefined)).toEqual([true, false, false, true, true, true]);
+  expect(b.holds('c', c)).toBe(true);
+});
+
+it('keeps window order after the set-aside order is rebuilt from several live buckets', () => {
+  const b = new RateBuckets(10, (bucket) => bucket.count >= 1);
+  [100, 110, 110, 110, 110, 110, 170, 150, 160, 130].forEach((resetAt, i) => b.add(`k${i}`, { count: 1, resetAt }, 0));
+  // Sets all ten aside and evicts `k0`; deleting five more leaves four live of nine, so the order is rebuilt from them.
+  b.add('n', { count: 1, resetAt: 200 }, 0);
+  for (let i = 1; i <= 5; i++) b.delete(`k${i}`);
+  for (let i = 0; i < 5; i++) b.add(`p${i}`, { count: 1, resetAt: 300 }, 0);
+  const watched = ['k6', 'k7', 'k8', 'k9', 'n'], evicted: string[] = [];
+  for (let i = 0; i < 5; i++) {
+    b.add(`q${i}`, { count: 1, resetAt: 300 }, 0);
+    evicted.push(...watched.filter((key) => !evicted.includes(key) && b.get(key, 0) === undefined));
+  }
+  expect(evicted).toEqual(['k9', 'k7', 'k8', 'k6', 'n']);
+});
+
 it('brings a table that kept keys held over its bound back to it, preferring within-limit buckets', () => {
   const buckets = new RateBuckets(2, (bucket) => bucket.count >= 1);
   buckets.add('blocked', { count: 1, resetAt: 100 }, 0);

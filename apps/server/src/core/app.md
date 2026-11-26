@@ -118,10 +118,10 @@ can't lock new visitors out: ended windows and the oldest buckets still within
 their limits go first, and a bucket over its limit goes only once every other
 bucket is too, so lifting a refusal takes a flood that fills the whole table
 with refused clients. A walk making room sets the over-limit buckets it meets
-aside in a second map, once, in the order found, so a table full of refused
-clients costs no full walk per new key; set-aside buckets go after the rest, in
-the order set aside, keeping that place even if a count later drops below its
-limit or a window ends. Refusals keep their
+aside in a second map, once, so a table full of refused clients costs no full
+walk per new key; set-aside buckets go after the rest, the one whose window
+ends first first, keeping that place even if a count later drops below its
+limit. Refusals keep their
 `Retry-After`. This is process-local flood protection; auth
 retains its database-backed limiter. `peerAddress` defaults to the Node socket
 address. Set `trustedProxy` to a predicate matching only the immediate reverse
