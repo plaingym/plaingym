@@ -15,6 +15,7 @@ import { PostgresJobs } from '../infra/jobs/postgres.js';
 import { encryptSmtpConfig } from '../areas/settings/smtp.js';
 import { parseEncryptionKey } from './secrets.js';
 import { clock } from './clock.js';
+import { appCookieName } from './cookies.js';
 import { startRuntime, type Runtime } from './runtime.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
@@ -37,6 +38,8 @@ it('uses the runtime account service and refuses staff resets after the gym conf
   const target = await accounts.createPasswordUser(gymId, 'member@example.test', 'Member', 'original-member-password', clock);
   await factory('householdUsers', gymId, { userId: target.userId });
   runtime = await startRuntime(env);
+  // Starting a production runtime gives the app's own cookies the host prefix.
+  expect(appCookieName('plaingym_join')).toBe('__Host-plaingym_join');
   const post = (path: string, body: unknown, cookie = '') => runtime!.app.request(env.PUBLIC_ORIGIN + path, {
     method: 'POST', headers: { host: 'gym.example.test', origin: env.PUBLIC_ORIGIN, 'content-type': 'application/json', cookie }, body: JSON.stringify(body),
   });
