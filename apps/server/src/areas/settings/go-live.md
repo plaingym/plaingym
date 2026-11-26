@@ -136,8 +136,10 @@ phone/full-screen confirmation dialog shows the Stripe message during a failed
 billing enable and uses an explicit checkbox. Once no save is running, it closes
 and clears the checkbox if a failed settings or checklist read has locked the
 switches (the page behind it shows the error and **Try again**), billing is
-already on or the past-due list is empty. Closing for billing on moves the focus
-to the section's heading, unless a failed or timed-out save's message stays. The
+already on or the past-due list is empty. The section's heading takes the focus
+when the dialog closes for billing on or an emptied list with no message left (a
+message that stays takes the focus instead), after a confirmed save from the
+dialog, and when billing changed elsewhere while its switch held the focus. The
 Stripe message is put away whenever a read shows billing on, with or without the
 dialog; if it held the focus, the heading takes it.
 

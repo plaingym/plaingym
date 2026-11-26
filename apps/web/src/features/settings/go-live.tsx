@@ -50,9 +50,12 @@ export function GoLiveSettings() {
   const [confirmBilling, setConfirmBilling] = useState(false), [confirmedKey, setConfirmedKey] = useState<string | null>(null);
   // Set when a failed read closed the dialog: the read alert then takes the focus the dialog would return to a disabled switch.
   const [readAlertFocus, setReadAlertFocus] = useState(false);
-  // The heading acts on nothing, so it takes the focus when billing turned on elsewhere removes what held it.
+  // The heading acts on nothing, so it takes the focus when what held it goes away or would now change billing.
   const heading = useRef<HTMLHeadingElement>(null);
   const [headingFocus, setHeadingFocus] = useState(false);
+  const billingSwitch = useRef<HTMLButtonElement>(null);
+  // The billing value last seen, so a change made elsewhere is told apart from this page's own save.
+  const shownBilling = useRef<boolean | undefined>(undefined);
   // The page's alert: the plain one, or the read alert in its place.
   const messageBox = useRef<HTMLDivElement>(null);
   // The past-due dialog's own alert.
@@ -119,13 +122,13 @@ export function GoLiveSettings() {
   }, [messageRevision, settings?.revision]);
   // The past-due dialog is modal, so it closes once no save is running if a read failed (the page's retry is behind it),
   // billing is already on (a save that timed out may have turned it on, leaving nothing to confirm), or the list it asks
-  // about is empty. Closing for billing on moves the focus off the opener, which now turns billing off, to the heading,
-  // unless a message stays to take it.
+  // about is empty. Closing for billing on or for an emptied list moves the focus off the opener, which then changes
+  // billing at once, to the heading, unless a message stays to take it.
   useEffect(() => {
     if (confirmBilling && !busy && (readFailed || checklist?.billingEnabled || !checklist?.pastDueMemberships.length)) {
       setConfirmBilling(false); setConfirmedKey(null);
       if (readFailed) setReadAlertFocus(true);
-      if (!readFailed && checklist?.billingEnabled && (message === null || message === 'paymentsReadFailed')) setHeadingFocus(true);
+      if (!readFailed && (message === null || (message === 'paymentsReadFailed' && checklist?.billingEnabled))) setHeadingFocus(true);
     }
   }, [confirmBilling, busy, readFailed, checklist, message]);
   useEffect(() => { if (!readFailed) setReadAlertFocus(false); }, [readFailed]);
@@ -141,6 +144,13 @@ export function GoLiveSettings() {
     setHeadingFocus(false);
     heading.current?.focus();
   }, [headingFocus]);
+  // Billing changed elsewhere relabels the switch that holds the focus, so the heading, which acts on nothing, takes it.
+  useEffect(() => {
+    const value = checklist?.billingEnabled, before = shownBilling.current;
+    shownBilling.current = value;
+    if (before === undefined || value === undefined || before === value || confirmBilling) return;
+    if (document.activeElement === billingSwitch.current) heading.current?.focus();
+  }, [checklist?.billingEnabled]);
   // Read while rendering, before a swap between the two alerts can move the focus: a reason the settings have moved past,
   // with the owner working elsewhere, is about to be dropped, so the plain alert must not take the focus for it first.
   const leftBehind = messageRevision !== null && settings?.revision !== messageRevision
@@ -189,8 +199,12 @@ export function GoLiveSettings() {
         setMessage('paymentsReadFailed'); setQuietMessage(false); setMessageRevision(result.settings.revision); reloadChecklist(); return;
       }
       if (result.status >= 300) throw new Error();
-      setChecklist(parseChecklist(result.data));
+      const next = parseChecklist(result.data);
+      shownBilling.current = next.billingEnabled;
+      setChecklist(next);
       setConfirmBilling(false); setConfirmedKey(null);
+      // The dialog gives the focus back to an opener that is still disabled, so the heading takes it.
+      if (confirmDates) setHeadingFocus(true);
     } catch (error) { setMessage(error instanceof SaveTimeoutError ? 'timeout' : 'error'); setQuietMessage(false); setMessageRevision(null); }
     finally { setBusy(false); }
   }
@@ -224,7 +238,7 @@ export function GoLiveSettings() {
         return <li key={name} className="flex flex-col gap-3 rounded-lg border border-border p-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0"><p className="font-medium">{label(name)}: <span>{label(on ? 'on' : 'off')}</span></p>
             <p className="text-sm text-muted-foreground">{label(name === 'billingEnabled' ? 'billingHelp' : name === 'memberEmailsEnabled' ? 'memberEmailsHelp' : 'memberSmsHelp')}</p></div>
-          <Button className="shrink-0" variant={on ? 'outline' : 'default'} disabled={locked} aria-pressed={on}
+          <Button ref={name === 'billingEnabled' ? billingSwitch : undefined} className="shrink-0" variant={on ? 'outline' : 'default'} disabled={locked} aria-pressed={on}
             aria-label={label('toggleNamed', { action, name: label(name) })} onClick={() => void toggle(name)}>{action}</Button>
         </li>;
       })}</ul>

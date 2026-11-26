@@ -994,6 +994,74 @@ describe('go-live settings', () => {
     expect(screen.getAllByRole('alert')).toHaveLength(1);
     expect(screen.getByRole('alert').textContent).toBe('Stripe could not be checked. Try turning billing on again.');
   });
+  /** A read of billing made when the window gets the focus again, as after a change made elsewhere. */
+  const focusRead = () => act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+  it.each([
+    { from: 'Turn on: Billing', to: 'Turn off: Billing', before: false },
+    { from: 'Turn off: Billing', to: 'Turn on: Billing', before: true },
+  ])('moves the focus from $from to the heading when a read shows billing changed elsewhere', async ({ from, to, before }) => {
+    live.mockResolvedValue(reply(200, checklist(3, before)));
+    const user = userEvent.setup(); start();
+    const button = await screen.findByRole('button', { name: from });
+    act(() => button.focus());
+    live.mockResolvedValue(reply(200, checklist(3, !before)));
+    focusRead();
+    await screen.findByRole('button', { name: to });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { level: 2 })));
+    await user.keyboard('{Enter}');
+    await user.keyboard(' ');
+    expect(client.PATCH).not.toHaveBeenCalled();
+  });
+  it('leaves the focus on another switch when a read shows billing changed elsewhere', async () => {
+    start();
+    const button = await screen.findByRole('button', { name: 'Turn on: Member emails' });
+    act(() => button.focus());
+    live.mockResolvedValue(reply(200, checklist(3, true)));
+    focusRead();
+    await screen.findByRole('button', { name: 'Turn off: Billing' });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(document.activeElement).toBe(button);
+  });
+  it('does not move the focus to the heading after a billing switch pressed without the dialog saves', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } });
+    live.mockResolvedValue(reply(200, checklist(3, true)));
+    client.PATCH.mockResolvedValue(reply(200, checklist(4)));
+    const user = userEvent.setup(); start(queryClient);
+    await user.click(await screen.findByRole('button', { name: 'Turn off: Billing' }));
+    await screen.findByRole('button', { name: 'Turn on: Billing' });
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(client.PATCH).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).not.toBe(screen.getByRole('heading', { level: 2 }));
+  });
+  it('focuses the heading when the past-due dialog, with no message, closes because the list emptied with billing off', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } });
+    live.mockResolvedValue(reply(200, overdue()));
+    const user = userEvent.setup(); start(queryClient);
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
+    expect(screen.getByRole('dialog', { name: 'Review past billing dates' })).toBeDefined();
+    live.mockResolvedValue(reply(200, checklist(4)));
+    moveSettings(queryClient);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { level: 2 })));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(client.PATCH).not.toHaveBeenCalled();
+  });
+  it('focuses the heading after a confirmed save from the past-due dialog', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } });
+    live.mockResolvedValue(reply(200, overdue()));
+    client.PATCH.mockResolvedValue(reply(200, checklist(4, true)));
+    const user = userEvent.setup(); start(queryClient);
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
+    const dialog = screen.getByRole('dialog', { name: 'Review past billing dates' });
+    await user.click(within(dialog).getByRole('checkbox'));
+    await user.click(within(dialog).getByRole('button', { name: 'Confirm dates and turn billing on' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await screen.findByRole('button', { name: 'Turn off: Billing' });
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { level: 2 })));
+    expect(client.PATCH).toHaveBeenCalledTimes(1);
+  });
   it('keeps switches locked through overlapping explicit reloads until the latest read answers', async () => {
     let resolveFirst!: (value: unknown) => void, resolveSecond!: (value: unknown) => void;
     live.mockResolvedValueOnce(reply(200, checklist()))
