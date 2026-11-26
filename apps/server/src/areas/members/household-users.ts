@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, desc, eq, exists, inArray, isNotNull, isNull, not, notExists } from 'drizzle-orm';
+import { and, asc, desc, eq, exists, gt, inArray, isNotNull, isNull, not, notExists } from 'drizzle-orm';
 import { auditEvents, databaseCode, forGym, householdUsers, households, members, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { createHouseholdUserRequestSchema, householdUserSchema, type CreateHouseholdUserRequest, type Pagination } from '@plaingym/shared/contracts';
@@ -35,11 +35,23 @@ const payerLinked = (tx: Transaction) => exists(tx.select({ id: householdUsers.i
 /** Password mode has no mail to prove an address: the household's address awaits portal confirmation by staff
  * with `portal_access.manage`, who check the person and then issue the printed invitation. Identifiers only.
  * A household that already awaits confirmation (a request and no payer login) gets no second request: its earlier
- * one stands, so a sign-in retry after staff invited it doesn't list it again. Returns whether it wrote a request. */
+ * one stands, so a sign-in retry after staff invited it doesn't list it again. The exception is a join's own sign-in
+ * invitation (a system-actor invitation audit) strictly later than the latest request and than any staff invitation since
+ * it: a new request is written, so that invitation, perhaps never sent, doesn't hide the household. A staff invitation never
+ * does this, and one after the join's keeps the earlier request standing. Returns whether it wrote a request. */
 export async function requestPortalConfirmation(tx: Transaction, gymId: string, householdId: string, clock: Clock): Promise<boolean> {
   const [awaiting] = await tx.select({ id: households.id }).from(households)
     .where(and(eq(households.id, householdId), eq(households.gymId, gymId), requested(tx, gymId), not(payerLinked(tx))));
-  if (awaiting) return false;
+  if (awaiting) {
+    const onHousehold = and(eq(auditEvents.gymId, gymId), eq(auditEvents.targetType, 'household'), eq(auditEvents.targetId, householdId));
+    const [latest] = await tx.select({ occurredAt: auditEvents.occurredAt }).from(auditEvents)
+      .where(and(onHousehold, eq(auditEvents.action, confirmationRequested))).orderBy(desc(auditEvents.occurredAt)).limit(1);
+    if (!latest) return false;
+    // The latest invitation since that request decides; at the same instant a staff one wins.
+    const [lastInvited] = await tx.select({ actorKind: auditEvents.actorKind }).from(auditEvents).where(and(onHousehold, eq(auditEvents.action, 'household_user.invited'),
+      gt(auditEvents.occurredAt, latest.occurredAt))).orderBy(desc(auditEvents.occurredAt), desc(auditEvents.actorKind)).limit(1);
+    if (lastInvited?.actorKind !== 'system') return false;
+  }
   await writeAudit(tx, { gymId, actorKind: 'system', action: confirmationRequested, targetType: 'household', targetId: householdId, occurredAt: clock.now() });
   return true;
 }

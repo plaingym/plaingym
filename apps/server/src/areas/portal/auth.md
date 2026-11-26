@@ -136,7 +136,9 @@ confirmation request, since staff have acted; it returns if that invitation is r
 or expires, and its Portal access tab still lists the invitation. An invitation issued
 before the latest request, such as the one a failed join sign-in left, doesn't count.
 A household that already awaits confirmation gets no second request, so a sign-in retry
-after staff invited it doesn't list it again.
+after staff invited it doesn't list it again. A join's own sign-in invitation issued after
+the latest request, with no staff invitation after it, does let the retry write a new
+request, so the household is listed.
 
 ## Onboarding links
 

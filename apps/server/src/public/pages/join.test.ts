@@ -2184,6 +2184,38 @@ describe('the passwordless sign-in leaves the request', () => {
     expect(f.sent).toEqual([]);
   });
 
+  it('asks again when the join issued a sign-in invitation after its request, so the household is listed', async () => {
+    const f = await fixture(), email = 'password-toggle@example.invalid';
+    const accept = vi.spyOn(f.invitations, 'accept').mockRejectedValueOnce(new Error('SMTP unavailable'));
+    const { home, cookie } = await complete(f, email);
+    await f.drain();
+    expect(await invited(f, home.id)).toHaveLength(1);
+    const password = vi.spyOn(f.invitations, 'passwordRequired').mockResolvedValue(true);
+    f.clock.advance(1000);
+    await f.drain();
+    expect(await confirmationRequests(f, home.id)).toHaveLength(1);
+    // The gym leaves password mode: a resend issues a second invitation, later than the request, whose mail fails too.
+    password.mockResolvedValue(false);
+    accept.mockRejectedValueOnce(new Error('SMTP unavailable'));
+    f.clock.advance(1000);
+    expect((await f.post('/join/sign-in', undefined, cookie)).status).toBe(200);
+    await f.drain();
+    expect(await invited(f, home.id)).toHaveLength(2);
+    expect(f.sent).toEqual([]);
+    // Back in password mode, its retry asks again rather than leaving that unsent invitation to hide the household.
+    password.mockResolvedValue(true);
+    await logged(async lines => {
+      f.clock.advance(1000);
+      await f.drain();
+      expect(lines).toEqual([expect.objectContaining({ event: 'public.join.sign_in_skipped', gymId: f.gymId, householdId: home.id, reason: 'password_mode' })]);
+    });
+    expect(await confirmationRequests(f, home.id)).toHaveLength(2);
+    expect(await awaitingConfirmation(f)).toEqual([home.id]);
+    const store = createPortalInvitationStore(() => db.system.db);
+    expect(await createPortalConfirmationWidgetProvider({ scope: db.forGym, invitations: store }).read({ gymId: f.gymId, roles: ['owner'], clock: f.clock }))
+      .toMatchObject({ count: 1, items: [{ label: home.name }] });
+  });
+
   it('asks for no confirmation on a password-mode retry after the join ended', async () => {
     const f = await fixture(), { home, accept } = await failedOnce(f, 'password-ended@example.invalid');
     await ended(f, home.id);

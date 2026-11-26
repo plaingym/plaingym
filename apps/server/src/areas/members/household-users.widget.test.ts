@@ -158,6 +158,70 @@ describe('portal confirmation widget', () => {
     expect(await requests(other, home.id)).toHaveLength(1);
   });
 
+  describe('a sign-in invitation after the latest request', () => {
+    const at = (time: string) => new TestClock(`2026-10-30T${time}:00Z`);
+    /** A payer invitation issued at `time` as a join's sign-in job issues one: an invitee account, then the invitation row. */
+    async function issueAt(gymId: string, householdId: string, time: string) {
+      const userId = uuidv7();
+      await database.system.db.insert(authUser).values({ id: userId, name: 'Invitee', email: `${uuidv7()}@example.test` });
+      await store.withPayerInvitations(gymId, at(time), tx => store.issue(tx, gymId, { userId, householdId, scope: 'payer', memberId: null }, at(time)));
+      return userId;
+    }
+    const invitedAudit = (gymId: string, householdId: string, time: string, actor: { actorKind: 'system' } | { actorKind: 'user'; actorUserId: string }) =>
+      database.forGym(gymId, (tx) => writeAudit(tx, { gymId, ...actor, action: 'household_user.invited', targetType: 'household', targetId: householdId,
+        occurredAt: at(time).now() }));
+    const ask = (gymId: string, householdId: string, time: string) => database.forGym(gymId, (tx) => requestPortalConfirmation(tx, gymId, householdId, at(time)));
+    const readAt = (gymId: string, time: string) => provider().read({ gymId, roles: ['owner'], clock: at(time) });
+
+    it('writes a new request when the join issued it, so its unsent invitation no longer hides the household', async () => {
+      const gymId = await gym(), { home, member } = await waiting(gymId, 'Retried household');
+      await issueAt(gymId, home.id, '12:01');
+      await invitedAudit(gymId, home.id, '12:01', { actorKind: 'system' });
+      expect(await readAt(gymId, '12:01')).toBeNull();
+      expect(await ask(gymId, home.id, '12:02')).toBe(true);
+      expect(await requests(gymId, home.id)).toHaveLength(2);
+      expect(await readAt(gymId, '12:03')).toEqual({ id: portalConfirmationWidgetId, titleKey: 'portal/access:waitingTitle', status: 'ready', kind: 'count', count: 1,
+        items: [{ label: 'Retried household', href: href(member.id) }] });
+    });
+
+    it('writes none when staff issued it', async () => {
+      const gymId = await gym(), owner = await factory('staffRoles', gymId, { role: 'owner' }), { home } = await waiting(gymId, 'Invited household');
+      await issueAt(gymId, home.id, '12:01');
+      await invitedAudit(gymId, home.id, '12:01', { actorKind: 'user', actorUserId: owner.userId });
+      expect(await ask(gymId, home.id, '12:02')).toBe(false);
+      expect(await requests(gymId, home.id)).toHaveLength(1);
+      expect(await readAt(gymId, '12:03')).toBeNull();
+    });
+
+    it('writes none when staff invited after the join did, so the retry leaves the household out', async () => {
+      const gymId = await gym(), owner = await factory('staffRoles', gymId, { role: 'owner' }), { home } = await waiting(gymId, 'Invited household');
+      await issueAt(gymId, home.id, '12:01');
+      await invitedAudit(gymId, home.id, '12:01', { actorKind: 'system' });
+      await issueAt(gymId, home.id, '12:02');
+      await invitedAudit(gymId, home.id, '12:02', { actorKind: 'user', actorUserId: owner.userId });
+      expect(await ask(gymId, home.id, '12:03')).toBe(false);
+      expect(await requests(gymId, home.id)).toHaveLength(1);
+      expect(await readAt(gymId, '12:04')).toBeNull();
+    });
+
+    it('writes none for another gym\'s invitation audit naming the household', async () => {
+      const gymId = await gym(), other = await gym(), { home } = await waiting(gymId, 'Retried household');
+      await invitedAudit(other, home.id, '12:01', { actorKind: 'system' });
+      expect(await ask(gymId, home.id, '12:02')).toBe(false);
+      expect(await requests(gymId, home.id)).toHaveLength(1);
+    });
+
+    it('writes none for a join invitation before the latest request, or at the same instant', async () => {
+      const gymId = await gym(), { home } = await waiting(gymId, 'Retried household');
+      await invitedAudit(gymId, home.id, '11:59', { actorKind: 'system' });
+      expect(await ask(gymId, home.id, '12:02')).toBe(false);
+      // The request was written at 12:00; a join invitation audited then counts as earlier.
+      await invitedAudit(gymId, home.id, '12:00', { actorKind: 'system' });
+      expect(await ask(gymId, home.id, '12:02')).toBe(false);
+      expect(await requests(gymId, home.id)).toHaveLength(1);
+    });
+  });
+
   it('leaves out a thousand payer-invited households in one statement, never sending their list back', async () => {
     const gymId = await gym(), size = 1000;
     const homes = Array.from({ length: size + 2 }, (_, index) => ({ id: uuidv7(), gymId, name: `Household ${String(index).padStart(4, '0')}`,
