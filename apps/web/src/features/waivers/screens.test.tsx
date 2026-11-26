@@ -133,8 +133,9 @@ it('does not count an old signed version as signing the current template', async
 type Snapshot = Record<string, unknown> & { member: Record<string, unknown> };
 const newerKeys = (snapshot: Snapshot) => { snapshot.futureField = 'x'; snapshot.member.preferredName = 'Al'; };
 const noSigningTime = (snapshot: Snapshot) => { delete snapshot.signedAt; };
+const unreadableId = '01900000-0000-7000-8000-000000000004';
 /** Mounts the member's waivers with a changed snapshot in the signed list, the current template's status check, or both. */
-function mountSnapshots(list: (snapshot: Snapshot) => void, status: (snapshot: Snapshot) => void) {
+function mountSnapshots(list: ((snapshot: Snapshot) => void) | ((snapshot: Snapshot) => void)[], status: (snapshot: Snapshot) => void) {
   const changed = (change: (snapshot: Snapshot) => void) => {
     const row = signedCopy(true), snapshot = JSON.parse(row.snapshot) as Snapshot;
     change(snapshot);
@@ -142,7 +143,9 @@ function mountSnapshots(list: (snapshot: Snapshot) => void, status: (snapshot: S
   };
   const fetcher = vi.fn<typeof fetch>().mockImplementation(async url => {
     const path = new URL(String(url), 'https://gym.example.test');
-    const data = path.pathname.includes('/templates') ? [template] : [changed(path.searchParams.has('templateId') ? status : list)];
+    // A list of changes gives one signed copy each; the copy that lacks its signing time gets its own ID.
+    const data = path.pathname.includes('/templates') ? [template] : path.searchParams.has('templateId') ? [changed(status)]
+      : [list].flat().map(change => ({ ...changed(change), ...(change === noSigningTime && { id: unreadableId }) }));
     return Response.json({ data, pagination: { limit: 20, offset: 0, total: data.length } });
   });
   mount(<MemberWaivers gymId="gym" memberId={template.id} manage client={createWaiversClient(fetcher)} />);
@@ -156,10 +159,32 @@ it('shows and counts a signed copy whose snapshot has keys this version does not
   expect(await screen.findByText('Signed — current version')).toBeTruthy();
   expect(screen.queryByRole('alert')).toBeNull();
 });
-it('shows the error for a signed list snapshot without its signing time', async () => {
-  mountSnapshots(noSigningTime, newerKeys);
-  expect(await screen.findByRole('alert')).toBeTruthy();
-  expect(screen.queryByRole('heading', { name: 'Participation · Version 2' })).toBeNull();
+const unreadable = "This signed copy can't be shown here. Reload the page; if it still isn't shown, the stored copy may be damaged.";
+it('warns in the row of a signed copy whose snapshot lacks its signing time and keeps the readable copy', async () => {
+  mountSnapshots([noSigningTime, newerKeys], newerKeys);
+  const row = (await screen.findByText(unreadable)).closest('li')!;
+  expect(screen.getByRole('heading', { name: 'Participation · Version 2' })).toBeTruthy();
+  expect(within(row).queryByRole('heading')).toBeNull();
+  expect(within(row).queryByText(/Participation|signature:|Signer/)).toBeNull();
+  expect(row.querySelector('time')!.dateTime).toBe('1999-01-01T00:00:00Z');
+  expect(within(row).getByText('b'.repeat(64))).toBeTruthy();
+  expect((within(row).getByRole('button', { name: 'Prepare PDF' }) as HTMLButtonElement).disabled).toBe(false);
+  expect(screen.getAllByRole('button', { name: 'Prepare PDF' })).toHaveLength(2);
+  expect(await screen.findByText('Signed — current version')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+});
+it('prepares the PDF of an unreadable signed copy by its own ID', async () => {
+  const { fetcher } = mountSnapshots([newerKeys, noSigningTime], newerKeys);
+  const answer = fetcher.getMockImplementation()!;
+  fetcher.mockImplementation(async (url, init) => String(url).endsWith('/pdf')
+    ? Response.json({ data: { url: 'https://gym.example.test/signed.pdf', expiresAt: '2026-10-24T12:05:00Z' } })
+    : answer(url, init));
+  const row = (await screen.findByText(unreadable)).closest('li')!;
+  await userEvent.click(within(row).getByRole('button', { name: 'Prepare PDF' }));
+  expect((await screen.findByRole('link', { name: 'Download PDF (valid for five minutes)' })).getAttribute('href')).toBe('https://gym.example.test/signed.pdf');
+  const calls = fetcher.mock.calls.map(([url]) => String(url)).filter(url => url.endsWith('/pdf'));
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).toContain(unreadableId);
 });
 it('shows the error for a status check snapshot without its signing time, and says the status is unknown until a retry runs', async () => {
   const { fetcher } = mountSnapshots(newerKeys, noSigningTime);

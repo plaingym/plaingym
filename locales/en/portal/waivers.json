@@ -7,7 +7,7 @@
   "allSigned": "Everything is signed",
   "signed": "Signed copies",
   "noneSigned": "No signed copies yet",
-  "unreadable": "This signed copy can't be shown here. Prepare its PDF, or ask your gym for a copy.",
+  "unreadable": "This signed copy can't be shown here. Reload the page; if it still isn't shown, ask your gym for a copy.",
   "version": "Version {version}",
   "reviewSign": "Review and sign",
   "ownLogin": "Adults sign their own documents, from their own login or at the gym.",

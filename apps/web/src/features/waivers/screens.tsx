@@ -24,6 +24,10 @@ import { WaiverDocument, useWaiverDocument } from './document.js';
 const text = (key: string, values?: Record<string, string | number>) => t('waivers/waivers:' + key, values);
 const errorText = (error: unknown, fallback: string) => error instanceof WaiverRequestError ? error.message : text(fallback);
 const snapshotDetails = (snapshot: string) => parseResponse(waiverSigningSnapshotSchema, JSON.parse(snapshot));
+/** A signed copy's stored snapshot, or `null` when this version of the page can't read it. */
+function readableDetails(snapshot: string) {
+  try { return snapshotDetails(snapshot); } catch { return null; }
+}
 export function Templates({ gymId, manage, client = waiversClient }: { gymId: string; manage: boolean; client?: WaiversClient }) {
   const [offset, setOffset] = useState(0), [editor, setEditor] = useState<WaiverTemplate | 'new' | null>(null);
   const cache = useQueryClient(), key = ['waivers', gymId];
@@ -94,7 +98,7 @@ export function MemberWaivers({ gymId, memberId, manage, timezone = 'UTC', local
   const templates = useQuery({ queryKey: [...key, 'current', templateOffset], queryFn: () => client.call('listTemplates', undefined, {}, { limit: 20, offset: templateOffset }) });
   const signed = useQuery({ queryKey: [...key, memberId, offset], queryFn: async () => {
     const page = await client.call('listSignatures', undefined, {}, { memberId, offset, limit: 20 });
-    return { ...page, data: page.data.map(row => ({ ...row, details: snapshotDetails(row.snapshot) })) };
+    return { ...page, data: page.data.map(row => ({ ...row, details: readableDetails(row.snapshot) })) };
   } });
   // A template ID identifies one immutable version. Check that version directly,
   // independently of whichever page of historical signatures is on screen.
@@ -123,11 +127,12 @@ export function MemberWaivers({ gymId, memberId, manage, timezone = 'UTC', local
     <h3 className="font-semibold">{text('signed')}</h3>
     {signed.data?.data.length === 0 && <EmptyState title={text('unsigned')} />}
     <ul className="space-y-3">{signed.data?.data.map(row => <li key={row.id} className="space-y-2 rounded-xl border border-border p-4">
-      <h4 className="font-semibold">{row.details.template.name} · {text('version')} {row.details.template.version}</h4>
-      <p>{text(row.details.signer.kind === 'guardian' ? 'guardianSignature' : 'signer')}: {row.details.signer.name}
-        {row.details.signer.kind === 'guardian' && ` (${row.details.signer.relationship})`}</p>
-      <p>{text('signedAt')}: <time dateTime={row.details.signedAt}>{date.format(new Date(row.details.signedAt))}</time> · {timezone}</p>
+      {row.details && <><h4 className="font-semibold">{row.details.template.name} · {text('version')} {row.details.template.version}</h4>
+        <p>{text(row.details.signer.kind === 'guardian' ? 'guardianSignature' : 'signer')}: {row.details.signer.name}
+          {row.details.signer.kind === 'guardian' && ` (${row.details.signer.relationship})`}</p></>}
+      <p>{text('signedAt')}: <time dateTime={row.details?.signedAt ?? row.signedAt}>{date.format(new Date(row.details?.signedAt ?? row.signedAt))}</time> · {timezone}</p>
       <p className="break-all text-sm text-muted-foreground">{row.snapshotHash}</p>
+      {!row.details && <Alert variant="warning">{text('unreadable')}</Alert>}
       <Button variant="outline" onClick={() => void pdf(row.id)}>{text('pdf')}</Button>
     </li>)}</ul>
     {signed.data && <Pager offset={offset} total={signed.data.pagination.total} onChange={setOffset} />}

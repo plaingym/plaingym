@@ -44,6 +44,7 @@
   "member": "Member",
   "guardianSignature": "Guardian signature",
   "signedAt": "Signed at",
+  "unreadable": "This signed copy can't be shown here. Reload the page; if it still isn't shown, the stored copy may be damaged.",
   "openDocument": "Open the document",
   "documentHelp": "Open the document to read it in a new tab if needed. Confirm only after you have read it. If it will not open, contact the gym before signing.",
   "pdfDocument": "PDF document",

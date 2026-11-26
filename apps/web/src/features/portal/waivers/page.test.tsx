@@ -113,7 +113,7 @@ it('shows a signed copy whose snapshot has keys this version does not know', asy
   expect(document.querySelector('time')!.dateTime).toBe('2026-11-18T12:00:00Z');
   expect(document.querySelector('time')!.textContent).toBe(dateLabel('2026-11-18T12:00:00Z', 'UTC'));
 });
-const unreadable = "This signed copy can't be shown here. Prepare its PDF, or ask your gym for a copy.";
+const unreadable = "This signed copy can't be shown here. Reload the page; if it still isn't shown, ask your gym for a copy.";
 it('warns in the row of a signed copy whose snapshot lacks its signing time and keeps the pending list', async () => {
   mountWaivers(payerContext, [portalPerson(portalIds.payer, 'Pat', 'Payer', '1980-01-01')],
     [{ memberId: portalIds.payer, template: portalTemplate }], [signedRow(snapshot => { delete snapshot.signedAt; })]);

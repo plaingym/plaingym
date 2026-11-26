@@ -179,9 +179,12 @@ or signature references. Waiver template exports include `document_key`,
 
 The web editor and signing form use the shared Dialog and mobile components.
 Signed rows display the stored snapshot's template name/version, signer,
-guardian relationship and signing time. Current-version status uses a scoped
+guardian relationship and signing time. A row whose snapshot the page can't read
+shows instead the stored signing time, the hash, a warning to reload and the PDF
+button; the other rows are unaffected. Current-version status uses a scoped
 signature query for each visible immutable template ID, independently of history
-pagination. The member tab reads the gym timezone from the existing staff-readable
+pagination, and shows an error if the copy it reads can't be parsed. The member
+tab reads the gym timezone from the existing staff-readable
 schedule options endpoint and formats dates in the active UI language (there is
 no separate gym-locale field). Conflict messages and the demo's uploads-disabled
 message are displayed; unexpected server errors retain a generic message.
