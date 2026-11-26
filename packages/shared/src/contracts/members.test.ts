@@ -7,7 +7,7 @@ import {
   createMemberRequestSchema, createMemberTagRequestSchema, householdBillingSettingsSchema,
   householdMemberSchema, householdResponseSchema, householdSchema, householdUserListResponseSchema,
   householdUserSchema, memberListQuerySchema, memberListResponseSchema, memberMedicalNotesSchema,
-  memberSchema, membersContracts, setHouseholdPinRequestSchema, updateHouseholdBillingSettingsRequestSchema,
+  memberSchema, membersContracts, setHouseholdPinRequestSchema, setHouseholdPinResponseSchema, updateHouseholdBillingSettingsRequestSchema,
   updateHouseholdRequestSchema, updateMemberMedicalNotesRequestSchema, updateMemberRequestSchema,
   updateMemberTagRequestSchema, householdAddressReadSchema, emergencyContactReadSchema,
   type Household, type HouseholdBillingSettings, type HouseholdMember, type HouseholdUser,
@@ -27,7 +27,7 @@ const member = {
 };
 const household = {
   sms: { phoneValid: false, phoneE164: null, notices: null },
-  id: householdId, name: 'Family', email: null, phone: null, address: {}, revision: 1, createdAt,
+  id: householdId, name: 'Family', email: null, phone: null, address: {}, pinSet: false, revision: 1, createdAt,
 };
 type Wire<T> = { [K in keyof T]: T[K] extends Date ? string : T[K] extends Date | null ? string | null : T[K] };
 
@@ -118,6 +118,14 @@ describe('household, tag and login contracts', () => {
       expect(householdSchema.safeParse({ ...household, [field]: 'secret' }).success).toBe(false);
     }
   });
+  it('says only whether a household PIN is set, and whether a saved PIN is shared', () => {
+    expect(householdSchema.safeParse({ ...household, pinSet: undefined }).success).toBe(false);
+    expect(householdSchema.safeParse({ ...household, pinSet: 'yes' }).success).toBe(false);
+    expect(setHouseholdPinResponseSchema.parse({ data: { ...household, pinSet: true }, sharedPin: true }).sharedPin).toBe(true);
+    expect(setHouseholdPinResponseSchema.safeParse({ data: household }).success).toBe(false);
+    expect(setHouseholdPinResponseSchema.safeParse({ data: household, sharedPin: false, household: householdId }).success).toBe(false);
+    expect(membersContracts.setHouseholdPin.response).toBe(setHouseholdPinResponseSchema);
+  });
   it('validates household billing bounds and requires a revision on later changes', () => {
     expect(createHouseholdRequestSchema.parse({ name: 'Family', billingDay: 31, familyDiscountBasisPoints: 10_000 }).billingDay).toBe(31);
     expect(householdBillingSettingsSchema.parse({ id, revision: 1, billingDay: 1, familyDiscountBasisPoints: 0 }).billingDay).toBe(1);
@@ -181,7 +189,9 @@ describe('people contract permissions and schema compatibility', () => {
     expectTypeOf<Omit<Member, 'sms'>>().toExtend<Wire<Pick<typeof members.$inferSelect, Exclude<keyof Member, 'sms'>>>>();
     expectTypeOf<Omit<HouseholdMember, 'sms'>>().toExtend<Wire<Pick<typeof members.$inferSelect, Exclude<keyof HouseholdMember, 'sms'>>>>();
     expectTypeOf<MemberMedicalNotes>().toExtend<Pick<typeof members.$inferSelect, keyof MemberMedicalNotes>>();
-    expectTypeOf<Omit<Household, 'sms'>>().toExtend<Wire<Pick<typeof households.$inferSelect, Exclude<keyof Household, 'sms'>>>>();
+    // `pinSet` is derived from the PIN hash column, which no response carries.
+    expectTypeOf<Omit<Household, 'sms' | 'pinSet'>>().toExtend<Wire<Pick<typeof households.$inferSelect, Exclude<keyof Household, 'sms' | 'pinSet'>>>>();
+    expectTypeOf<Household['pinSet']>().toEqualTypeOf<boolean>();
     expectTypeOf<HouseholdBillingSettings>().toExtend<Pick<typeof households.$inferSelect, keyof HouseholdBillingSettings>>();
     expectTypeOf<MemberTag>().toExtend<Wire<Pick<typeof memberTags.$inferSelect, keyof MemberTag>>>();
     expectTypeOf<MemberTagLink>().toExtend<Wire<Pick<typeof memberTagLinks.$inferSelect, keyof MemberTagLink>>>();

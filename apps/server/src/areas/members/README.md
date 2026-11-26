@@ -341,6 +341,17 @@ HMAC, and compare hashes in constant time. The secret comes from the injected
 and the separate HMAC domain keeps PIN hashes unrelated to check-in codes. The resolver
 runs before the mutation transaction opens. A missing or short key fails closed.
 
+Household responses carry `pinSet`, whether a PIN is set, computed in SQL from
+`pin_hash is not null`; no response, log or audit carries the PIN or its hash.
+The profile's household panel shows it, and offers **Clear PIN** only when a PIN
+is set. Since each hash is bound to its household, `PUT /api/households/{id}/pin`
+finds a shared PIN by verifying the new PIN against every other household of the
+gym that has one (one HMAC each, inside the same transaction). It still saves the
+PIN and answers `sharedPin: true`, never naming the other household, so the panel
+can warn that members with similar names may not be able to check in by name and
+PIN (the kiosk refuses a name and PIN that match two households). Clearing a PIN
+answers `sharedPin: false`.
+
 Photos are resized to at most 512 pixels on the client and re-encoded as JPEG
 pixels, dropping source metadata. The server bounds the request, accepts only
 JPEG/PNG/WebP signatures, and stores at most 512 KiB through an injected

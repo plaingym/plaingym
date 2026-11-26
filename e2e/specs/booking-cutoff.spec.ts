@@ -36,7 +36,7 @@ for (const width of [360, 1280]) {
         if (path === `/api/bookings/sessions/${sessionId}/roster`) return route.fulfill({ json: { ...list([]), counts: { booked: 1, waitlisted: 0, checkedIn: 0 } } });
         if (path === '/api/members/' + memberId) return route.fulfill({ json: { data: member } });
         if (path === '/api/members') return route.fulfill({ json: list([member]) });
-        if (path === '/api/households/' + householdId) return route.fulfill({ json: { data: { id: householdId, name: 'Lee', email: null, phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: {}, revision: 1, createdAt: session.createdAt } } });
+        if (path === '/api/households/' + householdId) return route.fulfill({ json: { data: { id: householdId, name: 'Lee', email: null, phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: {}, pinSet: false, revision: 1, createdAt: session.createdAt } } });
         if (path.endsWith('/cancel')) {
           cancelled = true;
           return route.fulfill({ status: 409, json: { error: { code: 'conflict', message: 'Already cancelled', details: { reason: ['already_cancelled'] } } } });

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, ilike, isNotNull, isNull, or } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- Reviewed exact-name expression over imported gym-owned columns, used inside forGym only.
+import { and, asc, eq, ilike, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { forGym, households, members } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import {
@@ -37,24 +38,30 @@ export function createKioskCheckin(options: KioskCheckinOptions = {}) {
   const { identities, currentSessions, bookedSessions, record } = createKioskCheckinHelpers({ ...options, scope, clock });
 
   /**
-   * The one household whose PIN matches among households with a member or household name matching the search.
-   * `pinChecked` hears whether the guess was compared, and whether it matched.
+   * The one household whose PIN matches among households with a member or household name matching the search, or
+   * among those whose name equals it when any does. `pinChecked` hears whether the guess was compared, and whether it matched.
    */
   async function findHousehold(gymId: string, name: string, pin: string, pinChecked?: PinChecked): Promise<string | null> {
     if (!options.pinSecret) throw new AppError('unavailable', 'Kiosk PIN check-in is not configured');
     const text = name.trim().replace(/\s+/g, ' '), [first, ...rest] = text.split(' ');
     const prefix = (value: string) => escapeLike(value) + '%';
-    const candidates = await scope(gymId, (tx) => tx.selectDistinct({ id: households.id, pinHash: households.pinHash })
+    // A matching member's full name, or the household name, equals the search (ignoring case and spacing).
+    const spaced = (value: SQL) => sql`lower(regexp_replace(trim(${value}), '\\s+', ' ', 'g'))`;
+    const exact = sql<boolean>`bool_or(${spaced(sql`${members.firstName} || ' ' || ${members.lastName}`)} = lower(${text})
+      or ${spaced(sql`${households.name}`)} = lower(${text}))`;
+    const candidates = await scope(gymId, (tx) => tx.select({ id: households.id, pinHash: households.pinHash, exact })
       .from(members).innerJoin(households, eq(households.id, members.householdId))
       .where(and(isNull(members.anonymizedAt), isNotNull(households.pinHash), or(
         // A household name matches where one of its words starts with the search, never in the middle of a word.
         ilike(members.firstName, prefix(text)), ilike(members.lastName, prefix(text)),
         ilike(households.name, prefix(text)), ilike(households.name, '% ' + prefix(text)),
         rest.length ? and(ilike(members.firstName, prefix(first!)), ilike(members.lastName, prefix(rest.join(' ')))) : undefined,
-      ))).limit(maxCandidateHouseholds + 1));
+      ))).groupBy(households.id, households.pinHash).limit(maxCandidateHouseholds + 1));
     if (!candidates.length || candidates.length > maxCandidateHouseholds) { pinChecked?.('skipped'); return null; }
     const secret = await options.pinSecret(gymId);
-    const matches = candidates.filter((row) => verifyHouseholdPin(secret, gymId, row.id, pin, row.pinHash));
+    // An exact name narrows the bounded set, so "a a" isn't lost to "asd asd" sharing its PIN; it never adds a household.
+    const checked = candidates.some((row) => row.exact) ? candidates.filter((row) => row.exact) : candidates;
+    const matches = checked.filter((row) => verifyHouseholdPin(secret, gymId, row.id, pin, row.pinHash));
     // Two households sharing a name and PIN can't be told apart: never guess.
     pinChecked?.(matches.length === 1 ? 'verified' : 'compared');
     return matches.length === 1 ? matches[0]!.id : null;

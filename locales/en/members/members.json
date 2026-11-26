@@ -15,6 +15,8 @@
   "billingDay": "Billing day (1–31)", "discount": "Family discount (%)", "saveBilling": "Save billing settings",
   "invalidDiscount": "Enter a percentage from 0 to 100 with up to two decimal places.",
   "pin": "New household PIN (4–8 digits)", "setPin": "Set PIN", "clearPin": "Clear PIN",
+  "pinIsSet": "A PIN is set.", "pinNotSet": "No PIN is set.", "pinNew": "New PIN (4–8 digits)", "pinSaved": "PIN saved.", "pinCleared": "PIN cleared.",
+  "pinShared": "Another household uses this PIN. Members with similar names may not be able to check in.",
   "emergencyContacts": "Emergency contacts", "contact.name": "Contact name", "contact.phone": "Contact phone", "contact.email": "Contact email", "contact.relationship": "Relationship",
   "addContact": "Add emergency contact", "removeContact": "Remove contact", "medicalNotes": "Medical notes",
   "tags": "Tags", "allTags": "All tags", "manageTags": "Manage tags", "tagName": "Tag name", "color": "Color", "newTag": "New tag", "chooseTag": "Choose a tag", "addTag": "Add tag",

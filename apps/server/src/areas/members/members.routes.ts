@@ -172,7 +172,7 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
     jsonRoute(contracts.deleteHousehold, async (ctx, p, _q, b) => { await current().service.deleteHousehold(mutation(ctx), p.householdId!, c.deleteMemberRecordRequestSchema.parse(b).revision); return { data: null }; }),
     jsonRoute(contracts.getHouseholdBilling, async (ctx, p) => ({ data: await current().service.getHouseholdBilling(ctx.gym.gymId, p.householdId!) })),
     jsonRoute(contracts.updateHouseholdBilling, async (ctx, p, _q, b) => ({ data: await current().service.updateHouseholdBilling(mutation(ctx), p.householdId!, c.updateHouseholdBillingSettingsRequestSchema.parse(b)) })),
-    jsonRoute(contracts.setHouseholdPin, async (ctx, p, _q, b) => ({ data: await current().service.setHouseholdPin(mutation(ctx), p.householdId!, c.setHouseholdPinRequestSchema.parse(b)) })),
+    jsonRoute(contracts.setHouseholdPin, async (ctx, p, _q, b) => current().service.setHouseholdPin(mutation(ctx), p.householdId!, c.setHouseholdPinRequestSchema.parse(b))),
     jsonRoute(contracts.listTags, async (ctx, _p, q) => current().service.listTags(ctx.gym.gymId, c.paginationSchema.parse(q))),
     jsonRoute(contracts.createTag, async (ctx, _p, _q, b) => ({ data: await current().service.createTag(mutation(ctx), c.createMemberTagRequestSchema.parse(b)) })),
     jsonRoute(contracts.updateTag, async (ctx, p, _q, b) => ({ data: await current().service.updateTag(mutation(ctx), p.tagId!, c.updateMemberTagRequestSchema.parse(b)) })),

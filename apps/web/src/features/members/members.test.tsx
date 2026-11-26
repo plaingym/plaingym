@@ -30,6 +30,8 @@ function bootstrap(roles: readonly StaffRole[], country?: string) {
   const data: ShellBootstrap = { gym: { id: homeId, name: 'Test gym', timezone: 'UTC', currency: 'USD', enabledModules: [], ...(country ? { country } : {}) }, session: { userId: memberId, displayName: 'Test User', roles, member: false }, login: { password: true, magicLink: false } };
   vi.mocked(useBootstrap).mockReturnValue(new QueryObserver(new QueryClient(), { queryKey: ['bootstrap'], initialData: data, queryFn: async () => data }).getCurrentResult());
 }
+const household = (pinSet = false) => ({ id: homeId, name: 'Smith family', email: null, phone: null, sms: { phoneValid: false, phoneE164: null, notices: null },
+  address: {}, pinSet, revision: 1, createdAt: member.createdAt });
 function view(component: ReactNode) {
   return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>{component}</QueryClientProvider>);
 }
@@ -40,7 +42,7 @@ beforeEach(() => {
     if (path.endsWith('/billing-settings')) return { data: { id: homeId, billingDay: 1, familyDiscountBasisPoints: 0, revision: 1 } };
     // The Portal access tab, shown to managers, lists the household's logins and invitations.
     if (path.includes('/portal-logins') || path.endsWith('/portal-invitations')) return { data: [], pagination: { limit: 20, offset: 0, total: 0 } };
-    if (path.includes('/households/')) return { data: { id: homeId, name: 'Smith family', email: null, phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: {}, revision: 1, createdAt: member.createdAt } };
+    if (path.includes('/households/')) return { data: household() };
     if (path.endsWith('/tags') || path.startsWith('/api/member-tags')) return { data: [], pagination: { limit: 100, offset: 0, total: 0 } };
     return { data: member };
   });
@@ -158,6 +160,39 @@ describe('member admin UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await screen.findByRole('alert');
     expect(memberRequest).not.toHaveBeenCalled();
+  });
+  it('says no PIN is set and offers no Clear PIN without one', async () => {
+    view(<HouseholdDetails householdId={homeId} gymId={homeId}/>);
+    expect(await screen.findByText('No PIN is set.')).toBeDefined();
+    expect(screen.queryByText('A PIN is set.')).toBeNull();
+    expect(screen.getByLabelText('New household PIN (4–8 digits)')).toBeDefined();
+    expect((screen.getByRole('button', { name: 'Clear PIN' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+  it('says a PIN is set, labels the field for a new one, and confirms a save that shares another household\'s PIN', async () => {
+    const fallback = vi.mocked(memberRequest).getMockImplementation()!;
+    vi.mocked(memberRequest).mockImplementation(async (schema, path, method, ...rest) => path === `/api/households/${homeId}/pin` && method === 'PUT'
+      ? { data: household(true), sharedPin: true }
+      : path.includes('/households/') && !path.endsWith('/billing-settings') && !path.includes('/portal-') ? { data: household(true) } : fallback(schema, path, method, ...rest));
+    view(<HouseholdDetails householdId={homeId} gymId={homeId}/>);
+    expect(await screen.findByText('A PIN is set.')).toBeDefined();
+    expect(screen.queryByText('No PIN is set.')).toBeNull();
+    expect((screen.getByRole('button', { name: 'Clear PIN' }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.change(screen.getByLabelText('New PIN (4–8 digits)'), { target: { value: '1234' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Set PIN' }));
+    expect(await screen.findByText('PIN saved.')).toBeDefined();
+    expect(screen.getByText('Another household uses this PIN. Members with similar names may not be able to check in.')).toBeDefined();
+    expect(memberRequest).toHaveBeenCalledWith(expect.anything(), `/api/households/${homeId}/pin`, 'PUT', { revision: 1, pin: '1234' });
+  });
+  it('confirms a cleared PIN without a shared-PIN warning', async () => {
+    const fallback = vi.mocked(memberRequest).getMockImplementation()!;
+    vi.mocked(memberRequest).mockImplementation(async (schema, path, method, ...rest) => path === `/api/households/${homeId}/pin` && method === 'PUT'
+      ? { data: household(false), sharedPin: false }
+      : path.includes('/households/') && !path.endsWith('/billing-settings') && !path.includes('/portal-') ? { data: household(true) } : fallback(schema, path, method, ...rest));
+    view(<HouseholdDetails householdId={homeId} gymId={homeId}/>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Clear PIN' }));
+    expect(await screen.findByText('PIN cleared.')).toBeDefined();
+    expect(screen.queryByText(/Another household uses this PIN/)).toBeNull();
+    expect(memberRequest).toHaveBeenCalledWith(expect.anything(), `/api/households/${homeId}/pin`, 'PUT', { revision: 1, pin: null });
   });
   it('creates a household with the gym\'s country code joined to the typed phone', async () => {
     bootstrap(['admin'], 'CA');

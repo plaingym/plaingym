@@ -24,7 +24,7 @@ const fetcher = vi.fn(async (path: string | URL | Request) => {
   if (url.pathname === '/api/billing/invoices/' + invoice.id) return Response.json({ data: detail });
   if (url.pathname.endsWith('/payment-methods')) return Response.json(page([card]));
   if (url.pathname === '/api/households/' + home) return Response.json({ data: { id: home, name: 'Rivera household', email: null, phone: null,
-    sms: { phoneValid: false, phoneE164: null, notices: null }, address: {}, revision: 1, createdAt } });
+    sms: { phoneValid: false, phoneE164: null, notices: null }, address: {}, pinSet: false, revision: 1, createdAt } });
   if (url.pathname === '/api/members') return Response.json(page([]));
   return Response.json({}, { status: 503 });
 });

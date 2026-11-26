@@ -88,14 +88,14 @@ function transport(initial: Partial<InvoiceDetail> = {}, methods: MaskedPaymentM
     if (url.pathname.endsWith('/void')) { detail.invoice = { ...detail.invoice, status: 'void' }; return Response.json({ data: detail.invoice }); }
     if (url.pathname.endsWith('/payment-methods')) return Response.json(page(methods));
     if (url.pathname === '/api/members') return Response.json(page([]));
-    if (url.pathname === '/api/households/' + home) return Response.json({ data: { id: home, name: 'Rivera household', email: null, phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: {}, revision: 1, createdAt } });
+    if (url.pathname === '/api/households/' + home) return Response.json({ data: { id: home, name: 'Rivera household', email: null, phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: {}, pinSet: false, revision: 1, createdAt } });
     if (url.pathname.endsWith('/payments') && method === 'POST') {
       detail.invoice = { ...invoice, status: 'paid', paidAt: createdAt }; detail.payments = [payment]; return Response.json({ data: payment }, { status: 201 });
     }
     if (url.pathname === '/api/billing/charge-types') return Response.json(page([]));
     if (url.pathname === '/api/billing/tax-rates') return Response.json(page([]));
     if (url.pathname === '/api/settings') return Response.json({}, { status: 403 });
-    if (url.pathname === '/api/households') return Response.json(page([{ id: home, name: 'Rivera household', email: null, phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: {}, revision: 1, createdAt }]));
+    if (url.pathname === '/api/households') return Response.json(page([{ id: home, name: 'Rivera household', email: null, phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: {}, pinSet: false, revision: 1, createdAt }]));
     if (url.pathname === '/api/links/send') return Response.json({ data: {
       id: id(9), createdAt, householdId: home, campaignId: null, purpose: 'pay_invoice', invoiceId: invoice.id, memberId: null,
       expiresAt: '2026-11-01T12:00:00Z', usedAt: null, revokedAt: null, createdBy: id(10),
@@ -126,7 +126,7 @@ it.each([false, true])('lists payer text recipients with reasons when billing ph
   f.fetcher.mockImplementation(async (path, options) => {
     const url = new URL(String(path), 'http://gym.test');
     if (url.pathname === '/api/households/' + home) return Response.json({ data: { id: home, name: 'Rivera household', email: 'payer@example.test',
-      phone: '+12025550123', sms: { phoneE164: '+12025550123', phoneValid: true, notices: billingPhone ? consent : null }, address: {}, revision: 1, createdAt } });
+      phone: '+12025550123', sms: { phoneE164: '+12025550123', phoneValid: true, notices: billingPhone ? consent : null }, address: {}, pinSet: false, revision: 1, createdAt } });
     if (url.pathname === '/api/members') return Response.json(page([
       { id: id(101), firstName: 'Ready', lastName: 'Recipient', anonymizedAt: null, sms: { phoneValid: true, notices: consent } },
       { id: id(102), firstName: 'No', lastName: 'Consent', anonymizedAt: null, sms: { phoneValid: true, notices: null } },

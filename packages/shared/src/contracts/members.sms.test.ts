@@ -14,7 +14,7 @@ const member = {
 };
 const household = {
   sms: householdSms, id: '019a08bf-1234-7000-8000-000000000002', name: 'Family', email: null,
-  phone: '+1 202 555 0123', address: {}, revision: 1, createdAt,
+  phone: '+1 202 555 0123', address: {}, pinSet: false, revision: 1, createdAt,
 };
 
 describe('SMS opted-out date', () => {

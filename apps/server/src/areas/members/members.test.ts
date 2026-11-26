@@ -408,10 +408,45 @@ describe('members and households', () => {
     expect(verifyHouseholdPin(secretA, gymA, home.id, '1234', raw!.pin)).toBe(true);
     expect(verifyHouseholdPin(secretB, gymB, home.id, '1234', raw!.pin)).toBe(false);
     expect(verifyHouseholdPin(secretA, gymA, uuidv7(), '1234', raw!.pin)).toBe(false);
-    expect(saved).not.toHaveProperty('pinHash'); expect(saved).not.toHaveProperty('pin');
+    expect(saved.data).not.toHaveProperty('pinHash'); expect(saved.data).not.toHaveProperty('pin'); expect(saved.data.pinSet).toBe(true);
     await service.setHouseholdPin(context(), home.id, { revision: 2, pin: null });
     expect(verifyHouseholdPin(secretA, gymA, home.id, '1234', null)).toBe(false);
     expect(verifyHouseholdPin(secretA, gymA, home.id, 'bad', raw!.pin)).toBe(false);
+  });
+  it('says whether a PIN is set, and when another household of the gym shares it, without naming it or returning a hash', async () => {
+    // A fresh gym, so other tests' PINs can't count as shared.
+    const gymId = uuidv7(); await factory('gyms', gymId);
+    const owner = server({ kind: 'staff', userId, gymId, roles: ['owner'] }, gymId);
+    const first = await factory('households', gymId), second = await factory('households', gymId);
+    const responses: string[] = [];
+    const call = async (path: string, method = 'GET', body?: unknown) => {
+      const response = await send(owner, path, method, body); const text = await response.text(); responses.push(text);
+      expect(response.status, path).toBe(200); return JSON.parse(text) as { data: { pinSet: boolean; revision: number }; sharedPin?: boolean };
+    };
+    expect((await call(`/api/households/${first.id}`)).data.pinSet).toBe(false);
+    const saved = await call(`/api/households/${first.id}/pin`, 'PUT', { revision: 1, pin: '1234' });
+    expect(saved).toMatchObject({ data: { pinSet: true }, sharedPin: false });
+    expect((await call(`/api/households/${first.id}`)).data.pinSet).toBe(true);
+    expect((await call(`/api/households/${second.id}`)).data.pinSet).toBe(false);
+    const shared = await call(`/api/households/${second.id}/pin`, 'PUT', { revision: 1, pin: '1234' });
+    expect(shared).toMatchObject({ data: { pinSet: true }, sharedPin: true });
+    expect(Object.keys(shared).sort()).toEqual(['data', 'sharedPin']);
+    const [stored] = await database.forGym(gymId, (tx) => tx.select({ pin: households.pinHash }).from(households).where(eq(households.id, second.id)));
+    expect(verifyHouseholdPin(secretB, gymId, second.id, '1234', stored!.pin)).toBe(true);
+    const changed = await call(`/api/households/${second.id}/pin`, 'PUT', { revision: shared.data.revision, pin: '5678' });
+    expect(changed).toMatchObject({ data: { pinSet: true }, sharedPin: false });
+    const cleared = await call(`/api/households/${first.id}/pin`, 'PUT', { revision: saved.data.revision, pin: null });
+    expect(cleared).toMatchObject({ data: { pinSet: false }, sharedPin: false });
+    expect((await call(`/api/households/${first.id}`)).data.pinSet).toBe(false);
+    expect((await call(`/api/households?limit=50`) as unknown as { data: { id: string; pinSet: boolean }[] }).data
+      .map((home) => [home.id, home.pinSet]).sort()).toEqual([[first.id, false], [second.id, true]].sort());
+    for (const text of responses) { expect(text).not.toMatch(/pinHash|pin_hash/); expect(text).not.toContain(stored!.pin!); }
+    // The shared-PIN answer names only the household it saved.
+    expect(JSON.stringify(shared)).not.toContain(first.id);
+    // Another gym's staff can't set or probe this gym's household PINs.
+    expect((await send(staff('owner'), `/api/households/${first.id}/pin`, 'PUT', { revision: 1, pin: '1234' })).status).toBe(404);
+    const audits = await database.forGym(gymId, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'household.pin.updated')));
+    expect(audits).toHaveLength(4); expect(JSON.stringify(audits)).not.toMatch(/1234|5678|pinHash|pin_hash|sharedPin/);
   });
   it('deletes unused households and tags with revision guards while retaining households with member or invoice references', async () => {
     const home = await service.createHousehold(context(), { name: 'Empty' });

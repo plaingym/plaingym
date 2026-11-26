@@ -16,6 +16,9 @@ members, and evaluates standing. A guess is checked against at most three
 households where a member's first or last name, or a word of the household
 name, starts with the search; a wider match
 goes to the front desk, and a first and last name narrows a common surname.
+When any of those households has a member whose full name, or a household name,
+equals the search (ignoring case and spacing), the PIN is checked only against
+those households; the narrowing never adds one.
 Multiple matching households, invalid PINs,
 members outside the household, and failed checks receive the same neutral
 front-desk result. Lookup displays only first names, last initials, and optional

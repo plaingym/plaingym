@@ -29,7 +29,7 @@ const member: Member = { id: memberId, householdId: homeId, firstName: 'Alex', l
   sms: ready, dateOfBirth: null, status: 'active', emergencyContacts: [], emailOptOut: false, emailDeliverable: true, anonymizedAt: null, revision: 1, createdAt };
 const other: Member = { ...member, id: otherId, firstName: 'Sam', email: 'sam@example.com' };
 const household: Household = { id: homeId, name: 'Smith family', email: 'pay@example.com', phone: null,
-  sms: { phoneValid: true, phoneE164: '+16045550199', notices: consent }, address: {}, revision: 1, createdAt };
+  sms: { phoneValid: true, phoneE164: '+16045550199', notices: consent }, address: {}, pinSet: false, revision: 1, createdAt };
 const api = vi.mocked(invoiceClient);
 const sent = { data: { purpose: 'onboarding' } } as never;
 

@@ -5,7 +5,7 @@ import { campaignClient, householdsNeedingCard } from './api.js';
 import { api, ApiError } from '../../lib/api.js';
 
 const households: Household[] = ['empty', 'active', 'revoked-only'].map(id => ({ id, name: id, email: null,
-  phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: {}, revision: 1, createdAt: '2026-10-26T12:00:00Z' }));
+  phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: {}, pinSet: false, revision: 1, createdAt: '2026-10-26T12:00:00Z' }));
 
 it('pages the server filter and keeps only the editor households, in their order', async () => {
   // The server answers for the whole gym, so it can name a household the editor doesn't list.

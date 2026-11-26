@@ -104,7 +104,7 @@ export function membersSeed(options: { scope?: typeof forGym; clock?: Clock; pin
       if (!household) {
         household = await members.createHousehold(actor, { name: home.name, email: householdEmail(home), phone: home.phone,
           address: { city: 'Riverside', countryCode: 'US' } });
-        if (pinSecret) household = await members.setHouseholdPin(actor, household.id, { pin: demoPin, revision: household.revision });
+        if (pinSecret) household = (await members.setHouseholdPin(actor, household.id, { pin: demoPin, revision: household.revision })).data;
       }
       const existing = new Map((await members.listMembers(context.gymId, { ...page, householdId: household.id })).data.map((row) => [memberKey(row), row]));
       const guardian = home.members.find((member) => member.age >= 18);

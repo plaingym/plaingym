@@ -160,6 +160,58 @@ describe('kiosk name and PIN check-in', () => {
     const narrowed = await service.lookup(gymA, { name: 'Imani ' + surname, pin: '2000' });
     expect(narrowed.status === 'select_member' && narrowed.members.map((member) => member.firstName)).toEqual(['Dana', 'Imani', 'Kai']);
   });
+  describe('an exact name among the matches', () => {
+    // A fresh gym per case, so no other test's households join the name matches.
+    async function gym() {
+      const gymId = uuidv7(); await factory('gyms', gymId); secrets.set(gymId, new Uint8Array(32).fill(13)); return gymId;
+    }
+    async function home(gymId: string, name: string, pin: string, person: [string, string]) {
+      const id = uuidv7();
+      await factory('households', gymId, { id, name, pinHash: hashHouseholdPin(secrets.get(gymId)!, gymId, id, pin) });
+      const member = await factory('members', gymId, { householdId: id, firstName: person[0], lastName: person[1], status: 'active' });
+      return { id, member };
+    }
+    const ids = (result: Awaited<ReturnType<typeof service.lookup>>) => result.status === 'select_member' ? result.members.map((member) => member.id) : [];
+    it('checks the PIN only against households whose member or household name equals the search', async () => {
+      const gymId = await gym();
+      const aa = await home(gymId, 'aa', '4321', ['a', 'a']);
+      await home(gymId, 'asd', '4321', ['asd', 'asd']);
+      for (const name of ['a a', 'A  A', ' a a ']) {
+        const heard = vi.fn();
+        expect(ids(await service.lookup(gymId, { name, pin: '4321' }, heard)), name).toEqual([aa.member.id]);
+        expect(heard).toHaveBeenCalledWith('verified');
+      }
+      // A household name equal to the search counts as exact too.
+      const named = await home(gymId, 'Lopez Cruz', '4321', ['Ana', 'Lopez']);
+      await home(gymId, 'Lopez Cruzado', '4321', ['Ben', 'Lopez']);
+      expect(ids(await service.lookup(gymId, { name: 'lopez  cruz', pin: '4321' }))).toEqual([named.member.id]);
+    });
+    it('still refuses two households whose names both equal the search and share a PIN', async () => {
+      const gymId = await gym();
+      await home(gymId, 'Smith one', '2468', ['Dan', 'Smith']); await home(gymId, 'Smith two', '2468', ['Dan', 'Smith']);
+      const heard = vi.fn();
+      expect(await service.lookup(gymId, { name: 'Dan Smith', pin: '2468' }, heard)).toEqual({ status: 'see_front_desk' });
+      expect(heard).toHaveBeenCalledWith('compared'); expect(heard).toHaveBeenCalledTimes(1);
+    });
+    it('narrows only: a prefix search is unchanged, and four matching households still skip the PIN check', async () => {
+      const gymId = await gym();
+      await home(gymId, 'Smith', '1111', ['Dan', 'Smith']);
+      const daniel = await home(gymId, 'Smithers', '2222', ['Daniel', 'Smithers']);
+      const heard = vi.fn();
+      // The exact "Dan Smith" household is the only one checked, so Daniel's PIN finds nobody.
+      expect(await service.lookup(gymId, { name: 'Dan Smith', pin: '2222' }, heard)).toEqual({ status: 'see_front_desk' });
+      expect(heard).toHaveBeenLastCalledWith('compared');
+      expect(ids(await service.lookup(gymId, { name: 'Dan', pin: '2222' }, heard))).toEqual([daniel.member.id]);
+      expect(heard).toHaveBeenLastCalledWith('verified');
+      await home(gymId, 'Smithson', '3333', ['Danny', 'Smithson']); await home(gymId, 'Smithfield', '4444', ['Dana', 'Smithfield']);
+      for (const name of ['Dan', 'Dan Smith']) {
+        for (const pin of ['1111', '2222']) {
+          expect(await service.lookup(gymId, { name, pin }, heard), name).toEqual({ status: 'see_front_desk' });
+          expect(heard).toHaveBeenLastCalledWith('skipped');
+        }
+      }
+    });
+  });
   it('checks in a family for open mat, once per member per day however often they tap, and audits the device', async () => {
     const home = await family();
     const request = { name: home.name, pin: home.pin, checkins: [{ memberId: home.parent.id, sessionId: null }, { memberId: home.child.id, sessionId: null }] };

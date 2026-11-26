@@ -16,7 +16,7 @@ const id = '01900000-0000-7000-8000-000000000001', householdId = '01900000-0000-
 const detail: LinkCampaignDetail = { campaign: { id, name: 'October welcome', purpose: 'onboarding', createdBy: null,
   reminderSchedule: [3, 7], completedAt: null, createdAt: '2026-10-26T12:00:00Z' },
   progress: { total: 1, pending: 1, completed: 0, expired: 0, revoked: 0 } };
-const household: Household = { id: householdId, name: 'Chen household', email: 'payer@example.test', phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: {}, revision: 1, createdAt: '2026-10-26T12:00:00Z' };
+const household: Household = { id: householdId, name: 'Chen household', email: 'payer@example.test', phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: {}, pinSet: false, revision: 1, createdAt: '2026-10-26T12:00:00Z' };
 function client(): CampaignClient {
   return {
     needsCard: vi.fn(async () => [householdId]),

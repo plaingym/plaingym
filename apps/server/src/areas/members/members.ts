@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { escapeLike } from '../../lib/escape-like.js';
-import { and, asc, eq, gt, ilike, inArray, isNotNull, isNull, ne, or } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- Reviewed `pinSet` expression over the imported households column, used inside forGym only.
+import { and, asc, eq, gt, ilike, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import { forGym, members, memberRanks, memberships, households, householdUsers, memberTags, memberTagLinks, signedLinks, waiverSignatures,
   invoices, invoiceLineItems, membershipDiscounts, paymentMethods, classBookings, classSessions, classCreditEntries, classPackSales, attendances,
   announcementRecipients, announcementOptOuts, staffProfiles, leads, leadContacts, databaseCode, revisionGuard, assertRevised, RevisionConflictError, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
@@ -10,7 +11,7 @@ import { normalizePhone } from '@plaingym/shared/phone';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { forgetErasedAddressDigests } from '../announcements/erasure.js';
 import { clock as defaultClock } from '../../core/clock.js';
-import { hashHouseholdPin, type HouseholdPinSecret } from './pin.js';
+import { hashHouseholdPin, verifyHouseholdPin, type HouseholdPinSecret } from './pin.js';
 import { withJobTransaction, type Jobs, type JobTransaction } from '../../infra/jobs/index.js';
 import { logError } from '../../core/log.js';
 import { billingEmailQueuedAction, clearBillingEmailJob, eraseCreditReasons, redactCustomerJob, releaseErasedFilesJob } from './erasure-redaction.js';
@@ -35,7 +36,9 @@ const memberFields = { id: members.id, householdId: members.householdId, firstNa
   anonymizedAt: members.anonymizedAt, revision: members.revision, createdAt: members.createdAt };
 const householdFields = { id: households.id, name: households.name, email: households.email,
   phoneE164: households.phoneE164, smsNoticesConsentAt: households.smsNoticesConsentAt, smsNoticesConsentSource: households.smsNoticesConsentSource,
-  phone: households.phone, address: households.address, revision: households.revision, createdAt: households.createdAt };
+  phone: households.phone, address: households.address, revision: households.revision, createdAt: households.createdAt,
+  // Only whether a PIN is set; the hash itself never leaves the database.
+  pinSet: sql<boolean>`(${households.pinHash} is not null)` };
 const billingFields = { id: households.id, billingDay: households.billingDay,
   familyDiscountBasisPoints: households.familyDiscountBasisPoints, revision: households.revision };
 const tagFields = { id: memberTags.id, name: memberTags.name, color: memberTags.color, revision: memberTags.revision, createdAt: memberTags.createdAt };
@@ -459,16 +462,23 @@ export function createMembersService(options: MembersOptions = {}) {
         await audit(tx, context, 'household.billing.updated', 'household', id); return c.householdBillingSettingsSchema.parse(row);
       });
     },
-    async setHouseholdPin(context: MutationContext, id: string, input: c.SetHouseholdPinRequest) {
+    async setHouseholdPin(context: MutationContext, id: string, input: c.SetHouseholdPinRequest): Promise<c.SetHouseholdPinResponse> {
       const { revision, pin } = c.setHouseholdPinRequestSchema.parse(input);
       // Resolve configuration before opening the transaction (the resolver may read the gym).
       await scope(context.gymId, (tx) => getHouseholdRow(tx, id));
       if (pin && !options.pinSecret) throw new AppError('unavailable', 'PIN secret resolver is not configured');
-      const pinHash = pin ? hashHouseholdPin(await options.pinSecret!(context.gymId), context.gymId, id, pin) : null;
+      const secret = pin ? await options.pinSecret!(context.gymId) : null;
+      const pinHash = pin && secret ? hashHouseholdPin(secret, context.gymId, id, pin) : null;
       return scope(context.gymId, async (tx) => {
         await getHouseholdRow(tx, id); const guard = revisionGuard(households.revision, revision);
+        // PIN hashes are per household, so a shared PIN shows only by checking it against each other household's hash.
+        // The answer says only that one matches, never which; the PIN is saved either way.
+        const others = pin && secret ? await tx.select({ id: households.id, pinHash: households.pinHash }).from(households)
+          .where(and(ne(households.id, id), isNotNull(households.pinHash))) : [];
+        const sharedPin = others.some((other) => verifyHouseholdPin(secret!, context.gymId, other.id, pin!, other.pinHash));
         const row = assertRevised(await tx.update(households).set({ pinHash, revision: guard.next }).where(and(eq(households.id, id), guard.matches)).returning(householdFields));
-        await audit(tx, context, 'household.pin.updated', 'household', id); return household(row, await phoneCountry(tx, context.gymId, [row.phone]));
+        await audit(tx, context, 'household.pin.updated', 'household', id);
+        return { data: household(row, await phoneCountry(tx, context.gymId, [row.phone])), sharedPin };
       });
     },
     async listTags(gymId: string, input: c.Pagination) {

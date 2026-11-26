@@ -111,6 +111,8 @@ export const householdSchema = z.strictObject({
   phone: nullableTextSchema,
   sms: householdSmsSchema,
   address: householdAddressSchema,
+  /** Whether a kiosk PIN is set; the PIN and its hash never leave the server. */
+  pinSet: z.boolean(),
   revision: revisionSchema,
   createdAt: instantSchema,
 });
@@ -140,6 +142,8 @@ export const setHouseholdPinRequestSchema = z.strictObject({
 export const householdParamsSchema = z.strictObject({ householdId: idSchema });
 export const householdListQuerySchema = paginationSchema.extend({ search: nameSchema.optional() });
 export const householdResponseSchema = z.strictObject({ data: householdSchema });
+/** `sharedPin` says another household in the gym has the same PIN, without naming it; the PIN is saved either way. */
+export const setHouseholdPinResponseSchema = z.strictObject({ data: householdSchema, sharedPin: z.boolean() });
 export const householdListResponseSchema = listResponseSchema(householdSchema);
 export const householdBillingSettingsResponseSchema = z.strictObject({ data: householdBillingSettingsSchema });
 
@@ -239,7 +243,7 @@ export const membersContracts = {
   updateHouseholdBilling: { method: 'patch', path: '/api/households/{householdId}/billing-settings', permission: { kind: 'staff', capability: 'households.manage' },
     params: householdParamsSchema, body: updateHouseholdBillingSettingsRequestSchema, response: householdBillingSettingsResponseSchema },
   setHouseholdPin: { method: 'put', path: '/api/households/{householdId}/pin', permission: { kind: 'staff', capability: 'households.manage' },
-    params: householdParamsSchema, body: setHouseholdPinRequestSchema, response: householdResponseSchema },
+    params: householdParamsSchema, body: setHouseholdPinRequestSchema, response: setHouseholdPinResponseSchema },
   listTags: { method: 'get', path: '/api/member-tags', permission: { kind: 'staff', capability: 'members.read' },
     query: paginationSchema, response: memberTagListResponseSchema },
   createTag: { method: 'post', path: '/api/member-tags', permission: { kind: 'staff', capability: 'tags.manage' },
@@ -290,6 +294,7 @@ export type UpdateHouseholdBillingSettingsRequest = z.infer<typeof updateHouseho
 export type SetHouseholdPinRequest = z.infer<typeof setHouseholdPinRequestSchema>;
 export type HouseholdListQuery = z.infer<typeof householdListQuerySchema>;
 export type HouseholdResponse = z.infer<typeof householdResponseSchema>;
+export type SetHouseholdPinResponse = z.infer<typeof setHouseholdPinResponseSchema>;
 export type HouseholdListResponse = z.infer<typeof householdListResponseSchema>;
 export type MemberTag = z.infer<typeof memberTagSchema>;
 export type CreateMemberTagRequest = z.infer<typeof createMemberTagRequestSchema>;

@@ -2,6 +2,7 @@
 import { useId, useState, type FormEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import * as c from '@plaingym/shared/contracts';
+import { Alert } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
 import { Pager } from '../../components/ui/pager.js';
 import { Input } from '../../components/ui/input.js';
@@ -84,10 +85,18 @@ function DeleteHousehold({ household, onDeleted }: { household: c.Household; onD
 }
 function PinForm({ household }: { household: c.Household }) {
   const [pin, setPin] = useState(''), state = useMemberSave();
-  const submit = (clear: boolean) => void state.save(() => memberRequest(c.householdResponseSchema, `/api/households/${household.id}/pin`, 'PUT', c.setHouseholdPinRequestSchema.parse({ revision: household.revision, pin: clear ? null : pin })), () => setPin(''));
+  // What the last save did; the household query refetches after it, so `household.pinSet` follows.
+  const [saved, setSaved] = useState<{ cleared: boolean; shared: boolean } | null>(null);
+  const submit = (clear: boolean) => { setSaved(null); void state.save(async () => {
+    const result = await memberRequest(c.setHouseholdPinResponseSchema, `/api/households/${household.id}/pin`, 'PUT', c.setHouseholdPinRequestSchema.parse({ revision: household.revision, pin: clear ? null : pin }));
+    setSaved({ cleared: clear, shared: result.sharedPin });
+  }, () => setPin('')); };
   return <form className="space-y-3 border-t border-border pt-4" onSubmit={(event) => { event.preventDefault(); submit(false); }}><ErrorMessage error={state.error}/>
-    <Label className="grid gap-2">{text('pin')}<Input type="password" inputMode="numeric" autoComplete="new-password" pattern="[0-9]{4,8}" minLength={4} maxLength={8} value={pin} onChange={(event) => setPin(event.target.value)} required/></Label>
-    <div className="grid grid-cols-2 gap-2 sm:flex"><Button type="submit" disabled={state.busy}>{text('setPin')}</Button><Button type="button" variant="outline" disabled={state.busy} onClick={() => submit(true)}>{text('clearPin')}</Button></div>
+    <p className="text-sm">{text(household.pinSet ? 'pinIsSet' : 'pinNotSet')}</p>
+    <Label className="grid gap-2">{text(household.pinSet ? 'pinNew' : 'pin')}<Input type="password" inputMode="numeric" autoComplete="new-password" pattern="[0-9]{4,8}" minLength={4} maxLength={8} value={pin} onChange={(event) => setPin(event.target.value)} required/></Label>
+    <div className="grid grid-cols-2 gap-2 sm:flex"><Button type="submit" disabled={state.busy}>{text('setPin')}</Button><Button type="button" variant="outline" disabled={state.busy || !household.pinSet} onClick={() => submit(true)}>{text('clearPin')}</Button></div>
+    {saved && <p role="status" className="text-sm">{text(saved.cleared ? 'pinCleared' : 'pinSaved')}</p>}
+    {saved?.shared && <Alert className="border-warning/40 bg-warning/10">{text('pinShared')}</Alert>}
   </form>;
 }
 function BillingForm({ billing }: { billing: c.HouseholdBillingSettings }) {
