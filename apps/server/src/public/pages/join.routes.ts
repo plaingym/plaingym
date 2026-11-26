@@ -23,8 +23,9 @@ import pages from '../../../../../locales/en/public/pages.json' with { type: 'js
 import messages from '../../../../../locales/en/public/join.json' with { type: 'json' };
 import waiverMessages from '../../../../../locales/en/waivers/waivers.json' with { type: 'json' };
 import shellMessages from '../../../../../locales/en/shell/shell.json' with { type: 'json' };
+import phoneMessages from '../../../../../locales/en/shell/phone.json' with { type: 'json' };
 
-const translator = createTranslator({ 'public/pages': pages, 'public/join': messages, 'waivers/waivers': waiverMessages, 'shell/shell': shellMessages });
+const translator = createTranslator({ 'public/pages': pages, 'public/join': messages, 'waivers/waivers': waiverMessages, 'shell/shell': shellMessages, 'shell/phone': phoneMessages });
 /** In a demo sandbox, `testCardHint` names the test card for a gym's payment steps. */
 type TestCardHint = (gymId: string) => Promise<string | undefined>;
 interface JoinRouteOptions { service: JoinService; continuations: JoinContinuations; t?: Translator; testCardHint?: TestCardHint }

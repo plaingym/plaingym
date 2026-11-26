@@ -554,6 +554,15 @@ describe('phone country choice on the intake pages', () => {
     expect(/<option value=""[^>]*>/.exec(html)?.[0]).toContain('selected');
     expect(html.match(/<option [^>]*selected/g)).toHaveLength(1);
   });
+  it.each(['/trial', '/drop-in'])('labels the country choice in words on %s, with or without a gym country', async path => {
+    for (const country of ['CA', undefined]) {
+      const f = await fixture(false, country), html = await (await f.server.request(origin + path)).text();
+      expect(html).toContain('>Country code<');
+      expect(html).toContain('>Choose a country<');
+      expect(html).not.toMatch(/\b(shell|public|waivers)\/[a-z-]+:[A-Za-z]/);
+      if (!country) expect(/<option value=""[^>]*>/.exec(html)?.[0]).toContain('selected');
+    }
+  });
   it('stores the joined number, the typed number, or the +number as typed from a native trial form', async () => {
     const f = await fixture(false, 'CA');
     expect((await nativeTrial(f, 'a@example.invalid', { phoneCountry: 'CA', phone: '604 555 0123' })).status).toBeLessThan(400);

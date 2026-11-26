@@ -868,6 +868,21 @@ describe('public join pages through the production registrations', () => {
     } finally { reset(); }
   });
 
+  it('labels the phone country choice in words on the join form and its refused redisplay', async () => {
+    const f = await fixture(), page = await f.get(`/join?plan=${f.plan.id}&members=1`), html = await page.text();
+    expect(page.status).toBe(200);
+    expect(html).toContain('data-join-form');
+    expect(html).toContain('>Country code<');
+    expect(html).toContain('>Choose a country<');
+    expect(html).not.toMatch(/\b(shell|public|waivers)\/[a-z-]+:[A-Za-z]/);
+    const form = nativeForm(f, f.plan.id, 'labels@example.invalid'); form.set('contactName', 'x'.repeat(201));
+    const refused = await f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: form }));
+    const redisplay = await refused.text();
+    expect(refused.status).toBe(400);
+    expect(redisplay).toContain('data-join-form');
+    expect(redisplay).toContain('>Country code<');
+    expect(redisplay).not.toMatch(/\b(shell|public|waivers)\/[a-z-]+:[A-Za-z]/);
+  });
   it('keeps native join drafts and identifies missing signatures and consent without saving a household', async () => {
     const f = await fixture(), form = nativeForm(f, f.plan.id, 'draft@example.invalid');
     form.set('contactName', 'Pat <Payer>'); form.set('phone', '555-0123'); form.set('code', 'TRYAGAIN');

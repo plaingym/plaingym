@@ -19,8 +19,9 @@ import { configureDropInCleanup } from './pages.jobs.js';
 import messages from '../../../../../locales/en/public/pages.json' with { type: 'json' };
 import waiverMessages from '../../../../../locales/en/waivers/waivers.json' with { type: 'json' };
 import shellMessages from '../../../../../locales/en/shell/shell.json' with { type: 'json' };
+import phoneMessages from '../../../../../locales/en/shell/phone.json' with { type: 'json' };
 
-const translator = createTranslator({ 'public/pages': messages, 'waivers/waivers': waiverMessages, 'shell/shell': shellMessages });
+const translator = createTranslator({ 'public/pages': messages, 'waivers/waivers': waiverMessages, 'shell/shell': shellMessages, 'shell/phone': phoneMessages });
 interface PublicRoutesOptions { service: PublicPagesService; t?: Translator; stylesheet?: () => Promise<string> }
 let configured: PublicRoutesOptions | undefined;
 export function readPublicStylesheet(options = configured) {
