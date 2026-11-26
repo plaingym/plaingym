@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, count, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or } from 'drizzle-orm';
 import { z } from 'zod';
-import { auditEvents, forGym, gyms, households, invoices, paymentAttempts, paymentMethods, payments, refunds, revisionGuard, assertRevised,
+import { auditEvents, databaseCode, forGym, gyms, households, invoices, paymentAttempts, paymentMethods, payments, refunds, revisionGuard, assertRevised,
   signedLinks, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
@@ -201,7 +201,11 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     const [inFlight] = [...await tx.select({ id: paymentAttempts.id }).from(paymentAttempts).where(inArray(paymentAttempts.status, ['pending', 'processing'])).limit(1),
       ...await tx.select({ id: invoices.id }).from(invoices).where(eq(invoices.status, 'processing')).limit(1),
       ...await tx.select({ id: refunds.id }).from(refunds).where(eq(refunds.status, 'pending')).limit(1)];
-    if (inFlight) throw new AppError('conflict', 'A payment or refund is still being processed. A refund reservation that never reached Stripe clears automatically after 23 hours, within the next hourly check. If still blocked after 24 hours, ask an owner or admin to check Stripe and payment reconciliation.',
+    if (inFlight) paymentsInProgress();
+  }
+  /** Refuses the switch while a payment write is in progress; the save's transaction rolls back, so nothing changes. */
+  function paymentsInProgress(): never {
+    throw new AppError('conflict', 'A payment or refund is still being processed. A refund reservation that never reached Stripe clears automatically after 23 hours, within the next hourly check. If still blocked after 24 hours, ask an owner or admin to check Stripe and payment reconciliation.',
       { restrictedKey: ['payments_in_progress'] });
   }
   /**
@@ -213,23 +217,44 @@ export function createIntegrationsService(options: IntegrationsOptions) {
    * the Stripe objects to retire with the old test key afterwards.
    */
   async function clearTestData(tx: Transaction, gymId: string, userId: string, timezone: string) {
+    // The save holds the gym row, which every payment write's first insert or update waits for (its foreign key) after
+    // locking its own invoice, attempt, household, card or payment: waiting here for one of those rows would deadlock.
+    // Every row lock below is taken without waiting, and one held by another write refuses the switch instead.
+    try {
+      return await clearTestRows(tx, gymId, userId, timezone);
+    } catch (error) {
+      if (databaseCode(error) === '55P03') paymentsInProgress();
+      throw error;
+    }
+  }
+  async function clearTestRows(tx: Transaction, gymId: string, userId: string, timezone: string) {
     // The charge runner reserves an attempt under its invoice's lock: holding every payable invoice first means no attempt
-    // is reserved with a test card while the switch runs, and any reserved before is seen as in flight.
+    // is reserved with a test card while the switch runs, and any reserved before is seen as in flight. Like every lock
+    // the switch takes, it doesn't wait: the switch is refused while another write holds one of these invoices.
     const payable = await tx.select({ id: invoices.id, sessionId: invoices.checkoutSessionId, reservedUntil: invoices.checkoutExpiresAt })
-      .from(invoices).where(inArray(invoices.status, payableStatuses)).for('update');
+      .from(invoices).where(inArray(invoices.status, payableStatuses)).for('update', { noWait: true });
     await assertSettled(tx);
     const now = clock.now();
     const setups = await openSetups(tx);
     // Card removal and default selection use this same lock. Read the flags after acquiring it, since a payer may
-    // have changed their default while the switch waited. A card goes with its cleared customer, whatever its source.
+    // have changed their default before it. A card goes with its cleared customer, whatever its source.
     await tx.select({ id: households.id }).from(households).where(inArray(households.id,
       tx.select({ id: paymentMethods.householdId }).from(paymentMethods).where(testCards(tx, gymId))))
-      .orderBy(households.id).for('update');
+      .orderBy(households.id).for('update', { noWait: true });
+    await tx.select({ id: paymentMethods.id }).from(paymentMethods).where(testCards(tx, gymId))
+      .orderBy(paymentMethods.id).for('update', { noWait: true });
     const testCardRows = await tx.select({ id: paymentMethods.id, householdId: paymentMethods.householdId, isDefault: paymentMethods.isDefault })
       .from(paymentMethods).where(testCards(tx, gymId));
     const testCardIds = testCardRows.map(row => row.id);
-    const linked = await tx.select({ id: households.id, customerId: households.stripeCustomerId }).from(households)
-      .where(linkedCustomer(tx, gymId, true)).for('update');
+    // Where it revokes the default test card, the switch makes a kept card the default (`promoteDefaultCard`): those
+    // households' active cards are locked the same way first, since a card writer may hold one without the household lock.
+    const promoted = [...new Set(testCardRows.filter(row => row.isDefault).map(row => row.householdId))];
+    for (let index = 0; index < promoted.length; index += 500)
+      await tx.select({ id: paymentMethods.id }).from(paymentMethods)
+        .where(and(inArray(paymentMethods.householdId, promoted.slice(index, index + 500)), isNull(paymentMethods.revokedAt)))
+        .orderBy(paymentMethods.id).for('update', { noWait: true });
+    const linked =await tx.select({ id: households.id, customerId: households.stripeCustomerId }).from(households)
+      .where(linkedCustomer(tx, gymId, true)).for('update', { noWait: true });
     const [kept] = await tx.select({ n: count() }).from(households)
       .where(linkedCustomer(tx, gymId, false));
     const [unrevoked] = await tx.select({ n: count() }).from(paymentMethods).where(isNull(paymentMethods.revokedAt));
@@ -239,7 +264,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     const pending: { id: string; customerId: string | null }[] = [];
     for (let index = 0; index < reserved.length; index += 500)
       pending.push(...await tx.select({ id: households.id, customerId: households.stripeCustomerId }).from(households)
-        .where(and(inArray(households.id, reserved.slice(index, index + 500)), isNull(households.stripeCustomerId))).for('update'));
+        .where(and(inArray(households.id, reserved.slice(index, index + 500)), isNull(households.stripeCustomerId))).for('update', { noWait: true }));
     const unlinked = [...linked, ...pending];
     for (let index = 0; index < unlinked.length; index += 500) {
       const chunk = unlinked.slice(index, index + 500);
@@ -253,7 +278,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
       cards.push(...await tx.update(paymentMethods).set({ revokedAt: now, isDefault: false })
         .where(and(inArray(paymentMethods.id, testCardIds.slice(index, index + 500)), isNull(paymentMethods.revokedAt)))
         .returning({ id: paymentMethods.id }));
-    for (const householdId of new Set(testCardRows.filter(row => row.isDefault).map(row => row.householdId)))
+    for (const householdId of promoted)
       await promoteDefaultCard(tx, { gymId, actor: { kind: 'user', userId } }, clock, householdId, timezone);
     // Paid and void invoices keep their completed session's ID as history; nothing reads it with the new key.
     const sessions = payable.filter((row) => row.sessionId || row.reservedUntil);
@@ -263,7 +288,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     const actionNeeded = await tx.select({ id: paymentAttempts.id, intentId: paymentAttempts.paymentIntentId, declineCode: paymentAttempts.declineCode })
       .from(paymentAttempts)
       .where(eq(paymentAttempts.status, 'requires_action'))
-      .for('update');
+      .for('update', { noWait: true });
     for (let index = 0; index < actionNeeded.length; index += 500) {
       const chunk = actionNeeded.slice(index, index + 500);
       await tx.update(paymentAttempts).set({ status: 'failed', declineCode: testCleared, error: null, resolvedAt: now })
@@ -277,7 +302,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     // them, so they close here (a dispute's final status never reopens). The dispute writer waits for the gym row, so
     // none is attached to these invoices while the switch runs.
     const disputed = await tx.select({ id: invoices.id, disputeId: invoices.disputeId, disputeStatus: invoices.disputeStatus }).from(invoices)
-      .where(testDisputes(tx)).for('update');
+      .where(testDisputes(tx)).for('update', { noWait: true });
     if (disputed.length) {
       await tx.update(invoices).set({ disputeStatus: closedTestDispute }).where(inArray(invoices.id, disputed.map((row) => row.id)));
       await tx.insert(auditEvents).values(disputed.map((row) => ({ gymId, actorKind: 'user', actorUserId: userId,
@@ -285,6 +310,8 @@ export function createIntegrationsService(options: IntegrationsOptions) {
         before: { disputeId: row.disputeId, disputeStatus: row.disputeStatus },
         after: { disputeId: row.disputeId, disputeStatus: closedTestDispute, reason: 'stripe_test_cleared' }, occurredAt: now })));
     }
+    await tx.select({ id: payments.id }).from(payments).where(unmarkedCardPayments)
+      .orderBy(payments.id).for('update', { noWait: true });
     const marked = await tx.update(payments).set({ reference: stripeTestPaymentReference }).where(unmarkedCardPayments)
       .returning({ id: payments.id });
     const checkouts = [...sessions.flatMap((row) => row.sessionId ? [row.sessionId] : []), ...setups];

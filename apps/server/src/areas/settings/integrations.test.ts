@@ -2,7 +2,7 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { desc, eq } from 'drizzle-orm';
-import { auditEvents, gyms, households, invoices, paymentAttempts, paymentMethods, payments, uuidv7 } from '@plaingym/db';
+import { auditEvents, gyms, households, invoices, paymentAttempts, paymentMethods, payments, uuidv7, type Transaction } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
@@ -293,6 +293,54 @@ describe('Settings → Payments: test to live', () => {
   const snapshot = (gymId: string) => database.forGym(gymId, async (tx) => ({
     households: await tx.select().from(households), cards: await tx.select().from(paymentMethods), invoices: await tx.select().from(invoices),
     attempts: await tx.select().from(paymentAttempts), payments: await tx.select().from(payments) }));
+  const heldAction = 'test.row_lock_held';
+  /**
+   * Holds a row lock in another transaction, as a payment write does, until released; the holder then writes an audit for
+   * its gym, which waits for the gym row like a payment write's first insert, and commits.
+   */
+  async function holding(gymId: string, lock: (tx: Transaction) => Promise<unknown>) {
+    let release!: () => void, locked!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { locked = resolve; });
+    const done = database.forGym(gymId, async tx => {
+      await lock(tx);
+      locked();
+      await released;
+      await tx.insert(auditEvents).values({ id: uuidv7(), gymId, actorKind: 'system', action: heldAction, targetType: 'gym', targetId: gymId,
+        occurredAt: clock.now() });
+    });
+    await Promise.race([ready, done]);
+    return { release, done };
+  }
+  /** A save refused while another transaction holds a row answers at once; waiting for that row would hang here. */
+  async function within<T>(promise: Promise<T>, ms = 5000): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Save waited for a held row')), ms); })]);
+    } finally { clearTimeout(timer); }
+  }
+
+  // One holder at a time: the test database's app pool has two connections, one for the holder and one for the save.
+  it.each(['void', 'other'] as const)('lets a payment write holding a row the switch never changes go on without refusing it: %s', async (held) => {
+    const gymId = uuidv7();
+    await factory('gyms', gymId);
+    const user = await factory('authUser', gymId), app = server({ gymId, userId: user.id });
+    expect((await saveTo(app, `rk_test_held${held}`)).status).toBe(200);
+    const home = await factory('households', gymId, { stripeCustomerId: 'cus_ImportedHeld' });
+    await factory('paymentMethods', gymId, { householdId: home.id });
+    // A void invoice without a dispute, or another gym's open invoice: the switch never locks either.
+    const holderGym = held === 'void' ? gymId : uuidv7();
+    if (held === 'other') await factory('gyms', holderGym);
+    const invoice = await factory('invoices', holderGym, { householdId: held === 'void' ? home.id : (await factory('households', holderGym)).id,
+      status: held === 'void' ? 'void' : 'open', number: 1 });
+    const holder = await holding(holderGym, tx => tx.select({ id: invoices.id }).from(invoices).where(eq(invoices.id, invoice.id)).for('update'));
+    try {
+      const switched = await within(saveTo(app, `rk_live_held${held}`, { clearTestData: true }));
+      expect(switched.status, JSON.stringify(switched.json)).toBe(200);
+    } finally { holder.release(); }
+    await holder.done;
+    expect(await audits(gymId, 'integrations.stripe_test_cleared')).toMatchObject([{ after: { cards: 1 } }]);
+    expect(await stripeOf(gymId)).toMatchObject({ apiKey: `rk_live_held${held}`, mode: 'live' });
+  });
 
   it.each([
     { count: 0, expired: false, allExpired: false }, { count: 1, expired: false, allExpired: false },
@@ -387,6 +435,30 @@ describe('Settings → Payments: test to live', () => {
     expect(await audits(gymId, 'billing.card.default_changed')).toEqual(beforeAudits);
     expect(await audits(gymId, 'integrations.stripe_test_cleared')).toHaveLength(0);
   });
+  it('refuses while another write holds the kept card that would become the default, then promotes it', async () => {
+    const gymId = uuidv7();
+    await factory('gyms', gymId);
+    const user = await factory('authUser', gymId), app = server({ gymId, userId: user.id });
+    expect((await saveTo(app, 'rk_test_heldkept')).status).toBe(200);
+    const home = await factory('households', gymId, { stripeCustomerId: 'cus_ImportedHeldKept' });
+    await factory('paymentMethods', gymId, { householdId: home.id, isDefault: true });
+    const kept = await factory('paymentMethods', gymId, { householdId: home.id });
+    await factory('auditEvents', gymId, { action: 'payment_method.created', targetType: 'payment_method', targetId: kept.id });
+    const before = await snapshot(gymId), gym = await row(gymId);
+    // A card expiry alert locks its card without the household lock, then writes an audit that waits for the gym.
+    const holder = await holding(gymId, tx => tx.select({ id: paymentMethods.id }).from(paymentMethods).where(eq(paymentMethods.id, kept.id)).for('update'));
+    try {
+      const refusedHeld = await within(saveTo(app, 'rk_live_heldkept', { clearTestData: true }));
+      expect(refusedHeld.status).toBe(409);
+      expect(refusedHeld.json?.error?.details).toEqual({ restrictedKey: ['payments_in_progress'] });
+    } finally { holder.release(); }
+    await holder.done;
+    expect(await snapshot(gymId)).toEqual(before);
+    expect(await row(gymId)).toEqual(gym);
+    expect(await audits(gymId, 'integrations.stripe_test_cleared')).toHaveLength(0);
+    expect((await saveTo(app, 'rk_live_heldkept', { clearTestData: true })).status).toBe(200);
+    expect((await snapshot(gymId)).cards.find(row => row.id === kept.id)).toEqual({ ...kept, isDefault: true });
+  });
   it('clears exactly the test-mode references after the live key connects, in one audited change, and keeps the books', async () => {
     expect((await saveTo(appC(), 'rk_test_gymc')).status).toBe(200);
     const test = account('rk_test_gymc'), testConfig = (await stripeOf(gymC))!;
@@ -477,6 +549,32 @@ describe('Settings → Payments: test to live', () => {
     const refund = vi.spyOn(provider, 'refund');
     await settlement!.handler({}, { jobId: uuidv7(), gymId: gymC, timezone: 'UTC', attempt: 1, clock: settlementClock });
     expect(refund).not.toHaveBeenCalled();
+    // A payment write that holds a row the switch changes waits for the gym the save holds at its next write: the switch
+    // is refused at once instead of waiting for the row, nothing changes, and the write then commits.
+    const held = await snapshot(gymC), heldGym = await row(gymC);
+    const locks: [string, (tx: Transaction) => Promise<unknown>][] = [
+      ['open invoice', tx => tx.select({ id: invoices.id }).from(invoices).where(eq(invoices.id, open.id)).for('update')],
+      ['test card household', tx => tx.select({ id: households.id }).from(households).where(eq(households.id, payer.id)).for('update')],
+      ['test card', tx => tx.select({ id: paymentMethods.id }).from(paymentMethods).where(eq(paymentMethods.id, card.id)).for('update')],
+      ['linked household', tx => tx.select({ id: households.id }).from(households).where(eq(households.id, matched.id)).for('update')],
+      ['reserved household', tx => tx.select({ id: households.id }).from(households).where(eq(households.id, creating.id)).for('update')],
+      ['action-needed attempt', tx => tx.select({ id: paymentAttempts.id }).from(paymentAttempts).where(eq(paymentAttempts.id, actionNeeded.id)).for('update')],
+      ['disputed invoice', tx => tx.select({ id: invoices.id }).from(invoices).where(eq(invoices.id, paid.id)).for('update')],
+      ['card payment', tx => tx.select({ id: payments.id }).from(payments).where(eq(payments.id, cardPayment.id)).for('update')],
+    ];
+    for (const [name, lock] of locks) {
+      const holder = await holding(gymC, lock);
+      try {
+        const refusedHeld = await within(saveTo(appC(), 'rk_live_gymc', { clearTestData: true }));
+        expect(refusedHeld.status, name).toBe(409);
+        expect(refusedHeld.json?.error?.details, name).toEqual({ restrictedKey: ['payments_in_progress'] });
+      } finally { holder.release(); }
+      await holder.done;
+      expect(await snapshot(gymC), name).toEqual(held);
+      expect(await row(gymC), name).toEqual(heldGym);
+    }
+    expect(await audits(gymC, 'integrations.stripe_test_cleared')).toHaveLength(0);
+    expect(await audits(gymC, heldAction)).toHaveLength(locks.length);
 
     const switched = await saveTo(appC(), 'rk_live_gymc', { clearTestData: true });
     expect(switched.status, JSON.stringify(switched.json)).toBe(200);
