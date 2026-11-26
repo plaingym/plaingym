@@ -91,7 +91,9 @@ stable idempotency key per booking; the durable audit prevents replay and keeps
 the scan from recreating sent notices after job retention removes their keys. The same key
 records durable send state (`infra/email/README.md`): once SMTP accepted the
 notice, or may have, a retry never sends it again, even if the process failed
-before the audit committed. Only a definite non-send is retried.
+before the audit committed. The sent audit is written under the booking's row
+lock, once per booking, and not for a booking deleted during the send. Only a
+definite non-send is retried.
 Promotion email uses the member's own email, falling back to the household's
 billing address under `householdRecipients` suppression rules. It names the
 promoted member, and rechecks the current booking, member-email switch, erasure

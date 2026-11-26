@@ -2,12 +2,12 @@
 import { and, asc, eq, inArray, isNotNull, isNull, like, ne, or } from 'drizzle-orm';
 import { classBookings, classSessions, members, smsDeliveries, type Transaction } from '@plaingym/db';
 import { AppError, createTranslator } from '@plaingym/shared';
-import { createSmsDeliveries, type MemberSmsOptions, type Sms } from '../../infra/sms/index.js';
+import { createSmsDeliveries, DeliveryError, type MemberSmsOptions, type Sms } from '../../infra/sms/index.js';
 import { smsInFlightMs } from '../../infra/sms/deliveries.js';
 import { holdGymSettings, readGymSettings } from '../settings/settings.js';
 import { memberNoticePhones } from '../members/sms-recipients.js';
 import { noticeCapSettings, noticeSender, noticeWhen, readNoticePhones, shareNoticeRecipients, type ClassNoticeDeliveryOptions } from '../bookings/bookings.sms.js';
-import { sameMembers, selfNotice } from './cancellation.sms.js';
+import { selfNotice } from './cancellation.sms.js';
 import messages from '../../../../../locales/en/announcements/restored.json' with { type: 'json' };
 
 interface Restore { sessionId: string; memberIds: string[]; round: number }
@@ -97,12 +97,14 @@ export function createRestoreSms(options: ClassNoticeDeliveryOptions) {
                   ? (await phones(tx, gymId, notice, reservation.memberIds)).find(row => row.phoneE164 === group.phoneE164) : undefined;
               });
               if (!current) return { status: 'suppressed', reason: 'no_consent' };
-              const bodyFor = (self: boolean) => t(self ? 'announcements/restored:sms_self' : 'announcements/restored:sms', {
-                name: reservation.session.name, ...noticeWhen(reservation.session.startsAt, timezone), names: current.memberNames.join(', '),
+              const bodyFor = (self: boolean, names: readonly string[] = current.memberNames) => t(self ? 'announcements/restored:sms_self' : 'announcements/restored:sms', {
+                name: reservation.session.name, ...noticeWhen(reservation.session.startsAt, timezone), names: names.join(', '),
               });
+              let moved = false;
               // Lock order matches promotion and cancellation texts: settings key share, session FOR SHARE,
               // then reserved members and their households FOR SHARE NOWAIT so a busy row rolls back and retries.
               const lastCheck: NonNullable<MemberSmsOptions['recheck']> = async tx => {
+                moved = false;
                 await holdGymSettings(tx, gymId);
                 const gym = await readGymSettings(tx, gymId);
                 const [session] = await tx.select({ status: classSessions.status, restoreCount: classSessions.restoreCount, startsAt: classSessions.startsAt })
@@ -112,14 +114,22 @@ export function createRestoreSms(options: ClassNoticeDeliveryOptions) {
                 const active = await activeMembers(tx, notice.sessionId, reservation.memberIds);
                 const currentGroups = await memberNoticePhones(tx, gymId, active);
                 const now = currentGroups.find(row => row.phoneE164 === group.phoneE164);
-                if (!now || !sameMembers(now.memberIds, current.memberIds)) {
-                  return currentGroups.some(row => row.phoneE164 !== group.phoneE164 && row.memberIds.some(id => current.memberIds.includes(id)))
-                    ? 'phone_changed' : 'no_consent';
+                if (currentGroups.some(row => row.phoneE164 !== group.phoneE164 && row.memberIds.some(id => current.memberIds.includes(id)))) {
+                  moved = true;
+                  return 'phone_changed';
                 }
-                return { ...noticeCapSettings(gym), memberIds: now.memberIds, householdIds: now.consentHouseholdIds, body: bodyFor(selfNotice(now)) };
+                if (!now || !now.memberIds.length || now.memberIds.some(id => !current.memberIds.includes(id))) return 'no_consent';
+                return {
+                  ...noticeCapSettings(gym),
+                  memberIds: now.memberIds,
+                  householdIds: now.consentHouseholdIds,
+                  body: bodyFor(selfNotice(now), now.memberIds.map(id => current.memberNames[current.memberIds.indexOf(id)]!)),
+                };
               };
               // Format all texts in the job's timezone. The last check locks the send settings and recipient.
-              return noticeSender(options, gymId, current, lastCheck).sendSms({ to: current.phoneE164, body: bodyFor(selfNotice(current)) });
+              const result = await noticeSender(options, gymId, current, lastCheck).sendSms({ to: current.phoneE164, body: bodyFor(selfNotice(current)) });
+              if (moved) throw new DeliveryError('not_accepted', 'Restore text recipients moved');
+              return result;
             },
           };
           await deliveries.attempt(reservation.reserved, guarded, { to: group.phoneE164, body: '' });

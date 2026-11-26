@@ -200,9 +200,11 @@ it.each(['solo', 'household'] as const)('suppresses a restore text with phone_ch
         smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }).where(eq(members.id, f.mia.id)));
       return { gymId: id, name: 'Cedar Gym', sms: f.sms };
     });
-    await f.notice.run(payload, f.gymId);
+    await expect(f.notice.run(payload, f.gymId)).rejects.toMatchObject({ acceptance: 'not_accepted' });
     expect(f.sms.messages).toHaveLength(0);
     expect(await usage(f.gymId)).toEqual([]);
+    expect(await db.forGym(f.gymId, tx => tx.select({ state: smsDeliveries.state }).from(smsDeliveries)))
+      .toEqual([{ state: 'not_accepted' }]);
     expect(log).toHaveBeenCalledWith(expect.stringContaining('"reason":"phone_changed"'));
     // A retry sends each member's text to the right phone without naming Mia on the household phone.
     await f.notice.run(payload, f.gymId);
@@ -338,4 +340,47 @@ it.each(['member_to_household', 'household_to_member'] as const)('words the rest
     ? 'Cedar Gym: Evening practice on 2026-11-10 at 7:30 PM EST is back on. Places restored for: Mia First. Check the schedule for each place.'
     : ownText);
   expect(await usage(f.gymId)).toEqual([expect.objectContaining({ sent: 1, refused: 0 })]);
+});
+
+it('texts the remaining member at a shared household phone when the other cancels their restored place during resolution', async () => {
+  const f = await fixture();
+  await f.cancel(); await f.restore(['sms']);
+  f.resolver.resolve.mockImplementationOnce(async id => {
+    expect(isInTransaction()).toBe(false);
+    await f.cancelPlace(f.noa.id);
+    return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+  });
+  await f.notice.run({ sessionId: f.session.id, memberIds: [f.mia.id, f.noa.id], round: 1, channels: ['sms'] }, f.gymId);
+  expect(f.sms.messages).toHaveLength(1);
+  expect(f.sms.messages[0]!.to).toBe(phone);
+  expect(f.sms.messages[0]!.body).toContain('Mia First');
+  expect(f.sms.messages[0]!.body).not.toContain('Noa');
+  expect(await usage(f.gymId)).toEqual([expect.objectContaining({ sent: 1, refused: 0 })]);
+});
+
+it.each(['first', 'second'] as const)('fails as not_accepted and regroups on retry when the %s member at a shared household phone gains their own phone during resolution', async order => {
+  const f = await fixture(), newOwn = '+12025550188';
+  await f.cancel(); await f.restore(['sms']);
+  const [first, second] = [f.mia, f.noa].sort((a, b) => (a.id < b.id ? -1 : 1));
+  const moved = order === 'first' ? first! : second!;
+  const stayed = order === 'first' ? second! : first!;
+  const payload = { sessionId: f.session.id, memberIds: [f.mia.id, f.noa.id], round: 1, channels: ['sms'] as const };
+  f.resolver.resolve.mockImplementationOnce(async id => {
+    expect(isInTransaction()).toBe(false);
+    await db.forGym(id, tx => tx.update(members).set({ phone: newOwn, phoneE164: newOwn,
+      smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }).where(eq(members.id, moved.id)));
+    return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+  });
+  await expect(f.notice.run(payload, f.gymId)).rejects.toMatchObject({ acceptance: 'not_accepted' });
+  expect(f.sms.messages).toHaveLength(0);
+  expect(await usage(f.gymId)).toEqual([]);
+  expect(await db.forGym(f.gymId, tx => tx.select({ state: smsDeliveries.state }).from(smsDeliveries)))
+    .toEqual([{ state: 'not_accepted' }]);
+  await f.notice.run(payload, f.gymId);
+  expect(f.sms.messages.map(message => message.to).sort()).toEqual([phone, newOwn].sort());
+  expect(f.sms.messages.find(message => message.to === newOwn)!.body).toBe(ownText);
+  const householdText = f.sms.messages.find(message => message.to === phone)!.body;
+  expect(householdText).toContain(`${stayed.firstName} ${stayed.lastName}`);
+  expect(householdText).not.toContain(moved.firstName);
+  expect(await usage(f.gymId)).toEqual([expect.objectContaining({ sent: 2, refused: 0 })]);
 });

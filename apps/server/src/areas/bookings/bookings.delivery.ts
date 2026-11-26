@@ -162,7 +162,17 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
     // The job key doubles as the send-state key: an accepted or possibly accepted notice is never resent.
     const result = await deliveries.send(gymId, noticeKey(bookingId), sender, { to: recipient.address, subject: row.session.name, text: '', html: '' });
     if (result.status === 'suppressed' || (result.status === 'skipped' && result.state === 'unknown')) return;
-    await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'booking.notice_sent', targetType: 'class_booking', targetId: bookingId, occurredAt: clock.now() }));
+    await scope(gymId, async tx => {
+      const [booking] = await tx.select({ id: classBookings.id }).from(classBookings)
+        .where(and(eq(classBookings.gymId, gymId), eq(classBookings.id, bookingId))).for('update');
+      if (!booking) return;
+      const [existing] = await tx.select({ id: auditEvents.id }).from(auditEvents)
+        .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.action, 'booking.notice_sent'),
+          eq(auditEvents.targetType, 'class_booking'), eq(auditEvents.targetId, bookingId))).limit(1);
+      if (existing) return;
+      await writeAudit(tx, { gymId, actorKind: 'system', action: 'booking.notice_sent',
+        targetType: 'class_booking', targetId: bookingId, occurredAt: clock.now() });
+    });
   }
   async function send(gymId: string, bookingId: string) {
     // An email failure never prevents the text; when both fail, the email's error is reported.

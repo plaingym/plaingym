@@ -2,13 +2,15 @@
 import { describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Isolated integration fixtures change the notice switches and encrypted gym SMTP settings.
-import { auditEvents, classBookings, classSessions, gyms, members, uuidv7 } from '@plaingym/db';
+import { auditEvents, classBookings, classSessions, emailDeliveries, gyms, members, uuidv7 } from '@plaingym/db';
+// eslint-disable-next-line no-restricted-imports, database/system-tables -- Extra app-role connections hold and observe the row lock in this disposable test database.
+import { openConnection, scopedDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
 import { setLogSink } from '../../core/log.js';
 import { createServerRegistry } from '../../core/registry.js';
-import { DeliveryError, FakeEmail } from '../../infra/email/index.js';
+import { DeliveryError, FakeEmail, type Email } from '../../infra/email/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { createSmsPhoneDigest, FakeSms } from '../../infra/sms/index.js';
 import { encryptSmtpConfig } from '../settings/smtp.js';
@@ -251,5 +253,64 @@ describe('promotion jobs and notices', () => {
       expect(capture.messages[0]).toContain('From: gym@example.invalid');
       expect(capture.messages[0]).toContain('To: waiting@example.invalid');
     } finally { await capture.close(); }
+  });
+  it('writes one booking.notice_sent audit when two overlapping runs race on the booking lock', async () => {
+    const f = await fixture();
+    await f.delivery.promote(f.gymId, f.session.id);
+    const held = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const unblock = setTimeout(() => release.resolve(), 15_000);
+    const holderConnection = openConnection(db.appUrl, 1), observer = openConnection(db.appUrl, 1);
+    const waitingLocks = async () => {
+      const [row] = await observer.sql`select count(*)::int as n from pg_stat_activity
+        where datname = current_database() and wait_event_type = 'Lock'`;
+      return row!.n as number;
+    };
+    let holder: Promise<void> | undefined, runA: Promise<void> | undefined, runB: Promise<void> | undefined;
+    try {
+      holder = scopedDatabase(holderConnection.db).forGym(f.gymId, async tx => {
+        await tx.select({ id: classBookings.id }).from(classBookings).where(eq(classBookings.id, f.queued.id)).for('update');
+        held.resolve();
+        await release.promise;
+      });
+      await Promise.race([held.promise, holder]);
+      runA = f.delivery.send(f.gymId, f.queued.id);
+      await expect.poll(async () => f.email.messages.length === 1 && (await waitingLocks()) === 1,
+        { interval: 20, timeout: 5_000 }).toBe(true);
+      runB = f.delivery.send(f.gymId, f.queued.id);
+      await expect.poll(waitingLocks, { interval: 20, timeout: 5_000 }).toBe(2);
+      release.resolve();
+      await Promise.all([holder, runA, runB]);
+    } finally {
+      clearTimeout(unblock);
+      release.resolve();
+      await Promise.allSettled([holder, runA, runB]);
+      await holderConnection.close();
+      await observer.close();
+    }
+    expect(f.email.messages).toHaveLength(1);
+    expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents,
+      and(eq(auditEvents.targetId, f.queued.id), eq(auditEvents.action, 'booking.notice_sent'))))).toBe(1);
+  });
+  it('writes no booking.notice_sent audit when the member is deleted during the email send', async () => {
+    const f = await fixture();
+    await f.delivery.promote(f.gymId, f.session.id);
+    const mailer: Email = {
+      async sendEmail(message) {
+        const result = await f.email.sendEmail(message);
+        await db.forGym(f.gymId, async tx => {
+          await tx.delete(classBookings).where(eq(classBookings.memberId, f.waiting.id));
+          await tx.delete(members).where(eq(members.id, f.waiting.id));
+        });
+        return result;
+      },
+    };
+    const delivery = createBookingDelivery({ ...f.options, jobs: f.jobs, mailer: async () => mailer });
+    await expect(delivery.send(f.gymId, f.queued.id)).resolves.toBeUndefined();
+    expect(f.email.messages).toHaveLength(1);
+    expect(await db.forGym(f.gymId, tx => tx.select({ state: emailDeliveries.state }).from(emailDeliveries)))
+      .toEqual([{ state: 'accepted' }]);
+    expect(await db.forGym(f.gymId, tx => tx.$count(classBookings, eq(classBookings.id, f.queued.id)))).toBe(0);
+    expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents,
+      and(eq(auditEvents.targetId, f.queued.id), eq(auditEvents.action, 'booking.notice_sent'))))).toBe(0);
   });
 });

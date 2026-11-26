@@ -372,9 +372,11 @@ it.each(['solo', 'household'] as const)('suppresses with phone_changed and no sl
         smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }).where(eq(members.id, mia.id)));
       return { gymId: id, name: 'Cedar Gym', sms: f.sms };
     });
-    await f.notice.run(notice, f.gymId);
+    await expect(f.notice.run(notice, f.gymId)).rejects.toMatchObject({ acceptance: 'not_accepted' });
     expect(f.sms.messages).toHaveLength(0);
     expect(await usage(f.gymId)).toEqual([]);
+    expect(await db.forGym(f.gymId, tx => tx.select({ state: smsDeliveries.state }).from(smsDeliveries)))
+      .toEqual([{ state: 'not_accepted' }]);
     expect(log).toHaveBeenCalledWith(expect.stringContaining('"reason":"phone_changed"'));
     // A retry sends each member's text to the right phone without naming Mia on the household phone.
     await f.notice.run(notice, f.gymId);
@@ -513,4 +515,49 @@ it('sends nothing and takes no slot when the session is restored during resoluti
   expect(await usage(f.gymId)).toEqual([]);
   expect(await db.forGym(f.gymId, tx => tx.select({ state: smsDeliveries.state }).from(smsDeliveries)))
     .toEqual([{ state: 'not_accepted' }]);
+});
+
+it('texts the remaining member at a shared phone when the other loses notices consent during resolution', async () => {
+  const f = await fixture(), [mia, noa] = f.children;
+  const otherHome = await factory('households', f.gymId);
+  await db.forGym(f.gymId, tx => tx.update(members).set({ householdId: otherHome.id, phone, phoneE164: phone,
+    smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }).where(eq(members.id, noa!.id)));
+  f.resolver.resolve.mockImplementationOnce(async id => {
+    expect(isInTransaction()).toBe(false);
+    await db.forGym(id, tx => tx.update(members).set({ smsNoticesConsentAt: null, smsNoticesConsentSource: null })
+      .where(eq(members.id, noa!.id)));
+    return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+  });
+  await f.notice.run({ ...f.payload, memberIds: [mia!.id, noa!.id], channels: ['sms'] }, f.gymId);
+  expect(f.sms.messages).toHaveLength(1);
+  expect(f.sms.messages[0]!.to).toBe(phone);
+  expect(f.sms.messages[0]!.body).toContain('Mia');
+  expect(f.sms.messages[0]!.body).not.toContain('Noa');
+  expect(await usage(f.gymId)).toEqual([expect.objectContaining({ sent: 1, refused: 0 })]);
+});
+
+it.each(['first', 'second'] as const)('fails as not_accepted and regroups on retry when the %s member at a shared household phone gains their own phone during resolution', async order => {
+  const f = await fixture(), own = '+12025550199';
+  const [first, second] = [f.children[0]!, f.children[1]!].sort((a, b) => (a.id < b.id ? -1 : 1));
+  const moved = order === 'first' ? first! : second!;
+  const stayed = order === 'first' ? second! : first!;
+  const notice = { ...f.payload, memberIds: [first!.id, second!.id], channels: ['sms'] as const };
+  f.resolver.resolve.mockImplementationOnce(async id => {
+    expect(isInTransaction()).toBe(false);
+    await db.forGym(id, tx => tx.update(members).set({ phone: own, phoneE164: own,
+      smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }).where(eq(members.id, moved.id)));
+    return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+  });
+  await expect(f.notice.run(notice, f.gymId)).rejects.toMatchObject({ acceptance: 'not_accepted' });
+  expect(f.sms.messages).toHaveLength(0);
+  expect(await usage(f.gymId)).toEqual([]);
+  expect(await db.forGym(f.gymId, tx => tx.select({ state: smsDeliveries.state }).from(smsDeliveries)))
+    .toEqual([{ state: 'not_accepted' }]);
+  await f.notice.run(notice, f.gymId);
+  expect(f.sms.messages.map(message => message.to).sort()).toEqual([phone, own].sort());
+  expect(f.sms.messages.find(message => message.to === own)!.body).toBe(selfText);
+  const householdText = f.sms.messages.find(message => message.to === phone)!.body;
+  expect(householdText).toContain(stayed.firstName);
+  expect(householdText).not.toContain(moved.firstName);
+  expect(await usage(f.gymId)).toEqual([expect.objectContaining({ sent: 2, refused: 0 })]);
 });

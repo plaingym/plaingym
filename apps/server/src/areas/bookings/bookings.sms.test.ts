@@ -353,7 +353,8 @@ it('sends no text and takes no slot when a staff cancellation wins the session l
   cancelling.catch(() => undefined);
   try {
     await Promise.race([held.promise, cancelling]);
-    sending = createBookingDelivery({ ...f.options, scope: tracked(pid => { sender = pid; }) }).send(f.gymId, f.queued.id);
+    // Skip the email pass so the sender reaches the SMS last check instead of waiting on the booking lock for the email audit.
+    sending = createBookingDelivery({ ...f.options, mailer: async () => null, scope: tracked(pid => { sender = pid; }) }).send(f.gymId, f.queued.id);
     sending.catch(() => undefined);
     await waitsOnLock(() => sender);
   } finally {
