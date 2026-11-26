@@ -87,6 +87,11 @@ export function GoLiveSettings() {
   // A refusal whose follow-up read failed says why the switch didn't change, in the read failure's own alert.
   const refusedUnread = readFailed && (message === 'changed' || message === 'justSaved') ? message : null;
   useEffect(() => { if (behind) void query.refetch(); }, [behind, settings?.revision, query.refetch]);
+  // The past-due dialog is modal, so it closes once no save is running if a read failed (the page's retry is behind it)
+  // or the list it asks about is empty.
+  useEffect(() => {
+    if (confirmBilling && !busy && (readFailed || !checklist?.pastDueMemberships.length)) { setConfirmBilling(false); setConfirmedKey(null); }
+  }, [confirmBilling, busy, readFailed, checklist]);
   /**
    * A refused or conflicting save. A shared revision past the checklist's refetches it through `behind`, once; when the
    * settings did not move past it (their reload failed, or the server's revision went back), nothing else will.

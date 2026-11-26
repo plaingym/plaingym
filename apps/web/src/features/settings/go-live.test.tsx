@@ -505,6 +505,72 @@ describe('go-live settings', () => {
     expect(confirm.disabled).toBe(true);
     expect(client.PATCH).not.toHaveBeenCalled();
   });
+  it('closes the past-due dialog when the checklist read after a refused save fails, leaving the page retry reachable', async () => {
+    live.mockResolvedValueOnce(reply(200, overdue())).mockResolvedValueOnce(reply(500)).mockResolvedValue(reply(200, overdue()));
+    client.PATCH.mockResolvedValue({ response: { ok: false, status: 503 },
+      error: { error: { code: 'unavailable', details: { billingEnabled: ['read_failed'] } } } });
+    const user = userEvent.setup(); start();
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
+    const dialog = screen.getByRole('dialog', { name: 'Review past billing dates' });
+    await user.click(within(dialog).getByRole('checkbox'));
+    await user.click(within(dialog).getByRole('button', { name: 'Confirm dates and turn billing on' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    const alert = screen.getByRole('alert');
+    expect(alert.textContent).toContain('The request failed');
+    await user.click(within(alert).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    const billing = screen.getByRole<HTMLButtonElement>('button', { name: 'Turn on: Billing' });
+    expect(billing.disabled).toBe(false);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await user.click(billing);
+    expect(within(screen.getByRole('dialog')).getByRole<HTMLInputElement>('checkbox').checked).toBe(false);
+  });
+  it('closes the past-due dialog when a focus read empties the list, then turns billing on without it', async () => {
+    live.mockResolvedValueOnce(reply(200, overdue())).mockResolvedValue(reply(200, checklist()));
+    client.PATCH.mockResolvedValue(reply(200, checklist(4, true)));
+    const user = userEvent.setup(); start();
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
+    await user.click(within(screen.getByRole('dialog')).getByRole('checkbox'));
+    act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.queryByText('Ana Silva')).toBeNull();
+    expect(client.PATCH).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Turn on: Billing' }));
+    expect(await screen.findByRole('button', { name: 'Turn off: Billing' })).toBeDefined();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(client.PATCH).toHaveBeenCalledWith('/api/settings/go-live', { signal: expect.any(AbortSignal),
+      body: { revision: 3, billingEnabled: true } });
+  });
+  it('keeps the past-due dialog open while a save runs, and closes it afterwards if the list emptied', async () => {
+    let finish!: (value: unknown) => void;
+    live.mockResolvedValueOnce(reply(200, overdue())).mockResolvedValue(reply(200, checklist()));
+    client.PATCH.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const user = userEvent.setup(); start();
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
+    const dialog = screen.getByRole('dialog', { name: 'Review past billing dates' });
+    await user.click(within(dialog).getByRole('checkbox'));
+    await user.click(within(dialog).getByRole('button', { name: 'Confirm dates and turn billing on' }));
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+    await waitFor(() => expect(within(dialog).queryByText('Ana Silva')).toBeNull());
+    expect(screen.getByRole('dialog')).toBe(dialog);
+    await act(async () => { finish(reply(500)); });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getByRole('alert').textContent).toContain('The request failed');
+  });
+  it('keeps the past-due dialog open when a focus read fails and the checklist is kept', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } });
+    live.mockResolvedValueOnce(reply(200, overdue())).mockResolvedValue(reply(500));
+    const user = userEvent.setup(); start(queryClient);
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
+    const dialog = screen.getByRole('dialog', { name: 'Review past billing dates' });
+    await user.click(within(dialog).getByRole('checkbox'));
+    act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+    await vi.waitFor(() => expect(live).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(screen.getByRole('dialog')).toBe(dialog);
+    expect(within(dialog).getByRole<HTMLInputElement>('checkbox').checked).toBe(true);
+  });
   it('keeps switches locked through overlapping explicit reloads until the latest read answers', async () => {
     let resolveFirst!: (value: unknown) => void, resolveSecond!: (value: unknown) => void;
     live.mockResolvedValueOnce(reply(200, checklist()))
