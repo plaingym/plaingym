@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { formatCount } from '../../lib/count.js';
 import { parseResponse } from '../../lib/response.js';
-import { useEffect, useState } from 'react';
+import { useContext, useEffect, useState } from 'react';
 import { importsContracts, importJobSchema, importTargetFieldSchema, importUploadSchema, type ImportColumnMapping, type ImportJob,
   type ImportMapper, type ImportUpload, type ImportPlanRequest } from '@plaingym/shared/contracts';
 import { Button } from '../../components/ui/button.js';
@@ -14,6 +14,7 @@ import { t } from '../../lib/i18n.js';
 import { ApiError, createJsonTransport, refusalError } from '../../lib/api.js';
 import { createSetupClient } from './api.js';
 import { SetupActions, SetupSecondaryActions } from './actions.js';
+import { SetupFinishingContext } from './hold.js';
 
 const label = (key: string, values?: Record<string, string | number>) => t('setup/import-step:' + key, values);
 const pipeline = (key: string) => t('imports/pipeline:' + key);
@@ -25,6 +26,7 @@ type Failure = 'error' | 'changed' | 'invalidImport' | 'running';
  * billing and member emails stay off until the owner turns them on from go-live settings.
  */
 export function ImportStep({ fetcher = fetch, pollMs = 1500 }: { fetcher?: typeof fetch; pollMs?: number }) {
+  const setWizardFinishing = useContext(SetupFinishingContext);
   const [client] = useState(() => createSetupClient(fetcher)), [request] = useState(() => createJsonTransport(fetcher));
   const [importing, setImporting] = useState(false), [busy, setBusy] = useState(false), [done, setDone] = useState(false);
   const [failure, setFailure] = useState<Failure | null>(null);
@@ -53,11 +55,17 @@ export function ImportStep({ fetcher = fetch, pollMs = 1500 }: { fetcher?: typeo
     } finally { setBusy(false); }
   }
   const finish = (importId?: string) => run(async () => {
-    const { revision, completedSteps } = await client.call('status');
-    // Reaching this step without a confirmed backup step means the owner chose to set backups up later.
-    const deferred = completedSteps.includes(7) ? {} : { skipBackups: true as const };
-    await client.call('finish', importId ? { choice: 'import', revision, importId, ...deferred } : { choice: 'fresh', revision, ...deferred });
-    setDone(true);
+    setWizardFinishing?.(true);
+    try {
+      const { revision, completedSteps } = await client.call('status');
+      // Reaching this step without a confirmed backup step means the owner chose to set backups up later.
+      const deferred = completedSteps.includes(7) ? {} : { skipBackups: true as const };
+      await client.call('finish', importId ? { choice: 'import', revision, importId, ...deferred } : { choice: 'fresh', revision, ...deferred });
+      setDone(true);
+    } catch (error) {
+      setWizardFinishing?.(false);
+      throw error;
+    }
   });
   const uploadFile = (file: File) => run(async () => {
     const form = new FormData(); form.set('file', file);

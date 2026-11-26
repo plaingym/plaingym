@@ -18,7 +18,7 @@ import { SetupActions, SetupSecondaryActions } from './actions.js';
 import { hostTimezone } from './host-timezone.js';
 import { DraftContext, Field } from './field.js';
 import { takeBucketAddress } from './checks.js';
-import { SetupHoldContext } from './hold.js';
+import { SetupFinishingContext, SetupHoldContext } from './hold.js';
 import { SmtpPortHint } from './smtp-port-hint.js';
 import { BackupKeyPanel, ConfirmKeySection, confirmKeyLabels } from './backup-key.js';
 import { GoogleClientFields, GoogleRedirect } from '../settings/auth.js';
@@ -109,7 +109,10 @@ const stripeStep = 'setupSteps.setup.stripe', finalStep = 'setupSteps.setup.impo
 const appPaths = ['/portal', '/join', '/trial', '/drop-in'].join(' · ');
 export function SetupWizard({ client = setupClient, registries = createRegistries() }: { client?: Client; registries?: ReturnType<typeof createRegistries> }) {
   const services = useShellServices(), queries = useQueryClient();
-  const status = useQuery({ queryKey: key, queryFn: () => client.call('status'), retry: false });
+  const [jobId, setJobId] = useState<string | null>(() => sessionStorage.getItem('setup.restore'));
+  // A running restore makes the status answer 404, and that answer would outlive a restore that then fails.
+  const status = useQuery({ queryKey: key, queryFn: () => client.call('status'), retry: false,
+    refetchOnWindowFocus: !jobId, refetchOnReconnect: !jobId });
   const [override, setOverride] = useState<number | null>(null), [held, setHeld] = useState<Held | null>(null);
   const step = Math.min(8, held ? heldStep[held.kind] : override ?? status.data?.currentStep ?? 0);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -119,7 +122,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   const catalog = useQuery({ queryKey: ['setup', 'catalog'], queryFn: () => client.catalog(), enabled: step === 3 });
   const [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null);
   const errorBox = useRevealed<HTMLDivElement>(error);
-  const [restore, setRestore] = useState(false), [jobId, setJobId] = useState<string | null>(() => sessionStorage.getItem('setup.restore'));
+  const [restore, setRestore] = useState(false);
   const [restoreState, setRestoreState] = useState<'running' | 'failed' | 'restored' | null>(null);
   const [restoreFailure, setRestoreFailure] = useState<{ reason: SetupRestoreFailureReason; staged: boolean } | null>(null);
   // The last `running` answer's phase; null until one arrives (after a reload, say), so an unreachable server isn't guessed at.
@@ -140,6 +143,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   // The new key pair lives only in this component's state until the owner confirms it.
   const [backupKey, setBackupKey] = useState<{ privateKey: string; publicKey: string } | null>(null);
   const [done, setDone] = useState(false);
+  const [finalFinishing, setFinalFinishing] = useState(false);
   // Saved in this visit: the page stays gone even before the refreshed bootstrap says Google sign-in is on.
   const [googleSaved, setGoogleSaved] = useState(false);
   const draft = useDraft(step >= 2 ? session.data?.gym?.id : undefined, step);
@@ -180,6 +184,9 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
         setThrottled(false);
         restoreAnswer(state);
         if (state.status !== 'running') { sessionStorage.removeItem('setup.restore'); setJobId(null); }
+        // A status read that met the restore's hold on the gym answers 404, which says nothing once the restore has failed.
+        const read = queries.getQueryState(key);
+        if (state.status === 'failed' && (read?.status === 'error' || read?.fetchStatus === 'fetching')) void queries.refetchQueries({ queryKey: key });
       } catch (failure) {
         if (!alive) return;
         polledJob.current = jobId;
@@ -193,9 +200,15 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
     if (polledJob.current !== jobId) void poll();
     const timer = setInterval(() => { void poll(); }, unreachable || throttled ? 5000 : 1000);
     return () => { alive = false; clearInterval(timer); };
-  }, [client, jobId, unreachable, throttled, restoreAnswer]);
+  }, [client, queries, jobId, unreachable, throttled, restoreAnswer]);
   const complete = done || restoreState === 'restored';
-  const unavailable = status.isError && !status.data && !jobId && !restoreState && !done;
+  const finished = status.error instanceof ApiError && status.error.status === 404;
+  // With no status data, any restore answer keeps its screen. Once the status was read, a 404 ends the steps unless a
+  // restore is running, done, or failed with a staged copy while step 0 is still on screen.
+  const stagedFailure = restoreState === 'failed' && Boolean(restoreFailure?.staged) && step === 0;
+  const restoreStays = finished && status.data ? restoreState === 'running' || restoreState === 'restored' || stagedFailure
+    : Boolean(restoreState);
+  const unavailable = status.isError && (!status.data || finished) && !jobId && !done && !finalFinishing && !restoreStays;
   useEffect(() => { heading.current?.focus(); }, [step, restore, googlePage, held]);
   const deferBackups = <Button type="button" disabled={busy} variant="outline" onClick={() => void run(async () => {
     await client.call('decide', { revision, decision: 'backups_later' }); setBackupKey(null); draft.clear(); await refresh();
@@ -215,6 +228,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
         {phase && <p>{t(phase === 'verifying' ? 'setup/setup:restoreUnreachableVerifying' : 'setup/setup:restoreUnreachableStaged')}</p>}</Alert>
       : <LoadingState label={t('setup/setup:restoring')} />
     : <>
+      {status.isError && status.data && !finished && !finalFinishing && <Alert variant="error"><p>{t('setup/setup:reloadFailed')}</p><Button type="button" disabled={status.isFetching} onClick={() => void status.refetch()}>{t('setup/setup:retry')}</Button></Alert>}
       <p className="text-sm text-muted-foreground">{t('setup/setup:step')} {googlePage ? t('setup/setup:googleStepNumber') : step + 1} / 9</p>
       <h2 ref={heading} tabIndex={-1} className="scroll-mt-4 text-xl font-semibold focus:outline-none">{googlePage ? t('setup/google-step:title') : t('setup/setup:step' + step)}</h2>
       {error && <Alert ref={errorBox} tabIndex={-1} variant="error">{say(error)}</Alert>}
@@ -330,11 +344,16 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
           : <Form draft={draft} keepDraft submit="generateKey" secondary={deferBackups} action={async (data) => { setBackupKey(await client.call('backups', { revision, destination: destination(data) })); await refresh(); }}><Destination /></Form>}
           {/* Step 8 sends `skipBackups` when the backup step was not completed. */}
           </>}
-        {step === 8 && <SetupSecondaryActions.Provider value={!status.data?.completedSteps.includes(7) && <Button variant="outline" disabled={busy} onClick={backToBackups}>{t('setup/setup:backToBackups')}</Button>}>
-          {Final ? <Final /> : <SetupActions><Button disabled={busy} onClick={() => void run(async () => {
-            const deferred = status.data?.completedSteps.includes(7) ? {} : { skipBackups: true as const };
-            await client.call('finish', { choice: 'fresh', revision, ...deferred }); setDone(true);
-          })}>{t('setup/setup:finish')}</Button></SetupActions>}
+        {step === 8 && <SetupSecondaryActions.Provider value={!status.data?.completedSteps.includes(7) && <Button variant="outline" disabled={busy || finalFinishing} onClick={backToBackups}>{t('setup/setup:backToBackups')}</Button>}>
+          <SetupFinishingContext.Provider value={setFinalFinishing}>
+            {Final ? <Final /> : <SetupActions><Button disabled={busy} onClick={() => void run(async () => {
+              const deferred = status.data?.completedSteps.includes(7) ? {} : { skipBackups: true as const };
+              setFinalFinishing(true);
+              await client.call('finish', { choice: 'fresh', revision, ...deferred })
+                .catch((failure: unknown) => { setFinalFinishing(false); throw failure; });
+              setDone(true);
+            })}>{t('setup/setup:finish')}</Button></SetupActions>}
+          </SetupFinishingContext.Provider>
         </SetupSecondaryActions.Provider>}
       </>}
     </>}

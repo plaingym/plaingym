@@ -22,6 +22,8 @@ const publicKey = 'age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
 const restoreJob = '019a0af0-9c00-7000-8000-0000000000bb';
 /** The faked server's next answers to restore polls, in order; once they run out, the restore is complete. */
 let restorePolls: (() => Response | Promise<Response>)[] = [];
+/** What the faked server answers to a status read instead of its own progress, when set. */
+let statusAnswer: (() => Response) | null = null;
 /** A faked setup server: its step, revision and the owner's recorded decisions, as `/api/setup` reports them. */
 function start(step = 0, completedSteps = Array.from({ length: step }, (_, i) => i), registries = createRegistries(),
   recorded: { googleSkipped?: boolean; backupsLater?: boolean } = {}) {
@@ -29,6 +31,7 @@ function start(step = 0, completedSteps = Array.from({ length: step }, (_, i) =>
   const status = () => ({ currentStep: backupsLater && currentStep === 7 ? 8 : currentStep, completedSteps, completed: false, revision, googleSkipped, backupsLater });
   const fetcher = vi.fn(async (path: RequestInfo | URL, options?: RequestInit) => {
     const name = String(path), body = options?.body ? JSON.parse(String(options.body)) as Record<string, unknown> : {};
+    if (name === '/api/setup' && statusAnswer) return statusAnswer();
     if (name === '/api/setup' || name === '/api/setup/start') {
       if (name.endsWith('start')) currentStep = 1;
       return Response.json({ data: status() });
@@ -64,7 +67,7 @@ function start(step = 0, completedSteps = Array.from({ length: step }, (_, i) =>
   render(<QueryClientProvider client={query}><ShellServicesContext.Provider value={services}><SetupWizard client={client} registries={registries} /></ShellServicesContext.Provider></QueryClientProvider>);
   return { fetcher, client, query };
 }
-beforeEach(() => { sessionStorage.clear(); localStorage.clear(); vi.clearAllMocks(); restorePolls = []; });
+beforeEach(() => { sessionStorage.clear(); localStorage.clear(); vi.clearAllMocks(); restorePolls = []; statusAnswer = null; });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe('setup wizard', () => {
   it('reports a structured setup refusal once and keeps its reason codes on the thrown error', async () => {
@@ -971,7 +974,7 @@ describe('setup wizard restore progress', () => {
   const failed = (reason: string, staged: boolean) => () => Response.json({ data: { status: 'failed', jobId: restoreJob, message: 'Restore failed.', reason, staged } });
   const restoring = /Restoring your verified backup/;
   async function startRestore() {
-    start(0);
+    const started = start(0);
     await userEvent.click(await screen.findByRole('button', { name: 'Restore a backup' }));
     await userEvent.type(screen.getByLabelText('S3-compatible endpoint URL'), 'https://s3.example.test');
     await userEvent.type(screen.getByLabelText('Storage bucket'), 'backups');
@@ -980,6 +983,7 @@ describe('setup wizard restore progress', () => {
     await userEvent.type(screen.getByLabelText('Snapshot ID or snapshots/ID/ prefix'), '019a0af0-9c00-7000-8000-0000000000cc');
     await userEvent.click(screen.getByLabelText('Backup private key')); await userEvent.paste(privateKey);
     await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Restore a backup' }));
+    return started;
   }
   /** Runs the next restore poll: one second while the server answers, five while it doesn't. */
   const tick = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
@@ -1363,5 +1367,223 @@ describe('setup wizard restore progress', () => {
     expect(await screen.findByText('Could not save this step. Check the details and try again.')).toBeDefined();
     expect(screen.getByLabelText('Your name')).toBeDefined();
     expect(fetcher.mock.calls.filter(([path]) => String(path) === '/api/setup').length).toBe(1);
+  });
+  it('keeps the gym step with a retry alert when status reload fails with a network error, then advances on retry', async () => {
+    vi.mocked(services.loadBootstrap).mockResolvedValue({
+      gym: { id: 'gym', name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] },
+      session: { userId: 'owner', displayName: 'Test User', roles: ['owner'] as const, member: false },
+      login: { password: true, magicLink: false },
+    });
+    const { fetcher } = start(2);
+    await userEvent.type(await screen.findByLabelText('Gym name'), 'Reload Academy');
+    const base = fetcher.getMockImplementation()!;
+    let failReload = true;
+    fetcher.mockImplementation((path, options) => {
+      if (String(path) === '/api/setup' && failReload) {
+        failReload = false;
+        return Promise.reject(new TypeError('Failed to fetch'));
+      }
+      return base(path, options);
+    });
+
+    await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Save and continue' }));
+
+    expect(await screen.findByText('Could not load the latest setup progress. Check your connection and try again.')).toBeDefined();
+    expect(screen.getByRole('heading', { name: 'Gym details' })).toBeDefined();
+    expect(screen.getByLabelText('Gym name')).toBeDefined();
+    const statusCallsBeforeRetry = fetcher.mock.calls.filter(([path]) => String(path) === '/api/setup').length;
+
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByRole('heading', { name: 'What do you teach?' })).toBeDefined();
+    expect(screen.queryByText('Could not load the latest setup progress. Check your connection and try again.')).toBeNull();
+    expect(fetcher.mock.calls.filter(([path]) => String(path) === '/api/setup').length).toBe(statusCallsBeforeRetry + 1);
+  });
+  it('shows unavailable with the sign-in link when a status reload answers 404 after earlier data', async () => {
+    const { fetcher, query } = start(4);
+    await screen.findByRole('heading', { name: 'Your website' });
+    const base = fetcher.getMockImplementation()!;
+    fetcher.mockImplementation((path, options) => String(path) === '/api/setup'
+      ? Promise.resolve(Response.json({ error: { code: 'not_found', message: 'Not found' } }, { status: 404 }))
+      : base(path, options));
+
+    await act(async () => { await query.refetchQueries({ queryKey: ['setup', 'status'] }); });
+
+    expect(await screen.findByText('Setup is unavailable for this install. Sign in to manage your gym.')).toBeDefined();
+    expect(screen.getByRole('link', { name: 'Sign in' })).toBeDefined();
+    expect(screen.queryByRole('heading', { name: 'Your website' })).toBeNull();
+    expect(screen.queryByText('Could not load the latest setup progress. Check your connection and try again.')).toBeNull();
+  });
+  const unavailableText = 'Setup is unavailable for this install. Sign in to manage your gym.';
+  const reloadText = 'Could not load the latest setup progress. Check your connection and try again.';
+  const rejectedText = 'Restore failed: the storage service rejected the access key ID or secret. Check both, then start again.';
+  const gone = () => Response.json({ error: { code: 'not_found', message: 'Not found' } }, { status: 404 });
+  /** Reloads the status and lets the screen take the answer, so a check that nothing changed means something. */
+  const reloadStatus = (query: QueryClient) => act(async () => {
+    await query.refetchQueries({ queryKey: ['setup', 'status'] });
+    // The query tells React on a later task.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  function expectCompletion() {
+    expect(screen.getByRole('heading', { name: 'Setup complete' })).toBeDefined();
+    expect(screen.getByRole('link', { name: 'Open admin' })).toBeDefined();
+    expect(screen.queryByText(unavailableText)).toBeNull();
+    expect(screen.queryByText(reloadText)).toBeNull();
+  }
+  it('keeps the completion screen from the registered import step when a later status reload answers 404', async () => {
+    const { query } = start(8);
+    await userEvent.click(await screen.findByRole('button', { name: 'Start fresh' }));
+    expect(await screen.findByRole('heading', { name: 'Setup complete' })).toBeDefined();
+
+    statusAnswer = gone;
+    await reloadStatus(query);
+
+    expect(query.getQueryState(['setup', 'status'])?.status).toBe('error');
+    expectCompletion();
+  });
+  it.each([
+    ['the registered import step', undefined, 'Start fresh'],
+    ['the plain finish button', createWebRegistries<ExtensionView>([]), 'Finish setup'],
+  ])('keeps %s through a 404 status reload while finishing, then shows the completion screen', async (_, registries, finish) => {
+    const { fetcher, query } = start(8, [0, 1, 2, 3, 4, 5, 6], registries, { backupsLater: true });
+    const base = fetcher.getMockImplementation()!;
+    let answerFinish!: () => void;
+    const held = new Promise<void>((resolve) => { answerFinish = resolve; });
+    fetcher.mockImplementation(async (path, options) => {
+      if (String(path).endsWith('/finish')) await held;
+      return base(path, options);
+    });
+    await userEvent.click(await screen.findByRole('button', { name: finish }));
+    await waitFor(() => expect(fetcher.mock.calls.some(([path]) => String(path).endsWith('/finish'))).toBe(true));
+    // Leaving the step now would lose its completion screen.
+    expect(screen.getByRole('button', { name: 'Back to backups' }).hasAttribute('disabled')).toBe(true);
+
+    statusAnswer = gone;
+    await reloadStatus(query);
+
+    expect(screen.getByRole('button', { name: finish })).toBeDefined();
+    expect(screen.queryByText(unavailableText)).toBeNull();
+    expect(screen.queryByText(reloadText)).toBeNull();
+    await act(async () => { answerFinish(); });
+    expect(await screen.findByRole('heading', { name: 'Setup complete' })).toBeDefined();
+    expectCompletion();
+  });
+  it('shows unavailable on a 404 status reload after the import step failed to finish', async () => {
+    const { fetcher, query } = start(8);
+    const base = fetcher.getMockImplementation()!;
+    fetcher.mockImplementation((path, options) => String(path).endsWith('/finish')
+      ? Promise.resolve(Response.json({}, { status: 500 })) : base(path, options));
+    await userEvent.click(await screen.findByRole('button', { name: 'Start fresh' }));
+    expect(await screen.findByRole('alert')).toBeDefined();
+
+    statusAnswer = gone;
+    await reloadStatus(query);
+
+    expect(screen.getByText(unavailableText)).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Start fresh' })).toBeNull();
+  });
+  it('shows unavailable with the sign-in link on a 404 status reload after a failed restore, Back, and Start fresh', async () => {
+    restorePolls = [failed('credentials_rejected', false)];
+    const { query } = await startRestore();
+    expect(await screen.findByText(rejectedText)).toBeDefined();
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Start fresh' }));
+    expect(await screen.findByRole('heading', { name: 'Create your owner account' })).toBeDefined();
+
+    statusAnswer = gone;
+    await reloadStatus(query);
+
+    expect(screen.getByText(unavailableText)).toBeDefined();
+    expect(screen.getByRole('link', { name: 'Sign in' })).toBeDefined();
+    expect(screen.queryByRole('heading', { name: 'Create your owner account' })).toBeNull();
+    expect(screen.queryByText(reloadText)).toBeNull();
+  });
+  it('keeps the staged restore message on step 0 when a status reload answers 404', async () => {
+    restorePolls = [failed('other', true)];
+    const { query } = await startRestore();
+    expect(await screen.findByText(/^A verified restore is staged on the server\./)).toBeDefined();
+
+    statusAnswer = gone;
+    await reloadStatus(query);
+
+    expect(query.getQueryState(['setup', 'status'])?.status).toBe('error');
+    expect(screen.getByText(/^A verified restore is staged on the server\./)).toBeDefined();
+    expect(screen.queryByText(unavailableText)).toBeNull();
+    expect(screen.queryByText(reloadText)).toBeNull();
+  });
+  it('does not reload the status on focus or reconnect while a restore runs, so its failure stays on screen', async () => {
+    // The first poll runs at once; the second, a second later, brings the failure.
+    restorePolls = [running('verifying'), failed('credentials_rejected', false)];
+    const { fetcher } = await startRestore();
+    expect(await screen.findByText(restoring)).toBeDefined();
+    const reads = () => fetcher.mock.calls.filter(([path]) => String(path) === '/api/setup').length;
+    const before = reads();
+
+    statusAnswer = gone;
+    await act(async () => {
+      for (const event of ['visibilitychange', 'offline', 'online']) window.dispatchEvent(new Event(event));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(reads()).toBe(before);
+
+    expect(await screen.findByText(rejectedText, undefined, { timeout: 3000 })).toBeDefined();
+    expect(screen.queryByText(unavailableText)).toBeNull();
+    // With the restore over, a focus reloads the status again.
+    statusAnswer = null;
+    await act(async () => {
+      window.dispatchEvent(new Event('visibilitychange'));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(reads()).toBe(before + 1);
+  });
+  it('keeps the failure of a restore on screen after a reload whose first status answer was 404', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    sessionStorage.setItem('setup.restore', restoreJob);
+    restorePolls = [running('verifying'), failed('credentials_rejected', false)];
+    statusAnswer = gone;
+    const { query } = start(0);
+    expect(await screen.findByText(restoring)).toBeDefined();
+    await waitFor(() => expect(query.getQueryState(['setup', 'status'])?.status).toBe('error'));
+
+    // The failed restore released the gym, so the status answers again.
+    statusAnswer = null;
+    await tick(1000);
+
+    expect(await screen.findByText(rejectedText)).toBeDefined();
+    await waitFor(() => expect(query.getQueryState(['setup', 'status'])?.status).toBe('success'));
+    await userEvent.click(screen.getByRole('button', { name: 'Restore a backup' }));
+    expect(screen.getByLabelText('S3-compatible endpoint URL')).toBeDefined();
+    expect(screen.queryByText(unavailableText)).toBeNull();
+  });
+  it('reads the status again when a restore fails after a 404 answered while the restore request was pending', async () => {
+    restorePolls = [failed('credentials_rejected', false)];
+    let answerRestore!: () => void;
+    const held = new Promise<void>((resolve) => { answerRestore = resolve; });
+    const { fetcher, query } = start(0);
+    const base = fetcher.getMockImplementation()!;
+    fetcher.mockImplementation(async (path, options) => {
+      if (String(path) === '/api/setup/restore') await held;
+      return base(path, options);
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'Restore a backup' }));
+    await userEvent.type(screen.getByLabelText('S3-compatible endpoint URL'), 'https://s3.example.test');
+    await userEvent.type(screen.getByLabelText('Storage bucket'), 'backups');
+    await userEvent.type(screen.getByLabelText('S3 access key ID'), 'access');
+    await userEvent.type(screen.getByLabelText('S3 secret access key (not the Cloudflare API token value)'), 'secret');
+    await userEvent.type(screen.getByLabelText('Snapshot ID or snapshots/ID/ prefix'), '019a0af0-9c00-7000-8000-0000000000cc');
+    await userEvent.click(screen.getByLabelText('Backup private key')); await userEvent.paste(privateKey);
+    await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Restore a backup' }));
+    await waitFor(() => expect(fetcher.mock.calls.some(([path]) => String(path) === '/api/setup/restore')).toBe(true));
+    // The server holds the gym for the restore before it answers the request.
+    statusAnswer = gone;
+    await reloadStatus(query);
+    statusAnswer = null;
+
+    await act(async () => { answerRestore(); });
+
+    expect(await screen.findByText(rejectedText)).toBeDefined();
+    await waitFor(() => expect(query.getQueryState(['setup', 'status'])?.status).toBe('success'));
+    expect(screen.getByRole('heading', { name: 'Start fresh or restore a backup' })).toBeDefined();
+    expect(screen.queryByText(unavailableText)).toBeNull();
   });
 });
