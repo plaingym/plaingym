@@ -27,6 +27,31 @@ export function selfNotice(group: {
     && group.consentMemberIds.length === 1 && group.consentMemberIds[0] === group.memberIds[0];
 }
 
+type NoticeRow = Pick<typeof smsDeliveries.$inferSelect, 'key' | 'state' | 'commandResult'>;
+/** The members a class notice text row covers: its reserved group, or after a narrowed accepted send, who it named. */
+export const coveredMembers = (row: Pick<NoticeRow, 'commandResult'>) => (row.commandResult as { memberIds: string[] } | null)?.memberIds;
+/** The member key a class notice text key belongs to, without a regrouped `.<n>` suffix. */
+export const memberKey = (key: string) => key.replace(/\.\d+$/, '');
+/**
+ * A phone group's text is keyed by its first member. When an accepted text under that key left the member out (its
+ * last check narrowed the group), the member's own later group takes `<key>.<n>`, the smallest n of 2 or more that no
+ * such text holds. `previous` must include the rows keyed `<key>.%`.
+ */
+export function groupKey(previous: readonly NoticeRow[], base: string, anchor: string): string {
+  const passedOver = (key: string) => previous.some(row => row.key === key && row.state === 'accepted'
+    && coveredMembers(row)?.includes(anchor) === false);
+  let key = base;
+  for (let n = 2; passedOver(key); n++) key = `${base}.${n}`;
+  return key;
+}
+/** A narrowed accepted text records the members it named, so a member it left out gets a key of their own on a retry. */
+export async function recordCovered(scope: ClassNoticeDeliveryOptions['scope'], gymId: string, id: string,
+  reserved: readonly string[], covered: readonly string[] | undefined): Promise<void> {
+  if (!covered || (covered.length === reserved.length && covered.every(memberId => reserved.includes(memberId)))) return;
+  await scope(gymId, tx => tx.update(smsDeliveries).set({ commandResult: { memberIds: [...covered] } })
+    .where(and(eq(smsDeliveries.gymId, gymId), eq(smsDeliveries.id, id), eq(smsDeliveries.state, 'accepted'))));
+}
+
 /** A separate keyed send after email; neither channel's suppression nor outcome decides the other. */
 export function createCancellationSms(options: ClassNoticeDeliveryOptions) {
   const { scope, clock, settings } = options, deliveries = createSmsDeliveries(options);
@@ -58,26 +83,26 @@ export function createCancellationSms(options: ClassNoticeDeliveryOptions) {
             const current = (await readNoticePhones(tx, gymId, group.memberIds)).find(row => row.phoneE164 === group.phoneE164);
             if (!current) return;
             if (current.memberIds[0] !== anchor) throw new AppError('conflict', 'Cancellation text recipients changed');
-            const key = keyFor(anchor);
             const digest = prefix + options.sms!.phoneDigest(current.phoneE164);
             const previous = await tx.select().from(smsDeliveries).where(and(eq(smsDeliveries.gymId, gymId),
-              or(eq(smsDeliveries.key, key), eq(smsDeliveries.commandDigest, digest),
+              or(eq(smsDeliveries.key, keyFor(anchor)), like(smsDeliveries.key, `${keyFor(anchor)}.%`), eq(smsDeliveries.commandDigest, digest),
                 and(like(smsDeliveries.key, prefix + '%'), isNull(smsDeliveries.commandDigest), ne(smsDeliveries.state, 'not_accepted')))));
+            const key = groupKey(previous, keyFor(anchor), anchor);
             // After erasure, match the covered IDs instead of restoring a digest. An older redacted row
             // without a group snapshot can only prove that a destination in the original roster was covered.
             const matching = previous.filter(row => {
               if (row.key === key || row.commandDigest === digest) return true;
-              if (owned.has(row.key)) return false;
+              if (owned.has(memberKey(row.key))) return false;
               const snapshot = row.commandResult as { memberIds: string[] } | null;
               return snapshot ? snapshot.memberIds.some(id => current.memberIds.includes(id))
-                : notice.memberIds.includes(row.key.slice(prefix.length));
+                : notice.memberIds.includes(memberKey(row.key).slice(prefix.length));
             });
             if (matching.some(row => row.state === 'sending' && row.updatedAt.getTime() > clock.now().getTime() - smsInFlightMs))
               throw new AppError('conflict', 'Cancellation text is in flight');
             if (matching.some(row => row.state !== 'not_accepted')) return;
             // A definite non-send can be retried, including after the first member in an address group changes. Prefer
             // this group's own key, and never take over a key that another job-start phone group owns.
-            const retry = matching.find(row => row.key === key) ?? matching.find(row => !owned.has(row.key));
+            const retry = matching.find(row => row.key === key) ?? matching.find(row => !owned.has(memberKey(row.key)));
             const [updated] = retry ? await tx.update(smsDeliveries).set({ commandDigest: digest }).where(and(eq(smsDeliveries.id, retry.id),
               isNotNull(smsDeliveries.commandDigest))).returning({ key: smsDeliveries.key }) : [];
             const reserved = await deliveries.reserve(tx, gymId, updated?.key ?? key, digest);
@@ -85,15 +110,18 @@ export function createCancellationSms(options: ClassNoticeDeliveryOptions) {
             return { reserved, session, memberIds: current.memberIds };
           });
           if (!reservation) continue;
+          let covered: readonly string[] | undefined;
           const guarded: Sms = {
             verifyAccount: () => noticeSender(options, gymId, group).verifyAccount(),
             async sendSms() {
-              const current = await scope(gymId, async tx => {
+              const reread = await scope(gymId, async tx => {
                 const [session] = await tx.select({ status: classSessions.status, restoreCount: classSessions.restoreCount })
                   .from(classSessions).where(eq(classSessions.id, notice.sessionId));
-                return isCurrent(session)
-                  ? (await readNoticePhones(tx, gymId, reservation.memberIds)).find(row => row.phoneE164 === group.phoneE164) : undefined;
+                return isCurrent(session) ? readNoticePhones(tx, gymId, reservation.memberIds) : [];
               });
+              const current = reread.find(row => row.phoneE164 === group.phoneE164);
+              // The retry regroups reserved members who moved to another consented phone since the reservation.
+              if (!current && reread.length) throw new DeliveryError('not_accepted', 'Cancellation text recipients moved');
               if (!current) return { status: 'suppressed', reason: 'no_consent' };
               const bodyFor = (self: boolean, names: readonly string[] = current.memberNames) => t(self ? 'announcements/cancellation:sms_self' : 'announcements/cancellation:sms', {
                 name: reservation.session.name, ...noticeWhen(reservation.session.startsAt, timezone), names: names.join(', '),
@@ -102,7 +130,7 @@ export function createCancellationSms(options: ClassNoticeDeliveryOptions) {
               // Lock order matches promotion and staff cancellation texts: settings key share, session FOR SHARE,
               // then reserved members and their households FOR SHARE NOWAIT so a busy row rolls back and retries.
               const lastCheck: NonNullable<MemberSmsOptions['recheck']> = async tx => {
-                moved = false;
+                moved = false; covered = undefined;
                 await holdGymSettings(tx, gymId);
                 const gym = await readGymSettings(tx, gymId);
                 const [session] = await tx.select({ status: classSessions.status, restoreCount: classSessions.restoreCount })
@@ -111,11 +139,15 @@ export function createCancellationSms(options: ClassNoticeDeliveryOptions) {
                 if (!(await shareNoticeRecipients(tx, gymId, reservation.memberIds))) return 'no_consent';
                 const currentGroups = await memberNoticePhones(tx, gymId, reservation.memberIds);
                 const now = currentGroups.find(row => row.phoneE164 === group.phoneE164);
-                if (currentGroups.some(row => row.phoneE164 !== group.phoneE164 && row.memberIds.some(id => current.memberIds.includes(id)))) {
+                // Measured against the reserved members: one now at another phone, or back at this phone after the
+                // reread left them out (so this text couldn't name them), ends the attempt so the retry regroups.
+                if (currentGroups.some(row => row.phoneE164 !== group.phoneE164 && row.memberIds.some(id => reservation.memberIds.includes(id)))
+                  || now?.memberIds.some(id => !current.memberIds.includes(id))) {
                   moved = true;
                   return 'phone_changed';
                 }
-                if (!now || !now.memberIds.length || now.memberIds.some(id => !current.memberIds.includes(id))) return 'no_consent';
+                if (!now || !now.memberIds.length) return 'no_consent';
+                covered = now.memberIds;
                 return {
                   ...noticeCapSettings(gym),
                   memberIds: now.memberIds,
@@ -129,7 +161,8 @@ export function createCancellationSms(options: ClassNoticeDeliveryOptions) {
               return result;
             },
           };
-          await deliveries.attempt(reservation.reserved, guarded, { to: group.phoneE164, body: '' });
+          const result = await deliveries.attempt(reservation.reserved, guarded, { to: group.phoneE164, body: '' });
+          if (result.status === 'sent') await recordCovered(scope, gymId, reservation.reserved.id, reservation.memberIds, covered);
         } catch (error) { failure ??= error; }
       }
       // A failed phone must not strand the rest of the roster. Unknown reservations never send again on retry.

@@ -255,31 +255,41 @@ including the class's date and time in the timezone read at the start of the tex
 pass. When the phone is one member's own consented phone covering only them, the
 text (`sms_self`) leaves the names out; a household billing phone (its group's
 `consentHouseholdIds`) always lists who it covers. Announcement consent
-alone never authorizes these texts. After provider credentials resolve, the
-cancellation text's last check runs first in `MemberSms`'s cap transaction: it
-locks and reads gym settings, locks the class session (`FOR SHARE`) to confirm
-the cancellation is still current (not restored), then locks the reserved
-members and their households (`FOR SHARE NOWAIT`, rolling back and retrying
-through `SmsRecheckBusy` if a row is busy) and rereads `memberNoticePhones` for
-the reserved members. If any covered member moved to another phone, it
-suppresses with `phone_changed` and ends the attempt as a definite non-send so
-the job retries and regroups across phones; if no covered members remain at the
-phone (or a reserved member who wasn't there when the attempt started is there
-now), it suppresses with `no_consent`.
+alone never authorizes these texts. When the attempt starts (after the
+reservation commits), the guard rereads the reserved members' phone groups; if
+none is at this phone but a reserved member is at another consented phone, it
+ends the attempt as a definite non-send so the job retries and regroups. After
+provider credentials resolve, the cancellation text's last check runs first in
+`MemberSms`'s cap transaction: it locks and reads gym settings, locks the class
+session (`FOR SHARE`) to confirm the cancellation is still current (not
+restored), then locks the reserved members and their households (`FOR SHARE
+NOWAIT`, rolling back and retrying through `SmsRecheckBusy` if a row is busy)
+and rereads `memberNoticePhones` for the reserved members. If any reserved
+member is now at another phone, or a reserved member the attempt's reread left
+out is back at this phone (so the text can't name them), it suppresses with
+`phone_changed` and ends the attempt as a definite non-send so the job retries
+and regroups across phones; if no reserved members remain at the phone, it
+suppresses with `no_consent`.
 When the locked group at the phone is a non-empty subset of the reserved group,
 it sends to the members still covered, naming only them, returning the locked
 settings (SMS switch, daily cap, usage-day timezone and phone country), the
 locked recipient group's consent holders and the wording (`sms_self` or `sms`)
 chosen for the locked group to `MemberSms` for the final consent, phone and cap
-checks, while the message body keeps the job's timezone.
+checks, while the message body keeps the job's timezone. The delivery row's
+`command_result` holds the reserved group's member IDs; once such a narrowed
+text is accepted it holds only the members the text named.
 
-`sms_deliveries` keys are `schedule-cancel-sms:<scope>:<firstMemberId>`.
+`sms_deliveries` keys are `schedule-cancel-sms:<scope>:<firstMemberId>`. When an
+accepted text under that key left its first member out, that member's own later
+group (on a retry of the same job) takes `<firstMemberId>.<n>` instead, the
+smallest `n` of 2 or more not held by an accepted text that left them out.
 A scope-prefixed keyed phone digest also prevents another text to the same
 destination after the first member leaves the group or groups converge. Neither
 the phone nor message content is stored in those keys or digests. Live attempts
 defer to a retry; accepted and uncertain attempts never resend. Only a definite
 non-send can retry. A failure on one phone does not strand the remaining phones.
-Erasure clears cancellation delivery digests on the erased member's keys.
+Erasure clears cancellation delivery digests on the erased member's keys,
+including their `.<n>` keys.
 Accepted or uncertain reservations can still prevent replay using member IDs.
 The optional constructor `sms: { resolver, phoneDigest }` enables this pass:
 `resolver` is the gym-aware `SmsResolver` and `phoneDigest` comes from
@@ -317,19 +327,22 @@ keeps only members who still have a booked or waitlisted place in it: a member w
 cancelled their restored place gets nothing, and a session cancelled again or started
 sends nothing more. The email says the class is going ahead after all, that the places
 cancelled with it are back, and who the address covers (left out for a member at their own
-address); the text does the same, without names on a member's own phone. After provider
+address); the text does the same, without names on a member's own phone. Like the
+cancellation text, the attempt ends as a definite non-send when none of the reserved members
+still holding a place is at the phone but one is at another consented phone. After provider
 credentials resolve, the restore text's last check runs first in `MemberSms`'s cap
 transaction with the same lock order as the cancellation text (settings key share,
 session `FOR SHARE`, then the reserved members and their households `FOR SHARE NOWAIT`),
 rechecks that the restore still holds and that the reserved members still hold a booked or
-waitlisted place, and rereads `memberNoticePhones`: if a covered member moved to another
-phone, it suppresses with `phone_changed` and ends the attempt as a definite non-send so the
+waitlisted place, and rereads `memberNoticePhones` for those still holding one: if one is
+now at another phone, or one the attempt's reread left out is back at this phone, it
+suppresses with `phone_changed` and ends the attempt as a definite non-send so the
 job retries and regroups; when the locked group at the phone is a smaller non-empty part of
 the reserved group, it sends to the members still covered, naming only them (suppressing
-with `no_consent` if none remain or a reserved member who wasn't there when the attempt
-started is there now), returning the locked
+with `no_consent` if none remain), returning the locked
 settings, consent holders and wording (`sms_self` or `sms`) while the message body keeps the
-job's timezone. Each address
+job's timezone. An accepted narrowed text records the members it named, and a first member
+it left out takes a `.<n>` key of their own on a retry, as for cancellation texts. Each address
 gets a `schedule.restore_notice_decided` audit with the member ID, round and outcome.
 Accepted and uncertain deliveries are never resent. Restore notices have no recovery
 sweep: the job's own retries (12 attempts) are their retry. Erasure clears their digests

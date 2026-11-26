@@ -20,6 +20,7 @@ import { createMembersService } from '../members/members.js';
 import { idSchema } from '@plaingym/shared/contracts';
 import { z } from 'zod';
 import { cancellationNoticeJob, cancellationNoticeJobPayload, createCancellationNotice } from './cancellation.js';
+import { forgetErasedAddressDigests } from './erasure.js';
 import { createAnnouncementJobs } from './jobs.js';
 import { announcementRecoveryJob, createAnnouncementRecoveryJobs } from './recovery.js';
 
@@ -560,4 +561,104 @@ it.each(['first', 'second'] as const)('fails as not_accepted and regroups on ret
   expect(householdText).toContain(stayed.firstName);
   expect(householdText).not.toContain(moved.firstName);
   expect(await usage(f.gymId)).toEqual([expect.objectContaining({ sent: 2, refused: 0 })]);
+});
+
+type Change = (gymId: string) => Promise<unknown>;
+/**
+ * Runs `change` right after the first text reservation commits and `afterReread` right after the next transaction,
+ * the send-time reread of the group at the phone, counting calls so each runs once.
+ */
+function afterReservation(change: Change, afterReread?: Change) {
+  const calls = { reservation: 0, reread: 0 };
+  const scope: typeof db.forGym = async (gymId, fn) => {
+    const result = await db.forGym(gymId, fn);
+    if (calls.reservation === 1 && !calls.reread && afterReread) { calls.reread++; await afterReread(gymId); }
+    else if (!calls.reservation && result && typeof result === 'object' && 'reserved' in result && 'memberIds' in result) {
+      calls.reservation++; await change(gymId);
+    }
+    return result;
+  };
+  return { scope, calls };
+}
+const consentedPhone = (f: Awaited<ReturnType<typeof fixture>>, memberId: string, to: string | null) => db.forGym(f.gymId, tx =>
+  tx.update(members).set(to ? { phone: to, phoneE164: to, smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }
+    : { smsNoticesConsentAt: null, smsNoticesConsentSource: null }).where(eq(members.id, memberId)));
+const states = (gymId: string) => db.forGym(gymId, tx => tx.select({ key: smsDeliveries.key, state: smsDeliveries.state,
+  commandResult: smsDeliveries.commandResult }).from(smsDeliveries));
+
+it('ends the attempt as not_accepted when a reserved member moves to their own phone after the reservation, and the retry texts each phone once', async () => {
+  const f = await fixture(), [mia, noa] = f.children, own = '+12025550199';
+  const notice = { ...f.payload, memberIds: [mia!.id, noa!.id], channels: ['sms'] as const };
+  const { scope, calls } = afterReservation(() => consentedPhone(f, noa!.id, own));
+  await expect(createCancellationNotice({ ...f.options, scope }).run(notice, f.gymId)).rejects.toMatchObject({ acceptance: 'not_accepted' });
+  expect(calls.reservation).toBe(1);
+  expect(f.sms.messages).toHaveLength(0);
+  expect((await states(f.gymId)).map(row => row.state)).toEqual(['not_accepted']);
+  await f.notice.run(notice, f.gymId); await f.notice.run(notice, f.gymId);
+  expect(f.sms.messages.map(message => message.to).sort()).toEqual([phone, own]);
+  expect(f.sms.messages.find(message => message.to === own)!.body).toBe(selfText);
+  expect(f.sms.messages.find(message => message.to === phone)!.body).toContain('Mia');
+  expect(f.sms.messages.find(message => message.to === phone)!.body).not.toContain('Noa');
+});
+
+it('ends the attempt as not_accepted, not no_consent, when the whole reserved group moves phone after the reservation', async () => {
+  const f = await fixture(), [mia, noa] = f.children, moved = '+12025550199';
+  const notice = { ...f.payload, memberIds: [mia!.id, noa!.id], channels: ['sms'] as const };
+  const { scope, calls } = afterReservation(gymId => db.forGym(gymId, tx => tx.update(households)
+    .set({ phone: moved, phoneE164: moved }).where(eq(households.id, f.home.id))));
+  await expect(createCancellationNotice({ ...f.options, scope }).run(notice, f.gymId)).rejects.toMatchObject({ acceptance: 'not_accepted' });
+  expect(calls.reservation).toBe(1);
+  expect(f.sms.messages).toHaveLength(0);
+  expect((await states(f.gymId)).map(row => row.state)).toEqual(['not_accepted']);
+  await f.notice.run(notice, f.gymId); await f.notice.run(notice, f.gymId);
+  expect(f.sms.messages.map(message => message.to)).toEqual([moved]);
+  expect(f.sms.messages[0]!.body).toContain('Mia'); expect(f.sms.messages[0]!.body).toContain('Noa');
+});
+
+it('ends the attempt as not_accepted when a reserved member left out of the reread is back at the phone for the last check', async () => {
+  const f = await fixture(), [mia, noa] = f.children;
+  const otherHome = await factory('households', f.gymId);
+  await db.forGym(f.gymId, tx => tx.update(members).set({ householdId: otherHome.id }).where(eq(members.id, noa!.id)));
+  await consentedPhone(f, noa!.id, phone);
+  const notice = { ...f.payload, memberIds: [mia!.id, noa!.id], channels: ['sms'] as const };
+  const { scope, calls } = afterReservation(() => consentedPhone(f, noa!.id, null), () => consentedPhone(f, noa!.id, phone));
+  await expect(createCancellationNotice({ ...f.options, scope }).run(notice, f.gymId)).rejects.toMatchObject({ acceptance: 'not_accepted' });
+  expect(calls).toEqual({ reservation: 1, reread: 1 });
+  expect(f.sms.messages).toHaveLength(0);
+  expect((await states(f.gymId)).map(row => row.state)).toEqual(['not_accepted']);
+  await f.notice.run(notice, f.gymId); await f.notice.run(notice, f.gymId);
+  expect(f.sms.messages.map(message => message.to)).toEqual([phone]);
+  expect(f.sms.messages[0]!.body).toContain('Mia'); expect(f.sms.messages[0]!.body).toContain('Noa');
+});
+
+it('records whom a narrowed text named, so a first member it left out is texted under a key of their own on the retry', async () => {
+  const f = await fixture(), [first, second] = [f.children[0]!, f.children[1]!].sort((a, b) => (a.id < b.id ? -1 : 1));
+  const ari = f.children[2]!, aris = '+12025550177', own = '+12025550199';
+  const otherHome = await factory('households', f.gymId);
+  await db.forGym(f.gymId, tx => tx.update(members).set({ householdId: otherHome.id }).where(eq(members.id, first!.id)));
+  await consentedPhone(f, first!.id, phone); await consentedPhone(f, ari.id, aris);
+  const notice = { ...f.payload, memberIds: [first!.id, second!.id, ari.id], channels: ['sms'] as const };
+  // The shared phone sorts first: its first member drops out while it resolves; then the second phone's text fails.
+  f.resolver.resolve.mockImplementationOnce(async id => {
+    await consentedPhone(f, first!.id, null);
+    return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+  }).mockImplementationOnce(async id => {
+    f.sms.respondNext(new DeliveryError('not_accepted', 'Provider unavailable'));
+    return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+  });
+  await expect(f.notice.run(notice, f.gymId)).rejects.toThrow();
+  expect(f.sms.messages.map(message => message.to)).toEqual([phone]);
+  expect(f.sms.messages[0]!.body).toContain(second!.firstName); expect(f.sms.messages[0]!.body).not.toContain(first!.firstName);
+  const prefix = `schedule-cancel-sms:${f.session.id}:`;
+  expect(await states(f.gymId)).toContainEqual({ key: prefix + first!.id, state: 'accepted', commandResult: { memberIds: [second!.id] } });
+
+  await consentedPhone(f, first!.id, own);
+  await f.notice.run(notice, f.gymId); await f.notice.run(notice, f.gymId);
+  expect(f.sms.messages.map(message => message.to)).toEqual([phone, aris, own]);
+  expect(f.sms.messages[2]!.body).toBe(selfText);
+  expect(await states(f.gymId)).toContainEqual(expect.objectContaining({ key: `${prefix}${first!.id}.2`, state: 'accepted' }));
+  // Erasing the member clears the regrouped key's phone digest as well.
+  await db.forGym(f.gymId, tx => forgetErasedAddressDigests(tx, f.gymId, first!.id));
+  const rows = await db.forGym(f.gymId, tx => tx.select().from(smsDeliveries));
+  expect(rows.filter(row => row.key.startsWith(prefix + first!.id)).map(row => row.commandDigest)).toEqual([null, null]);
 });

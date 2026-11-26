@@ -7,7 +7,7 @@ import { smsInFlightMs } from '../../infra/sms/deliveries.js';
 import { holdGymSettings, readGymSettings } from '../settings/settings.js';
 import { memberNoticePhones } from '../members/sms-recipients.js';
 import { noticeCapSettings, noticeSender, noticeWhen, readNoticePhones, shareNoticeRecipients, type ClassNoticeDeliveryOptions } from '../bookings/bookings.sms.js';
-import { selfNotice } from './cancellation.sms.js';
+import { groupKey, memberKey, recordCovered, selfNotice } from './cancellation.sms.js';
 import messages from '../../../../../locales/en/announcements/restored.json' with { type: 'json' };
 
 interface Restore { sessionId: string; memberIds: string[]; round: number }
@@ -63,24 +63,24 @@ export function createRestoreSms(options: ClassNoticeDeliveryOptions) {
             const current = (await phones(tx, gymId, notice, group.memberIds)).find(row => row.phoneE164 === group.phoneE164);
             if (!current) return;
             if (current.memberIds[0] !== anchor) throw new AppError('conflict', 'Restore text recipients changed');
-            const key = keyFor(anchor);
             const digest = prefix + options.sms!.phoneDigest(current.phoneE164);
             const previous = await tx.select().from(smsDeliveries).where(and(eq(smsDeliveries.gymId, gymId),
-              or(eq(smsDeliveries.key, key), eq(smsDeliveries.commandDigest, digest),
+              or(eq(smsDeliveries.key, keyFor(anchor)), like(smsDeliveries.key, `${keyFor(anchor)}.%`), eq(smsDeliveries.commandDigest, digest),
                 and(like(smsDeliveries.key, prefix + '%'), isNull(smsDeliveries.commandDigest), ne(smsDeliveries.state, 'not_accepted')))));
+            const key = groupKey(previous, keyFor(anchor), anchor);
             // After erasure, match the covered IDs instead of restoring a digest.
             const matching = previous.filter(row => {
               if (row.key === key || row.commandDigest === digest) return true;
-              if (owned.has(row.key)) return false;
+              if (owned.has(memberKey(row.key))) return false;
               const snapshot = row.commandResult as { memberIds: string[] } | null;
               return snapshot ? snapshot.memberIds.some(id => current.memberIds.includes(id))
-                : notice.memberIds.includes(row.key.slice(prefix.length));
+                : notice.memberIds.includes(memberKey(row.key).slice(prefix.length));
             });
             if (matching.some(row => row.state === 'sending' && row.updatedAt.getTime() > clock.now().getTime() - smsInFlightMs))
               throw new AppError('conflict', 'Restore text is in flight');
             if (matching.some(row => row.state !== 'not_accepted')) return;
             // A definite non-send can be retried; never take over a key that another job-start phone group owns.
-            const retry = matching.find(row => row.key === key) ?? matching.find(row => !owned.has(row.key));
+            const retry = matching.find(row => row.key === key) ?? matching.find(row => !owned.has(memberKey(row.key)));
             const [updated] = retry ? await tx.update(smsDeliveries).set({ commandDigest: digest }).where(and(eq(smsDeliveries.id, retry.id),
               isNotNull(smsDeliveries.commandDigest))).returning({ key: smsDeliveries.key }) : [];
             const reserved = await deliveries.reserve(tx, gymId, updated?.key ?? key, digest);
@@ -88,14 +88,17 @@ export function createRestoreSms(options: ClassNoticeDeliveryOptions) {
             return { reserved, session: session!, memberIds: current.memberIds };
           });
           if (!reservation) continue;
+          let covered: readonly string[] | undefined;
           const guarded: Sms = {
             verifyAccount: () => noticeSender(options, gymId, group).verifyAccount(),
             async sendSms() {
-              const current = await scope(gymId, async tx => {
+              const reread = await scope(gymId, async tx => {
                 const [session] = await tx.select().from(classSessions).where(eq(classSessions.id, notice.sessionId));
-                return restoreHolds(session, notice.round, clock.now())
-                  ? (await phones(tx, gymId, notice, reservation.memberIds)).find(row => row.phoneE164 === group.phoneE164) : undefined;
+                return restoreHolds(session, notice.round, clock.now()) ? phones(tx, gymId, notice, reservation.memberIds) : [];
               });
+              const current = reread.find(row => row.phoneE164 === group.phoneE164);
+              // The retry regroups reserved members still holding a place who moved to another consented phone.
+              if (!current && reread.length) throw new DeliveryError('not_accepted', 'Restore text recipients moved');
               if (!current) return { status: 'suppressed', reason: 'no_consent' };
               const bodyFor = (self: boolean, names: readonly string[] = current.memberNames) => t(self ? 'announcements/restored:sms_self' : 'announcements/restored:sms', {
                 name: reservation.session.name, ...noticeWhen(reservation.session.startsAt, timezone), names: names.join(', '),
@@ -104,7 +107,7 @@ export function createRestoreSms(options: ClassNoticeDeliveryOptions) {
               // Lock order matches promotion and cancellation texts: settings key share, session FOR SHARE,
               // then reserved members and their households FOR SHARE NOWAIT so a busy row rolls back and retries.
               const lastCheck: NonNullable<MemberSmsOptions['recheck']> = async tx => {
-                moved = false;
+                moved = false; covered = undefined;
                 await holdGymSettings(tx, gymId);
                 const gym = await readGymSettings(tx, gymId);
                 const [session] = await tx.select({ status: classSessions.status, restoreCount: classSessions.restoreCount, startsAt: classSessions.startsAt })
@@ -114,11 +117,15 @@ export function createRestoreSms(options: ClassNoticeDeliveryOptions) {
                 const active = await activeMembers(tx, notice.sessionId, reservation.memberIds);
                 const currentGroups = await memberNoticePhones(tx, gymId, active);
                 const now = currentGroups.find(row => row.phoneE164 === group.phoneE164);
-                if (currentGroups.some(row => row.phoneE164 !== group.phoneE164 && row.memberIds.some(id => current.memberIds.includes(id)))) {
+                // Measured against the reserved members still holding a place: one now at another phone, or back at this
+                // phone after the reread left them out (so this text couldn't name them), ends the attempt so the retry regroups.
+                if (currentGroups.some(row => row.phoneE164 !== group.phoneE164 && row.memberIds.some(id => active.includes(id)))
+                  || now?.memberIds.some(id => !current.memberIds.includes(id))) {
                   moved = true;
                   return 'phone_changed';
                 }
-                if (!now || !now.memberIds.length || now.memberIds.some(id => !current.memberIds.includes(id))) return 'no_consent';
+                if (!now || !now.memberIds.length) return 'no_consent';
+                covered = now.memberIds;
                 return {
                   ...noticeCapSettings(gym),
                   memberIds: now.memberIds,
@@ -132,7 +139,8 @@ export function createRestoreSms(options: ClassNoticeDeliveryOptions) {
               return result;
             },
           };
-          await deliveries.attempt(reservation.reserved, guarded, { to: group.phoneE164, body: '' });
+          const result = await deliveries.attempt(reservation.reserved, guarded, { to: group.phoneE164, body: '' });
+          if (result.status === 'sent') await recordCovered(scope, gymId, reservation.reserved.id, reservation.memberIds, covered);
         } catch (error) { failure ??= error; }
       }
       // A failed phone must not strand the rest of the roster. Unknown reservations never send again on retry.

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, gte, inArray, isNotNull, lt, or } from 'drizzle-orm';
+import { and, asc, eq, gte, inArray, isNotNull, like, lt, or } from 'drizzle-orm';
 import { announcementRecipients, announcementSmsRecipients, emailDeliveries, members, smsDeliveries, type Transaction } from '@plaingym/db';
 import { cancellationNoticeKeyPrefix } from './cancellation.js';
 import { cancellationSmsKeyPrefix } from './cancellation.sms.js';
@@ -51,12 +51,14 @@ async function forgetAnnouncementSms(tx: Transaction, gymId: string, memberId: s
 export async function forgetErasedAddressDigests(tx: Transaction, gymId: string, memberId: string, erasedAddress?: string | null, deleting = false): Promise<void> {
   memberId = memberId.toLowerCase();
   await forgetAnnouncementSms(tx, gymId, memberId, deleting);
+  // A class notice text is keyed by its group's first member, with `.<n>` when that member was regrouped after a retry.
+  const memberKeyed = or(eq(thirdSmsKeyPart, memberId), like(thirdSmsKeyPart, `${memberId}.%`));
   await tx.update(smsDeliveries).set({ commandDigest: null }).where(and(eq(smsDeliveries.gymId, gymId),
     gte(smsDeliveries.key, cancellationSmsKeyPrefix), lt(smsDeliveries.key, 'schedule-cancel-smt'),
-    isNotNull(smsDeliveries.commandDigest), eq(thirdSmsKeyPart, memberId)));
+    isNotNull(smsDeliveries.commandDigest), memberKeyed));
   await tx.update(smsDeliveries).set({ commandDigest: null }).where(and(eq(smsDeliveries.gymId, gymId),
     gte(smsDeliveries.key, restoreSmsKeyPrefix), lt(smsDeliveries.key, 'schedule-restore-smt'),
-    isNotNull(smsDeliveries.commandDigest), eq(thirdSmsKeyPart, memberId)));
+    isNotNull(smsDeliveries.commandDigest), memberKeyed));
   const [member] = await tx.select({ householdId: members.householdId }).from(members)
     .where(and(eq(members.gymId, gymId), eq(members.id, memberId)));
   if (member) await tx.update(smsDeliveries).set({ key: erasedCampaignSmsKey }).where(and(eq(smsDeliveries.gymId, gymId),
