@@ -2255,7 +2255,7 @@ describe('setup wizard restore progress', () => {
     await settle();
     expect(document.activeElement).toBe(field);
   });
-  it('stops waiting for the status read after 10 seconds, and shows the message when it answers 404 later', async () => {
+  it('stops waiting for the status read after 10 seconds, showing the message, and keeps it when the read answers 404 later', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const read = later();
     const { shown } = await sendRestoreEnding(dropped, () => read.response);
@@ -2265,7 +2265,7 @@ describe('setup wizard restore progress', () => {
 
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
 
-    expect(await screen.findByText(saveFailedText)).toBeDefined();
+    expect(await screen.findByText(unansweredText)).toBeDefined();
     expect(within(actions).queryByRole('button', { name: 'Saving…' })).toBeNull();
     expect(within(actions).getByRole('button', { name: 'Back' })).toHaveProperty('disabled', false);
 
@@ -2693,6 +2693,46 @@ describe('setup wizard restore progress', () => {
     expect(await screen.findByText(saveFailedText)).toBeDefined();
     await settle();
     expect(screen.queryByText(unansweredText)).toBeNull();
+    expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
+  });
+  /** An unanswered request whose own status read ends as `read` says, expected to leave the unanswered message. */
+  async function dropWithUnansweredRead(read: () => Promise<Response>) {
+    const started = await sendRestoreEnding(dropped, read);
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+    expect(await screen.findByText(reloadText)).toBeDefined();
+    await settle();
+    return started;
+  }
+  it.each([
+    ['gets no response', dropped],
+    ['answers 502', proxyAnswer(502)],
+    ['answers 504', proxyAnswer(504)],
+    ['answers 520', proxyAnswer(520)],
+    ['answers 522', proxyAnswer(522)],
+    ['answers 524', proxyAnswer(524)],
+  ])('says the restore may be running when the status read after an unanswered restore request %s', async (_, read) => {
+    const { fetcher, before } = await dropWithUnansweredRead(read);
+
+    expect(document.activeElement).toBe(alertOf(unansweredText));
+    expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
+    expect(screen.queryByText(saveFailedText)).toBeNull();
+    expect(statusReads(fetcher)).toBe(before + 1);
+  });
+  it('shows the save error when the status read after an unanswered restore request answers 521', async () => {
+    await sendRestoreEnding(dropped, proxyAnswer(521));
+
+    expect(await screen.findByText(saveFailedText)).toBeDefined();
+    expect(await screen.findByText(reloadText)).toBeDefined();
+    await settle();
+    expect(screen.queryByText(unansweredText)).toBeNull();
+  });
+  it('drops the message of a 502 status read once a later status read works', async () => {
+    await dropWithUnansweredRead(proxyAnswer(502));
+
+    statusAnswer = null;
+    await refocus();
+
+    await waitFor(() => expect(screen.queryByText(unansweredText)).toBeNull());
     expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
   });
 });

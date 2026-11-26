@@ -32,14 +32,14 @@ class OwnerSavedSignInError extends Error {
     this.name = 'OwnerSavedSignInError';
   }
 }
-/** A restore request that may be running: after no definite answer, a status read or a resend's refusal suggests it. */
+/** A restore request that may be running: it got no definite answer, and the status read after it, or a resend's refusal, leaves that open. */
 class RestoreUnansweredError extends Error {
   constructor(options?: ErrorOptions) {
     super('Restore request unanswered', options);
     this.name = 'RestoreUnansweredError';
   }
 }
-/** How long the status read after an unanswered restore request is waited for before the form shows the save error. */
+/** How long the status read after an unanswered restore request is waited for before the form shows the unanswered message, not the save error. */
 const restoreReadLimit = 10_000;
 const text = (data: FormData, name: string) => String(data.get(name) ?? '');
 /** A message key in the wizard's own locale file, or a full `namespace:key`. */
@@ -120,8 +120,9 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   const services = useShellServices(), queries = useQueryClient();
   const [jobId, setJobId] = useState<string | null>(() => sessionStorage.getItem('setup.restore'));
   const [restoreSending, setRestoreSending] = useState(false);
-  // A restore request got no answer, then a status read met a restore's hold, or a resend failed without ruling out
-  // that restore: the form stays.
+  // A restore request got no answer, then a status read met a restore's hold, the read awaited after the request got no
+  // clear answer either (none, a gateway's, or none in time), or a resend failed without ruling out that restore: the
+  // form stays.
   const [restoreUnanswered, setRestoreUnanswered] = useState(false);
   // When the last restore request went unanswered, until a status read works: a later 404 or 503 keeps the form too.
   const [unansweredAt, setUnansweredAt] = useState<number | null>(null);
@@ -376,12 +377,13 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
             void status.refetch(); throw failure;
           }
           setUnansweredAt(Date.now());
-          // Awaited with the request still counted as pending, so a 404 can't swap the form out first; not forever.
+          // Awaited with the request still counted as pending, so a 404 can't swap the form out first; not forever:
+          // when the wait ends, the form shows the unanswered message, not the save error.
           let timer: ReturnType<typeof setTimeout> | undefined;
           const read = await Promise.race([status.refetch(),
             new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), restoreReadLimit); })])
             .finally(() => clearTimeout(timer));
-          if (read?.error instanceof ApiError && (read.error.status === 404 || read.error.status === 503)) {
+          if (!read || read.error instanceof TypeError || (read.error instanceof ApiError && [404, 502, 503, 504, 520, 522, 524].includes(read.error.status))) {
             setRestoreUnanswered(true);
             throw new RestoreUnansweredError({ cause: failure });
           }
