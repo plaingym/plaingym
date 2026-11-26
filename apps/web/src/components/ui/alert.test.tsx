@@ -73,4 +73,52 @@ describe('failure alerts', () => {
     view.rerender(<><FormMessage message={{ ...failed }}/><button>Save</button></>);
     expect(document.activeElement).toBe(screen.getByRole('alert'));
   });
+  it('neither scrolls to nor focuses an error revealed inside an inert element, until its text changes outside one', () => {
+    const scroll = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scroll;
+    try {
+      const content = (inert: boolean, message: string) => <><button>Before</button><div inert={inert}><Alert variant="error" focusOnReveal>{message}</Alert></div></>;
+      const view = render(<button>Before</button>);
+      screen.getByRole('button').focus();
+      view.rerender(content(true, 'Unable to sign in'));
+      const button = screen.getByRole('button');
+      expect(scroll).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(button);
+      view.rerender(content(false, 'Unable to sign in'));
+      expect(scroll).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(button);
+      view.rerender(content(false, 'Unable to sign in again'));
+      expect(scroll).toHaveBeenCalledWith({ block: 'center' });
+      expect(document.activeElement).toBe(screen.getByRole('alert'));
+    } finally { HTMLElement.prototype.scrollIntoView = original; }
+  });
+  it('still scrolls to an error revealed inside an inert wrapper that is hidden', () => {
+    const scroll = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scroll;
+    try {
+      render(<div inert style={{ visibility: 'hidden' }}><Alert variant="error" focusOnReveal>Unable to save</Alert></div>);
+      expect(scroll).toHaveBeenCalledWith({ block: 'center' });
+    } finally { HTMLElement.prototype.scrollIntoView = original; }
+  });
+  it('does not scroll to an error in a hidden inert wrapper inside an inert element that is still shown', () => {
+    const scroll = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scroll;
+    try {
+      render(<main inert><div inert style={{ visibility: 'hidden' }}><Alert variant="error" focusOnReveal>Unable to save</Alert></div></main>);
+      expect(scroll).not.toHaveBeenCalled();
+    } finally { HTMLElement.prototype.scrollIntoView = original; }
+  });
+  it('scrolls to and focuses an error inside a wrapper that is not inert', () => {
+    const scroll = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scroll;
+    try {
+      render(<div><Alert variant="error" focusOnReveal>Unable to sign in</Alert></div>);
+      expect(scroll).toHaveBeenCalledWith({ block: 'center' });
+      expect(document.activeElement).toBe(screen.getByRole('alert'));
+    } finally { HTMLElement.prototype.scrollIntoView = original; }
+  });
 });

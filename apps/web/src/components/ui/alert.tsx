@@ -7,7 +7,8 @@ import { AlertIcon } from './icons.js';
  * A message announced to screen readers (`status` for info and warning, `alert` for error). `info` (the default) is a neutral
  * note; `warning` is a caution, in the warning colours; `error` says something failed, with the destructive colours
  * `ErrorState` uses and an icon, so it never reads as a hint.
- * `focusOnReveal` opts submit errors into scrolling and focus on reveal and whenever the rendered message changes.
+ * `focusOnReveal` opts submit errors into scrolling and focus on reveal and whenever the rendered message changes;
+ * one revealed inside an inert element that is still shown, as under an open phone menu, is neither scrolled to nor focused.
  */
 export function Alert({ className, variant = 'info', focusOnReveal = false, children, ref: forwardedRef, ...props }: ComponentProps<'div'> & { variant?: 'info' | 'warning' | 'error'; focusOnReveal?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -20,6 +21,11 @@ export function Alert({ className, variant = 'info', focusOnReveal = false, chil
     const previous = revealed.current;
     revealed.current = { enabled, text };
     if (!enabled || !element || (previous?.enabled && previous.text === text)) return;
+    // An error under an open phone menu can't take the focus, and a scroll would move the locked page behind the menu.
+    // An inert wrapper that is also hidden is only waiting to come back (portal recovery): scroll, so the error is in view
+    // then, unless an inert element further out is still shown (the menu is open over the recovering page).
+    for (let inert = element.closest('[inert]'); inert; inert = inert.parentElement?.closest('[inert]') ?? null)
+      if (getComputedStyle(inert).visibility !== 'hidden') return;
     element.scrollIntoView?.({ block: 'center' });
     element.focus({ preventScroll: true });
   });
