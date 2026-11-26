@@ -2551,6 +2551,38 @@ describe('setup wizard restore progress', () => {
     expect(await screen.findByText(reloadText)).toBeDefined();
     expect(screen.queryByText(heldText)).toBeNull();
   });
+  const proxy503 = () => new Response('<html><body>503 Service Unavailable</body></html>',
+    { status: 503, headers: { 'Content-Type': 'text/html' } });
+
+  it('shows the usual load error for a 503 page that is not the app\'s own, and loads the steps on Try again', async () => {
+    statusAnswer = proxy503;
+    start(0);
+
+    expect(await screen.findByText(reloadText)).toBeDefined();
+    expect(screen.queryByText(heldText)).toBeNull();
+
+    statusAnswer = null;
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByRole('button', { name: 'Start fresh' })).toBeDefined();
+    expect(screen.queryByText(reloadText)).toBeNull();
+  });
+  it('shows the usual load error for a JSON 503 with another code', async () => {
+    statusAnswer = () => Response.json({ error: { code: 'request_failed', message: 'Busy' } }, { status: 503 });
+    start(0);
+
+    expect(await screen.findByText(reloadText)).toBeDefined();
+    expect(screen.queryByText(heldText)).toBeNull();
+  });
+  it('keeps the form when a status read after an unanswered restore request answers a 503 page', async () => {
+    const { fetcher, before } = await sendRestoreEnding(dropped, proxy503);
+
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+    await settle();
+    expect(screen.queryByText(heldText)).toBeNull();
+    expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
+    expect(statusReads(fetcher)).toBe(before + 1);
+  });
   it('says the restore may be running when a status read answers 503 after a refused resend', async () => {
     const { shown } = await sendRefusedAgain(snapshotRefused);
     expect(await screen.findByText(saveFailedText)).toBeDefined();

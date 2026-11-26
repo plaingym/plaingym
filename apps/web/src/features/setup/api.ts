@@ -8,6 +8,11 @@ function refusalCodes(body: unknown): string[] {
   const details = (body as { error?: { details?: Record<string, unknown> } } | null | undefined)?.error?.details;
   return Object.values(details ?? {}).flat().filter((code) => typeof code === 'string');
 }
+/** The server's `error.code` in a parsed error body, else none. */
+function errorCode(body: unknown) {
+  const code = (body as { error?: { code?: unknown } } | null | undefined)?.error?.code;
+  return typeof code === 'string' ? code : undefined;
+}
 export function createSetupClient(fetcher: typeof fetch = fetch) {
   function setupToken(): string | null {
     const fragment = new URLSearchParams(window.location.hash.slice(1));
@@ -33,7 +38,9 @@ export function createSetupClient(fetcher: typeof fetch = fetch) {
       });
       if (!response.ok) {
         const refusal = await readRefusal(response);
-        throw refusal.error('request_failed', refusalCodes(refusal.body));
+        // Only the app's own 503 keeps the code `unavailable` (on the status read, a restore's hold); a proxy's page has none.
+        throw refusal.error(response.status === 503 && errorCode(refusal.body) === 'unavailable' ? 'unavailable' : 'request_failed',
+          refusalCodes(refusal.body));
       }
       if (name === 'finish') sessionStorage.removeItem('setup.token');
       return parseResponse(contract.response, await response.json()).data as ReturnType<typeof setupContracts[K]['response']['parse']>['data'];

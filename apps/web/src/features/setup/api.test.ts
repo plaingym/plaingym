@@ -36,3 +36,19 @@ describe('setup HTTP client magicLink', () => {
     expect(failure).toMatchObject({ status: 503, code: 'request_failed' });
   });
 });
+
+describe('setup HTTP client call refusals', () => {
+  const hold = { error: { code: 'unavailable', message: 'A restore is in progress.' } };
+
+  it.each([
+    ['the app\'s own 503', () => Response.json(hold, { status: 503 }), 503, 'unavailable'],
+    ['a 503 page that is not JSON', () => new Response('Service Unavailable', { status: 503 }), 503, 'request_failed'],
+    ['another status with the same body', () => Response.json(hold, { status: 500 }), 500, 'request_failed'],
+  ])('reads %s', async (_, answer, status, code) => {
+    const client = createSetupClient(vi.fn().mockResolvedValue(answer()) as typeof fetch);
+
+    const failure = await client.call('status').catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(failure).toMatchObject({ status, code });
+  });
+});

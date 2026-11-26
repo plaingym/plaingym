@@ -244,9 +244,11 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   }, [client, queries, jobId, unreachable, throttled, restoreAnswer]);
   const complete = done || restoreState === 'restored';
   const finished = status.error instanceof ApiError && status.error.status === 404;
-  // The status read answers 503 while a restore holds the server: the reload alert says so, and after an unanswered
-  // restore request the form stays.
+  // The status read answers 503 while a restore holds the server: the reload alert says so only for the app's own
+  // answer (code `unavailable`), since a proxy in front of the install can answer 503 too. After an unanswered restore
+  // request the form stays for any 503.
   const gateClosed = status.error instanceof ApiError && status.error.status === 503;
+  const restoreHold = status.error instanceof ApiError && status.error.status === 503 && status.error.code === 'unavailable';
   // With no status data, any restore answer keeps its screen. Once the status was read, a 404 ends the steps unless a
   // restore is running, done, or failed with a staged copy while step 0 is still on screen.
   const stagedFailure = restoreState === 'failed' && Boolean(restoreFailure?.staged) && step === 0;
@@ -316,7 +318,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   }, [status.isSuccess, status.dataUpdatedAt, unansweredAt, error, errorBox]);
   const retryStatus = <Button type="button" disabled={status.isFetching}
     onClick={() => { retried.current = unavailable || !status.data; void readAgain(); }}>{t('setup/setup:retry')}</Button>;
-  const reloadAlert = <Alert ref={reloadBox} variant="error"><p>{t(gateClosed ? 'setup/setup:restoreHeld' : 'setup/setup:reloadFailed')}</p>{retryStatus}</Alert>;
+  const reloadAlert = <Alert ref={reloadBox} variant="error"><p>{t(restoreHold ? 'setup/setup:restoreHeld' : 'setup/setup:reloadFailed')}</p>{retryStatus}</Alert>;
   const deferBackups = <Button type="button" disabled={busy} variant="outline" onClick={() => void run(async () => {
     await client.call('decide', { revision, decision: 'backups_later' }); setBackupKey(null); draft.clear(); await refresh();
   })}>{t('setup/setup:skipBackups')}</Button>;

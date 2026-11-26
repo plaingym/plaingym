@@ -138,6 +138,20 @@ keeps checking. A setup page that can't load because a restore holds the server 
 or one staged and waiting to finish) says to wait and try again; if that stays, to restart the
 app; and only if it still stays, to resume the restore with the maintenance command.
 
+If restarting the app doesn't finish a staged restore, stop the app, resume the restore with
+the maintenance command, then start the app again, from the install folder:
+
+```sh
+sudo docker compose stop app
+sudo docker compose run --rm --no-deps --entrypoint sh app -ec '/app/deploy/database.sh wait && /app/deploy/database.sh roles && node ${PLAINGYM_NODE_FLAGS:-} /app/maintenance.mjs resume' &&
+sudo docker compose up -d
+```
+
+The last command starts the app only when the one before it succeeds. If `resume` fails, it
+prints the reason: see [Restore errors](#restore-errors). The message
+`Database is not reachable; refusing startup` means PostgreSQL didn't answer: start it with
+`sudo docker compose up -d postgres`, then run the commands again.
+
 Under the backup lock, starting a new restore removes abandoned `restore-*` staging
 folders when no restore is active. `resume` does the same when the journal is absent
 or complete. An unfinished or unreadable journal preserves its staging for recovery.
