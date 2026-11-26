@@ -346,10 +346,12 @@ describe('portal check-in code', () => {
     client.regenerateCheckin.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
     await user.click(replace());
     let read!: () => void;
+    client.checkinCode.mockImplementation(async (memberId: string) => answer({ memberId, code: replaced, version: 2, revision: 5 }));
     client.checkinCode.mockImplementationOnce((memberId: string) => new Promise(resolve => { read = () => resolve(answer({ memberId, code, version: 1, revision: 4 })); }));
     refocus();
     await waitFor(() => expect(client.checkinCode).toHaveBeenCalledTimes(2));
     await act(async () => finish(answer({ memberId: parent, code: replaced, version: 2, revision: 5 })));
+    await waitFor(() => expect(client.checkinCode).toHaveBeenCalledTimes(3));
     await act(async () => read());
     // The cache tells the page on a later timer, so a late answer would be drawn only after it.
     await act(() => new Promise<void>(resolve => setTimeout(resolve, 10)));
@@ -460,5 +462,94 @@ describe('portal check-in code', () => {
     expect((await screen.findAllByRole('alert')).length).toBeGreaterThan(0);
     expect(screen.queryByAltText('QR check-in code for Casey Parent')).toBeNull();
     expect(cache.getQueryCache().findAll().some(query => JSON.stringify(query.state.data ?? null).includes('c'.repeat(43)))).toBe(false);
+  });
+  it('reads the code again after a read still in flight is cancelled for the replacement', async () => {
+    const newer = 'pgci1_' + 'c'.repeat(43);
+    const user = userEvent.setup(); page();
+    await screen.findByAltText('QR check-in code for Pat Parent');
+    await user.click(screen.getByRole('button', { name: 'Replace this code' }));
+    let finish!: (value: unknown) => void;
+    client.regenerateCheckin.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await user.click(replace());
+    // The read in flight and the ones after it are answered after a newer change.
+    client.checkinCode.mockImplementation(async (memberId: string) => answer({ memberId, code: newer, version: 3, revision: 6 }));
+    client.checkinCode.mockImplementationOnce(() => new Promise(() => undefined));
+    refocus();
+    await waitFor(() => expect(client.checkinCode).toHaveBeenCalledTimes(2));
+    await act(async () => finish(answer({ memberId: parent, code: 'pgci1_' + 'b'.repeat(43), version: 2, revision: 5 })));
+    await waitFor(() => expect(vi.mocked(qrDataUrl).mock.lastCall![0]).toBe(newer));
+    expect(client.checkinCode).toHaveBeenCalledTimes(3);
+  });
+  it("starts a failed creation's re-read afresh instead of joining a read already in flight", async () => {
+    let fail!: (cause: unknown) => void;
+    client.regenerateCheckin.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+    const user = userEvent.setup(); page();
+    await user.selectOptions(await screen.findByLabelText('Code for'), child);
+    await user.click(await screen.findByRole('button', { name: 'Create a code' }));
+    await user.selectOptions(screen.getByLabelText('Code for'), parent);
+    await screen.findByAltText('QR check-in code for Pat Parent');
+    let read!: () => void;
+    client.checkinCode.mockImplementationOnce((memberId: string) => new Promise(resolve => { read = () => resolve(answer({ memberId, code: null, version: 1, revision: 4 })); }));
+    const reads = client.checkinCode.mock.calls.length;
+    await user.selectOptions(screen.getByLabelText('Code for'), child);
+    await waitFor(() => expect(client.checkinCode).toHaveBeenCalledTimes(reads + 1));
+    client.checkinCode.mockImplementation(made);
+    await act(async () => fail(new TypeError('Failed to fetch')));
+    await act(async () => read());
+    await screen.findByAltText('QR check-in code for Casey Parent');
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(screen.queryByText(inactive)).toBeNull();
+  });
+  it.each(['another member is chosen', 'the page is left'])('keeps no code that is answered after %s', async (away) => {
+    const cache = portalTestCache('gym', 'user', 'household', { defaultOptions: { queries: { retry: false } } });
+    let finish!: (value: unknown) => void;
+    client.regenerateCheckin.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const user = userEvent.setup();
+    const view = render(<QueryClientProvider client={cache}><PortalCheckinPage client={client as unknown as PortalClient} /></QueryClientProvider>);
+    await user.selectOptions(await screen.findByLabelText('Code for'), child);
+    await user.click(await screen.findByRole('button', { name: 'Create a code' }));
+    if (away === 'the page is left') view.unmount();
+    else {
+      await user.selectOptions(screen.getByLabelText('Code for'), parent);
+      await screen.findByAltText('QR check-in code for Pat Parent');
+    }
+    // The child's unread query is collected before the answer arrives.
+    const childRead = () => cache.getQueryCache().findAll().filter(query => query.queryKey.includes(child));
+    await waitFor(() => expect(childRead()).toHaveLength(0));
+    await act(async () => finish(answer({ memberId: child, code: 'pgci1_' + 'b'.repeat(43), version: 2, revision: 5 })));
+    expect(cache.getQueryCache().findAll().some(query => JSON.stringify(query.state.data ?? null).includes('b'.repeat(43)))).toBe(false);
+  });
+  it.each([
+    ['dialog close', 0],
+    ['Keep', -1],
+  ])("puts the focus on the page's retry when the %s button closes the dialog while the read is in error", async (_name, index) => {
+    const user = userEvent.setup(); page();
+    await user.click(await screen.findByRole('button', { name: 'Replace this code' }));
+    client.regenerateCheckin.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    client.checkinCode.mockRejectedValueOnce(new ApiError(500, 'request_failed'));
+    await user.click(replace());
+    await within(screen.getByRole('dialog')).findByRole('button', { name: 'Try again' });
+    await user.click(screen.getAllByRole('button', { name: 'Keep the current code' }).at(index)!);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Try again' }));
+  });
+  it('puts the focus on the replace button when the code failed and was read again while the dialog was open', async () => {
+    const user = userEvent.setup(); page();
+    await user.click(await screen.findByRole('button', { name: 'Replace this code' }));
+    client.checkinCode.mockRejectedValueOnce(new ApiError(500, 'request_failed'));
+    refocus();
+    await user.click(await within(screen.getByRole('dialog')).findByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(replace().disabled).toBe(false));
+    await user.click(screen.getAllByRole('button', { name: 'Keep the current code' }).at(-1)!);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Replace this code' }));
+  });
+  it('returns the focus to the button that opened the dialog when the code is fine', async () => {
+    const user = userEvent.setup(); page();
+    const opener = await screen.findByRole('button', { name: 'Replace this code' });
+    await user.click(opener);
+    await user.click(screen.getAllByRole('button', { name: 'Keep the current code' }).at(-1)!);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(opener);
   });
 });

@@ -50,6 +50,17 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
     if (errorBox.current?.contains(document.activeElement)) action.current?.focus();
     setError('');
   }, [error, waiting, code.data?.code]);
+  const errorState = useRef<HTMLDivElement>(null), dismissed = useRef(false);
+  const dismiss = () => { dismissed.current = true; setConfirming(null); };
+  // A read that failed while the dialog was open replaced the section, so the button that opened it is gone. The focus goes
+  // to the page's retry while the read is still in error, and to the section's new button once it has answered.
+  useEffect(() => {
+    if (confirming !== null || !dismissed.current) return;
+    dismissed.current = false;
+    if (document.activeElement !== document.body) return;
+    if (code.isError) errorState.current?.querySelector('button')?.focus();
+    else action.current?.focus();
+  }, [confirming]);
   async function regenerate() {
     if (!code.data || code.isError || rereading.has(memberId) || locked.current) return;
     const id = memberId, creating = !code.data.code;
@@ -58,8 +69,17 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
       // A code regenerated in another household than this page's is never shown.
       const answer = scope.own(await scope.run(() => client.regenerateCheckin(id, code.data!.revision, scope.key[4]!))).data;
       // A code read still in flight may have been answered before this change, so it must not overwrite the answer.
-      await cache.cancelQueries({ queryKey: [...scope.key, 'checkin-code', id], exact: true });
-      cache.setQueryData([...scope.key, 'checkin-code', id], answer);
+      const own = { queryKey: [...scope.key, 'checkin-code', id], exact: true };
+      const reading = cache.isFetching(own) > 0;
+      await cache.cancelQueries(own);
+      if ((cache.getQueryCache().find(own)?.getObserversCount() ?? 0) > 0) {
+        cache.setQueryData([...scope.key, 'checkin-code', id], answer);
+        // The cancelled read may have been answered after a newer change, so it is made again.
+        if (reading) void cache.invalidateQueries(own);
+      } else {
+        // Nothing reads this member's code now, and a code is never kept between visits.
+        cache.removeQueries(own);
+      }
       setConfirming(null);
     } catch (cause) {
       // The member can be changed while a first code is being created, or leave the list while a replacement is being sent.
@@ -70,7 +90,9 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
       // A stale revision must be read again before another attempt for this member. The read waits while offline, so only that
       // attempt waits for it: the dialog can be closed meanwhile. A read that fails leaves the query in error, which also waits.
       setRereading(current => new Set(current).add(id));
-      void code.refetch().finally(() => setRereading(current => { const next = new Set(current); next.delete(id); return next; }));
+      // A read already in flight may have been served before the change, so it isn't joined.
+      void cache.cancelQueries({ queryKey: [...scope.key, 'checkin-code', id], exact: true }).then(() => code.refetch())
+        .finally(() => setRereading(current => { const next = new Set(current); next.delete(id); return next; }));
     } finally { locked.current = false; setBusy(false); }
   }
   if (!members.data) return members.isPending || scope.settling ? <LoadingState /> : <ErrorState message={text('error')} onRetry={() => void members.refetch()} />;
@@ -82,7 +104,7 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
     <PageHeader title={text('title')} description={text('description')} />
     <MemberPicker label={text('member')} members={members.data} value={memberId} onChange={id => { setError(''); setConfirming(null); choose(id); }} />
     {code.isPending || (!code.data && scope.settling) ? <LoadingState label={text('loading')} />
-      : code.isError ? <ErrorState message={text(code.error instanceof ApiError && code.error.status === 503 ? 'unavailable' : 'error')} onRetry={() => void code.refetch()} />
+      : code.isError ? <div ref={errorState}><ErrorState message={text(code.error instanceof ApiError && code.error.status === 503 ? 'unavailable' : 'error')} onRetry={() => void code.refetch()} /></div>
         : <section className="space-y-4" aria-label={text('codeFor', { name: member?.name ?? '' })}>
           {member && members.data.length > 1 && <h2 className="text-lg font-semibold">{member.name}</h2>}
           {active ? waiting ? <Alert>{text('rereading')}</Alert>
@@ -92,13 +114,13 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
           <Button ref={action} variant={active ? 'outline' : 'default'} className="w-full sm:w-auto" disabled={busy || waiting} onClick={() => { setError(''); if (active) setConfirming(memberId); else void regenerate(); }}>
             {text(active ? 'regenerate' : 'create')}</Button>
         </section>}
-    {confirming !== null && confirming === memberId && <Dialog title={text('confirmTitle')} closeLabel={text('keep')} onClose={() => setConfirming(null)} dismissible={!busy}>
+    {confirming !== null && confirming === memberId && <Dialog title={text('confirmTitle')} closeLabel={text('keep')} onClose={dismiss} dismissible={!busy}>
       <div className="space-y-4"><p>{text('confirmBody')}</p>{error && <Alert variant="error" focusOnReveal role="alert">{errorText}</Alert>}
         {unread && <p className="text-sm text-muted-foreground">{text('waiting')}</p>}
         {/* The dialog covers the page's own retry. */}
         {code.isError && <Button variant="outline" className="w-full sm:w-auto" disabled={code.isFetching} onClick={() => void code.refetch()}>{text('retry')}</Button>}
         <div className="flex flex-col gap-3 sm:flex-row"><Button disabled={busy || unread} onClick={() => void regenerate()}>{text(busy ? 'saving' : 'confirm')}</Button>
-          <Button variant="outline" disabled={busy} onClick={() => setConfirming(null)}>{text('keep')}</Button></div></div>
+          <Button variant="outline" disabled={busy} onClick={dismiss}>{text('keep')}</Button></div></div>
     </Dialog>}
   </PortalRecovery></Page>;
 }
