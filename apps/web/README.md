@@ -86,7 +86,7 @@ readiness read and disappears when the roster has members, including inactive on
 Failure `Alert`s use `variant="error"`. Set `focusOnReveal` on submit errors to
 scroll into view and receive focus when the rendered message changes; without it, an
 error leaves focus alone, including background read failures inside forms. Neutral status messages leave focus alone.
-An `Alert` with `focusOnReveal` revealed under an open phone menu (inside an inert element that is still shown, such as the demo rows) is neither scrolled to nor focused.
+An `Alert` with `focusOnReveal`, or a `FormMessage` error, revealed under an open phone menu (inside an inert element that is still shown, such as the demo rows or a page's `main`, and not inside an open dialog) is neither scrolled to nor focused. An `Alert` error with `focusOnReveal` inside a dialog that is closed for now (the portal closes its dialogs while a household is read again) is revealed when the dialog opens again, if `focusOnReveal` is still set then.
 `Alert` derives its announcement role from the variant (`status` for info and warning,
 `alert` for error); callers can override it for a note. A conditional variant can keep
 `focusOnReveal` enabled: it focuses only errors.

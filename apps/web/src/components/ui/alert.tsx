@@ -1,31 +1,48 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useEffect, useRef, useImperativeHandle, type ComponentProps } from 'react';
+import { useContext, useEffect, useRef, useImperativeHandle, type ComponentProps } from 'react';
 import { cn } from '../../lib/utils.js';
+import { DialogRecoveryContext } from './dialog.js';
 import { AlertIcon } from './icons.js';
+
+/**
+ * An element under an open phone menu (inert and still shown) can't take the focus, and a scroll would move the locked
+ * page behind the menu. An inert page that is also hidden is only waiting to come back (portal recovery), unless an inert
+ * element further out is still shown (the menu is open over the recovering page). An open modal dialog stays usable under
+ * an inert page.
+ */
+function heldByMenu(element: HTMLElement) {
+  if (element.closest('dialog')?.hasAttribute('open')) return false;
+  for (let inert = element.closest('[inert]'); inert; inert = inert.parentElement?.closest('[inert]') ?? null)
+    if (getComputedStyle(inert).visibility !== 'hidden') return true;
+  return false;
+}
 
 /**
  * A message announced to screen readers (`status` for info and warning, `alert` for error). `info` (the default) is a neutral
  * note; `warning` is a caution, in the warning colours; `error` says something failed, with the destructive colours
  * `ErrorState` uses and an icon, so it never reads as a hint.
  * `focusOnReveal` opts submit errors into scrolling and focus on reveal and whenever the rendered message changes;
- * one revealed inside an inert element that is still shown, as under an open phone menu, is neither scrolled to nor focused.
+ * one revealed inside an inert element that is still shown, as under an open phone menu, and not inside an open dialog, is
+ * neither scrolled to nor focused; one inside a dialog that is closed for now is revealed when the dialog opens.
  */
 export function Alert({ className, variant = 'info', focusOnReveal = false, children, ref: forwardedRef, ...props }: ComponentProps<'div'> & { variant?: 'info' | 'warning' | 'error'; focusOnReveal?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const revealed = useRef<{ enabled: boolean; text: string | null } | null>(null);
   useImperativeHandle(forwardedRef, () => ref.current!);
+  // Portal recovery closes and reopens dialogs through this context, so the alert renders again when its dialog opens and
+  // an error that waited is revealed then.
+  useContext(DialogRecoveryContext);
   // Compare the rendered message, including nested markup, without revealing again just because JSX was recreated.
   useEffect(() => {
     const element = ref.current;
     const enabled = variant === 'error' && focusOnReveal, text = element?.textContent ?? null;
     const previous = revealed.current;
+    // An error inside a dialog that is closed for now waits, unrevealed, until it opens again.
+    const dialog = element?.closest('dialog');
+    if (enabled && dialog && !dialog.hasAttribute('open')) return;
     revealed.current = { enabled, text };
     if (!enabled || !element || (previous?.enabled && previous.text === text)) return;
-    // An error under an open phone menu can't take the focus, and a scroll would move the locked page behind the menu.
-    // An inert wrapper that is also hidden is only waiting to come back (portal recovery): scroll, so the error is in view
-    // then, unless an inert element further out is still shown (the menu is open over the recovering page).
-    for (let inert = element.closest('[inert]'); inert; inert = inert.parentElement?.closest('[inert]') ?? null)
-      if (getComputedStyle(inert).visibility !== 'hidden') return;
+    if (heldByMenu(element)) return;
     element.scrollIntoView?.({ block: 'center' });
     element.focus({ preventScroll: true });
   });
@@ -41,12 +58,14 @@ export function Alert({ className, variant = 'info', focusOnReveal = false, chil
 /**
  * For an error shown at the top of a long form: when `shown` becomes truthy (or changes), scrolls the element into view
  * and moves focus to it, so an owner scrolled down at the submit button sees what happened. Give it `tabIndex={-1}`.
+ * Like `Alert`, it neither scrolls to nor focuses an element under an open phone menu.
  */
 export function useRevealed<T extends HTMLElement>(shown: unknown) {
   const ref = useRef<T>(null);
   useEffect(() => {
     const element = ref.current;
     if (!shown || !element) return;
+    if (heldByMenu(element)) return;
     element.scrollIntoView?.({ block: 'center' });
     element.focus({ preventScroll: true });
   }, [shown]);

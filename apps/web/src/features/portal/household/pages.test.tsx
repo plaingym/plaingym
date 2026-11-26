@@ -684,6 +684,34 @@ describe('portal household page', () => {
     expect(input.isConnected).toBe(false);
     expect(screen.queryByRole('alert')).toBeNull();
   });
+  it('reveals a failed save in a member dialog when the dialog comes back from a failed recovery', async () => {
+    let release!: (response: Response) => void;
+    const user = userEvent.setup();
+    const original = HTMLElement.prototype.scrollIntoView;
+    const scroll = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scroll;
+    try {
+      mount(<PortalHousehold />, (path, init) => {
+        if (init?.method === 'PATCH') return Response.json({ error: { code: 'conflict' } }, { status: 409, headers: { 'X-Portal-Household': id(99) } });
+        if (path === '/api/portal/household') return { data: household };
+        if (path.startsWith('/api/portal/members?')) return page(people);
+        return undefined;
+      }, { context: payer, householdLists: () => new Promise(resolve => { release = resolve; }) });
+      await screen.findByLabelText('Phone');
+      await user.click(screen.getAllByRole('button', { name: 'Edit details' })[0]!);
+      const form = within(screen.getByRole('dialog'));
+      const input = form.getByLabelText('First name');
+      await user.clear(input); await user.type(input, 'Draft');
+      await user.click(form.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Loading'));
+      await act(async () => { release(new Response(null, { status: 503 })); });
+      await waitFor(() => expect(form.getByRole('button', { name: 'Save' })).toBeDefined());
+      const alert = await form.findByRole('alert');
+      expect(alert.textContent).toContain('We couldn\'t save. Check the details and try again.');
+      await waitFor(() => expect(document.activeElement).toBe(alert));
+      expect(scroll.mock.contexts.at(-1)).toBe(alert);
+    } finally { HTMLElement.prototype.scrollIntoView = original; }
+  });
   it('lets the payer edit household contacts and children, not other adults, and shows memberships read-only', async () => {
     const view = mount(<PortalHousehold />, (path, init) => {
       if (path === '/api/portal/household' && init?.method === 'PATCH') return { data: { ...household, phone: '555-0199', revision: 4 } };

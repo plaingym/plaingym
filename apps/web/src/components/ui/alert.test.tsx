@@ -121,4 +121,57 @@ describe('failure alerts', () => {
       expect(document.activeElement).toBe(screen.getByRole('alert'));
     } finally { HTMLElement.prototype.scrollIntoView = original; }
   });
+  it('neither scrolls to nor focuses a form failure revealed inside an inert element that is still shown', () => {
+    const scroll = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scroll;
+    try {
+      const view = render(<button>Before</button>);
+      screen.getByRole('button').focus();
+      view.rerender(<><button>Before</button><div inert><FormMessage message={{ kind: 'alert', text: 'Save failed' }} /></div></>);
+      expect(scroll).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(screen.getByRole('button'));
+    } finally { HTMLElement.prototype.scrollIntoView = original; }
+  });
+  it('still scrolls to a form failure revealed inside an inert wrapper that is hidden', () => {
+    const scroll = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scroll;
+    try {
+      render(<div inert style={{ visibility: 'hidden' }}><FormMessage message={{ kind: 'alert', text: 'Save failed' }} /></div>);
+      expect(scroll).toHaveBeenCalledWith({ block: 'center' });
+    } finally { HTMLElement.prototype.scrollIntoView = original; }
+  });
+  it.each([
+    ['an alert', <Alert variant="error" focusOnReveal>Unable to save</Alert>],
+    ['a form failure', <FormMessage message={{ kind: 'alert', text: 'Save failed' }} />],
+  ])('scrolls to %s inside an open dialog under an inert element', (_, content) => {
+    const scroll = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scroll;
+    try {
+      render(<div inert><dialog open>{content}</dialog></div>);
+      expect(scroll).toHaveBeenCalledWith({ block: 'center' });
+    } finally { HTMLElement.prototype.scrollIntoView = original; }
+  });
+  it('reveals an error inside a closed dialog once, when the dialog opens', () => {
+    const scroll = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scroll;
+    try {
+      const content = (open: boolean) => <><button>Before</button><dialog open={open}><Alert variant="error" focusOnReveal>Unable to save</Alert></dialog></>;
+      const view = render(<button>Before</button>);
+      screen.getByRole('button').focus();
+      view.rerender(content(false));
+      const button = screen.getByText('Before');
+      expect(scroll).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(button);
+      view.rerender(content(true));
+      expect(scroll).toHaveBeenCalledTimes(1);
+      expect(scroll).toHaveBeenCalledWith({ block: 'center' });
+      expect(document.activeElement).toBe(screen.getByRole('alert'));
+      view.rerender(content(true));
+      expect(scroll).toHaveBeenCalledTimes(1);
+    } finally { HTMLElement.prototype.scrollIntoView = original; }
+  });
 });
