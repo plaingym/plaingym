@@ -38,15 +38,23 @@ describe('automatic update setting routes', () => {
     expect(await f.settings.get(f.gymId)).toMatchObject({ enabled: false, revision: 2 });
     const response = await f.request('owner');
     expect(response.headers.get('cache-control')).toBe('no-store');
-    expect(await f.read(response)).toEqual({ enabled: false, available: true, revision: 2 });
+    expect(await f.read(response)).toEqual({ enabled: false, available: true, revision: 2, windowStart: 2 });
   });
   it('answers a stale revision 409 and an invalid body 400, changing nothing', async () => {
     const f = await fixture();
-    expect(await f.read(await f.request('owner', 'PUT', { enabled: false, revision: 1 }))).toEqual({ enabled: false, available: true, revision: 2 });
+    expect(await f.read(await f.request('owner', 'PUT', { enabled: false, revision: 1 }))).toEqual({ enabled: false, available: true, revision: 2, windowStart: 2 });
     expect((await f.request('owner', 'PUT', { enabled: true, revision: 1 })).status).toBe(409);
-    for (const body of [{ enabled: true }, { enabled: 'yes', revision: 2 }, { enabled: true, revision: 2, available: true }, 'invalid'])
+    for (const body of [{ enabled: true }, { enabled: 'yes', revision: 2 }, { enabled: true, revision: 2, available: true }, 'invalid',
+      { enabled: true, revision: 2, windowStart: 22 }, { enabled: true, revision: 2, windowStart: -1 }])
       expect((await f.request('owner', 'PUT', body)).status, JSON.stringify(body)).toBe(400);
-    expect(await f.settings.get(f.gymId)).toMatchObject({ enabled: false, revision: 2 });
+    expect(await f.settings.get(f.gymId)).toMatchObject({ enabled: false, revision: 2, windowStart: 2 });
+  });
+  it('saves the window start hour the owner picks', async () => {
+    const f = await fixture();
+    expect(await f.read(await f.request('owner', 'PUT', { enabled: true, windowStart: 21, revision: 1 }))).toEqual({ enabled: true, available: true, revision: 2, windowStart: 21 });
+    expect(await f.read(await f.request('owner'))).toEqual({ enabled: true, available: true, revision: 2, windowStart: 21 });
+    expect((await f.request('owner', 'PUT', { enabled: false, windowStart: 3, revision: 1 })).status).toBe(409);
+    expect(await f.settings.get(f.gymId)).toMatchObject({ enabled: true, revision: 2, windowStart: 21 });
   });
   it('denies another gym\'s owner and leaves both gyms alone', async () => {
     const a = await fixture(), b = await fixture();
@@ -58,7 +66,7 @@ describe('automatic update setting routes', () => {
   });
   it('reads unavailable and refuses changes on an install that serves several gyms', async () => {
     const f = await fixture('multi');
-    expect(await f.read(await f.request('owner'))).toEqual({ enabled: true, available: false, revision: 1 });
+    expect(await f.read(await f.request('owner'))).toEqual({ enabled: true, available: false, revision: 1, windowStart: 2 });
     expect((await f.request('owner', 'PUT', { enabled: false, revision: 1 })).status).toBe(409);
     expect(await f.settings.get(f.gymId)).toMatchObject({ enabled: true, revision: 1 });
   });

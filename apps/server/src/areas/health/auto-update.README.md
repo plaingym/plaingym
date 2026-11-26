@@ -4,24 +4,31 @@
 The host's `update.sh --patch` installs patch releases each night (`deploy/README.md`, "Automatic patch updates").
 The app never holds the Docker socket. This area reports update status and sends owners notices; installation stays on the host.
 
-* **The switch.** `areas/settings/auto-update.ts` keeps it in the gym's opaque `settings` as
-  `automaticUpdates: { enabled, revision }`; a gym without the key has updates on. The switch has its own revision,
-  so saving it neither moves nor checks the gym revision the other settings sections share; a stale revision is a
-  `RevisionConflictError` (409). Each change writes `settings.automatic_updates.updated`. It lives with the settings
-  because only `areas/settings` may touch the `gyms` table.
+* **The switch and the window.** `areas/settings/auto-update.ts` keeps them in the gym's opaque `settings` as
+  `automaticUpdates: { enabled, revision, windowStart }`; a gym without the key has updates on. `windowStart` is the
+  hour the nightly window opens: the window is three hours from the start hour the owner picks in Settings → Updates
+  (default 02:00–05:00), in the gym's timezone. Start hours run from 0 to 21, so the window never crosses midnight
+  and the host's once-a-night rule can go by the gym's calendar date; a stored value outside that reads as 2. A save
+  that omits `windowStart` keeps the stored hour. The switch has its own revision (each save moves it, whichever
+  field changed), so saving it neither moves nor checks the gym revision the other settings sections share; a stale
+  revision is a `RevisionConflictError` (409). Each change writes `settings.automatic_updates.updated` with
+  `enabled` and `windowStart` before and after. It lives with the settings because only `areas/settings` may touch
+  the `gyms` table.
 * **First observation.** The state reader persists `automaticUpdatesFirstSeen` through the settings service on its
   first read, under a gym-row lock with a system audit event; later reads take no lock. It preserves other settings and both revisions.
   The health tiles share one state read per request; the next request reads again.
 * **Routes.** `GET` and `PUT /api/health/auto-update` (`autoUpdateContracts`, owners only through
-  `integrations.manage`) read and change the switch. `available` is false on an install that serves several gyms,
+  `integrations.manage`) read and change the switch and the window's start hour. `available` is false on an install that serves several gyms,
   where no updater runs, and `PUT` answers 409 there.
 * **The host's command.** `gym-app auto-update check` prints `restore=…` and, unless a restore holds the install,
   `setup=false` before the setup wizard has created the gym, or `setup=true`, `enabled=…`, `backups=…` and
-  `timezone=…`; the host asks every hour. `gym-app auto-update record --at --result [--reason] [--from] [--to]
+  `timezone=…`, then `window_start=…`; the host asks every hour. `gym-app auto-update record --at --result [--reason] [--from] [--to]
   [--failures] [--down-at]` stores one attempt as an audit row (`health.auto_update.attempted`, target type
   `auto_update`), refused during a restore; an attempt that updated, rolled back or failed gets a second row
   under `health.auto_update.changed`, so the last change is found however many checks follow it. A replayed
-  report (an instant already among the latest attempts) stores nothing new. Exit 2 means the input is invalid,
+  report (an instant already among the latest attempts) stores nothing new. Concurrent reports for one gym
+  serialize on a per-gym transaction advisory lock (`auto-update.lock.ts`), taken before the replay read; it locks
+  no row, so the gym's other writes don't wait on it. Exit 2 means the input is invalid,
   which the host drops rather than retries.
   `autoUpdateAttemptSchema` accepts each result only with the facts it can know: `up_to_date` the running
   version, `updated`, `rolled_back` and `failed` both versions and (for the last two) a reason, `skipped` a reason.

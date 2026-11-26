@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it } from 'vitest';
 import { auditEvents, uuidv7 } from '@plaingym/db';
-import { eq } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- The interleaving test's backend-pid and lock-wait probes only.
+import { eq, sql } from 'drizzle-orm';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
@@ -11,7 +12,7 @@ import { FakeEmail, DeliveryError } from '../../infra/email/index.js';
 import { encryptSmtpConfig } from '../settings/smtp.js';
 import { createAutoUpdateNotices, type AutoUpdateNoticeOptions } from './auto-update.notices.js';
 import { createAutoUpdateCommand } from './auto-update.cli.js';
-import { autoUpdateAttemptAction, autoUpdateChangeAction, type AutoUpdateAttempt } from './auto-update.js';
+import { autoUpdateAttemptAction, autoUpdateChangeAction, createAutoUpdateAttempts, type AutoUpdateAttempt } from './auto-update.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 const clock = new TestClock('2026-11-03T16:30:00Z');
@@ -112,6 +113,44 @@ it('sends through the host record command and deduplicates concurrent replays', 
   expect(new Set(f.email.messages.map(message => message.to)).size).toBe(2);
   expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, autoUpdateAttemptAction)))).toHaveLength(1);
   expect((await audits()).filter(row => row.action === autoUpdateChangeAction)).toHaveLength(1);
+});
+it('serializes an interleaved replay with its own per-gym lock, without holding up the gym\'s other writes', async () => {
+  const f = await fixture(), home = await factory('households', f.gymId);
+  const holding = Promise.withResolvers<number>(), release = Promise.withResolvers<void>();
+  let calls = 0;
+  // The first record's transaction stays open after its replay read and its writes, until the test releases it.
+  const hooked = ((gymId: string, fn: Parameters<typeof db.forGym>[1]) => db.forGym(gymId, async (tx) => {
+    const first = calls++ === 0, result = await fn(tx);
+    if (first) {
+      // eslint-disable-next-line database/system-tables -- Identify the held transaction for the lock-wait probe.
+      holding.resolve((await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0]!.pid);
+      await release.promise;
+    }
+    return result;
+  })) as typeof db.forGym;
+  const attempts = createAutoUpdateAttempts({ scope: hooked, clock });
+  const first = attempts.record(f.gymId, attempt);
+  let second: Promise<unknown> | undefined;
+  try {
+    const pid = await holding.promise;
+    // Another write for the same gym checks its foreign key on the gym row; the record lock must not stand in its way.
+    const inserted = await Promise.race([factory('members', f.gymId, { householdId: home.id }).then(() => true),
+      new Promise<false>(resolve => setTimeout(() => resolve(false), 5_000))]);
+    expect(inserted).toBe(true);
+    let finished = false;
+    second = attempts.record(f.gymId, attempt).finally(() => { finished = true; });
+    let waiting = false;
+    for (let tries = 0; tries < 5_000 && !waiting && !finished; tries++)
+      // eslint-disable-next-line database/system-tables -- The lock-wait probe, from the system connection.
+      waiting = (await db.system.db.execute<{ n: number }>(
+        sql`select count(*)::int as n from pg_stat_activity where ${pid} = any(pg_blocking_pids(pid))`))[0]!.n > 0;
+    // The replay waits for the held report instead of reading past its uncommitted audits.
+    expect(waiting).toBe(true);
+    expect(finished).toBe(false);
+  } finally { release.resolve(); await first; await second; }
+  const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents));
+  expect(audits.filter(row => row.action === autoUpdateAttemptAction)).toHaveLength(1);
+  expect(audits.filter(row => row.action === autoUpdateChangeAction)).toHaveLength(1);
 });
 it('stores a deferred failure and its recovery, then sends only the recovery notice with per-owner replay protection', async () => {
   const f = await fixture(), command = createAutoUpdateCommand({ env, clock, scope: db.forGym, resolveGymId: async () => f.gymId,

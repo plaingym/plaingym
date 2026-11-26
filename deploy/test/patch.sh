@@ -206,8 +206,12 @@ write_manifest() {
     "$1" "$digest" "$(printf 'a%.0s' $(seq 64))" "$(printf 'b%.0s' $(seq 64))" "$(printf '1%.0s' $(seq 40))" "$(printf 'c%.0s' $(seq 64))" > "$FIXTURES/manifest"
   openssl pkeyutl -sign -inkey "${2:-$temporary/release/key.pem}" -rawin -in "$FIXTURES/manifest" -out "$FIXTURES/manifest.sig"
 }
-# checks [RESTORE] [ENABLED] [BACKUPS]: what `gym-app auto-update check` answers.
-checks() { printf 'restore=%s\nsetup=true\nenabled=%s\nbackups=%s\ntimezone=America/Denver\n' "${1:-false}" "${2:-true}" "${3:-true}" > "$FIXTURES/check"; }
+# checks [RESTORE] [ENABLED] [BACKUPS] [WINDOW_START]: what `gym-app auto-update check` answers. Without WINDOW_START
+# it answers as an app older than the window setting, with no window_start line.
+checks() {
+  printf 'restore=%s\nsetup=true\nenabled=%s\nbackups=%s\ntimezone=America/Denver\n' "${1:-false}" "${2:-true}" "${3:-true}" > "$FIXTURES/check"
+  [ -z "${4:-}" ] || printf 'window_start=%s\n' "$4" >> "$FIXTURES/check"
+}
 make_install() {
   printf 'Case: %s\n' "$1"
   case_dir="$temporary/$1"
@@ -711,6 +715,43 @@ expect_status 0 FAIL_AT=app_down FAKE_HOUR=14 --patch
 [ ! -s "$RECORDS" ] && [ ! -e "$case_dir/auto-update.result" ]
 never 'auto-update check'
 expect_status 1 FAIL_AT=app_down FAKE_HOUR=02 --patch
+grep -Eq '^[0-9T:Z-]+ skipped check_failed - - - -$' "$case_dir/auto-update.result"
+
+# The owner's start hour moves the three-hour window; it never crosses midnight, so the night is the gym's date.
+make_install window-start
+checks false true true 21
+expect_status 0 FAKE_HOUR=21 --patch
+recorded "--result updated --from v1.2.3 --to v1.2.5"
+grep -qx night=2026-11-03 "$case_dir/auto-update.state"
+grep -qx window_start=21 "$case_dir/auto-update.state"
+: > "$CALLS"
+expect_status 0 FAKE_HOUR=22 --patch
+never 'curl '; [ "$(wc -l < "$RECORDS")" -eq 1 ]
+expect_status 0 FAKE_HOUR=02 FAKE_DAY=2026-11-04 --patch
+never 'curl '; [ "$(wc -l < "$RECORDS")" -eq 1 ]
+expect_status 0 FAKE_HOUR=00 FAKE_DAY=2026-11-04 --patch
+never 'curl '; [ "$(wc -l < "$RECORDS")" -eq 1 ]
+# Anything but an hour from 0 to 21 reads as 02:00.
+make_install window-start-invalid
+checks false true true 22
+expect_status 0 FAKE_HOUR=22 --patch
+[ ! -s "$RECORDS" ]; never 'curl '
+grep -qx window_start=2 "$case_dir/auto-update.state"
+expect_status 0 FAKE_HOUR=02 --patch
+recorded "--result updated --from v1.2.3 --to v1.2.5"
+# An app that names no start hour keeps 02:00-05:00.
+make_install window-start-older-app
+expect_status 0 FAKE_HOUR=21 --patch
+[ ! -s "$RECORDS" ]; never 'curl '
+expect_status 0 FAKE_HOUR=02 --patch
+recorded "--result updated --from v1.2.3 --to v1.2.5"
+# The app can't answer: the start hour it last gave decides, so 02:30 is outside a 21:00 window and reports nothing.
+make_install window-start-fallback
+printf 'timezone=America/Denver\nwindow_start=21\n' > "$case_dir/auto-update.state"
+expect_status 0 FAIL_AT=app_down FAKE_HOUR=02 --patch
+[ ! -s "$RECORDS" ] && [ ! -e "$case_dir/auto-update.result" ]
+never 'auto-update check'
+expect_status 1 FAIL_AT=app_down FAKE_HOUR=21 --patch
 grep -Eq '^[0-9T:Z-]+ skipped check_failed - - - -$' "$case_dir/auto-update.result"
 
 # Another update holds the lock: this run does nothing.

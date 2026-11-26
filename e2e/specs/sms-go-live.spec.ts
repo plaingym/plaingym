@@ -34,7 +34,7 @@ for (const width of [360, 1280]) {
         return route.fulfill({ json: { data: [], pagination: { limit: 100, offset: 0, total: 0 } } });
       if (path === '/api/website') return route.fulfill({ json: { data: { revision: settings.revision,
         tagline: null, about: null, phone: null, email: null, primaryColor: null, accentColor: null, logo: false, logoVersion: null, photos: [] } } });
-      if (path === '/api/health/auto-update') return route.fulfill({ json: { data: { enabled: false, available: false, revision: 1 } } });
+      if (path === '/api/health/auto-update') return route.fulfill({ json: { data: { enabled: false, available: false, revision: 1, windowStart: 2 } } });
       if (path === '/api/settings/integrations') return route.fulfill({ json: { data: { ...integrations, revision: settings.revision } } });
       if (path === '/api/settings/integrations/google') return route.fulfill({ json: { data: {
         source: 'none', editable: false, unreadable: false, clientId: null, clientSecretSet: false, removeBlocked: false, revision: settings.revision,

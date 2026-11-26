@@ -143,11 +143,16 @@ export const dismissChargeFailuresRequestSchema = z.union([
 export const dismissChargeFailuresResponseSchema = z.strictObject({ data: z.strictObject({ dismissed: z.array(idSchema) }) });
 /**
  * The owner's switch for automatic patch updates (on by default). The install's nightly timer reads it through the
- * app; `available` is false on an install that serves several gyms, where no timer reads it.
+ * app; `available` is false on an install that serves several gyms, where no timer reads it. `windowStart` is the hour
+ * (gym time) the three-hour nightly window opens; it ends by midnight, so one window stays within one calendar date.
  */
-export const autoUpdateSettingsSchema = z.strictObject({ enabled: z.boolean(), available: z.boolean(), revision: revisionSchema });
+const autoUpdateWindowStartSchema = z.int().min(0).max(21);
+export const autoUpdateSettingsSchema = z.strictObject({ enabled: z.boolean(), available: z.boolean(), revision: revisionSchema,
+  windowStart: autoUpdateWindowStartSchema });
 export const autoUpdateSettingsResponseSchema = z.strictObject({ data: autoUpdateSettingsSchema });
-export const updateAutoUpdateSettingsRequestSchema = z.strictObject({ enabled: z.boolean(), revision: revisionSchema });
+/** An omitted `windowStart` keeps the stored one. */
+export const updateAutoUpdateSettingsRequestSchema = z.strictObject({ enabled: z.boolean(), revision: revisionSchema,
+  windowStart: autoUpdateWindowStartSchema.optional() });
 const manageSettings = { kind: 'staff', capability: 'settings.manage' } satisfies RoutePermission;
 const manageIntegrations = { kind: 'staff', capability: 'integrations.manage' } satisfies RoutePermission;
 export const manualBackupSchema = z.strictObject({

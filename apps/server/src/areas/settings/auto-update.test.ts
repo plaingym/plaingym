@@ -28,7 +28,7 @@ describe('automatic update setting', () => {
     expect(await createAutoUpdateSettings({ scope: db.forGym, clock: f.clock }).firstSeen(f.gymId)).toBe(seen);
     expect(await f.service.get(f.gymId)).toMatchObject({ revision: 1 });
     await f.service.update(f.context, { enabled: false, revision: 1 });
-    expect((await f.row()).settings).toEqual({ setup: { completed: true }, automaticUpdatesFirstSeen: seen, automaticUpdates: { enabled: false, revision: 2 } });
+    expect((await f.row()).settings).toEqual({ setup: { completed: true }, automaticUpdatesFirstSeen: seen, automaticUpdates: { enabled: false, revision: 2, windowStart: 2 } });
     expect((await f.row()).revision).toBe(revision);
     const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'settings.automatic_updates.first_seen')));
     expect(audits).toHaveLength(1);
@@ -42,15 +42,39 @@ describe('automatic update setting', () => {
   });
   it('is on by default and reports the gym timezone the updater uses for its nightly window', async () => {
     const f = await fixture();
-    expect(await f.service.get(f.gymId)).toEqual({ enabled: true, revision: 1, timezone: 'America/Denver' });
+    expect(await f.service.get(f.gymId)).toEqual({ enabled: true, revision: 1, windowStart: 2, timezone: 'America/Denver' });
+  });
+  it('keeps the owner\'s window start hour beside the switch, bumping its revision', async () => {
+    const f = await fixture({ setup: { completed: true } });
+    expect(await f.service.update(f.context, { enabled: true, windowStart: 21, revision: 1 })).toEqual({ enabled: true, revision: 2, windowStart: 21, timezone: 'America/Denver' });
+    // A save that leaves the hour out keeps it.
+    expect(await f.service.update(f.context, { enabled: false, revision: 2 })).toMatchObject({ enabled: false, revision: 3, windowStart: 21 });
+    expect(await f.service.get(f.gymId)).toMatchObject({ enabled: false, revision: 3, windowStart: 21 });
+    expect((await f.row()).settings).toEqual({ setup: { completed: true }, automaticUpdates: { enabled: false, revision: 3, windowStart: 21 } });
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'settings.automatic_updates.updated')));
+    expect(audits.map(row => [row.before, row.after])).toEqual(expect.arrayContaining([
+      [{ enabled: true, windowStart: 2 }, { enabled: true, windowStart: 21 }], [{ enabled: true, windowStart: 21 }, { enabled: false, windowStart: 21 }]]));
+    expect(await f.service.update(f.context, { enabled: false, windowStart: 0, revision: 3 })).toMatchObject({ windowStart: 0, revision: 4 });
+    // Past 21 the window would cross midnight: refused, and nothing changes.
+    await expect(f.service.update(f.context, { enabled: true, windowStart: 22, revision: 4 })).rejects.toMatchObject({ name: 'ZodError' });
+    await expect(f.service.update(f.context, { enabled: true, windowStart: 3, revision: 3 })).rejects.toBeInstanceOf(RevisionConflictError);
+    expect(await f.service.get(f.gymId)).toMatchObject({ enabled: false, revision: 4, windowStart: 0 });
+  });
+  it('reads a stored start hour outside 0 to 21 as the default', async () => {
+    for (const windowStart of [22, -1, 2.5, '21', null]) {
+      const f = await fixture({ automaticUpdates: { enabled: true, revision: 4, windowStart } });
+      expect(await f.service.get(f.gymId)).toMatchObject({ revision: 4, windowStart: 2 });
+    }
+    const late = await fixture({ automaticUpdates: { enabled: true, revision: 4, windowStart: 21 } });
+    expect(await late.service.get(late.gymId)).toMatchObject({ windowStart: 21 });
   });
   it('saves a change with its own revision, keeps the other settings and the gym revision, and audits it', async () => {
     const f = await fixture({ setup: { completed: true } });
     const gymRevision = (await f.row()).revision;
-    expect(await f.service.update(f.context, { enabled: false, revision: 1 })).toEqual({ enabled: false, revision: 2, timezone: 'America/Denver' });
+    expect(await f.service.update(f.context, { enabled: false, revision: 1 })).toEqual({ enabled: false, revision: 2, windowStart: 2, timezone: 'America/Denver' });
     expect(await f.service.get(f.gymId)).toMatchObject({ enabled: false, revision: 2 });
     const row = await f.row();
-    expect(row.settings).toEqual({ setup: { completed: true }, automaticUpdates: { enabled: false, revision: 2 } });
+    expect(row.settings).toEqual({ setup: { completed: true }, automaticUpdates: { enabled: false, revision: 2, windowStart: 2 } });
     // The other settings sections share the gym revision; this switch doesn't move it.
     expect(row.revision).toBe(gymRevision);
     const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents)

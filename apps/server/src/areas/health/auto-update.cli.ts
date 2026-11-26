@@ -35,7 +35,8 @@ const flags = { '--at': 'attemptedAt', '--result': 'result', '--reason': 'reason
  * Docker socket. The updater runs it in the app container (`docker compose exec`):
  *
  * * `check` prints `restore=…`, then (unless a restore holds the install) `setup=false` before the setup wizard has
- *   created the gym, or `enabled=…`, `backups=…` and the gym's `timezone=…`, one `key=value` per line.
+ *   created the gym, or `enabled=…`, `backups=…`, the gym's `timezone=…` and `window_start=…` (the hour, 0 to 21, the
+ *   owner's three-hour nightly window opens in that timezone), one `key=value` per line.
  * * `record` stores one attempt's result for the `automatic_updates` health tile. `--failures` is how many automatic
  *   attempts at the target release have failed so far, and `--down-at` when a recovered failed rollback's site went down.
  *   `--notice deferred` leaves delivery to the host's separate notice queue; `notice` sends without recording again.
@@ -58,7 +59,8 @@ export function createAutoUpdateCommand(options: AutoUpdateCommandOptions = {}):
         if (!await (options.hasGym ?? (async () => (await listGyms()).length > 0))()) { io.stdout('restore=false\nsetup=false'); return 0; }
         const backups = options.backups ?? (() => backupsConfigured(parseEncryptionKey(env.APP_ENCRYPTION_KEY ?? '')));
         const setting = await settings.get(await resolveGymId());
-        io.stdout(['restore=false', 'setup=true', `enabled=${setting.enabled}`, `backups=${await backups()}`, `timezone=${setting.timezone}`].join('\n'));
+        io.stdout(['restore=false', 'setup=true', `enabled=${setting.enabled}`, `backups=${await backups()}`, `timezone=${setting.timezone}`,
+          `window_start=${setting.windowStart}`].join('\n'));
         return 0;
       }
       if (['record', 'notice'].includes(args[0] ?? '') && args.length % 2 === 1) {

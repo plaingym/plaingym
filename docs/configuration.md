@@ -274,7 +274,7 @@ image updates preserve their local Compose configuration.
 ## Automatic patch updates
 
 `update.sh --patch`, which the installer's nightly timer runs, reads this from `.env`, and Compose passes the same
-value to the app, so the "Update available" banner reads the releases the updater follows. Whether patch releases install on their own is the owner's switch in **Settings → Updates**, stored in
+value to the app, so the "Update available" banner reads the releases the updater follows. Whether patch releases install on their own, and the start hour of their nightly window, are the owner's choices in **Settings → Updates**, stored in
 the database ([self-hosting.md](self-hosting.md#updates)).
 
 | Variable | Default | Meaning |

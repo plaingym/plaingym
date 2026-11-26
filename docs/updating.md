@@ -9,8 +9,10 @@ major releases** (`v1.2` to `v1.3`, or `v2`) wait for you: owners and admins see
 
 ## The nightly update
 
-Every hour, the server's update timer (`plaingym-update.timer`) wakes up. Between 02:00
-and 05:00 in the gym's timezone it acts once, and the other hours it stops at once. It
+Every hour, the server's update timer (`plaingym-update.timer`) wakes up. In the nightly
+window, three hours from the start hour the owner picks in Settings → Updates (default
+02:00–05:00), in the gym's timezone, it acts once, and the other hours it stops at once. The
+latest start hour is 21:00, so the window always ends by midnight. It
 looks for a newer patch release of the version you run (from 1.2.3 it takes 1.2.4, never
 1.3.0). If there is one, it:
 
@@ -19,7 +21,8 @@ looks for a newer patch release of the version you run (from 1.2.3 it takes 1.2.
 3. installs the new version and checks that it stays healthy for a minute;
 4. goes back to the previous version if it doesn't.
 
-Owners switch it off, or on again, in **Settings → Updates**; it is on by default. It does
+Owners switch it off, or on again, in **Settings → Updates**; it is on by default. The
+**Nightly update window** select there picks the window's start hour. It does
 nothing, and tells you why, until backups are set up
 (**Settings → Integrations**).
 

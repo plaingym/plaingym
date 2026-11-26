@@ -12,15 +12,15 @@ import { registration } from './updates.registrations.js';
 const client = vi.hoisted(() => ({ GET: vi.fn(), PUT: vi.fn() }));
 vi.mock('../../lib/api.js', () => ({ api: client }));
 const reply = (status: number, data?: unknown) => ({ response: { ok: status < 300, status }, data });
-let stored = { enabled: true, available: true, revision: 1 };
+let stored = { enabled: true, available: true, revision: 1, windowStart: 2 };
 /** The server's rule: the revision sent must be the current one, and each save moves it on. */
 beforeEach(() => {
-  stored = { enabled: true, available: true, revision: 1 };
+  stored = { enabled: true, available: true, revision: 1, windowStart: 2 };
   client.GET.mockReset(); client.PUT.mockReset();
   client.GET.mockImplementation(async () => reply(200, { data: stored }));
-  client.PUT.mockImplementation(async (_path: string, { body }: { body: { enabled: boolean; revision: number } }) => {
+  client.PUT.mockImplementation(async (_path: string, { body }: { body: { enabled: boolean; revision: number; windowStart?: number } }) => {
     if (body.revision !== stored.revision) return reply(409);
-    stored = { ...stored, enabled: body.enabled, revision: stored.revision + 1 };
+    stored = { ...stored, enabled: body.enabled, windowStart: body.windowStart ?? stored.windowStart, revision: stored.revision + 1 };
     return reply(200, { data: stored });
   });
 });
@@ -50,6 +50,35 @@ describe('Settings → Updates', () => {
     await waitFor(async () => expect((await toggle()).checked).toBe(true));
     expect(client.PUT.mock.calls.map(([path, { body }]) => [path, body])).toEqual([
       ['/api/health/auto-update', { enabled: false, revision: 1 }], ['/api/health/auto-update', { enabled: true, revision: 2 }]]);
+  });
+  it('shows the stored nightly window and saves a new start hour with the current revision', async () => {
+    stored = { ...stored, enabled: false, windowStart: 4 };
+    const user = userEvent.setup();
+    section();
+    const select = await screen.findByRole('combobox', { name: 'Nightly update window' }) as HTMLSelectElement;
+    expect(select.value).toBe('4');
+    expect(select.selectedOptions[0]!.textContent).toBe('04:00–07:00');
+    const options = [...select.options].map(option => option.textContent);
+    expect(options).toHaveLength(22);
+    expect([options[0], options.at(-1)]).toEqual(['00:00–03:00', '21:00–00:00']);
+    await user.selectOptions(select, '21:00–00:00');
+    await waitFor(async () => expect((await screen.findByRole('combobox', { name: 'Nightly update window' }) as HTMLSelectElement).value).toBe('21'));
+    expect(await screen.findByText('Saved.')).toBeDefined();
+    expect(client.PUT.mock.calls.map(([path, { body }]) => [path, body])).toEqual([
+      ['/api/health/auto-update', { enabled: false, windowStart: 21, revision: 1 }]]);
+    // The switch keeps the chosen window.
+    await user.click(await toggle());
+    await waitFor(() => expect(stored).toMatchObject({ enabled: true, windowStart: 21, revision: 3 }));
+  });
+  it('shows another owner\'s window instead of overwriting it', async () => {
+    const user = userEvent.setup();
+    section();
+    const select = await screen.findByRole('combobox', { name: 'Nightly update window' });
+    stored = { ...stored, windowStart: 0, revision: 2 };
+    await user.selectOptions(select, '21:00–00:00');
+    expect(await screen.findByText('Someone else changed this setting. It now shows their choice.')).toBeDefined();
+    await waitFor(async () => expect((await screen.findByRole('combobox', { name: 'Nightly update window' }) as HTMLSelectElement).value).toBe('0'));
+    expect(client.PUT).toHaveBeenCalledTimes(1);
   });
   it('shows another owner\'s change instead of overwriting it', async () => {
     const user = userEvent.setup();
@@ -124,6 +153,7 @@ describe('Settings → Updates', () => {
     stored = { ...stored, available: false };
     section();
     expect((await toggle()).disabled).toBe(true);
+    expect((screen.getByRole('combobox', { name: 'Nightly update window' }) as HTMLSelectElement).disabled).toBe(true);
     expect(screen.getByText(/install that serves several gyms/).closest('[role="status"]')).not.toBeNull();
     cleanup();
     client.GET.mockResolvedValueOnce(reply(500));

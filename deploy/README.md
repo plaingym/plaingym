@@ -547,10 +547,14 @@ Backups use the key pair created in the setup wizard; an old
 The installer writes `plaingym-update.service` and `plaingym-update.timer`
 (`systemd/`, with the install directory filled in) to `/etc/systemd/system` and
 enables the timer. It fires every hour at a random minute and runs
-`update.sh --patch`, which acts once a night: on the first run between 02:00 and
-05:00 in the gym's timezone (which the app reports; UTC until it has). Every run
-asks the app for the timezone first, so a changed timezone counts from the new
-zone's next night; while the app can't answer, the zone it last gave decides. The
+`update.sh --patch`, which acts once a night: on the first run in the three
+hours from the start hour the owner picks in Settings → Updates (default
+02:00–05:00), in the gym's timezone (which the app reports; UTC until it has).
+Start hours run from 00:00 to 21:00, so the window never crosses midnight. Every
+run asks the app for the timezone and start hour first (`window_start=`; an app
+too old to report one means 02:00), so a changed timezone counts from the new
+zone's next night; while the app can't answer, the zone and hour it last gave
+decide. The
 other runs stop there. A change of zone just after a night's run doesn't start a
 second run within six hours. `update.sh --patch --now` runs the check at any time.
 

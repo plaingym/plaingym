@@ -248,7 +248,7 @@ are read in one `forGym` transaction, with no billing writes.
 never contain a password, key, signing secret or storage credential. The one
 exception is a new backup key pair: its private key is returned once, in a
 `Cache-Control: no-store` answer, and never stored or audited. It also
-covers **Settings → Updates**, the switch for automatic patch updates, and
+covers **Settings → Updates**, the switch and nightly window for automatic patch updates, and
 **Settings → Google sign-in** (with the wizard's Google page), whose client
 secret is never returned, logged or audited.
 

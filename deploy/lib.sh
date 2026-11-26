@@ -327,7 +327,11 @@ host_apply() { # SOURCE TARGET_PIN PREVIOUS_IMAGE_ID [FILES UNITS]; empty ID ski
   fi
 }
 valid_timezone() { printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$' && [ -f "/usr/share/zoneinfo/$1" ]; }
-in_window() { hour=$(TZ="$1" date +%H); hour=${hour#0}; [ "$hour" -ge 2 ] && [ "$hour" -lt 5 ]; }
+# in_window ZONE [START]: the hour in ZONE is within the three hours from START (0 to 21; default 2), which ends by midnight.
+in_window() {
+  window_from=${2:-2}; hour=$(TZ="$1" date +%H); hour=${hour#0}
+  [ "$hour" -ge "$window_from" ] && [ "$hour" -lt $((window_from + 3)) ]
+}
 # The newest patch of VERSION's minor among TAGS (one per line), or nothing if VERSION is the newest.
 newest_patch() { # VERSION TAGS
   printf '%s\n' "$2" | grep -E "$version_pattern" | awk -v current="$1" '

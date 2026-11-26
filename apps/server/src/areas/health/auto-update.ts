@@ -6,7 +6,8 @@ import { createTranslator, type Clock } from '@plaingym/shared';
 import { automaticUpdatesHealthDetailsSchema, instantSchema, type AutomaticUpdatesHealthDetails, type HealthTile } from '@plaingym/shared/contracts';
 import messages from '../../../../../locales/en/health/auto-update.json' with { type: 'json' };
 import { tenancyMode, type TenancyMode } from '../../core/tenancy.js';
-import { createAutoUpdateSettings, lockAutoUpdateRecording, type AutoUpdateSettings } from '../settings/auto-update.js';
+import { createAutoUpdateSettings, type AutoUpdateSettings } from '../settings/auto-update.js';
+import { lockAutoUpdateRecording } from './auto-update.lock.js';
 import { healthProvider } from './status.js';
 import type { StaffProviderContext } from '../../core/interfaces/extensions.js';
 

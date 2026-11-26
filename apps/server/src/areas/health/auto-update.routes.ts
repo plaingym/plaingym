@@ -6,14 +6,16 @@ import { tenancyMode, type TenancyMode } from '../../core/tenancy.js';
 import { createAutoUpdateSettings, type AutoUpdateSetting, type AutoUpdateSettings } from '../settings/auto-update.js';
 
 /**
- * Settings → Updates: the owner's switch for automatic patch updates. The install's nightly timer reads it through
+ * Settings → Updates: the owner's switch for automatic patch updates and the start hour of its nightly three-hour
+ * window. The install's nightly timer reads both through
  * `gym-app auto-update check`; the app never touches Docker. An install serving several gyms has no timer, so there
  * the switch reads as unavailable and can't be changed.
  */
 export function createAutoUpdateRoutes(options: { settings?: AutoUpdateSettings; tenancy?: TenancyMode } = {}): readonly RouteRegistration[] {
   const settings = options.settings ?? createAutoUpdateSettings();
   const available = () => (options.tenancy ?? tenancyMode()) === 'single';
-  const present = (value: AutoUpdateSetting): AutoUpdateSettingsResponse => ({ enabled: value.enabled, available: available(), revision: value.revision });
+  const present = (value: AutoUpdateSetting): AutoUpdateSettingsResponse => ({ enabled: value.enabled, available: available(), revision: value.revision,
+    windowStart: value.windowStart });
   const { get, update } = autoUpdateContracts;
   return [
     route({ ...get, responses: { 200: { description: 'The automatic patch update switch', content: { 'application/json': { schema: get.response } } } } }, async (c) => {

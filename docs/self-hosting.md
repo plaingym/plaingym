@@ -338,14 +338,16 @@ never changes the database; a minor or major release can.
 
 Each night the server installs the newest patch release of the version it runs:
 from 1.2.3 it takes 1.2.4 or 1.2.5, never 1.3.0. The installer's timer runs
-`update.sh --patch` once a night between 02:00 and 05:00 in the gym's timezone. It checks
+`update.sh --patch` once a night, in the three hours from the start hour the owner picks in
+Settings → Updates (default 02:00–05:00), in the gym's timezone. It checks
 the release's signed manifest and the image it names, takes a pre-upgrade backup, starts the
 new version, checks that it stays healthy for a minute, and goes back to the previous version
 if it doesn't. A release that fails is tried once more the next night; after a second failure
 automatic updates wait for a newer patch release.
 
 The **Health** page's **Automatic updates** tile shows the last night's result. Owners turn
-automatic patch updates off, or on again, in **Settings → Updates**; they are on by default.
+automatic patch updates off, or on again, and pick the nightly window, in **Settings → Updates**;
+they are on by default.
 [What happens each night](updating.md) explains the tile's messages; to run tonight's check at
 once, for example after setting up backups:
 

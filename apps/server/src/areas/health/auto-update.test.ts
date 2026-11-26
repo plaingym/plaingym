@@ -286,11 +286,17 @@ describe('gym-app auto-update', () => {
   it('prints the switch, the backup state and the gym timezone for the host updater', async () => {
     const f = await fixture(), out = f.io();
     expect(await f.command().run(['check'], out.io)).toBe(0);
-    expect(out.out.join('\n').split('\n')).toEqual(['restore=false', 'setup=true', 'enabled=true', 'backups=true', 'timezone=Australia/Sydney']);
+    expect(out.out.join('\n').split('\n')).toEqual(['restore=false', 'setup=true', 'enabled=true', 'backups=true', 'timezone=Australia/Sydney', 'window_start=2']);
     await f.turn(false);
     const off = f.io();
     expect(await f.command({ backups: async () => false }).run(['check'], off.io)).toBe(0);
-    expect(off.out.join('\n').split('\n')).toEqual(['restore=false', 'setup=true', 'enabled=false', 'backups=false', 'timezone=Australia/Sydney']);
+    expect(off.out.join('\n').split('\n')).toEqual(['restore=false', 'setup=true', 'enabled=false', 'backups=false', 'timezone=Australia/Sydney', 'window_start=2']);
+  });
+  it('prints the window start hour the owner picked after the timezone', async () => {
+    const f = await fixture(), out = f.io();
+    await f.settings.update({ gymId: f.gymId, actor: { kind: 'system' } }, { enabled: true, windowStart: 21, revision: (await f.settings.get(f.gymId)).revision });
+    expect(await f.command().run(['check'], out.io)).toBe(0);
+    expect(out.out.join('\n').split('\n').slice(-2)).toEqual(['timezone=Australia/Sydney', 'window_start=21']);
   });
   it('says setup=false, and nothing else, before the setup wizard has created the gym', async () => {
     const f = await fixture(), out = f.io();

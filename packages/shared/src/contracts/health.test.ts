@@ -130,8 +130,12 @@ describe('health contracts', () => {
     for (const contract of [autoUpdateContracts.get, autoUpdateContracts.update])
       for (const role of staffRoles) expect(canStaff([role], contract.permission.capability)).toBe(role === 'owner');
     expect(updateAutoUpdateSettingsRequestSchema.parse({ enabled: false, revision: 3 })).toEqual({ enabled: false, revision: 3 });
-    for (const body of [{ enabled: false }, { enabled: 'no', revision: 3 }, { enabled: true, revision: 0 }, { enabled: true, revision: 3, available: true }])
+    expect(updateAutoUpdateSettingsRequestSchema.parse({ enabled: true, revision: 3, windowStart: 0 })).toEqual({ enabled: true, revision: 3, windowStart: 0 });
+    expect(updateAutoUpdateSettingsRequestSchema.parse({ enabled: true, revision: 3, windowStart: 21 })).toMatchObject({ windowStart: 21 });
+    for (const body of [{ enabled: false }, { enabled: 'no', revision: 3 }, { enabled: true, revision: 0 }, { enabled: true, revision: 3, available: true },
+      { enabled: true, revision: 3, windowStart: 22 }, { enabled: true, revision: 3, windowStart: -1 }, { enabled: true, revision: 3, windowStart: 2.5 }, { enabled: true, revision: 3, windowStart: '2' }])
       expect(updateAutoUpdateSettingsRequestSchema.safeParse(body).success).toBe(false);
-    expect(autoUpdateSettingsResponseSchema.safeParse({ data: { enabled: true, available: false, revision: 1 } }).success).toBe(true);
+    expect(autoUpdateSettingsResponseSchema.safeParse({ data: { enabled: true, available: false, revision: 1, windowStart: 2 } }).success).toBe(true);
+    expect(autoUpdateSettingsResponseSchema.safeParse({ data: { enabled: true, available: false, revision: 1 } }).success).toBe(false);
   });
 });

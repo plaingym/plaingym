@@ -9,13 +9,17 @@ import type { MutationContext } from '../../core/interfaces/common.js';
 /**
  * The owner's switch for automatic patch updates, kept in the gym's opaque settings as `automaticUpdates`. A gym
  * without the key has them on (the default). The switch carries its own revision, so saving it doesn't make the
- * other settings sections stale, and theirs don't make it stale.
+ * other settings sections stale, and theirs don't make it stale. Beside it, `windowStart` is the hour (gym time) the
+ * nightly three-hour window opens: 0 to 21, so the window never crosses midnight; anything else reads as 2.
  */
-export interface AutoUpdateSetting { readonly enabled: boolean; readonly revision: number; readonly timezone: string }
-function stored(settings: unknown): { enabled: boolean; revision: number } {
-  const value = (settings as { automaticUpdates?: { enabled?: unknown; revision?: unknown } } | null)?.automaticUpdates;
+export interface AutoUpdateSetting { readonly enabled: boolean; readonly revision: number; readonly windowStart: number; readonly timezone: string }
+export const defaultAutoUpdateWindowStart = 2;
+function stored(settings: unknown): { enabled: boolean; revision: number; windowStart: number } {
+  const value = (settings as { automaticUpdates?: { enabled?: unknown; revision?: unknown; windowStart?: unknown } } | null)?.automaticUpdates;
   const revision = typeof value?.revision === 'number' && Number.isSafeInteger(value.revision) && value.revision > 0 ? value.revision : 1;
-  return { enabled: value?.enabled !== false, revision };
+  const start = value?.windowStart;
+  const windowStart = typeof start === 'number' && Number.isInteger(start) && start >= 0 && start <= 21 ? start : defaultAutoUpdateWindowStart;
+  return { enabled: value?.enabled !== false, revision, windowStart };
 }
 async function readGym(tx: Transaction, gymId: string, lock: boolean) {
   const query = tx.select({ settings: gyms.settings, timezone: gyms.timezone }).from(gyms).where(eq(gyms.id, gymId));
@@ -23,10 +27,6 @@ async function readGym(tx: Transaction, gymId: string, lock: boolean) {
   const [row] = await (lock ? query.for('update') : query);
   if (!row) throw new AppError('not_found', 'Gym not found');
   return row;
-}
-/** Serialize attempt recording within the caller's transaction, including the first report before any audit exists. */
-export async function lockAutoUpdateRecording(tx: Transaction, gymId: string): Promise<void> {
-  await readGym(tx, gymId, true);
 }
 export function createAutoUpdateSettings(options: { scope?: typeof forGym; clock?: Clock } = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
@@ -57,19 +57,23 @@ export function createAutoUpdateSettings(options: { scope?: typeof forGym; clock
       const row = await scope(gymId, tx => readGym(tx, gymId, false));
       return { ...stored(row.settings), timezone: row.timezone };
     },
-    /** A stale revision throws `RevisionConflictError` (409) and changes nothing. */
+    /**
+     * A stale revision throws `RevisionConflictError` (409) and changes nothing. An omitted `windowStart` keeps the
+     * stored hour; either way the switch's revision moves.
+     */
     async update(context: MutationContext, input: UpdateAutoUpdateSettingsRequest): Promise<AutoUpdateSetting> {
-      const { enabled, revision } = updateAutoUpdateSettingsRequestSchema.parse(input);
+      const request = updateAutoUpdateSettingsRequestSchema.parse(input), { enabled, revision } = request;
       return scope(context.gymId, async (tx) => {
         const row = await readGym(tx, context.gymId, true), before = stored(row.settings);
         if (before.revision !== revision) throw new RevisionConflictError();
-        const after = { enabled, revision: before.revision + 1 };
+        const windowStart = request.windowStart ?? before.windowStart;
+        const after = { enabled, revision: before.revision + 1, windowStart };
         await tx.update(gyms).set({ settings: { ...row.settings as object, automaticUpdates: after }, updatedAt: clock.now() })
           .where(eq(gyms.id, context.gymId));
         await writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
           ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
           action: 'settings.automatic_updates.updated', targetType: 'gym', targetId: context.gymId,
-          before: { enabled: before.enabled }, after: { enabled }, occurredAt: clock.now() });
+          before: { enabled: before.enabled, windowStart: before.windowStart }, after: { enabled, windowStart }, occurredAt: clock.now() });
         return { ...after, timezone: row.timezone };
       });
     },

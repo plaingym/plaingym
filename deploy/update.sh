@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # ./update.sh IMAGE           Update to an explicit image, run by the owner (deploy/README.md, "Updates and recovery").
 # ./update.sh --patch [--now] The nightly timer's run: install the newest signed patch release of the running minor
-#                             version, once a night between 02:00 and 05:00 in the gym's timezone (--now: at once).
+#                             version, once a night in the three hours from the start hour the owner picks in
+#                             Settings → Updates (default 02:00–05:00), in the gym's timezone (--now: at once).
 # The exit trap calls cleanup and what it uses, which shellcheck reads as unreachable.
 # shellcheck disable=SC2317,SC2329
 set -eu
@@ -757,11 +758,14 @@ fi
 work=$(mktemp -d)
 send_pending || true
 
-# Once a night, between 02:00 and 05:00 where the gym is. The timer fires every hour; the other runs stop here.
-# Each run asks the app for the gym's timezone, so a changed zone counts from its next night. The zone it last gave
-# is the fallback while the app can't answer (or a restore holds it); with that, a run outside the window stops
-# without a result, and with no zone known yet a failed check is reported.
-due() { in_window "$1" && ! tonight_done "$1"; }
+# Once a night, in the three hours from the start hour the owner picks (0 to 21, so the window never crosses
+# midnight; default 02:00–05:00) where the gym is. The timer fires every hour; the other runs stop here.
+# Each run asks the app for the gym's timezone and start hour, so a changed zone counts from its next night. The zone
+# and hour it last gave are the fallback while the app can't answer (or a restore holds it); with those, a run outside
+# the window stops without a result, and with no zone known yet a failed check is reported. An app that names no
+# start hour (one older than the setting) means 02:00.
+due() { in_window "$1" "$2" && ! tonight_done "$1"; }
+valid_window_start() { case "$1" in [0-9]|1[0-9]|2[01]) return 0 ;; *) return 1 ;; esac; }
 # Once a night: tonight's date is done in this zone, or, after a change of zone, a run less than six hours ago counts.
 tonight_done() {
   night_zone=$(value_of "$STATE" night_zone)
@@ -772,6 +776,8 @@ tonight_done() {
 }
 cached=$(value_of "$STATE" timezone)
 valid_timezone "$cached" || cached=
+cached_start=$(value_of "$STATE" window_start)
+valid_window_start "$cached_start" || cached_start=2
 answered=false
 app_up=false
 if app_running; then
@@ -779,14 +785,18 @@ if app_running; then
   if compose exec -T app gym-app auto-update check > "$work/check"; then answered=true; fi
 fi
 timezone=$cached
+window_start=$cached_start
 if [ "$answered" = true ] && [ "$(value_of "$work/check" restore)" != true ]; then
   # Before the setup wizard creates the gym there is nothing to update, and nowhere to record a result.
   if [ "$(value_of "$work/check" setup)" = false ]; then echo 'The gym is not set up yet; nothing to update.'; exit 0; fi
   timezone=$(value_of "$work/check" timezone)
   valid_timezone "$timezone" || timezone=UTC
   [ "$timezone" = "$cached" ] || state_set timezone "$timezone"
+  window_start=$(value_of "$work/check" window_start)
+  valid_window_start "$window_start" || window_start=2
+  [ "$window_start" = "$(value_of "$STATE" window_start)" ] || state_set window_start "$window_start"
 fi
-if [ "$now" = false ] && [ -n "$timezone" ] && ! due "$timezone"; then exit 0; fi
+if [ "$now" = false ] && [ -n "$timezone" ] && ! due "$timezone" "$window_start"; then exit 0; fi
 if [ "$answered" = false ]; then
   [ "$app_up" = true ] || echo 'The app is not running.' >&2
   finish skipped check_failed 1
