@@ -442,7 +442,7 @@ describe('members and households', () => {
     expect((await call(`/api/households/${first.id}`)).data.pinSet).toBe(false);
     expect((await call(`/api/households?limit=50`) as unknown as { data: { id: string; pinSet: boolean }[] }).data
       .map((home) => [home.id, home.pinSet]).sort()).toEqual([[first.id, false], [second.id, true]].sort());
-    for (const text of responses) { expect(text).not.toMatch(/pinHash|pin_hash/); expect(text).not.toContain(stored!.pin!); }
+    for (const text of responses) { expect(text).not.toMatch(/pinHash|pin_hash/); for (const hash of [firstStored!.pin, stored!.pin, changedStored!.pin]) expect(text).not.toContain(hash!); }
     // The shared-PIN answer names only the household it saved.
     expect(JSON.stringify(shared)).not.toContain(first.id);
     // Another gym's staff can't set or probe this gym's household PINs.

@@ -287,10 +287,14 @@ describe('docs/configuration.md', () => {
   });
   it('lists every variable the deployment Compose file uses', () => {
     const documented = documentedVariables();
+    expect(composeVariables()).toContain('APP_IMAGE');
+    expect(documented.size).toBeGreaterThan(40);
     expect([...composeVariables()].filter((name) => !documented.has(name)).sort()).toEqual([]);
   });
   it('lists every variable the host scripts read', () => {
     const documented = documentedVariables();
+    expect(hostVariables()).toContain('RELEASE_REPOSITORY');
+    expect(documented.size).toBeGreaterThan(40);
     expect([...hostVariables()].filter((name) => !documented.has(name)).sort()).toEqual([]);
   });
   describe('the real sources', () => {
@@ -308,9 +312,6 @@ describe('docs/configuration.md', () => {
       // A broken scan would pass the checks above vacuously.
       expect(serverVariables()).toContain('APP_ENCRYPTION_KEY');
       expect(serverVariables()).toContain('BACKUP_STAGING_DIR');
-      expect(composeVariables()).toContain('APP_IMAGE');
-      expect(hostVariables()).toContain('RELEASE_REPOSITORY');
-      expect(documentedVariables().size).toBeGreaterThan(40);
     });
   });
 });
