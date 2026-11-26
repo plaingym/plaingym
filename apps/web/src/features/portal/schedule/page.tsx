@@ -137,7 +137,8 @@ export function PortalSchedulePage({ client = portalClient, now = currentTime }:
     onMutate: () => setMessage(undefined),
     onSuccess: (row, input) => setMessage({ tone: 'success', text: row.status === 'cancelled' ? text('cancelledSaved', { name: input.member.name })
       : row.status === 'waitlisted' ? text(row.queueRank === null ? 'waitlistSavedUnknown' : 'waitlistSaved', { name: input.member.name, rank: row.queueRank === null ? '' : formatCount(row.queueRank) }) : text('bookedSaved', { name: input.member.name }) }),
-    onError: error => setMessage({ tone: 'error', text: error instanceof BookingConflictError ? error.message : text(error instanceof ApiError && error.status === 409 ? 'conflict' : 'error') }),
+    onError: (error, input) => setMessage({ tone: 'error', text: error instanceof BookingConflictError ? error.message
+      : text(error instanceof ApiError && error.status === 409 ? 'conflict' : input.action === 'book' ? 'bookFailed' : 'cancelFailed') }),
     onSettled: () => cache.invalidateQueries({ queryKey: [...scope.key, 'schedule'] }),
   });
   const dateLabel = dateFormatter('day', timezone);

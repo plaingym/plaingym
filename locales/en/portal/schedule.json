@@ -11,6 +11,8 @@
   "emptyDescription": "Try the next week.",
   "error": "We couldn't load the schedule. Please try again.",
   "conflict": "This change isn't available any more. The class may be full, closed or past its cancellation cutoff. The schedule has been refreshed.",
+  "bookFailed": "We couldn't confirm the booking. Check the class and try again.",
+  "cancelFailed": "We couldn't confirm the cancellation. Check the class and try again.",
   "booked": "Booked",
   "waitlistedUnknown": "Waitlist",
   "waitlistSavedUnknown": "{name} is on the waitlist.",

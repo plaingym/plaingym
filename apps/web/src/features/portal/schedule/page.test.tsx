@@ -542,3 +542,29 @@ it('shows the translated credit refusal instead of the generic booking conflict'
   expect(await dialog.findByText(message)).toBeDefined();
   expect(screen.queryByText(/This change isn't available/)).toBeNull();
 });
+
+it.each([
+  ['a dropped request', new TypeError('Failed to fetch')],
+  ['a server error', new ApiError(500, 'request_failed')],
+])('says a booking could not be confirmed after %s and reads the schedule again', async (_, failure) => {
+  client.book.mockRejectedValue(failure);
+  const user = userEvent.setup(); page();
+  const dialog = await openClass(user);
+  const reads = client.schedule.mock.calls.length;
+  await user.click(dialog.getByRole('button', { name: 'Book Fundamentals for Pat Parent' }));
+  expect(await dialog.findByText("We couldn't confirm the booking. Check the class and try again.")).toBeDefined();
+  expect(screen.queryByText("We couldn't load the schedule. Please try again.")).toBeNull();
+  await waitFor(() => expect(client.schedule.mock.calls.length).toBeGreaterThan(reads));
+});
+
+it('says a cancellation could not be confirmed after a dropped request', async () => {
+  client.schedule.mockResolvedValue(answer([{ ...session, bookings: [{ ...booking, memberId: parent }] }]));
+  client.cancel.mockRejectedValue(new TypeError('Failed to fetch'));
+  const user = userEvent.setup(); page();
+  const dialog = await openClass(user);
+  const reads = client.schedule.mock.calls.length;
+  await user.click(dialog.getByRole('button', { name: 'Cancel booking: Fundamentals for Pat Parent' }));
+  expect(await dialog.findByText("We couldn't confirm the cancellation. Check the class and try again.")).toBeDefined();
+  expect(screen.queryByText("We couldn't load the schedule. Please try again.")).toBeNull();
+  await waitFor(() => expect(client.schedule.mock.calls.length).toBeGreaterThan(reads));
+});
