@@ -69,6 +69,14 @@ export class CustomerDeleted extends Error {
   }
 }
 export class BankDebitUnavailable extends Error {}
+/** The provider refused an object, or its customer, as not this gym's. */
+export class PaymentObjectNotForGym extends Error {}
+/** The object, or its customer, carries no gym tag: a people import linked it untagged, and adoption tags it. */
+export class PaymentObjectUntagged extends PaymentObjectNotForGym {
+  constructor(options?: ErrorOptions) {
+    super('Payment object has no gym metadata', options);
+  }
+}
 interface CheckoutOptions {
   readonly mode: 'payment' | 'setup';
   readonly bankDebit?: { type: 'us_bank_account' } | { type: 'acss_debit'; intervalDescription: string };

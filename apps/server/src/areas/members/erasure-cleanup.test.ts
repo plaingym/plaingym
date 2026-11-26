@@ -11,7 +11,7 @@ import { setLogSink } from '../../core/log.js';
 import { createServerRegistry } from '../../core/registry.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { FakeJobs, type Jobs } from '../../infra/jobs/index.js';
-import type { DetachOptions } from '../../infra/payments/index.js';
+import { PaymentObjectUntagged, type DetachOptions } from '../../infra/payments/index.js';
 import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
 import { StripePayments } from '../../infra/payments/stripe.js';
 import { FakeUploads } from '../../infra/storage/index.js';
@@ -269,7 +269,7 @@ describe('erasure cleanup after commit', () => {
     let untaggedError: unknown;
     try { await provider.detachPaymentMethod('pm_csv_wrapped', { redactBillingDetails: true }); }
     catch (error) { untaggedError = error; }
-    expect(untaggedError).toBeInstanceOf(Error);
+    expect(untaggedError).toBeInstanceOf(PaymentObjectUntagged);
     const detachCard = vi.fn(async () => { throw new Error('Wrapped', { cause: untaggedError }); });
     type LogEntry = { level?: string; event?: string; gymId?: string; memberId?: string; paymentMethodId?: string };
     const logs: LogEntry[] = [], previous = setLogSink(entry => { logs.push(JSON.parse(entry)); });
@@ -283,6 +283,64 @@ describe('erasure cleanup after commit', () => {
     expect(JSON.stringify(logs)).not.toMatch(/Wrapped|Payment object has no gym metadata/);
     expect(jobs.jobs.filter(job => job.name === detachJob).map(job => job.payload)).toEqual([
       { paymentMethodId: card.id, redactBillingDetails: true, customerId: 'cus_csv_wrapped' },
+    ]);
+  });
+  it('logs a deleted-customer refusal and a plain Error with matching message text as error detach_failed, not detach_deferred', async () => {
+    const uploads = new FakeUploads(gymId, clock);
+    type LogEntry = { level?: string; event?: string; gymId?: string; memberId?: string; paymentMethodId?: string; error?: { name: string } };
+
+    const deletedHome = await factory('households', gymId, { stripeCustomerId: 'cus_deleted_erasure' });
+    const deletedPerson = await factory('members', gymId, { householdId: deletedHome.id });
+    const deletedCard = await factory('paymentMethods', gymId, { householdId: deletedHome.id, processorId: 'pm_deleted_erasure', isDefault: true });
+    const stripe = new StripeFixtures(gymId);
+    stripe.objects.clear();
+    stripe.objects.set('cus_deleted_erasure', { id: 'cus_deleted_erasure', object: 'customer', deleted: true });
+    stripe.objects.set('pm_deleted_erasure', {
+      id: 'pm_deleted_erasure', object: 'payment_method', created: stripe.now, type: 'card',
+      customer: 'cus_deleted_erasure', metadata: {}, card: { brand: 'visa', last4: '4242', exp_month: 12, exp_year: 2030 },
+    });
+    const provider = new StripePayments(gymId, { transport: stripe, webhookSecret: 'whsec_SYNTHETIC' });
+    const deletedJobs = new FakeJobs(clock);
+    const deletedLogs: LogEntry[] = [], previousDeleted = setLogSink(entry => { deletedLogs.push(JSON.parse(entry)); });
+    let deletedStatus: number;
+    try {
+      deletedStatus = (await app({
+        jobs: deletedJobs, uploads,
+        detachCard: vi.fn((_gym: string, processorId: string, options?: DetachOptions) => provider.detachPaymentMethod(processorId, options)),
+      })(deletedPerson.id)).status;
+    } finally { setLogSink(previousDeleted); }
+    expect(deletedStatus).toBe(200);
+    expect(deletedLogs.filter(entry => entry.event === 'members.erasure.detach_deferred')).toEqual([]);
+    expect(deletedLogs.filter(entry => entry.event === 'members.erasure.detach_failed')).toEqual([expect.objectContaining({
+      level: 'error', event: 'members.erasure.detach_failed', gymId, memberId: deletedPerson.id, paymentMethodId: deletedCard.id,
+      error: expect.objectContaining({ name: 'Error' }),
+    })]);
+    expect(JSON.stringify(deletedLogs)).not.toContain('Customer was deleted');
+    expect(deletedJobs.jobs.filter(job => job.name === detachJob).map(job => job.payload)).toEqual([
+      { paymentMethodId: deletedCard.id, redactBillingDetails: true, customerId: 'cus_deleted_erasure' },
+    ]);
+
+    const plainHome = await factory('households', gymId, { stripeCustomerId: 'cus_plain_error' });
+    const plainPerson = await factory('members', gymId, { householdId: plainHome.id });
+    const plainCard = await factory('paymentMethods', gymId, { householdId: plainHome.id, processorId: 'pm_plain_error', isDefault: true });
+    const plainJobs = new FakeJobs(clock);
+    const plainLogs: LogEntry[] = [], previousPlain = setLogSink(entry => { plainLogs.push(JSON.parse(entry)); });
+    let plainStatus: number;
+    try {
+      plainStatus = (await app({
+        jobs: plainJobs, uploads,
+        detachCard: vi.fn(async () => { throw new Error('Payment object has no gym metadata'); }),
+      })(plainPerson.id)).status;
+    } finally { setLogSink(previousPlain); }
+    expect(plainStatus).toBe(200);
+    expect(plainLogs.filter(entry => entry.event === 'members.erasure.detach_deferred')).toEqual([]);
+    expect(plainLogs.filter(entry => entry.event === 'members.erasure.detach_failed')).toEqual([expect.objectContaining({
+      level: 'error', event: 'members.erasure.detach_failed', gymId, memberId: plainPerson.id, paymentMethodId: plainCard.id,
+      error: expect.objectContaining({ name: 'Error' }),
+    })]);
+    expect(JSON.stringify(plainLogs)).not.toContain('Payment object has no gym metadata');
+    expect(plainJobs.jobs.filter(job => job.name === detachJob).map(job => job.payload)).toEqual([
+      { paymentMethodId: plainCard.id, redactBillingDetails: true, customerId: 'cus_plain_error' },
     ]);
   });
   it('refuses an erasure without a queue before changing anything', async () => {

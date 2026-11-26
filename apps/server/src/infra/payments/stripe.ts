@@ -8,7 +8,8 @@ import { CustomerCreationInProgress, CustomerDeleted, ERASED_CUSTOMER_NAME, norm
   type PaymentObjectReference, type PaymentObjectResult, type PaymentObject, type PaymentChange,
   type PaymentEvent, type Refund, type RefundRequest, type CustomerMatch, CardImportRefused, CardCursorRefused,
   type CustomerCardPage, type CustomerCardQuery, type PaymentMethod, type PaymentMethodType, type BankPaymentMethod,
-  type BankAccountImportRead, type BankPaymentMethodForImport, BankDebitUnavailable, hasBankLast4 } from './index.js';
+  type BankAccountImportRead, type BankPaymentMethodForImport, BankDebitUnavailable, hasBankLast4,
+  PaymentObjectNotForGym, PaymentObjectUntagged } from './index.js';
 import type { Json, ObjectData, PaymentTransport, ProviderRequest } from './transport.js';
 import { PaymentWebhookError } from './webhook-error.js';
 import { matchesBillingEmail, type ClearCustomerEmail } from './email-erasure.js';
@@ -56,10 +57,9 @@ function timestamp(value: Json | undefined): Date {
   if (!time) throw new Error('Invalid provider timestamp');
   return time;
 }
-class NotForGym extends Error {}
 // Used only by readPaymentObject to distinguish a missing refund from a missing parent.
 class RefundMissing extends Error {}
-class IncompleteBankMethod extends NotForGym {
+class IncompleteBankMethod extends PaymentObjectNotForGym {
   constructor(readonly customerId: string) { super('Bank account has no usable last four digits'); }
 }
 function methodType(method: ObjectData): PaymentMethodType {
@@ -172,7 +172,8 @@ export class StripePayments implements Payments {
   #metadata(object: ObjectData): PaymentMetadata {
     const metadata = data(object.metadata ?? {});
     if (metadata.gym_id !== this.gymId) {
-      throw new NotForGym(metadata.gym_id ? 'Payment object belongs to another gym' : 'Payment object has no gym metadata');
+      if (!metadata.gym_id) throw new PaymentObjectUntagged();
+      throw new PaymentObjectNotForGym('Payment object belongs to another gym');
     }
     return { gymId: this.gymId, ...(typeof metadata.invoice_id === 'string' ? { invoiceId: metadata.invoice_id } : {}),
       ...(typeof metadata.attempt_id === 'string' ? { attemptId: metadata.attempt_id } : {}),
@@ -202,7 +203,9 @@ export class StripePayments implements Payments {
     this.#metadata(intent); return intent;
   }
   async #ownedCustomer(customerId: string): Promise<void> {
-    this.#metadata(await this.#get(this.#path('customers', customerId)));
+    const customer = await this.#get(this.#path('customers', customerId));
+    if (customer.deleted === true) throw new PaymentObjectNotForGym('Customer was deleted');
+    this.#metadata(customer);
   }
   async createCustomer(request: CreateCustomer): Promise<{ id: string; email: string }> {
     assertNoTransaction('payments.createCustomer'); key(request.idempotencyKey);
@@ -269,7 +272,7 @@ export class StripePayments implements Payments {
         if (after.status === 'succeeded' || after.status === 'canceled' || after.status === 'processing') return this.#intent(after);
         throw error;
       }
-    } catch (error) { if (missing(error) || error instanceof NotForGym) return { status: 'unknown', reference: { kind: 'charge', id: objectId } }; throw error; }
+    } catch (error) { if (missing(error) || error instanceof PaymentObjectNotForGym) return { status: 'unknown', reference: { kind: 'charge', id: objectId } }; throw error; }
   }
   async findCharge(reference: ChargeReference, options?: { includeSuccessTime?: boolean }): Promise<ChargeOutcome> {
     assertNoTransaction('payments.findCharge');
@@ -280,7 +283,7 @@ export class StripePayments implements Payments {
         const session = await this.#checkout(await this.#get(this.#path('checkout/sessions', reference.id)));
         outcome = session.chargeId ? this.#intent(await this.#ownedIntent(session.chargeId)) : { status: 'unknown', reference };
       }
-    } catch (error) { if (missing(error) || error instanceof NotForGym) return { status: 'unknown', reference }; throw error; }
+    } catch (error) { if (missing(error) || error instanceof PaymentObjectNotForGym) return { status: 'unknown', reference }; throw error; }
     // The intent read's expanded Charge normally supplies the time. Otherwise read the Charge: a missing one is
     // retryable, never an unknown intent and never permission to substitute the processing clock.
     if (options?.includeSuccessTime && outcome.status === 'succeeded' && !outcome.succeededAt) {
@@ -374,7 +377,7 @@ export class StripePayments implements Payments {
     if (data(object.metadata ?? {}).gym_id) this.#metadata(object);
     if (object.payment_intent) return this.#ownedIntent(id(object.payment_intent));
     const charge = await this.#get(this.#path('charges', id(object.charge)));
-    if (!charge.payment_intent) throw new NotForGym('Charge has no parent intent');
+    if (!charge.payment_intent) throw new PaymentObjectNotForGym('Charge has no parent intent');
     return this.#ownedIntent(id(charge.payment_intent));
   }
   async #refund(object: ObjectData): Promise<Refund> {
@@ -423,7 +426,7 @@ export class StripePayments implements Payments {
         return { status: 'unknown', reference, incompleteBankMethod: { customerId: error.customerId } };
       // Only a not-found for the refund itself is `missing`; its charge or parent intent missing is unverified.
       if (error instanceof RefundMissing) return { status: 'unknown', reference, missing: true };
-      if (missing(error) || error instanceof NotForGym) return { status: 'unknown', reference };
+      if (missing(error) || error instanceof PaymentObjectNotForGym) return { status: 'unknown', reference };
       throw error;
     }
   }
@@ -511,7 +514,7 @@ export class StripePayments implements Payments {
       case 'payment_method': {
         const object = await this.#get(this.#path('payment_methods', reference.id));
         if (data(object.metadata ?? {}).gym_id) this.#metadata(object);
-        if (!object.customer) throw new NotForGym('Payment method has no customer');
+        if (!object.customer) throw new PaymentObjectNotForGym('Payment method has no customer');
         await this.#ownedCustomer(id(object.customer));
         value = { kind: 'payment_method', object: readMethod(object) }; break;
       }
@@ -561,7 +564,7 @@ export class StripePayments implements Payments {
     catch (error) { if (absent(error)) return { matched: false, placeholderMethods: [], failedMethods: [] }; throw error; }
     if (customer.deleted === true) return { matched: false, placeholderMethods: [], failedMethods: [] };
     const metadata = data(customer.metadata ?? {});
-    if (metadata.gym_id !== undefined && metadata.gym_id !== this.gymId) throw new NotForGym('Customer belongs to another gym');
+    if (metadata.gym_id !== undefined && metadata.gym_id !== this.gymId) throw new PaymentObjectNotForGym('Customer belongs to another gym');
     if (metadata.household_id !== undefined && metadata.household_id !== options.householdId) throw new Error('Customer belongs to another household');
     // Validate every owner before the first write. Untagged imported customers are checked by the caller's local link.
     const methods: { methodId: string; path: string; method: ObjectData }[] = [];
@@ -629,7 +632,7 @@ export class StripePayments implements Payments {
     if (customer.deleted === true) return;
     // As adoptCustomer: an untagged customer (imported or made in the dashboard) is the gym's own; another gym's is refused.
     const owner = data(customer.metadata ?? {}).gym_id;
-    if (owner !== undefined && owner !== this.gymId) throw new NotForGym('Payment object belongs to another gym');
+    if (owner !== undefined && owner !== this.gymId) throw new PaymentObjectNotForGym('Payment object belongs to another gym');
     const customFields = customer.invoice_settings ? data(customer.invoice_settings).custom_fields : undefined;
     const personal = [customer.email, customer.phone, customer.address, customer.shipping, customer.description,
       customer.individual_name, customer.business_name, customFields];
@@ -713,11 +716,17 @@ export class StripePayments implements Payments {
     const path = this.#path('customers', customerId), customer = await this.#get(path);
     if (customer.deleted === true) throw new CustomerDeleted();
     const owner = data(customer.metadata ?? {}).gym_id;
-    if (owner !== undefined && owner !== this.gymId) throw new NotForGym('Payment object belongs to another gym');
+    if (owner !== undefined && owner !== this.gymId) throw new PaymentObjectNotForGym('Payment object belongs to another gym');
     // Metadata updates merge, so the customer's other keys stay.
     // No idempotency key: setting the same tag twice is harmless, and a key would replay a cached reply after the tag is removed in the dashboard.
+    // Recheck after tagging: refuse a customer another gym sharing this Stripe account tagged meanwhile, or one deleted since the first read.
     const adopted = owner === undefined;
-    if (adopted) await this.#post(path, { metadata: { gym_id: this.gymId } });
+    if (adopted) {
+      await this.#post(path, { metadata: { gym_id: this.gymId } });
+      const after = await this.#get(path);
+      if (after.deleted === true) throw new CustomerDeleted();
+      if (data(after.metadata ?? {}).gym_id !== this.gymId) throw new PaymentObjectNotForGym('Payment object belongs to another gym');
+    }
     return { id: id(customer.id), email: typeof customer.email === 'string' ? customer.email : null, adopted };
   }
   async listCustomerCards(customerId: string, options: CustomerCardQuery = {}): Promise<CustomerCardPage> {
@@ -841,7 +850,7 @@ export class StripePayments implements Payments {
           const value = await this.#read(reference);
           changes.push({ ...value, changedAt: new Date(Number(object.created) * 1000) } as PaymentChange);
         } catch (error) {
-          if (error instanceof NotForGym) continue;
+          if (error instanceof PaymentObjectNotForGym) continue;
           if (missing(error)) throw new Error('Unresolved payment object: ' + (reference?.kind ?? String(source.object))
             + ':' + (reference?.id ?? id(source.id)), { cause: error });
           throw error;
@@ -884,7 +893,7 @@ export class StripePayments implements Payments {
       }
       return { id: event.id, type: event.type, gymId: this.gymId, objectId: reference.id, objectKind: reference.kind };
     } catch (error) {
-      if (error instanceof NotForGym) throw new PaymentWebhookError('webhook_not_for_gym');
+      if (error instanceof PaymentObjectNotForGym) throw new PaymentWebhookError('webhook_not_for_gym');
       throw error;
     }
   }

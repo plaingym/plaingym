@@ -4,7 +4,7 @@ import { randomUUID, createHmac } from 'node:crypto';
 import { afterAll, expect, it, vi } from 'vitest';
 import Stripe from 'stripe';
 import { runInTransaction } from '@plaingym/shared/transaction';
-import { BankDebitUnavailable, CustomerCreationInProgress, CustomerDeleted, FakePayments, isProviderOutage } from './index.js';
+import { BankDebitUnavailable, CustomerCreationInProgress, CustomerDeleted, FakePayments, isProviderOutage, PaymentObjectNotForGym, PaymentObjectUntagged } from './index.js';
 import { FixtureRecorder, replayPayments } from './recording.js';
 import { recordingTransport, replayTransport, type PaymentTransport } from './transport.js';
 import { StripePayments, STRIPE_API_VERSION, stripeTransport } from './stripe.js';
@@ -610,6 +610,92 @@ it('tags an untagged customer without an idempotency key and re-tags after the g
 
   expect(await payments.adoptCustomer('cus_retag')).toEqual({ id: 'cus_retag', email: 'retag@example.invalid', adopted: false });
   expect(posts()).toHaveLength(2);
+});
+it('distinguishes untagged, deleted and foreign customers on detach while keeping readPaymentObject unknown', async () => {
+  const { payments, transport } = fixture();
+  transport.objects.set('cus_untagged', { id: 'cus_untagged', object: 'customer', metadata: {} });
+  transport.objects.set('pm_untagged', { id: 'pm_untagged', object: 'payment_method', type: 'card', created: transport.now,
+    customer: 'cus_untagged', metadata: {}, card: { last4: '4242', exp_month: 12, exp_year: 2030 } });
+  transport.objects.set('cus_deleted_card', { id: 'cus_deleted_card', object: 'customer', deleted: true });
+  transport.objects.set('pm_deleted_card', { id: 'pm_deleted_card', object: 'payment_method', type: 'card', created: transport.now,
+    customer: 'cus_deleted_card', metadata: {}, card: { last4: '4242', exp_month: 12, exp_year: 2030 } });
+  transport.objects.set(detach.foreign, { id: detach.foreign, object: 'payment_method', type: 'card', created: transport.now,
+    customer: 'cus_foreign', metadata: {}, card: { last4: '4242', exp_month: 12, exp_year: 2030 } });
+  const capture = async (methodId: string) => {
+    try { await payments.detachPaymentMethod(methodId); return undefined; }
+    catch (error) { return error; }
+  };
+
+  const untagged = await capture('pm_untagged');
+  expect(untagged).toBeInstanceOf(PaymentObjectUntagged);
+  expect(untagged).toBeInstanceOf(PaymentObjectNotForGym);
+  expect(untagged).toMatchObject({ name: 'Error', message: 'Payment object has no gym metadata' });
+
+  const deleted = await capture('pm_deleted_card');
+  expect(deleted).toBeInstanceOf(PaymentObjectNotForGym);
+  expect(deleted).not.toBeInstanceOf(PaymentObjectUntagged);
+  expect(deleted).toMatchObject({ name: 'Error', message: 'Customer was deleted' });
+
+  const foreign = await capture(detach.foreign);
+  expect(foreign).toBeInstanceOf(PaymentObjectNotForGym);
+  expect(foreign).not.toBeInstanceOf(PaymentObjectUntagged);
+  expect(foreign).toMatchObject({ name: 'Error', message: 'Payment object belongs to another gym' });
+
+  for (const methodId of ['pm_untagged', 'pm_deleted_card', detach.foreign]) {
+    expect(await payments.readPaymentObject({ kind: 'payment_method', id: methodId }))
+      .toEqual({ status: 'unknown', reference: { kind: 'payment_method', id: methodId } });
+  }
+  await expect(payments.parseWebhook(...signedEvent(transport.objects.get('pm_deleted_card')))).rejects.toMatchObject({ code: 'webhook_not_for_gym' });
+});
+it('refuses the losing gym when two gyms sharing a Stripe account adopt one untagged customer concurrently', async () => {
+  const otherGymId = '00000000-0000-7000-8000-000000000002';
+  const transport = new StripeFixtures(gymId);
+  transport.objects.set('cus_shared', { id: 'cus_shared', object: 'customer', email: 'shared@example.invalid', metadata: {} });
+  const gymA = new StripePayments(gymId, { transport, webhookSecret: 'fixture-signing-secret' });
+  const gymB = new StripePayments(otherGymId, { transport, webhookSecret: 'fixture-signing-secret' });
+
+  const outcomes = await Promise.all([
+    gymA.adoptCustomer('cus_shared').then(value => ({ gym: gymId, ok: true as const, value }), error => ({ gym: gymId, ok: false as const, error })),
+    gymB.adoptCustomer('cus_shared').then(value => ({ gym: otherGymId, ok: true as const, value }), error => ({ gym: otherGymId, ok: false as const, error })),
+  ]);
+  expect(transport.requests.filter(request => request.method === 'POST' && request.path === '/v1/customers/cus_shared')).toHaveLength(2);
+  const winners = outcomes.filter(outcome => outcome.ok);
+  const losers = outcomes.filter(outcome => !outcome.ok);
+  expect(winners).toHaveLength(1);
+  expect(losers).toHaveLength(1);
+  expect(winners[0]!.value).toEqual({ id: 'cus_shared', email: 'shared@example.invalid', adopted: true });
+  expect(losers[0]!.error).toBeInstanceOf(PaymentObjectNotForGym);
+  expect(losers[0]!.error).not.toBeInstanceOf(PaymentObjectUntagged);
+  expect(losers[0]!.error).toMatchObject({ name: 'Error', message: 'Payment object belongs to another gym' });
+  expect(transport.objects.get('cus_shared')!.metadata).toEqual({ gym_id: winners[0]!.gym });
+});
+it('rechecks the customer only when adoptCustomer writes a tag and raises CustomerDeleted if deleted before the recheck', async () => {
+  const { payments, transport } = fixture();
+  transport.objects.set('cus_count', { id: 'cus_count', object: 'customer', email: 'count@example.invalid', metadata: {} });
+  const firstStart = transport.requests.length;
+  expect(await payments.adoptCustomer('cus_count')).toEqual({ id: 'cus_count', email: 'count@example.invalid', adopted: true });
+  expect(transport.requests.slice(firstStart).map(({ method, path }) => [method, path])).toEqual([
+    ['GET', '/v1/customers/cus_count'], ['POST', '/v1/customers/cus_count'], ['GET', '/v1/customers/cus_count'],
+  ]);
+
+  const secondStart = transport.requests.length;
+  expect(await payments.adoptCustomer('cus_count')).toEqual({ id: 'cus_count', email: 'count@example.invalid', adopted: false });
+  expect(transport.requests.slice(secondStart).map(({ method, path }) => [method, path])).toEqual([
+    ['GET', '/v1/customers/cus_count'],
+  ]);
+
+  transport.objects.set('cus_vanished', { id: 'cus_vanished', object: 'customer', email: 'vanished@example.invalid', metadata: {} });
+  const deletingTransport: PaymentTransport = {
+    async request(input) {
+      const response = await transport.request(input);
+      if (input.method === 'POST' && input.path === '/v1/customers/cus_vanished') {
+        transport.objects.set('cus_vanished', { id: 'cus_vanished', object: 'customer', deleted: true });
+      }
+      return response;
+    },
+  };
+  const deletingPayments = new StripePayments(gymId, { transport: deletingTransport, webhookSecret: 'fixture-signing-secret' });
+  await expect(deletingPayments.adoptCustomer('cus_vanished')).rejects.toBeInstanceOf(CustomerDeleted);
 });
 it.each(['concurrent', 'lost_response', 'missing', 'permission', 'failure'] as const)('handles detach %s without hiding a failed removal', async outcome => {
   const { payments, transport } = fixture();

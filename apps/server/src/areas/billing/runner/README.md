@@ -347,7 +347,8 @@ A successful confirmation carries the processor's `succeededAt` (the adapter
 expands the latest Charge), so recording it reads nothing more: a saved-card
 charge makes five provider requests (customer adoption, the payment-method read
 that also checks the payer, create, and the confirmation's read and request), and
-six when adoption first tags an untagged customer.
+seven when adoption first tags an untagged customer (adding the tag write and its
+recheck read).
 Any other success, including after restore or a cancel/confirm race, calls
 `findCharge(reference, { includeSuccessTime: true })` and records its
 `succeededAt`. Missing or invalid success times remain retryable; the clock never

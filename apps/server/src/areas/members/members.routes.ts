@@ -13,7 +13,7 @@ import { createMemberPhotoService, type MemberUploads } from './photos.js';
 import type { HouseholdPinSecret } from './pin.js';
 import type { JobRecovery, Jobs } from '../../infra/jobs/index.js';
 import { promoteWaitlist } from '../bookings/bookings.js';
-import type { DetachOptions } from '../../infra/payments/index.js';
+import { PaymentObjectUntagged, type DetachOptions } from '../../infra/payments/index.js';
 import { releaseFiles } from '../../infra/storage/release.js';
 import { clearBillingEmailJob, clearErasedBillingEmail, type ClearBillingEmail, queueEarlierRedactions, redactCustomerJob, redactEarlierJob, releaseErasedFiles, releaseErasedFilesJob } from './erasure-redaction.js';
 import { createPortalInvitationStore } from '../../infra/auth/portal-invitations.js';
@@ -50,9 +50,9 @@ type ErasureOptions = { clock?: Clock; scope?: typeof forGym; detachCard?: (gymI
   jobs?: Pick<Jobs, 'enqueue'> & Partial<JobRecovery> };
 export { redactCustomerJob, releaseErasedFilesJob };
 const redactPayload = z.object({ customerId: z.string().regex(/^cus_[A-Za-z0-9_]+$/) });
-/** StripePayments' refusal for a customer or method with no gym tag: a people CSV linked it untagged, and the detach job adopts it. */
+/** StripePayments' refusal for a customer or method with no gym tag (a deleted customer is not untagged): a people CSV linked it untagged, and the detach job adopts it. */
 const untaggedRefusal = (error: unknown) =>
-  [error, (error as { cause?: unknown } | null)?.cause].some(value => value instanceof Error && value.message === 'Payment object has no gym metadata');
+  [error, (error as { cause?: unknown } | null)?.cause].some(value => value instanceof PaymentObjectUntagged);
 type Composition = ErasureOptions & { service: MembersService; photos: ReturnType<typeof createMemberPhotoService> | undefined; uploadsFor?: MemberUploads };
 let configured: Composition | undefined;
 /** Runtime supplies the gym key for household PINs, file storage for photos and the job queue for erasure before serving requests. */

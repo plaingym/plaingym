@@ -82,10 +82,15 @@ and webhook endpoints receive `gym_id` metadata. Checkout also puts metadata on 
 PaymentIntent or SetupIntent. Stripe-generated child objects are matched through
 their parent: a card's Customer, or a refund/dispute's Charge and PaymentIntent.
 Customers created elsewhere (imported Stripe customer IDs) carry no `gym_id` and are
-refused until `adoptCustomer(id)` tags them; it is idempotent, returns `{ id, email, adopted }`
-(`adopted` is true when the pre-read found no tag and this call wrote one), and refuses customers
-tagged for another gym. The tag write carries no idempotency key, so a re-tag after a dashboard
-removal writes again and concurrent calls don't conflict. Call it only on staff-provided IDs. A test key can't see
+refused with `PaymentObjectUntagged` (a subclass of `PaymentObjectNotForGym`; a deleted
+customer is refused with `PaymentObjectNotForGym` instead) until `adoptCustomer(id)` tags
+them; it is idempotent, returns `{ id, email, adopted }` (`adopted` is true when the
+pre-read found no tag and this call wrote one), and refuses customers tagged for another
+gym. The tag write carries no idempotency key, so a re-tag after a dashboard removal writes
+again and concurrent calls don't conflict. After tagging, `adoptCustomer` reads the
+customer again and refuses one another gym tagged meanwhile (two gyms sharing one Stripe
+account) or one deleted since the first read, leaving only another gym's tag write that
+lands after that recheck. Call it only on staff-provided IDs. A test key can't see
 live-mode objects, so a live customer it reads looks missing, as one from another
 account does; `keyMode` (`test` or `live` for `StripePayments`, unset by default
 on `FakePayments`) lets callers tell which key they hold. Email matches are
@@ -164,7 +169,8 @@ request checks both that the method is attached to the payer and that the payer
 carries this gym's `gym_id`, before the intent is created. A successful saved-card
 charge makes four requests: that read, the create, the confirmation's ownership
 read and the confirmation. The charge runner's customer adoption adds a fifth,
-and a sixth when it first tags an untagged customer.
+and a sixth and seventh when it first tags an untagged customer (the tag write
+and its recheck read).
 
 `isProviderOutage(error)` tells an error with which the provider could not serve
 the request at all (unreachable or timed out, rate limited, a server error, or
