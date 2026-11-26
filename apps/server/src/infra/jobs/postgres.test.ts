@@ -522,12 +522,15 @@ describe('worker leases, caps, and lifecycle', () => {
     const q = queue({ leaseMs: 1000 }); const started = latch(), held = latch();
     q.handle('work', async () => { started.resolve(); await held.promise; });
     const { jobId } = await q.enqueue('work', {}, { ...options, maxAttempts: 1 });
+    const dueAt = clock.now();
     const active = q.runNext(); await started.promise;
     const expiredAt = (await row(jobId)).lockedUntil!;
     clock.advance(6 * 3_600_000);
     try { expect(await queue().runNext()).toBe(false); }
     finally { held.resolve(); await active; }
-    expect(await row(jobId)).toMatchObject({ status: 'failed', attempts: 1, runAt: expiredAt, lastError: 'Lease expired after final attempt' });
+    // The lease end is when it finished; the row keeps the time it was due.
+    expect(await row(jobId)).toMatchObject({ status: 'failed', attempts: 1, runAt: dueAt, finishedAt: expiredAt,
+      lastError: 'Lease expired after final attempt' });
     expect((await new PostgresJobStatsQuery(database).get(gymA)).oldestFailureAt).toBe(expiredAt.toISOString());
   });
   it('waits only for the target gym live leases, allowing crashed leases to expire', async () => {
@@ -1144,7 +1147,7 @@ describe('retention', () => {
     const q = queue({ retention: { keep: [] } }); q.handle('work', async () => {});
     const { jobId } = await q.enqueue('work', {}, { ...options, runAt: new Date('2025-12-01T00:00:00Z') });
     expect(await q.runNext()).toBe(true);
-    expect(await row(jobId)).toMatchObject({ status: 'succeeded', runAt: clock.now() });
+    expect(await row(jobId)).toMatchObject({ status: 'succeeded', runAt: new Date('2025-12-01T00:00:00Z'), finishedAt: clock.now() });
     clock.advance(13 * 86_400_000);
     expect(await q.prune()).toBe(0);
     clock.advance(2 * 86_400_000);
@@ -1268,5 +1271,99 @@ describe('failed job recovery', () => {
       expect(await q.retryFailed(jobId, { gymId: gymA, runAt: clock.now() })).toBe(true);
     } finally { held.resolve(); await active; }
     expect(await row(jobId)).toMatchObject({ status: 'pending', attempts: 0, lockToken: null, lastError: null });
+  });
+});
+
+describe('finish times', () => {
+  const minute = 60_000, day = 86_400_000;
+  const stats = () => new PostgresJobStatsQuery(database).get(gymA);
+  /** The stored key of a caller key, as the queue hashes it. */
+  const storedKey = (name: string, key: string) => createHash('sha256').update(JSON.stringify([name, key])).digest('hex');
+  it('keeps the due time of a job that succeeds or finally fails, and clears the finish time on a retry', async () => {
+    const due = clock.now(), q = queue();
+    q.handle('ok', async () => {}); q.handle('fail', async () => { throw new Error('down'); });
+    const ok = await q.enqueue('ok', {}, { ...options, runAt: due });
+    clock.set(new Date(due.getTime() + 5 * minute));
+    expect(await q.runNext()).toBe(true);
+    expect(await row(ok.jobId)).toMatchObject({ status: 'succeeded', runAt: due, finishedAt: clock.now() });
+
+    const failed = await q.enqueue('fail', {}, { ...options, runAt: due, idempotencyKey: 'f', maxAttempts: 1 });
+    const failedAt = new Date(due.getTime() + 7 * minute);
+    clock.set(failedAt);
+    expect(await q.runNext()).toBe(true);
+    expect(await row(failed.jobId)).toMatchObject({ status: 'failed', runAt: due, finishedAt: failedAt });
+    expect(await q.failedJobs('fail', ['f'], options)).toEqual([{ jobId: failed.jobId, idempotencyKey: 'f', failedAt }]);
+    expect(await stats()).toMatchObject({ failed: 1, oldestFailureAt: failedAt.toISOString() });
+
+    const reset = new Date(failedAt.getTime() + 10 * minute);
+    expect(await q.retryFailed(failed.jobId, { gymId: gymA, runAt: reset })).toBe(true);
+    expect(await row(failed.jobId)).toMatchObject({ status: 'pending', runAt: reset, finishedAt: null });
+  });
+  it('clears a finish time left on a pending row when an attempt is retried or deferred', async () => {
+    let eligible: boolean | 'defer' = true;
+    const q = queue({ eligibleGym: async () => eligible }), earlier = new Date(clock.now().getTime() - day);
+    q.handle('fail', async () => { throw new Error('down'); });
+    // An older release retried a finished row: pending again, with the earlier finish time still set.
+    const stale = async () => {
+      const { jobId } = await q.enqueue('fail', {}, { ...options, maxAttempts: 3, idempotencyKey: uuidv7() });
+      await database.forSystem(tx => tx.update(jobs).set({ finishedAt: earlier }).where(eq(jobs.id, jobId)));
+      return jobId;
+    };
+    const retried = await stale();
+    expect(await q.runNext()).toBe(true);
+    expect(await row(retried)).toMatchObject({ status: 'pending', attempts: 1, finishedAt: null });
+    await database.forSystem(tx => tx.delete(jobs));
+    eligible = 'defer';
+    const deferred = await stale();
+    expect(await q.runNext()).toBe(true);
+    expect(await row(deferred)).toMatchObject({ status: 'pending', attempts: 0, finishedAt: null });
+  });
+  it('reads a failed row written before the finish time column by its run time, exactly as before', async () => {
+    const failedAt = clock.now(), q = queue({ retention: { keep: [] } });
+    const [old] = await database.forSystem(tx => tx.insert(jobs).values({ gymId: gymA, name: 'send',
+      payload: { version: 1, timezone: 'UTC', value: {} }, status: 'failed', attempts: 1, maxAttempts: 1, failureCount: 1,
+      runAt: failedAt, idempotencyKey: storedKey('send', 'old') }).returning());
+    expect(old).toMatchObject({ finishedAt: null });
+    expect(await q.failedJobs('send', ['old'], options)).toEqual([{ jobId: old!.id, idempotencyKey: 'old', failedAt }]);
+    expect(await stats()).toMatchObject({ failed: 1, oldestFailureAt: failedAt.toISOString() });
+    clock.set(new Date(failedAt.getTime() + 89 * day));
+    expect(await q.prune()).toBe(0);
+    clock.set(new Date(failedAt.getTime() + 91 * day));
+    expect(await q.prune()).toBe(1);
+    expect(await rows()).toEqual([]);
+  });
+  it('reads the later run time of a row an older release retried and failed again', async () => {
+    // An older release leaves the finish time alone, so a retry and a second failure leave the first finish time set
+    // and record the second in run_at.
+    const first = new Date(clock.now().getTime() - day), again = clock.now();
+    await database.forSystem(tx => tx.insert(jobs).values({ gymId: gymA, name: 'send',
+      payload: { version: 1, timezone: 'UTC', value: {} }, status: 'failed', attempts: 1, maxAttempts: 1, failureCount: 2,
+      runAt: again, finishedAt: first, idempotencyKey: storedKey('send', 'again') }));
+    expect(await queue().failedJobs('send', ['again'], options)).toMatchObject([{ failedAt: again }]);
+    expect(await stats()).toMatchObject({ oldestFailureAt: again.toISOString() });
+  });
+  it('prunes a succeeded row by its finish time, keeping one due long ago that finished recently', async () => {
+    const q = queue({ retention: { keep: [] } }), at = (days: number) => new Date(clock.now().getTime() - days * day);
+    const succeeded = (runAt: Date, finishedAt: Date) => ({ gymId: gymA, name: 'work', status: 'succeeded',
+      payload: { version: 1, timezone: 'UTC', value: {} }, attempts: 1, maxAttempts: 1, runAt, finishedAt, idempotencyKey: uuidv7() });
+    const [recent] = await database.forSystem(tx => tx.insert(jobs).values([succeeded(at(30), at(1)), succeeded(at(30), at(29))])
+      .returning({ id: jobs.id }));
+    expect(await q.prune()).toBe(1);
+    expect((await rows()).map(r => r.id)).toEqual([recent!.id]);
+  });
+  it('changes the failed version when a failed job is retried and fails again', async () => {
+    const q = queue();
+    q.handle('fail', async () => { throw new Error('down'); });
+    const { jobId } = await q.enqueue('fail', {}, { ...options, maxAttempts: 1 });
+    expect(await q.runNext()).toBe(true);
+    const first = (await stats()).failedVersion;
+    expect(first).toMatch(/^[0-9a-f]{32}$/);
+    clock.advance(minute);
+    expect(await q.retryFailed(jobId, { gymId: gymA, runAt: clock.now() })).toBe(true);
+    clock.advance(minute);
+    expect(await q.runNext()).toBe(true);
+    const second = await stats();
+    expect(second).toMatchObject({ failed: 1, oldestFailureAt: clock.now().toISOString() });
+    expect(second.failedVersion).not.toBe(first);
   });
 });

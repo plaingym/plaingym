@@ -27,7 +27,7 @@ describe('failInterrupted', () => {
     const at = clock.now();
     expect(await queue.failInterrupted(['health.backup'], { at, reason: 'Interrupted' })).toBe(1);
     const [settled] = await rows([running.id as string]);
-    expect(settled).toMatchObject({ gymId: null, status: 'failed', acknowledgedAt: at, runAt: at, lastError: 'Interrupted',
+    expect(settled).toMatchObject({ gymId: null, status: 'failed', acknowledgedAt: at, runAt: earlier, finishedAt: at, lastError: 'Interrupted',
       lockToken: null, lockedUntil: null, attempts: 1, failureCount: 1 });
     expect(await rows(untouched)).toEqual(before);
     expect(await queue.failInterrupted(['health.backup'], { at, reason: 'Interrupted' })).toBe(0);
@@ -46,8 +46,19 @@ describe('failInterrupted', () => {
     expect(await new PostgresJobs({ database: db, clock, failureCountColumn: false }).failInterrupted(['health.backup.manual'],
       { at, reason: 'Interrupted' })).toBe(1);
     for (const row of await rows([explicit.id as string, inherited.id as string]))
-      expect(row).toMatchObject({ status: 'failed', acknowledgedAt: at, runAt: at, lastError: 'Interrupted', lockToken: null,
-        lockedUntil: null, failureCount: 0 });
+      expect(row).toMatchObject({ status: 'failed', acknowledgedAt: at, runAt: new Date('2026-10-31T23:00:00Z'), finishedAt: at,
+        lastError: 'Interrupted', lockToken: null, lockedUntil: null, failureCount: 0 });
+  });
+
+  it('records the failure time in run_at, as before the finish time column, for a database without it', async () => {
+    const gymId = uuidv7(), clock = new TestClock('2026-11-01T00:00:00Z'), at = clock.now();
+    await factory('gyms', gymId);
+    const running = await factory('jobs', gymId, { name: 'health.backup.manual', status: 'running', attempts: 1,
+      runAt: new Date('2026-10-31T23:00:00Z'), lockToken: uuidv7(), lockedUntil: new Date('2026-11-01T00:05:00Z') });
+    expect(await new PostgresJobs({ database: db, clock, finishedAtColumn: false }).failInterrupted(['health.backup.manual'],
+      { at, reason: 'Interrupted' })).toBe(1);
+    expect((await rows([running.id as string]))[0]).toMatchObject({ status: 'failed', acknowledgedAt: at, runAt: at,
+      finishedAt: null, failureCount: 1 });
   });
 
   it('rejects an empty name list, an invalid time and an open transaction', async () => {
@@ -68,15 +79,17 @@ describe('enqueue without the failure counter column', () => {
     const options = { gymId, timezone: 'America/New_York', maxAttempts: 2, runAt: new Date('2026-11-01T00:10:00Z') };
     const payload = { restoreId: uuidv7(), snapshotAt: '2026-10-31T12:00:00.000Z', nested: { list: [1, 'two', null] } };
     const normal = await new PostgresJobs({ database: db, clock }).enqueue('test.enqueue', payload, { ...options, idempotencyKey: 'normal' });
-    const narrow = new PostgresJobs({ database: db, clock, failureCountColumn: false });
-    const first = await narrow.enqueue('test.enqueue', payload, { ...options, idempotencyKey: 'narrow' });
-    expect(await narrow.enqueue('test.enqueue', payload, { ...options, idempotencyKey: 'narrow' })).toEqual(first);
-    const [a, b] = await rows([normal.jobId, first.jobId]);
-    const comparable = ({ id: _id, idempotencyKey: _key, ...row }: NonNullable<typeof a>) => row;
-    expect(comparable(b!)).toEqual(comparable(a!));
-    expect(b).toMatchObject({ status: 'pending', attempts: 0, failureCount: 0, maxAttempts: 2, runAt: options.runAt,
-      createdAt: clock.now(), acknowledgedAt: null, lockToken: null, lastError: null });
-    expect(b!.payload).toEqual({ version: 1, timezone: 'America/New_York', value: payload });
+    for (const narrowed of [{ failureCountColumn: false }, { finishedAtColumn: false }]) {
+      const narrow = new PostgresJobs({ database: db, clock, ...narrowed }), key = JSON.stringify(narrowed);
+      const first = await narrow.enqueue('test.enqueue', payload, { ...options, idempotencyKey: key });
+      expect(await narrow.enqueue('test.enqueue', payload, { ...options, idempotencyKey: key })).toEqual(first);
+      const [a, b] = await rows([normal.jobId, first.jobId]);
+      const comparable = ({ id: _id, idempotencyKey: _key, ...row }: NonNullable<typeof a>) => row;
+      expect(comparable(b!)).toEqual(comparable(a!));
+      expect(b).toMatchObject({ status: 'pending', attempts: 0, failureCount: 0, maxAttempts: 2, runAt: options.runAt,
+        finishedAt: null, createdAt: clock.now(), acknowledgedAt: null, lockToken: null, lastError: null });
+      expect(b!.payload).toEqual({ version: 1, timezone: 'America/New_York', value: payload });
+    }
   });
 });
 
@@ -125,8 +138,8 @@ describe('acknowledgeFailedVersion', () => {
     expect(tile).toMatchObject({ failed: 1, running: 1 });
     // A worker's next claim fails the expired lease, backdated to the lease expiry, before the tile's check time.
     expect(await new PostgresJobs({ database: db, clock }).runNext()).toBe(false);
-    expect((await rows([expired.id as string]))[0]).toMatchObject({ status: 'failed', runAt: expiredAt, acknowledgedAt: null,
-      failureCount: 1 });
+    expect((await rows([expired.id as string]))[0]).toMatchObject({ status: 'failed', finishedAt: expiredAt,
+      runAt: new Date(clock.now().getTime() - 20 * minute), acknowledgedAt: null, failureCount: 1 });
     expect(await queue.acknowledgeFailedVersion({ gymId, failedVersion: tile.failedVersion, at: clock.now() })).toBe('changed');
     expect((await rows([failed.id, expired.id] as string[])).map(row => row.acknowledgedAt)).toEqual([null, null]);
     const fresh = await stats.get(gymId);
@@ -148,11 +161,12 @@ describe('acknowledgeFailedVersion', () => {
     expect((await stats.get(gymId)).failedVersion).toBe(first.failedVersion);
     // Recovery retries the job in place; it keeps its ID and fails again on its final attempt.
     clock.advance(60_000);
-    expect(await queue.retryFailed(jobId, { gymId, runAt: clock.now() })).toBe(true);
+    const retriedAt = clock.now();
+    expect(await queue.retryFailed(jobId, { gymId, runAt: retriedAt })).toBe(true);
     clock.advance(1000);
     expect(await queue.runNext()).toBe(true);
     const [again] = await rows([jobId]);
-    expect(again).toMatchObject({ id: jobId, status: 'failed', runAt: clock.now(), acknowledgedAt: null });
+    expect(again).toMatchObject({ id: jobId, status: 'failed', runAt: retriedAt, finishedAt: clock.now(), acknowledgedAt: null });
     expect(await queue.acknowledgeFailedVersion({ gymId, failedVersion: first.failedVersion, at: clock.now() })).toBe('changed');
     expect((await rows([jobId]))[0]).toEqual(again);
     const fresh = await stats.get(gymId);

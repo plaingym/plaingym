@@ -203,7 +203,9 @@ their effective Google configuration; the malformed variables stay in startup lo
 
 `JobStatsQuery.oldestFailureAt` is the oldest final failure time among this gym's
 retained failed jobs that are not acknowledged, or null when none remain. The
-worker records final completion in `runAt`. Pending jobs, install jobs and other
+worker records final completion in `finishedAt` and keeps `runAt` as the due time;
+a row finished before that column existed has only `runAt`, so a failure's time is
+the later of the two. Pending jobs, install jobs and other
 gyms never affect this time.
 The tile stays in error while any unacknowledged failed jobs remain, however old
 the failure is. With none, the page leaves out the oldest failure row. A failed

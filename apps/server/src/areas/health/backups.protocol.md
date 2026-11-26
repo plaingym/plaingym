@@ -203,7 +203,8 @@ A journal past the rekey receipt can be resumed by a newer release than the one
 that started the restore, on the schema that release migrated to, before the newer
 release's own migration runs. So the statements after the rekey name only the
 columns they set or read: settling interrupted backups leaves the job failure
-counter out when the restored `jobs` table lacks it, the reconciliation job insert
+counter out when the restored `jobs` table lacks it and records the failure time in
+`run_at` when it lacks `finished_at`, the reconciliation job insert
 names only the columns it sets, and the `billing.runner.restore_requested` audit
 is inserted by named columns without reading the row back. Settlement sets
 `jobs.acknowledged_at`, so a restored schema without that column (one before

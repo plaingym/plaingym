@@ -14,6 +14,7 @@ export const jobs = pgTable('jobs', {
   lockedUntil: instant('locked_until'), lockToken: uuid('lock_token'), lastError: text('last_error'),
   acknowledgedAt: instant('acknowledged_at'),
   failureCount: integer('failure_count').notNull().default(0),
+  finishedAt: instant('finished_at'),
   idempotencyKey: text('idempotency_key').notNull(),
   createdAt: instant('created_at').notNull().defaultNow(),
 }, (t) => [

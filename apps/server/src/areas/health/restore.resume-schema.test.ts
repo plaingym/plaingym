@@ -12,13 +12,15 @@ import { useRestoreFixture } from './restore.fixture.test-helper.js';
 
 const f = useRestoreFixture({ shared: true });
 const otherGym = uuidv7();
-let snapshotId: string, snapshotAt: string, backupId: string;
+let snapshotId: string, snapshotAt: string, backupId: string, backupDueAt: Date;
 beforeAll(async () => {
   const snapshot = await f.prepare(async () => {
     await f.make('gyms', otherGym, { billingEnabled: true });
     const now = f.clock.now();
+    // Due before the resume fails it, so its due time and its finish time differ.
+    backupDueAt = new Date(now.getTime() - 60_000);
     backupId = (await f.make('jobs', f.gymId, { name: 'health.backup.manual', status: 'running', attempts: 1, maxAttempts: 1,
-      runAt: now, lockToken: uuidv7(), lockedUntil: new Date(now.getTime() + 60_000) })).id as string;
+      runAt: backupDueAt, lockToken: uuidv7(), lockedUntil: new Date(now.getTime() + 60_000) })).id as string;
     return f.backup().snapshot();
   });
   snapshotId = snapshot.id; snapshotAt = snapshot.startedAt;
@@ -90,11 +92,15 @@ describe('resuming a restore an earlier release stopped after rekeying', () => {
     await expect(f.restore(stopAt('uploads_switched')).restore(snapshotId, f.identity)).rejects.toThrow();
     expect((await journal()).phase).toBe('uploads_switched');
     await onTarget(sql => sql`alter table audit_events drop column before`);
-    await onTarget(sql => sql`alter table jobs drop column failure_count`);
+    await onTarget(sql => sql`alter table jobs drop column failure_count, drop column finished_at`);
 
     expect(await f.restore().resume()).toBeUndefined();
     expect((await journal()).phase).toBe('complete');
     const settled = await expectReconciled();
+    // Without the finish time column the failure time goes in run_at, as releases before the column record it.
+    const job = settled.jobs.find(row => row.id === backupId)!;
+    expect(job).not.toHaveProperty('finished_at');
+    expect(new Date(job.run_at as string)).toEqual(f.clock.now());
     await f.restore().resume();
     expect(await state()).toEqual(settled);
     expect(await f.gate().isClosed()).toBe(false);
@@ -108,6 +114,11 @@ describe('resuming a restore an earlier release stopped after rekeying', () => {
     expect((await journal()).phase).toBe('complete');
     const settled = await expectReconciled();
     expect(settled.jobs.filter(row => row.name === 'billing.runner.restore').map(row => row.failure_count)).toEqual([0, 0]);
+    expect(settled.jobs.filter(row => row.name === 'billing.runner.restore').map(row => row.finished_at)).toEqual([null, null]);
+    // The failed backup job keeps its due time and records when the resume failed it.
+    const job = settled.jobs.find(row => row.id === backupId)!;
+    expect(new Date(job.run_at as string)).toEqual(backupDueAt);
+    expect(new Date(job.finished_at as string)).toEqual(f.clock.now());
     expect(settled.audits.filter(row => row.action === 'billing.runner.restore_requested').map(row => row.before)).toEqual([null, null]);
     await f.restore().resume();
     expect(await state()).toEqual(settled);

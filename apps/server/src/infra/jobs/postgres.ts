@@ -21,14 +21,22 @@ type Tx = Parameters<Parameters<typeof forSystem>[0]>[0];
 type Gym = Pick<JobOptions, 'gymId' | 'timezone'>;
 const unacknowledgedFailure = sql`${jobs.status} = 'failed' and ${jobs.acknowledgedAt} is null`;
 /**
- * The failed jobs version: one digest of each job's ID, failure time and failure count, in ID order, or `none` for
- * no rows. Every failure sets `run_at` to the time it failed and adds one to `failure_count`, which a retry never
- * resets, so a job retried in place that fails again changes the version even when both failures record the same
- * time. The time is in microseconds since the epoch, so the session's time zone doesn't change it. The stats read and
- * the acknowledgment both compute it with this fragment, so a version from the tile matches only the same failures.
+ * When a finished row finished. The queue sets `finished_at` when a job succeeds or finally fails and keeps `run_at`
+ * as the time it was due, so `run_at <= finished_at`. Rows finished before the column existed, or by an older release
+ * after a rollback, have only `run_at`, which that release set to the finish time. The later of the two covers both,
+ * and also a row an older release retried and finished again, whose `finished_at` still holds the earlier finish.
+ * Without the column (`finishedAtColumn: false`) it is `run_at`.
  */
-const failedVersionOf = (id: SQLWrapper, runAt: SQLWrapper, failureCount: SQLWrapper, filter?: SQL) =>
-  sql<string>`coalesce(md5(string_agg(${id}::text || ':' || (extract(epoch from ${runAt}) * 1000000)::bigint::text || ':' || ${failureCount}::text, ',' order by ${id})${filter ? sql` filter (where ${filter})` : sql``}), 'none')`;
+const finishedTime = (column: boolean) => column ? sql`greatest(${jobs.finishedAt}, ${jobs.runAt})` : sql`${jobs.runAt}`;
+/**
+ * The failed jobs version: one digest of each job's ID, failure time and failure count, in ID order, or `none` for
+ * no rows. Every failure records the time it failed (`finishedTime`) and adds one to `failure_count`, which a retry
+ * never resets, so a job retried in place that fails again changes the version even when both failures record the
+ * same time. The time is in microseconds since the epoch, so the session's time zone doesn't change it. The stats read
+ * and the acknowledgment both compute it with this fragment, so a version from the tile matches only the same failures.
+ */
+const failedVersionOf = (id: SQLWrapper, failedAt: SQLWrapper, failureCount: SQLWrapper, filter?: SQL) =>
+  sql<string>`coalesce(md5(string_agg(${id}::text || ':' || (extract(epoch from ${failedAt}) * 1000000)::bigint::text || ':' || ${failureCount}::text, ',' order by ${id})${filter ? sql` filter (where ${filter})` : sql``}), 'none')`;
 /** Every update that fails a job adds one, so successive failures of one job never look alike. */
 const nextFailure = sql`${jobs.failureCount} + 1`;
 type Envelope = { version: 1; timezone: string; value: unknown; schedule?: { expression: string; at: string }; deferrals?: number };
@@ -79,6 +87,13 @@ export interface PostgresJobsOptions {
    * `failInterrupted` then leaves the counter out unless told otherwise.
    */
   readonly failureCountColumn?: boolean;
+  /**
+   * Whether `jobs.finished_at` exists. Default true. False makes enqueueing name only the columns it sets, every write
+   * that finishes a job record the time in `run_at` as releases before the column did, and every read of a finished
+   * row's time use `run_at`, for a restore resume on a restored schema without the column. Never set it false on a
+   * schema that has the column: `PostgresJobStatsQuery` always reads it, so that queue's failed versions wouldn't match.
+   */
+  readonly finishedAtColumn?: boolean;
 }
 export interface WorkerOptions {
   readonly concurrency?: number;
@@ -138,6 +153,8 @@ export class PostgresJobs implements Jobs, JobRecovery {
   readonly #notices: Set<string>;
   readonly #noticeCap: number;
   readonly #failureCountColumn: boolean;
+  readonly #finishedAtColumn: boolean;
+  readonly #finishedTime: SQL;
   readonly #handlers = new Map<string, JobHandler>();
   readonly #systemHandlers = new Map<string, SystemJobHandler>();
   readonly #schedules = new Map<string, string>();
@@ -157,12 +174,22 @@ export class PostgresJobs implements Jobs, JobRecovery {
     this.#notices = new Set();
     this.#noticeCap = positive(options.notices?.perGymConcurrency ?? 1, 'notices.perGymConcurrency');
     this.#failureCountColumn = options.failureCountColumn ?? true;
+    this.#finishedAtColumn = options.finishedAtColumn ?? true;
+    this.#finishedTime = finishedTime(this.#finishedAtColumn);
     if (options.retention) {
       const { keep, succeededDays = defaultSucceededRetentionDays, failedDays = 90, batchSize = 1000 } = options.retention;
       this.#retention = { keep: [...keep], succeededDays: positive(succeededDays, 'succeededDays'),
         failedDays: positive(failedDays, 'failedDays'), batchSize: positive(batchSize, 'batchSize') };
       this.handleSystem(retentionJob, async () => { await this.prune(); });
     }
+  }
+  /** The columns a write that finishes a job sets for its finish time; `run_at` keeps the time it was due. */
+  #finish(at: Date | typeof jobs.lockedUntil) {
+    return this.#finishedAtColumn ? { finishedAt: at } : { runAt: at };
+  }
+  /** The columns a write that makes a job pending again sets: its new due time and no finish time. */
+  #pending(runAt: Date) {
+    return this.#finishedAtColumn ? { runAt, finishedAt: null } : { runAt };
   }
   handle(name: string, handler: JobHandler, options: HandleOptions = {}): void {
     if (!name || this.#handlers.has(name)) throw new Error(`Duplicate or empty job handler: ${name}`);
@@ -220,9 +247,9 @@ export class PostgresJobs implements Jobs, JobRecovery {
         eq(jobScheduleCursors.gymId, gymId), eq(jobScheduleCursors.name, schedule.name), eq(jobScheduleCursors.expression, schedule.expression),
         eq(jobScheduleCursors.timezone, options.timezone), lt(jobScheduleCursors.lastOccurrence, new Date(schedule.at))));
       for (let attempt = 0; attempt < 2; attempt++) {
-        // Drizzle names every schema column in an insert, so a database without the failure counter gets one that
-        // names only the columns set here; the rest take their database defaults either way.
-        const [row] = this.#failureCountColumn
+        // Drizzle names every schema column in an insert, so a database without the failure counter or the finish
+        // time gets one that names only the columns set here; the rest take their database defaults either way.
+        const [row] = this.#failureCountColumn && this.#finishedAtColumn
           ? await tx.insert(jobs).values({ id, gymId, name, payload: JSON.parse(encoded) as unknown,
             runAt, maxAttempts, idempotencyKey, createdAt: now }).onConflictDoNothing().returning({ id: jobs.id })
           : await tx.execute<{ id: string }>(sql`insert into ${jobs}
@@ -253,7 +280,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
       // skips this tick rather than waiting with a pooled connection held.
       const lock = await tx.execute<{ acquired: boolean }>(sql`select pg_try_advisory_xact_lock(${advisoryLockNamespace}::int, ${advisoryLocks.jobClaims}::int) as acquired`);
       if (!lock[0]?.acquired) return undefined;
-      await tx.update(jobs).set({ status: 'failed', lockedUntil: null, lockToken: null, runAt: jobs.lockedUntil,
+      await tx.update(jobs).set({ status: 'failed', lockedUntil: null, lockToken: null, ...this.#finish(jobs.lockedUntil),
         failureCount: nextFailure, lastError: 'Lease expired after final attempt' }).where(sql`${jobs.status} = 'running'
           and ${jobs.lockedUntil} <= ${now.toISOString()} and ${jobs.attempts} >= ${jobs.maxAttempts}`);
       const accepted = sql`((${jobs.gymId} is not null and ${nameIn(this.#handlers.keys())})
@@ -330,8 +357,9 @@ export class PostgresJobs implements Jobs, JobRecovery {
         ...(deferred ? { attempts: row.attempts - 1 } : {}),
         ...(!deferred && failed && final ? { failureCount: nextFailure } : {}),
         ...(body && (deferred || deferrals > 0) ? { payload: { ...body, deferrals: deferred ? Math.min(deferrals + 1, 30) : 0 } } : {}),
-        // A finished row's run time records when it finished: retention and failed-job lookups read it.
-        runAt: deferred ? new Date(now.getTime() + deferBackoff) : failed && !final ? new Date(now.getTime() + backoff) : now,
+        // A finished row keeps its due time and records when it finished: retention and failed-job lookups read it.
+        ...deferred ? this.#pending(new Date(now.getTime() + deferBackoff))
+          : failed && !final ? this.#pending(new Date(now.getTime() + backoff)) : this.#finish(now),
         lastError: failed || policyFailed ? (({ name, code }) => JSON.stringify({ name, code }))(describeError(failure)) : null,
         lockedUntil: null, lockToken: null,
       }).where(and(eq(jobs.id, row.id), eq(jobs.status, 'running'), eq(jobs.lockToken, row.lockToken!),
@@ -363,10 +391,10 @@ export class PostgresJobs implements Jobs, JobRecovery {
     if (!idempotencyKeys.length) return [];
     const keys = new Map(idempotencyKeys.map((key) => [hashKey(name, key), key]));
     const read = (tx: Tx) => tx.select({ id: jobs.id, key: jobs.idempotencyKey,
-      runAt: jobs.runAt }).from(jobs).where(and(eq(jobs.name, name), inArray(jobs.idempotencyKey, [...keys.keys()]),
-      eq(jobs.status, 'failed')));
+      failedAt: sql<Date>`${this.#finishedTime}`.mapWith(jobs.runAt) }).from(jobs).where(and(eq(jobs.name, name),
+      inArray(jobs.idempotencyKey, [...keys.keys()]), eq(jobs.status, 'failed')));
     const rows = await (transaction ? read(transaction.tx) : this.#database.forGym(options.gymId, read));
-    return rows.map((row) => ({ jobId: row.id, idempotencyKey: keys.get(row.key)!, failedAt: row.runAt }));
+    return rows.map((row) => ({ jobId: row.id, idempotencyKey: keys.get(row.key)!, failedAt: row.failedAt }));
   }
   /** Resets one failed job of the gym to pending with fresh attempts, keeping its ID and key; other jobs are left alone. */
   async retryFailed(jobId: string, options: { gymId: string; runAt: Date }, transaction?: JobTransaction): Promise<boolean> {
@@ -375,7 +403,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
     idSchema.parse(options.gymId);
     if (!Number.isFinite(options.runAt.getTime())) throw new Error('Invalid job time');
     const update = (tx: Tx) => tx.update(jobs).set({ status: 'pending', attempts: 0,
-      runAt: options.runAt, lockedUntil: null, lockToken: null, lastError: null, acknowledgedAt: null })
+      ...this.#pending(options.runAt), lockedUntil: null, lockToken: null, lastError: null, acknowledgedAt: null })
       .where(and(eq(jobs.id, jobId), eq(jobs.status, 'failed'))).returning({ id: jobs.id });
     const reset = await (transaction ? update(transaction.tx) : this.#database.forGym(options.gymId, update));
     return reset.length > 0;
@@ -403,10 +431,11 @@ export class PostgresJobs implements Jobs, JobRecovery {
     if (!Number.isFinite(options.at.getTime())) throw new Error('Invalid job time');
     const acknowledge = async (tx: Tx) => {
       // Keep the locked IDs in PostgreSQL so the update can handle more jobs than a parameter list fits.
-      const locked = tx.$with('locked').as(tx.select({ id: jobs.id, runAt: jobs.runAt, failureCount: jobs.failureCount })
+      const locked = tx.$with('locked').as(tx.select({ id: jobs.id, failedAt: sql`${this.#finishedTime}`.as('failed_at'),
+        failureCount: jobs.failureCount })
         .from(jobs).where(and(eq(jobs.gymId, options.gymId), unacknowledgedFailure)).orderBy(asc(jobs.id)).for('update'));
       const observed = tx.$with('observed').as(tx.select({
-        version: failedVersionOf(locked.id, locked.runAt, locked.failureCount).as('version') }).from(locked));
+        version: failedVersionOf(locked.id, locked.failedAt, locked.failureCount).as('version') }).from(locked));
       const updated = tx.$with('updated').as(tx.update(jobs).set({ acknowledgedAt: options.at })
         .where(and(eq(jobs.gymId, options.gymId), unacknowledgedFailure,
           inArray(jobs.id, tx.select({ id: locked.id }).from(locked)),
@@ -431,7 +460,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
     if (!Number.isFinite(options.at.getTime())) throw new Error('Invalid job time');
     const counted = options.countFailure ?? this.#failureCountColumn;
     const failed = await this.#database.forSystem(tx => tx.update(jobs).set({ status: 'failed', acknowledgedAt: options.at,
-      runAt: options.at, ...(counted ? { failureCount: nextFailure } : {}), lastError: options.reason, lockToken: null, lockedUntil: null })
+      ...this.#finish(options.at), ...(counted ? { failureCount: nextFailure } : {}), lastError: options.reason, lockToken: null, lockedUntil: null })
       .where(and(inArray(jobs.name, [...names]), eq(jobs.status, 'running'))));
     return failed.count;
   }
@@ -531,12 +560,14 @@ export class PostgresJobs implements Jobs, JobRecovery {
     let deleted = 0;
     for (const [status, days] of [['succeeded', succeededDays], ['failed', failedDays]] as const) {
       const before = new Date(now - days * day);
-      // Continue after the previous batch without locking rows protected from retention.
+      // Continue after the previous batch without locking rows protected from retention. A row finishes at or after
+      // its due time, so the due-time bound keeps the claim index's range scan and the finish time makes it exact.
       let after: { runAt: Date; id: string } | undefined;
       for (;;) {
         const batch = await this.#database.forSystem(async (tx) => {
           const rows = await tx.select({ id: jobs.id, runAt: jobs.runAt }).from(jobs)
-            .where(and(deletable, eq(jobs.status, status), lt(jobs.runAt, before), after
+            .where(and(deletable, eq(jobs.status, status), lt(jobs.runAt, before),
+              sql`${this.#finishedTime} < ${before.toISOString()}::timestamptz`, after
               ? sql`(${jobs.runAt}, ${jobs.id}) > (${after.runAt.toISOString()}::timestamptz, ${after.id}::uuid)` : undefined))
             .orderBy(asc(jobs.runAt), asc(jobs.id)).limit(batchSize).for('update', { skipLocked: true });
           if (rows.length) await tx.delete(jobs).where(inArray(jobs.id, rows.map((row) => row.id)));
@@ -656,8 +687,8 @@ export class PostgresJobStatsQuery implements JobStatsQuery {
         succeeded: sql<number>`count(*) filter (where ${jobs.status} = 'succeeded')::int`,
         failed: sql<number>`count(*) filter (where ${unacknowledgedFailure})::int`,
         oldest: sql<string | null>`min(${jobs.runAt}) filter (where ${jobs.status} = 'pending')`,
-        oldestFailure: sql<string | null>`min(${jobs.runAt}) filter (where ${unacknowledgedFailure})`,
-        failedVersion: failedVersionOf(jobs.id, jobs.runAt, jobs.failureCount, unacknowledgedFailure),
+        oldestFailure: sql<string | null>`min(${finishedTime(true)}) filter (where ${unacknowledgedFailure})`,
+        failedVersion: failedVersionOf(jobs.id, finishedTime(true), jobs.failureCount, unacknowledgedFailure),
       }).from(jobs).where(eq(jobs.gymId, gymId));
       if (!row) throw new Error('Missing job statistics');
       return { pending: row.pending, running: row.running, succeeded: row.succeeded, failed: row.failed,

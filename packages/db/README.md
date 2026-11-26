@@ -205,6 +205,10 @@ Migration `0043_sms_opted_out_numbers.sql` adds the gym-owned `sms_opted_out_num
 one row per gym and E.164 number that replied STOP, with the time of its latest opt-out. It
 starts empty.
 
+Migration `0044_jobs_finished_at.sql` adds the nullable `jobs.finished_at`, the time a job
+succeeded or finally failed; `run_at` keeps the time it was due. Existing rows start without
+one, and the queue reads a finished row's time from `run_at` when it has none.
+
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver

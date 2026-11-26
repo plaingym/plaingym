@@ -34,9 +34,12 @@ again, so external effects must use idempotency keys. The lock token fences ever
 heartbeat and acknowledgement so an old handler cannot overwrite its replacement.
 Retries start at one second, double per failure, and are capped at one day.
 Unregistered job names stay pending for a worker that has their handlers. A
-finished job's run time records when it succeeded or finally failed. When a
-final attempt crashes, its failure time is the lease expiry, even if the next
-worker starts much later.
+job's `run_at` is when it is due; `finished_at` is when it succeeded or finally
+failed, and a retry, a deferral or `retryFailed` clears it with the new `run_at`.
+Rows finished before that column existed, or by an older release after a rollback,
+have only `run_at`, which those releases set to the finish time, so a finished
+row's time is the later of the two. When a final attempt crashes, its failure time
+is the lease expiry, even if the next worker starts much later.
 
 `JobRecovery` (implemented by `PostgresJobs` and `FakeJobs`) lets a producer
 recover its own exhausted jobs without reading queue rows: `failedJobs(name,
@@ -71,9 +74,9 @@ exactly the gym's unacknowledged failed jobs that `failedVersion` names.
 `JobStatsQuery.get(gymId)` returns that version in `JobStats.failedVersion`.
 A shared SQL fragment computes the MD5 digest of the gym's unacknowledged failures
 in job ID order, or returns `none` when the set is empty. Each entry is
-`id:run_at:failure_count`, with the time in microseconds since the epoch, independent
-of the session's time zone. Every failure sets `run_at` to the time it
-failed and adds one to `failure_count`: a final failure after the handler ran records
+`id:failed_at:failure_count`, with the failure time (the later of `finished_at` and
+`run_at`) in microseconds since the epoch, independent of the session's time zone.
+Every failure records the time it failed and adds one to `failure_count`: a final failure after the handler ran records
 the finish time, an expired final lease its expiry, and `failInterrupted` its `at`.
 `retryFailed` never resets the count, so two failures of one job differ even when they
 record the same time. A job that failed before the column existed starts at 0 and
@@ -95,7 +98,10 @@ resume a restore that an older one stopped after rekeying, before its normal mig
 adds `failure_count`, so the restore checks for the column first: it passes
 `failInterrupted` `countFailure: false` and builds its reconciliation queue with
 `failureCountColumn: false`, whose enqueue then names only the columns it sets. The
-migration that follows gives those rows `failure_count` 0.
+migration that follows gives those rows `failure_count` 0. It does the same for
+`finished_at`: `failInterrupted` runs on a queue built with `finishedAtColumn` set to
+whether the column exists, and without it records the failure time in `run_at` as
+releases before the column did.
 
 Install-level work uses `enqueueSystem` and `handleSystem`, with `gymId: null` in
 the handler context. These separate methods keep the gym-required `Jobs` contract
@@ -228,9 +234,11 @@ a schedule's cron occurrence rows before that gym has a cursor for it, since tho
 rows are then still its watermark. Job statistics count only retained rows.
 `PostgresJobStatsQuery` reports the oldest pending scheduled time and the oldest
 final failure time separately, scoped to the requested gym and excluding install
-jobs. Each time is null when no matching rows remain. Final failures use `runAt`,
-which the worker sets when the final attempt finishes or its expired lease is
-marked failed; pending schedules never stand in for failure times.
+jobs. Each time is null when no matching rows remain. Final failures use the
+finish time (the later of `finished_at` and `run_at`), which the worker sets when
+the final attempt finishes or its expired lease is marked failed; pending schedules
+never stand in for failure times. Retention ages a row by the same finish time; it
+also bounds the scan by `run_at`, which is never later than the finish time.
 Producers must not rely on a pruned job's key: a later enqueue with that key
 creates a new job. Today's producers dedupe through durable state of their own
 (signed-link and campaign audits, `email_deliveries`, stored webhook events) or

@@ -302,6 +302,13 @@
       "when": 1795466552028,
       "tag": "0043_sms_opted_out_numbers",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1795664886595,
+      "tag": "0044_jobs_finished_at",
+      "breakpoints": true
     }
   ]
 }

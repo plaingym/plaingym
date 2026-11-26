@@ -96,9 +96,10 @@ export async function settleInterruptedBackups(database: PostgresMaintenance, sn
         .where(and(ne(backupRuns.id, snapshotId), eq(backupRuns.status, 'running'))).returning({ id: backupRuns.id });
       return settled.length + failed.length;
     });
-    const jobs = await new PostgresJobs({ database: scope, clock }).failInterrupted([manualBackupJob, 'health.backup'],
-      { at: clock.now(), reason: 'Interrupted by the restored snapshot',
-        countFailure: (await readResumeColumns(connection)).has('jobs', 'failure_count') });
+    const columns = await readResumeColumns(connection);
+    const jobs = await new PostgresJobs({ database: scope, clock, finishedAtColumn: columns.has('jobs', 'finished_at') })
+      .failInterrupted([manualBackupJob, 'health.backup'], { at: clock.now(), reason: 'Interrupted by the restored snapshot',
+        countFailure: columns.has('jobs', 'failure_count') });
     logInfo('restore.backups_settled', { runs, jobs });
   } finally { await connection.close(); }
 }
