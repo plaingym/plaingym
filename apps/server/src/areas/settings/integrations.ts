@@ -253,7 +253,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
       await tx.select({ id: paymentMethods.id }).from(paymentMethods)
         .where(and(inArray(paymentMethods.householdId, promoted.slice(index, index + 500)), isNull(paymentMethods.revokedAt)))
         .orderBy(paymentMethods.id).for('update', { noWait: true });
-    const linked =await tx.select({ id: households.id, customerId: households.stripeCustomerId }).from(households)
+    const linked = await tx.select({ id: households.id, customerId: households.stripeCustomerId }).from(households)
       .where(linkedCustomer(tx, gymId, true)).for('update', { noWait: true });
     const [kept] = await tx.select({ n: count() }).from(households)
       .where(linkedCustomer(tx, gymId, false));
