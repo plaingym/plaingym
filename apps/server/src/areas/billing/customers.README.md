@@ -43,10 +43,11 @@ which a settings save holds for its whole transaction, so it waits for a switch 
 progress. A creation reserved after the switch looked for reservations, with the
 provider resolved before the switch committed, is abandoned the same way when the
 gym's switch snapshot changed meanwhile (`stripeSwitchSnapshot`: the latest
-`integrations.stripe_test_cleared` audit, or the latest Payments save that changed
-the Stripe mode): the service
+`integrations.stripe_test_cleared` audit, the latest Payments save that changed
+the Stripe mode, or the latest setup Stripe step save that changed or removed a
+stored mode): the service
 writes the unlink audit itself (`reason: 'stripe_test_cleared'` after a clear,
-or `'stripe_mode_changed'` after a mode-changing Payments save), then starts once more. The lock and audit comparison
+or `'stripe_mode_changed'` after any other of those saves), then starts once more. The lock and audit comparison
 use `stripeWriteCurrent` in `stripe-writes.ts`, shared with the runner, refunds and
 webhook writes. Card setup starts record their customer, so a session made
 for an earlier customer is never reused (`signed-link-checkout.ts`).

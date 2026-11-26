@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { and, desc, eq, or } from 'drizzle-orm';
-// eslint-disable-next-line database/system-tables -- Compare the saved and previous Stripe mode in the gym-scoped Payments save audit.
+// eslint-disable-next-line database/system-tables -- Compare the saved and previous Stripe mode in the gym-scoped Payments save and setup Stripe step audits.
 import { sql } from 'drizzle-orm';
 import { auditEvents, type forGym, type Transaction } from '@plaingym/db';
 import { holdGymSettings } from '../settings/settings.js';
@@ -17,16 +17,20 @@ export async function latestTestSwitch(tx: Transaction, gymId: string): Promise<
 export const latestTestSwitchId = async (tx: Transaction, gymId: string): Promise<string | null> => (await latestTestSwitch(tx, gymId))?.id ?? null;
 
 const stripeSavedAction = 'integrations.stripe_saved';
+const setupStripeAction = 'setup.stripe_configured';
 /**
- * The write guard's snapshot: the gym's latest test-data clear, or the latest Payments save that changed the Stripe mode
- * (each audited in its save's transaction). A key read before either is stale even when the save had nothing to clear.
- * Cleared test data is still identified by `latestTestSwitch` alone.
+ * The write guard's snapshot: the gym's latest test-data clear, the latest Payments save that changed the Stripe mode, or
+ * the latest setup Stripe step save that changed or removed it (each audited in its save's transaction). A key read
+ * before any of them is stale even when the save had nothing to clear. Cleared test data is still identified by
+ * `latestTestSwitch` alone.
  */
 export async function stripeSwitchSnapshot(tx: Transaction, gymId: string): Promise<string | null> {
   // `<>` on purpose: a first save (no earlier mode) leaves no key to be stale, since the gym had no provider before it.
+  // A setup save also counts a removal (no resulting mode); setup audits from before the step recorded `before` never count.
   const [row] = await tx.select({ id: auditEvents.id }).from(auditEvents)
     .where(and(eq(auditEvents.targetType, 'gym'), eq(auditEvents.targetId, gymId), or(eq(auditEvents.action, stripeTestClearedAction),
-      and(eq(auditEvents.action, stripeSavedAction), sql`${auditEvents.before}->>'mode' <> ${auditEvents.after}->>'mode'`))))
+      and(eq(auditEvents.action, stripeSavedAction), sql`${auditEvents.before}->>'mode' <> ${auditEvents.after}->>'mode'`),
+      and(eq(auditEvents.action, setupStripeAction), sql`${auditEvents.before}->>'mode' is not null and (${auditEvents.after}->>'mode' is null or ${auditEvents.before}->>'mode' <> ${auditEvents.after}->>'mode')`))))
     .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id)).limit(1);
   return row?.id ?? null;
 }

@@ -180,8 +180,9 @@ holder can fail before it records a usable outcome. Under the lease, the follow-
 checks whether billing is back on, its restore has been superseded, or the latest
 check is clear for the saved Stripe mode. If any applies, it finishes before
 resolving Stripe credentials. Otherwise it resolves the provider, then rechecks
-those conditions and the Stripe switch (the latest test-data clear, or the latest
-Payments save that changed the Stripe mode) under the same gym row lock used to
+those conditions and the Stripe switch (the latest test-data clear, the latest
+Payments save that changed the Stripe mode, or the latest setup Stripe step save
+that changed or removed a stored mode) under the same gym row lock used to
 enable billing. A switch during resolution stops it, and so do Stripe settings
 saved after resolution found none. If a check still needs to run, it records its
 start under the lock. With either key mode, a switch seen during the check, after

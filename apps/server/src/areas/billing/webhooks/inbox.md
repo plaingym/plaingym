@@ -96,7 +96,8 @@ event). An event stored without `livemode` counts as test mode when it arrived
 before the gym's latest `integrations.stripe_test_cleared` audit.
 
 Dispatch reads the switch snapshot (`stripeSwitchSnapshot`: the latest test-data
-clear, or the latest Payments save that changed the Stripe mode) before resolving
+clear, the latest Payments save that changed the Stripe mode, or the latest setup
+Stripe step save that changed or removed a stored mode) before resolving
 its provider. For a test provider, `stripe-writes.ts` carries that snapshot through
 the handler's separate transactions. Each takes the gym settings lock before invoice
 or household locks and checks the snapshot again. A switch committed meanwhile rolls back the stale transaction

@@ -43,6 +43,17 @@ Status reports them as `googleSkipped` and `backupsLater`, and with backups set 
 later and step 7 the first unfinished one, `currentStep` is 8, so a reopened wizard
 resumes past both.
 
+The Stripe step (`PUT /api/setup/stripe`, `stripe-step.ts`, step 6) saves a restricted
+key (or `skip`, which removes stored credentials) under the revision and audits
+`setup.stripe_configured` with `before: { mode }`, the mode stored when the save locked
+the gym row (`null` without one), and `after` with the saved mode (`null` on skip),
+the endpoint ID and whether it was reused. Until setup finishes the owner can come
+back to change mode or remove the key, so the billing write guard
+(`stripeSwitchSnapshot`, `areas/billing/stripe-writes.ts`) counts a setup save that
+changed or removed a stored mode as a switch, as it does a mode-changing Payments
+save: billing work that read the snapshot before it writes nothing with the old key.
+A first save, a same-mode key rotation and a setup audit without `before` don't count.
+
 Backup setup first probes the destination through `settings/backup-destination.ts`
 (list, write, read and delete under the gym's prefix), refusing with `unreachable`
 without saving a key if any operation fails. It returns a new private identity once, stores only its public recipient,

@@ -5,8 +5,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- One test holds the gym row the way a settings save does.
 import { auditEvents, gyms, households, invoices, paymentAttempts, paymentMethods, type Transaction } from '@plaingym/db';
+import type { SetupStripeRequest } from '@plaingym/shared/contracts';
 import { FakePayments } from '../../../infra/payments/index.js';
-import { stripeTestClearedAction, stripeWriteScope, StripeTestModeSwitched, withProviderWrites } from '../stripe-writes.js';
+import { StripeFixtures } from '../../../infra/payments/stripe-fixtures.js';
+import { stripeProvisioner } from '../../../infra/payments/setup.js';
+import { createStripeStep } from '../../setup/stripe-step.js';
+import { stripeSwitchSnapshot, stripeTestClearedAction, stripeWriteCurrent, stripeWriteScope, StripeTestModeSwitched,
+  withProviderWrites } from '../stripe-writes.js';
 import { createChargeRunner } from './index.js';
 import { useRunnerFixture, type Fixture } from './runner.fixture.test-helper.js';
 
@@ -145,6 +150,65 @@ describe('a charge run across a switch from Stripe test mode to live', () => {
     const runner = createChargeRunner({ ...f.serviceOptions, transitions: f.transitions, payments: resolve });
     expect(await runner.charge(f.gymId, bill.id)).toEqual({ status: 'succeeded' });
     expect(resolve).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a switch through the setup wizard's Stripe step", () => {
+  type Save = { choice: 'skip' } | { choice: 'configure'; restrictedKey: string };
+  /** Puts the fixture's gym in an unfinished setup with step 5 done; each call of the result saves the Stripe step. */
+  async function setupStep(f: Fixture) {
+    const owner = await factory('authUser', f.gymId);
+    const [gym] = await db.forGym(f.gymId, tx => tx.select().from(gyms).where(eq(gyms.id, f.gymId)));
+    await db.forGym(f.gymId, tx => tx.update(gyms).set({ settings: { ...gym!.settings as object,
+      setup: { ownerId: owner.id, completed: false, completedSteps: [0, 1, 2, 3, 4, 5] } } }).where(eq(gyms.id, f.gymId)));
+    let revision = gym!.revision;
+    const accounts = new Map<string, StripeFixtures>();
+    const step = createStripeStep({ key: Buffer.alloc(32, 7), origin: 'https://gym.example.invalid', clock: f.clock, scope: db.forGym,
+      provisioner: apiKey => {
+        if (!accounts.has(apiKey)) accounts.set(apiKey, new StripeFixtures(f.gymId, undefined, accounts.size * 1000));
+        return stripeProvisioner(accounts.get(apiKey)!);
+      } });
+    const context = { gymId: f.gymId, actor: { kind: 'user', userId: owner.id } } as const;
+    return async (save: Save) => {
+      revision = (await step.configure(context, { ...save, revision } as SetupStripeRequest)).revision;
+    };
+  }
+  const snapshotOf = (f: Fixture) => db.forGym(f.gymId, tx => stripeSwitchSnapshot(tx, f.gymId));
+  const currentFor = (f: Fixture, snapshot: string | null) => db.forGym(f.gymId, tx => stripeWriteCurrent(tx, f.gymId, snapshot));
+
+  it.each<[string, Save | null, Save, boolean]>([
+    ['a switch to live', { choice: 'configure', restrictedKey: 'rk_test_SETUPA' }, { choice: 'configure', restrictedKey: 'rk_live_SETUPB' }, false],
+    ['a removal', { choice: 'configure', restrictedKey: 'rk_test_SETUPA' }, { choice: 'skip' }, false],
+    ['a same-mode rotation', { choice: 'configure', restrictedKey: 'rk_test_SETUPA' }, { choice: 'configure', restrictedKey: 'rk_test_SETUPC' }, true],
+    ['a first save from no Stripe', null, { choice: 'configure', restrictedKey: 'rk_test_SETUPA' }, true],
+  ])('%s: a snapshot read before it is checked against the saved mode', async (_name, first, then, current) => {
+    const f = await fixture(), save = await setupStep(f);
+    if (first) await save(first);
+    const snapshot = await snapshotOf(f);
+    await save(then);
+    expect(await currentFor(f, snapshot)).toBe(current);
+  });
+  it('does not count a setup audit written without the mode it replaced', async () => {
+    const f = await fixture(), save = await setupStep(f);
+    await save({ choice: 'configure', restrictedKey: 'rk_test_SETUPA' });
+    const snapshot = await snapshotOf(f);
+    await db.forGym(f.gymId, tx => tx.insert(auditEvents).values({ gymId: f.gymId, actorKind: 'system', action: 'setup.stripe_configured',
+      targetType: 'gym', targetId: f.gymId, before: null, after: { configured: true, mode: 'live', endpointId: 'we_old', endpointReused: false },
+      occurredAt: f.clock.now() }));
+    expect(await snapshotOf(f)).toBe(snapshot);
+    expect(await currentFor(f, snapshot)).toBe(true);
+  });
+  it('reserves nothing with a test provider resolved before a setup switch to live, and charges with the provider resolved again', async () => {
+    const f = await fixture(), bill = await invoice(f), create = vi.spyOn(f.provider, 'createCharge'), save = await setupStep(f);
+    await save({ choice: 'configure', restrictedKey: 'rk_test_SETUPA' });
+    const { runner, oldCalls, resolutions } = switchingRunner(f, () => save({ choice: 'configure', restrictedKey: 'rk_live_SETUPB' }));
+    expect(await runner.charge(f.gymId, bill.id)).toEqual({ status: 'succeeded' });
+    expect(resolutions()).toBe(2);
+    for (const call of oldCalls) expect(call).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledTimes(1);
+    const state = await f.read();
+    expect(state.attempts).toMatchObject([{ attemptNumber: 1, status: 'succeeded' }]);
+    expect(state.audits.filter(row => row.action === 'billing.runner.reserved')).toHaveLength(1);
   });
 });
 

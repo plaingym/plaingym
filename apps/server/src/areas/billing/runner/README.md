@@ -148,9 +148,12 @@ its whole save. The reservation first takes `holdGymSettings` (before the invoic
 lock, in the switch's order), so it waits for a switch in progress, and compares the
 gym's switch snapshot with the one read before the provider was resolved. The
 snapshot (`stripeSwitchSnapshot`) is the latest `integrations.stripe_test_cleared`
-audit or the latest Payments save that changed the Stripe mode, so a mode change
-with no test data to clear counts too; cleared test data is still identified by the
-clear audit alone. If a switch committed in between, the provider may hold the
+audit, the latest Payments save that changed the Stripe mode, or the latest setup
+wizard Stripe step save that changed or removed a stored mode
+(`setup.stripe_configured` with `before.mode` set), so a mode change with no test
+data to clear counts too; a same-mode key rotation, a first save and a setup audit
+without `before` don't. Cleared test data is still identified by the clear audit
+alone. If a switch committed in between, the provider may hold the
 old test key: nothing is reserved, and the charge starts again once with the
 provider resolved again (a second change skips with `collection_changed`). Before
 releasing an invoice's Checkout session or action-needed PaymentIntent, the charge

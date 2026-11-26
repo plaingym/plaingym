@@ -104,6 +104,8 @@ export function createStripeStep(options: { key: Buffer; origin: string; clock?:
           throw new AppError('not_found', 'Setup not found');
         const guard = revisionGuard(gyms.revision, input.revision);
         assertRevised(gym.revision === input.revision ? [gym] : []);
+        // The mode stored when this save locked the gym row: the billing write guard counts a change or removal of it.
+        const was = readStripeConfig(options.key, gym.stripeConfig, context.gymId);
         const paused = config && await pauseRestoredBillingForStripe(tx, context, gym.billingEnabled, clock.now(), config.mode);
         const updated = assertRevised(await tx.update(gyms).set({
           ...(paused ? { billingEnabled: false } : {}),
@@ -113,7 +115,7 @@ export function createStripeStep(options: { key: Buffer; origin: string; clock?:
           revision: guard.next, updatedAt: clock.now(),
         }).where(and(eq(gyms.id, context.gymId), guard.matches)).returning());
         await writeAudit(tx, { gymId: context.gymId, actorKind: 'user', actorUserId: context.actor.userId,
-          action: 'setup.stripe_configured', targetType: 'gym', targetId: context.gymId,
+          action: 'setup.stripe_configured', targetType: 'gym', targetId: context.gymId, before: { mode: was?.mode ?? null },
           after: { configured: !!config, mode: config?.mode ?? null, endpointId: config?.endpointId ?? null, endpointReused: reused }, occurredAt: clock.now() });
         return { configured: !!config, mode: config?.mode ?? null, webhookRegistered: !!config, revision: updated.revision };
       });

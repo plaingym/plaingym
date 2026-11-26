@@ -183,6 +183,16 @@ it('deletes the stored endpoint when Stripe is skipped after being configured', 
   expect(await stored(id)).toBeNull();
   expect(ids(apiKey)).toEqual([foreign]);
 });
+it('audits the mode stored when each save locked the gym row and the mode it saved', async () => {
+  const { id, context } = await newGym();
+  await service.configure(context, { choice: 'configure', revision: 1, restrictedKey: 'rk_test_MODESFIRST' });
+  await service.configure(context, { choice: 'configure', revision: 2, restrictedKey: 'rk_live_MODESSECOND' });
+  await service.configure(context, { choice: 'skip', revision: 3 });
+  const audits = await database.forGym(id, (tx) => tx.select().from(auditEvents)
+    .where(eq(auditEvents.action, 'setup.stripe_configured')).orderBy(auditEvents.createdAt, auditEvents.id));
+  expect(audits.map(({ before, after }) => ({ before, mode: (after as { mode: string | null }).mode }))).toEqual([
+    { before: { mode: null }, mode: 'test' }, { before: { mode: 'test' }, mode: 'live' }, { before: { mode: 'live' }, mode: null }]);
+});
 it('deletes nothing when the revision changes while the new endpoint is registered', async () => {
   const { id, context } = await newGym(), apiKey = 'rk_test_RACEKEPT';
   await service.configure(context, { choice: 'configure', revision: 1, restrictedKey: 'rk_test_RACEOLD' });
