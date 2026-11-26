@@ -40,10 +40,12 @@ sees its sign-in email, methods and households and changes its email.
 The header stays at the top while the page scrolls, and the page's scroll padding keeps a control focused while
 scrolling up from hiding under it. On a screen 500 px tall or less (a phone in landscape) it scrolls away with the page
 instead. On a phone, **Menu** opens the navigation as a panel under the header, with the page behind locked and inert
-(the skip link, the demo rows and the source footer too), and focus on the first link. The panel is as tall as its links,
-but stops 3rem short of the screen's bottom, so a strip of backdrop shows below it; it never gets shorter than one link.
-**Menu** again, a link, Escape (which returns focus to **Menu**), a press outside the panel, another navigation or a
-wider window closes it. On a wider screen the navigation stays beside the page, under the header, and scrolls on its own.
+(the skip link, the demo rows with any error message shown when it opens, and the source footer too), and focus on the
+first link. The panel is as tall as its links, but stops 3rem short of the screen's bottom, so a strip of backdrop shows
+below it; it never gets shorter than one link, and when one wouldn't fit below the header, the panel moves up over the
+header's lower edge so that one shows. **Menu** again, a link, Escape (which returns focus to **Menu**), a press outside
+the panel, another navigation or a wider window closes it. A tap or press on the demo rows above the header only closes
+it. On a wider screen the navigation stays beside the page, under the header, and scrolls on its own.
 While the browser says it is offline, the portal's reads wait instead of failing, and a banner says so (before the
 portal has opened, above the loading state). A
 section whose code is already loaded shows its loading state when opened then, and its reads run once the browser is

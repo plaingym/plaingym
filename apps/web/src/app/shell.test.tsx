@@ -37,6 +37,13 @@ function keepMaxHeight(element: HTMLElement) {
   let written = '';
   Object.defineProperty(element.style, 'maxHeight', { configurable: true, get: () => written, set: (value: string) => { written = value; } });
 }
+/** Sets the window's height, and returns what puts it back. */
+function windowHeight(height: number) {
+  const before = window.innerHeight;
+  const set = (value: number) => { Object.defineProperty(window, 'innerHeight', { configurable: true, writable: true, value }); };
+  set(height);
+  return () => set(before);
+}
 function start(service: ShellServices, path = '/login') {
   const router = createAppRouter(createMemoryHistory({ initialEntries: [path] }));
   render(<App services={service} router={router} />);
@@ -364,6 +371,8 @@ describe('admin shell', () => {
     Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get() { return this.tagName === 'HEADER' ? 56 : 0; } });
     Object.defineProperty(HTMLElement.prototype, 'offsetTop', { configurable: true, get() { return this.classList.contains('relative') ? contentTop : 0; } });
     Object.defineProperty(window, 'scrollY', { configurable: true, get: () => currentScroll });
+    // Taller than any top measured here, so the panel starts where the content does.
+    const restoreHeight = windowHeight(2000);
     try {
       const state = { ...anonymous, session: { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false } };
       const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });
@@ -384,6 +393,7 @@ describe('admin shell', () => {
       await user.click(menu);
       await waitFor(() => expect(navigation.style.top).toBe('1200px'));
     } finally {
+      restoreHeight();
       for (const [key, descriptor] of [['offsetHeight', offsetHeight], ['offsetTop', offsetTop]] as const)
         if (descriptor) Object.defineProperty(HTMLElement.prototype, key, descriptor);
         else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[key];
@@ -406,6 +416,7 @@ describe('admin shell', () => {
       disconnect() { callbacks.clear(); }
     }
     vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    const restoreHeight = windowHeight(2000);
     try {
       const state = { ...anonymous, session: { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false } };
       const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });
@@ -420,6 +431,7 @@ describe('admin shell', () => {
       for (const callback of callbacks) callback([], {} as ResizeObserver);
       await waitFor(() => expect(navigation.style.top).toBe('1000px'));
     } finally {
+      restoreHeight();
       for (const [key, descriptor] of [['offsetHeight', offsetHeight], ['offsetTop', offsetTop]] as const)
         if (descriptor) Object.defineProperty(HTMLElement.prototype, key, descriptor);
         else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[key];
@@ -528,6 +540,80 @@ describe('admin shell', () => {
     await user.keyboard('{Escape}');
     expect(menu.getAttribute('aria-expanded')).toBe('false');
     expect(link.closest('[inert]')).toBeNull();
+  });
+  it('takes a press above the phone menu and closes it on the click, so the banner under the press is never clicked', async () => {
+    const offsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get() { return this.tagName === 'HEADER' ? 57 : 0; } });
+    try {
+      const clicked = vi.fn();
+      const state = { ...anonymous, session: { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false } };
+      const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}
+        banner={<a href="/admin/updates" onClick={clicked}>Update available</a>}><p>Child content</p></AdminShell> });
+      render(<RouterProvider router={createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) })} />);
+      const user = userEvent.setup();
+      const menu = await screen.findByRole('button', { name: 'Menu' }), link = screen.getByRole('link', { name: 'Update available' });
+      const cover = () => document.querySelector<HTMLElement>('div[aria-hidden="true"].top-0');
+      expect(cover()).toBeNull();
+      await user.click(menu);
+      const above = cover()!;
+      expect([...above.classList]).toEqual(expect.arrayContaining(['fixed', 'inset-x-0', 'top-0', 'z-10', 'md:hidden']));
+      expect(above.style.height).toBe('57px');
+      // The press leaves the menu open, so what is under the cover stays inert until the click.
+      fireEvent.pointerDown(above);
+      expect(menu.getAttribute('aria-expanded')).toBe('true');
+      expect(link.closest('[inert]')).not.toBeNull();
+      expect(above.closest('[inert]')).toBeNull();
+      fireEvent.click(above);
+      expect(menu.getAttribute('aria-expanded')).toBe('false');
+      expect(cover()).toBeNull();
+      expect(clicked).not.toHaveBeenCalled();
+    } finally {
+      if (offsetHeight) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', offsetHeight);
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetHeight;
+    }
+  });
+  it('starts the phone menu high enough to show one link when the content above leaves less room than that', async () => {
+    const offsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    const offsetTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetTop');
+    let contentTop = 280;
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get() { return this.tagName === 'HEADER' ? 57 : 0; } });
+    Object.defineProperty(HTMLElement.prototype, 'offsetTop', { configurable: true, get() { return this.classList.contains('relative') ? contentTop : 0; } });
+    const restoreHeight = windowHeight(300);
+    document.documentElement.style.fontSize = '16px';
+    try {
+      const state = { ...anonymous, session: { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false } };
+      const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });
+      render(<RouterProvider router={createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) })} />);
+      const user = userEvent.setup();
+      const opener = await screen.findByRole('button', { name: 'Menu' });
+      const navigation = screen.getByRole('navigation', { name: 'Gym navigation' });
+      keepMaxHeight(navigation);
+      await user.click(opener);
+      // One link's floor is 3.75rem and the border, 61px.
+      const at = (top: number, layer: 'z-20' | 'z-40', menuTop: number) => {
+        expect(navigation.style.top).toBe(`${top}px`);
+        expect(navigation.classList).toContain(layer);
+        expect(navigation.classList).not.toContain(layer === 'z-20' ? 'z-40' : 'z-20');
+        expect(navigation.style.maxHeight).toBe(`max(calc(100dvh - ${menuTop}px - 3rem), calc(3.75rem + 1px))`);
+        // The backdrop and the cover keep meeting at the top of the content.
+        expect(document.querySelector<HTMLElement>('div[aria-hidden="true"].bottom-0')!.style.top).toBe(`${menuTop}px`);
+        expect(document.querySelector<HTMLElement>('div[aria-hidden="true"].top-0')!.style.height).toBe(`${menuTop}px`);
+      };
+      await waitFor(() => at(239, 'z-40', 280));
+      // A taller screen moves the capped panel with it, though the content above hasn't moved.
+      window.innerHeight = 320;
+      act(() => { window.dispatchEvent(new Event('resize')); });
+      at(259, 'z-40', 280);
+      contentTop = 100;
+      act(() => { window.dispatchEvent(new Event('resize')); });
+      at(100, 'z-20', 100);
+    } finally {
+      restoreHeight();
+      document.documentElement.style.fontSize = '';
+      for (const [key, descriptor] of [['offsetHeight', offsetHeight], ['offsetTop', offsetTop]] as const)
+        if (descriptor) Object.defineProperty(HTMLElement.prototype, key, descriptor);
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[key];
+    }
   });
   it('moves the open phone menu when content above the shell resizes the page', async () => {
     const offsetTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetTop');

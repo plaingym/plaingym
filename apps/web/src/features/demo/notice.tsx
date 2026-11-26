@@ -124,9 +124,9 @@ export function DemoShell({ children }: { children: ReactNode }) {
   const status: DemoDiscoveryStatus = discovery.isError || expired ? 'error' : discovery.isPending ? 'pending' : 'ready';
   return <DemoErrorPlacement.Provider value={{ menuOpen, setMenuOpen, cards, addCard }}>
     <DemoContext.Provider value={status === 'error' ? undefined : mode}><DiscoveryStatusContext.Provider value={status}><LoginContext.Provider value={login}>
-    {tokenSaveFailed && <div className="space-y-3 p-4"><Alert key={tokenSaveAttempt} variant="error" focusOnReveal role="alert">{t('kiosk/kiosk:retrySaveError')}</Alert>
+    {tokenSaveFailed && <div data-menu-covers className="space-y-3 p-4"><Alert key={tokenSaveAttempt} variant="error" focusOnReveal role="alert">{t('kiosk/kiosk:retrySaveError')}</Alert>
       <Button type="button" onClick={() => setTokenSaveAttempt(value => value + 1)}>{t('shell/shell:retry')}</Button></div>}
-    {(discovery.isError || expired) && <div className="p-4" role="alert">
+    {(discovery.isError || expired) && <div data-menu-covers className="p-4" role="alert">
       <p>{t('demo/demo:error')}</p><Button type="button" onClick={() => { void refetch(); }}>{t('shell/shell:retry')}</Button>
     </div>}
     {copyToken ? handoffError ? <div className="space-y-3 p-4"><Alert key={handoffSaveAttempt} variant="error" focusOnReveal={handoffSaveFailed}>{t(handoffSaveFailed ? 'kiosk/kiosk:retrySaveError' : 'demo/demo:handoffError')}</Alert>

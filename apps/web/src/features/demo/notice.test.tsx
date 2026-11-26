@@ -235,6 +235,33 @@ it('lets an open phone menu make the demo rows inert, and restores them after', 
   fireEvent.click(toggle);
   expect(rows.inert).toBe(false);
 });
+it.each(['discovery', 'token save'] as const)('lets an open phone menu make the %s error and its retry inert, and restores them after', async failure => {
+  if (failure === 'discovery') fetcher.mockImplementation(async () => Response.json({}, { status: 500 }));
+  else {
+    window.history.replaceState(null, '', '/demo#kioskToken=demo-device');
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+    fetcher.mockImplementation(async () => sandbox());
+  }
+  function Menu() { useMenuCovers(true); return null; }
+  function Opener() {
+    const [open, setOpen] = useState(false);
+    return <><button type="button" onClick={() => setOpen(!open)}>Toggle menu</button>{open && <Menu />}</>;
+  }
+  // The token-save error holds back the page, so the menu's stand-in renders beside the shell.
+  start(undefined, <></>);
+  render(<Opener />);
+  const retry = await screen.findByRole('button', { name: 'Try again' });
+  expect(screen.getByRole('alert').textContent).toContain(failure === 'discovery' ? 'The demo is unavailable' : 'save');
+  const block = retry.closest<HTMLElement>('[data-menu-covers]')!;
+  expect(block).not.toBeNull();
+  expect(block.contains(screen.getByRole('alert'))).toBe(true);
+  block.inert = false;
+  const toggle = screen.getByRole('button', { name: 'Toggle menu' });
+  fireEvent.click(toggle);
+  expect(block.inert).toBe(true);
+  fireEvent.click(toggle);
+  expect(block.inert).toBe(false);
+});
 it('keeps the copy dialog outside what an open phone menu makes inert, so Tab still reaches its controls', async () => {
   fetcher.mockResolvedValue(Response.json({ data: { mode: 'showcase', expiresAt: '2099-01-01T00:00:00.000Z', join: false } }));
   start();

@@ -841,6 +841,66 @@ it('stops the open phone menu short of the screen\'s bottom and makes what it co
     expect([link.inert, footer.inert]).toEqual([false, false]);
   } finally { link.remove(); footer.remove(); }
 });
+it('takes a press above the phone menu and closes it on the click, so what is above the portal is never clicked', async () => {
+  const rows = document.createElement('div'), control = document.createElement('button'), clicked = vi.fn();
+  control.addEventListener('click', clicked);
+  rows.setAttribute('data-menu-covers', ''); rows.inert = false; rows.append(control); document.body.prepend(rows);
+  try {
+    portal(ids.first);
+    const user = userEvent.setup(), { menu } = await portalMenu(), header = screen.getByRole('banner');
+    vi.spyOn(header, 'getBoundingClientRect').mockImplementation(() => ({ bottom: 121 }) as DOMRect);
+    const cover = () => document.querySelector<HTMLElement>('div[aria-hidden="true"].top-0');
+    expect(cover()).toBeNull();
+    await user.click(menu);
+    const above = cover()!;
+    expect([...above.classList]).toEqual(expect.arrayContaining(['fixed', 'inset-x-0', 'top-0', 'z-10', 'md:hidden']));
+    expect(above.style.height).toBe('121px');
+    // The press leaves the menu open, so what is under the cover stays inert until the click.
+    act(() => { above.dispatchEvent(new Event('pointerdown', { bubbles: true })); });
+    expect(menu.getAttribute('aria-expanded')).toBe('true');
+    expect(rows.inert).toBe(true);
+    expect(above.closest('[inert]')).toBeNull();
+    await user.click(above);
+    expect(menu.getAttribute('aria-expanded')).toBe('false');
+    expect(cover()).toBeNull();
+    expect(rows.inert).toBe(false);
+    expect(clicked).not.toHaveBeenCalled();
+  } finally { rows.remove(); }
+});
+it('starts the phone menu high enough to show one link when the header leaves less room than that', async () => {
+  const innerHeight = window.innerHeight;
+  Object.defineProperty(window, 'innerHeight', { configurable: true, writable: true, value: 300 });
+  document.documentElement.style.fontSize = '16px';
+  try {
+    portal(ids.first);
+    const user = userEvent.setup(), { menu, nav } = await portalMenu(), header = screen.getByRole('banner');
+    let bottom = 280;
+    vi.spyOn(header, 'getBoundingClientRect').mockImplementation(() => ({ bottom }) as DOMRect);
+    keepMaxHeight(nav);
+    await user.click(menu);
+    // One link's floor is 4.25rem and the border, 69px.
+    const at = (top: number, layer: 'z-20' | 'z-40', menuTop: number) => {
+      expect(nav.style.top).toBe(`${top}px`);
+      expect(nav.classList).toContain(layer);
+      expect(nav.classList).not.toContain(layer === 'z-20' ? 'z-40' : 'z-20');
+      expect(nav.style.maxHeight).toBe(`max(calc(100dvh - ${menuTop}px - 3rem), calc(4.25rem + 1px))`);
+      // The backdrop and the cover keep meeting under the header.
+      expect(document.querySelector<HTMLElement>('div[aria-hidden="true"].bottom-0')!.style.top).toBe(`${menuTop}px`);
+      expect(document.querySelector<HTMLElement>('div[aria-hidden="true"].top-0')!.style.height).toBe(`${menuTop}px`);
+    };
+    at(231, 'z-40', 280);
+    // A taller screen moves the capped panel with it, though the header hasn't moved.
+    window.innerHeight = 320;
+    act(() => { window.dispatchEvent(new Event('resize')); });
+    at(251, 'z-40', 280);
+    bottom = 100;
+    act(() => { window.dispatchEvent(new Event('scroll')); });
+    at(100, 'z-20', 100);
+  } finally {
+    Object.defineProperty(window, 'innerHeight', { configurable: true, writable: true, value: innerHeight });
+    document.documentElement.style.fontSize = '';
+  }
+});
 it('keeps the open phone menu under the header as the page around it resizes or scrolls', async () => {
   const observers = new Set<{ callback: ResizeObserverCallback; observed: Set<Element> }>();
   vi.stubGlobal('ResizeObserver', class {

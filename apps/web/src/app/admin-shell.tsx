@@ -43,9 +43,11 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
   const menuButton = useRef<HTMLButtonElement>(null), nav = useRef<HTMLElement>(null);
   const header = useRef<HTMLElement>(null), content = useRef<HTMLDivElement>(null), bannerRef = useRef<HTMLDivElement>(null);
   const [menuTop, setMenuTop] = useState<number>();
-  const backdrop = useRef<HTMLDivElement>(null);
-  // The backdrop closes the menu on its click: gone on the press instead, a tap would land on the page under it.
-  const [refs] = useState(() => [menuButton, nav, backdrop]);
+  const [capTop, setCapTop] = useState<number>();
+  const backdrop = useRef<HTMLDivElement>(null), cover = useRef<HTMLDivElement>(null);
+  // The backdrop, and the cover over what is above the menu, close it on their click: gone on the press instead, a tap
+  // would land on what is under them.
+  const [refs] = useState(() => [menuButton, nav, backdrop, cover]);
   const [close] = useState(() => () => setOpen(false));
   useDismiss(open, close, refs, menuButton);
   useMenuCovers(open);
@@ -66,13 +68,16 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
   // The content container is observed too: showing or hiding a banner above it moves the menu without resizing the header.
   // So is the page: content above the shell moves the menu without resizing anything in it.
   useLayoutEffect(() => {
-    if (!open) { setMenuTop(undefined); return; }
+    if (!open) { setMenuTop(undefined); setCapTop(undefined); return; }
     const measure = () => {
       const headerHeight = header.current?.offsetHeight ?? 0;
       let contentTop = 0;
       for (let node: HTMLElement | null = content.current; node; node = node.offsetParent as HTMLElement | null) contentTop += node.offsetTop;
       const top = Math.max(headerHeight, contentTop - window.scrollY);
       setMenuTop((current) => current === top ? current : top);
+      // The lowest the panel can start and still show one link: its height floor above the screen's bottom.
+      const lowest = window.innerHeight - (parseFloat(getComputedStyle(document.documentElement).fontSize) * 3.75 + 1);
+      setCapTop(top > lowest ? lowest : undefined);
     };
     measure();
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
@@ -136,10 +141,13 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
     <div ref={bannerRef} inert={open}>{banner}</div>
     <div ref={content} className="relative flex flex-1">
       {open && <div ref={backdrop} aria-hidden="true" onClick={close} style={menuTop === undefined ? undefined : { top: menuTop }} className="fixed inset-x-0 bottom-0 z-10 bg-foreground/20 md:hidden" />}
-      {/* The open panel is as tall as its links, but stops 3rem short of the screen's bottom so a strip of backdrop shows. It never gets shorter than one link. */}
+      {/* Takes the presses above the menu, under the header: the banner and demo rows there are inert, so a tap would close the menu on the press and then click them. */}
+      {open && menuTop !== undefined && <div ref={cover} aria-hidden="true" onClick={close} style={{ height: menuTop }} className="fixed inset-x-0 top-0 z-10 md:hidden" />}
+      {/* The open panel is as tall as its links, but stops 3rem short of the screen's bottom so a strip of backdrop shows. It never gets shorter than one link,
+          and when one wouldn't fit below its top, it starts higher, over the header's lower edge if need be. */}
       <nav ref={nav} id="admin-navigation" aria-label={t('shell/shell:navigation')}
-        style={open && menuTop !== undefined ? { top: menuTop, maxHeight: `max(calc(100dvh - ${menuTop}px - 3rem), calc(3.75rem + 1px))` } : undefined}
-        className={`${open ? `fixed inset-x-0 z-20 block${menuTop === undefined ? ' max-h-dvh' : ''}` : 'hidden'} overflow-y-auto overscroll-contain border-b border-border bg-background p-2 shadow-lg
+        style={open && menuTop !== undefined ? { top: capTop ?? menuTop, maxHeight: `max(calc(100dvh - ${menuTop}px - 3rem), calc(3.75rem + 1px))` } : undefined}
+        className={`${open ? `fixed inset-x-0 ${capTop === undefined ? 'z-20' : 'z-40'} block${menuTop === undefined ? ' max-h-dvh' : ''}` : 'hidden'} overflow-y-auto overscroll-contain border-b border-border bg-background p-2 shadow-lg
           md:sticky md:top-header md:bottom-auto md:block md:max-h-[calc(100dvh-var(--spacing-header))] md:w-60 md:shrink-0 md:self-start md:border-b-0 md:border-r md:p-3 md:shadow-none`}>
         <div className="space-y-4">{adminNavigationGroups(entriesToShow).map(group => <section key={group.id} aria-labelledby={'nav-' + group.id}>
           <h2 id={'nav-' + group.id} className="hidden px-3 pb-1 text-xs font-semibold text-muted-foreground md:block">{t('shell/shell:nav.' + group.id)}</h2>

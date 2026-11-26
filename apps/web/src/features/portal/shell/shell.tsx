@@ -109,10 +109,11 @@ export function PortalLayout({ name, person, scope, entries, children, onSignOut
     account?: boolean }) {
   const [open, setOpen] = useState(false), [online, setOnline] = useState(navigator.onLine);
   const root = useRef<HTMLDivElement>(null), header = useRef<HTMLElement>(null);
-  const menuButton = useRef<HTMLButtonElement>(null), nav = useRef<HTMLElement>(null), backdrop = useRef<HTMLDivElement>(null);
-  const [headerHeight, setHeaderHeight] = useState(0), [menuTop, setMenuTop] = useState<number>();
-  // The backdrop closes the menu on its click: gone on the press instead, a tap would land on the page under it.
-  const [refs] = useState(() => [menuButton, nav, backdrop]);
+  const menuButton = useRef<HTMLButtonElement>(null), nav = useRef<HTMLElement>(null), backdrop = useRef<HTMLDivElement>(null), cover = useRef<HTMLDivElement>(null);
+  const [headerHeight, setHeaderHeight] = useState(0), [menuTop, setMenuTop] = useState<number>(), [capTop, setCapTop] = useState<number>();
+  // The backdrop, and the cover over what is above the menu, close it on their click: gone on the press instead, a tap
+  // would land on what is under them.
+  const [refs] = useState(() => [menuButton, nav, backdrop, cover]);
   const [close] = useState(() => () => setOpen(false));
   useDismiss(open, close, refs, menuButton);
   useMenuCovers(open);
@@ -133,7 +134,11 @@ export function PortalLayout({ name, person, scope, entries, children, onSignOut
       const element = header.current;
       // On a short screen the header scrolls away with the page, so it takes no room at the top.
       setHeaderHeight(element && getComputedStyle(element).position === 'sticky' ? element.offsetHeight : 0);
-      setMenuTop(open ? Math.max(0, element?.getBoundingClientRect().bottom ?? 0) : undefined);
+      const top = open ? Math.max(0, element?.getBoundingClientRect().bottom ?? 0) : undefined;
+      setMenuTop(top);
+      // The lowest the panel can start and still show one link: its height floor above the screen's bottom.
+      const lowest = window.innerHeight - (parseFloat(getComputedStyle(document.documentElement).fontSize) * 4.25 + 1);
+      setCapTop(top !== undefined && top > lowest ? lowest : undefined);
     };
     measure();
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
@@ -184,9 +189,12 @@ export function PortalLayout({ name, person, scope, entries, children, onSignOut
     </header>
     <div className="flex min-w-0 flex-1 flex-col md:flex-row">
       {open && <div ref={backdrop} aria-hidden="true" className="fixed inset-x-0 bottom-0 z-10 bg-foreground/20 md:hidden" style={{ top: menuTop }} onClick={close} />}
-      {/* The open panel is as tall as its links, but stops 3rem short of the screen's bottom so a strip of backdrop shows. It never gets shorter than one link. */}
-      <nav ref={nav} id="portal-navigation" aria-label={text('navigation')} style={open && menuTop !== undefined ? { top: menuTop, maxHeight: `max(calc(100dvh - ${menuTop}px - 3rem), calc(4.25rem + 1px))` } : undefined}
-        className={`${open ? 'fixed inset-x-0 z-20 block overflow-y-auto overscroll-contain bg-background shadow-lg' : 'hidden'} border-b border-border p-3
+      {/* Takes the presses above the menu, under the header: the demo rows there are inert, so a tap would close the menu on the press and then click them. */}
+      {open && menuTop !== undefined && <div ref={cover} aria-hidden="true" className="fixed inset-x-0 top-0 z-10 md:hidden" style={{ height: menuTop }} onClick={close} />}
+      {/* The open panel is as tall as its links, but stops 3rem short of the screen's bottom so a strip of backdrop shows. It never gets shorter than one link,
+          and when one wouldn't fit below its top, it starts higher, over the header's lower edge if need be. */}
+      <nav ref={nav} id="portal-navigation" aria-label={text('navigation')} style={open && menuTop !== undefined ? { top: capTop ?? menuTop, maxHeight: `max(calc(100dvh - ${menuTop}px - 3rem), calc(4.25rem + 1px))` } : undefined}
+        className={`${open ? `fixed inset-x-0 ${capTop === undefined ? 'z-20' : 'z-40'} block overflow-y-auto overscroll-contain bg-background shadow-lg` : 'hidden'} border-b border-border p-3
           md:sticky md:top-[var(--portal-header-height)] md:bottom-auto md:block md:max-h-[calc(100dvh-var(--portal-header-height))] md:w-56 md:shrink-0 md:self-start md:overflow-y-auto md:border-b-0 md:border-r md:shadow-none`}>
         <ul className="space-y-1">{entries.map(entry => <li key={entry.id}><Link to={entry.href} onClick={() => setOpen(false)} className="flex min-h-11 items-center rounded-md px-3 hover:bg-muted" activeOptions={{ exact: true }} activeProps={{ className: 'bg-muted font-semibold', 'aria-current': 'page' }}>{t(entry.labelKey)}</Link></li>)}</ul>
       </nav>

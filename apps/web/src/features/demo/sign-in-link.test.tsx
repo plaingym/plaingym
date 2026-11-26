@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { StrictMode, type ReactNode } from 'react';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, expect, it, vi } from 'vitest';
 import { ShellServicesContext } from '../../app/context.js';
@@ -42,7 +42,7 @@ it('moves a single role sign-in error between the showcase card, menu and fallba
   fireEvent.click(within(card).getByRole('button', { name: t('demo/demo:owner') }));
   const alert = await within(card).findByRole('alert');
   expect(alert.textContent).toBe(t('demo/demo:error'));
-  expect(document.activeElement).toBe(alert);
+  await waitFor(() => expect(document.activeElement).toBe(alert));
   expect(screen.getAllByRole('alert')).toEqual([alert]);
   expect(within(bar).queryByRole('alert')).toBeNull();
 
