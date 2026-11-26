@@ -168,8 +168,42 @@ export async function withPreviousTree(commit, operation, runGit = gitChild, war
   }
 }
 
-/** Keep older assertions, while controlling configuration, migration and the project to clean after a hard timeout.
- * Refuse an unfamiliar harness rather than silently running the wrong configuration.
+/**
+ * Jobs a bare install runs, queued as this release writes them, plus fields the older release doesn't know. A change
+ * to the payload of such a job adds it here, so the older worker proves it can still finish it after a rollback.
+ */
+export const newerReleaseJobs = [{
+  name: 'intake-rate-limits.sweep',
+  envelope: { version: 1, timezone: 'UTC', value: { addedByNewerRelease: true }, addedByNewerRelease: true },
+}];
+
+/** Harness source that queues each newer-release job as a pending system job and requires the older worker to finish it. */
+function newerJobSteps() {
+  const literal = (value) => `'${value.replaceAll("'", "''")}'`;
+  return newerReleaseJobs.map(({ name, envelope }) => {
+    const id = randomUUID();
+    const insert = `INSERT INTO jobs (id, gym_id, name, payload, run_at, attempts, max_attempts, status, idempotency_key)
+    VALUES ('${id}', NULL, ${literal(name)}, ${literal(JSON.stringify(envelope))}::jsonb, now(), 0, 3, 'pending', 'previous-smoke-newer-${id}')`;
+    const select = `SELECT status || ':' || coalesce(last_error, '') FROM jobs WHERE id = '${id}'`;
+    return `  // The older worker finishes a job queued as the newer release writes it.
+  {
+    sql(${JSON.stringify(insert)});
+    const deadline = Date.now() + 60_000;
+    for (;;) {
+      const state = sql(${JSON.stringify(select)}).trim();
+      if (state === 'succeeded:') break;
+      if (Date.now() > deadline) assert.fail(${JSON.stringify(`Newer release job ${name} did not succeed: `)} + state);
+      await new Promise((resolveWait) => setTimeout(resolveWait, 1000));
+    }
+    sql(${JSON.stringify(`DELETE FROM jobs WHERE id = '${id}'`)});
+    console.log(${JSON.stringify(`PASS: newer release job ${name} finished on the previous image.`)});
+  }
+`;
+  }).join('');
+}
+
+/** Keep older assertions, while controlling configuration, migration and the project to clean after a hard timeout,
+ * and add the newer-release jobs. Refuse an unfamiliar harness rather than silently running the wrong configuration.
  */
 export function adaptPreviousSmoke(source, deployment, currentDeployment, project) {
   const replace = (pattern, value) => {
@@ -192,6 +226,9 @@ const compose = (args, options) => {
   try { return docker([...(migrating ? migrationPrefix : prefix), ...args], options); }
   catch (error) { throw new Error((migrating ? 'Migrate new image under current deployment files' : 'Run previous image under selected deployment files') + ': ' + error.message, { cause: error }); }
 };`);
+  const marker = '  // Rollback availability is read-only and must terminate with Postgres down, including pool startup/cleanup.';
+  replace(/^ {2}\/\/ Rollback availability is read-only and must terminate with Postgres down, including pool startup\/cleanup\.$/m,
+    newerJobSteps() + marker);
   if (deployment === currentDeployment) source = compatibilityAssertions(source);
   return source;
 }

@@ -90,6 +90,7 @@ process.exit(0);
   compose(['exec', '-T', 'app', '/app/deploy/database.sh', 'migrate']);
   assert.equal(compose(['exec', '-T', 'caddy', 'cat', '/proc/sys/net/ipv4/tcp_wmem'])
   const caPath =
+  // Rollback availability is read-only and must terminate with Postgres down, including pool startup/cleanup.
 */
 `;
   const stub = (name, source) => writeFileSync(join(directory, name),

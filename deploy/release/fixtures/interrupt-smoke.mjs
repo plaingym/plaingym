@@ -28,6 +28,7 @@ if (false) {
   compose(['exec', '-T', 'app', '/app/deploy/database.sh', 'migrate']);
   assert.equal(compose(['exec', '-T', 'caddy', 'cat', '/proc/sys/net/ipv4/tcp_wmem']).trim(), 'fixture');
   const caPath = 'fixture'; void caPath;
+  // Rollback availability is read-only and must terminate with Postgres down, including pool startup/cleanup.
 }
 if (process.env.SMOKE_FIXTURE_MODE === 'fail') process.exit(1);
 if (process.env.SMOKE_FIXTURE_MODE === 'cleanup') process.exit(0);

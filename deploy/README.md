@@ -910,7 +910,10 @@ released=2026-11-03T12:00:00Z
 * `rollback_floor` is the oldest compatible release. A patch preserves its minor's
   floor; an incompatible major sets the floor to itself. The release workflow smoke-tests
   the previous minor on the new database before publishing a compatible `vX.Y.0`, and
-  Image checks runs the same test on any commit that changes the migrations. Older code
+  Image checks runs the same test on any commit that changes the migrations. That smoke
+  test also runs the jobs in `newerReleaseJobs` (`release/previous-smoke.mjs`), queued as
+  this release writes them with fields the older release doesn't know; a change to the
+  payload of a job a bare install runs adds it there. Older code
   accepts a newer release's table only with the security shape every table has
   ([versioning guide](../docs/versioning.md#compatibility-from-10)).
 * The current reader also accepts format 1 and manifests without host digests.

@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
-import { adaptPreviousSmoke, checkInterrupt, childInterruptCode, compatibilityAssertions, holdInterrupts, interruptExitCode, recordInterrupt, removeImage, removeSmokeProject, runChild, SmokeInterrupted, smokePreviousImage, withPreviousTree } from './previous-smoke.mjs';
+import { adaptPreviousSmoke, checkInterrupt, childInterruptCode, compatibilityAssertions, holdInterrupts, interruptExitCode, newerReleaseJobs, recordInterrupt, removeImage, removeSmokeProject, runChild, SmokeInterrupted, smokePreviousImage, withPreviousTree } from './previous-smoke.mjs';
 import { prereleaseFloor, smokePublished } from './previous-minor.mjs';
 import { previousCode } from './previous-code.mjs';
 import { runSmoke } from './run-smoke.mjs';
@@ -59,6 +59,7 @@ if (false) {
   compose(['exec', '-T', 'app', '/app/deploy/database.sh', 'migrate']);
   assert.equal(compose(['exec', '-T', 'caddy', 'cat', '/proc/sys/net/ipv4/tcp_wmem']).trim(), 'fixture');
   const caPath = 'fixture'; void caPath;
+  // Rollback availability is read-only and must terminate with Postgres down, including pool startup/cleanup.
 }
 `;
   writeFileSync(join(oldTree, 'deploy/test/smoke.mjs'), harness + `
@@ -95,6 +96,67 @@ compose(['up']);`, {
   assert.ok(calls.every(args => args.includes('unique-project')));
   assert.ok(adapted.includes("new URL('../', import.meta.url)"), 'assertion fixtures stay beside the older harness');
   assert.throws(() => adaptPreviousSmoke('unknown harness', '/old', '/new', 'project'), /no supported/);
+});
+
+const rollbackMarker = '  // Rollback availability is read-only and must terminate with Postgres down, including pool startup/cleanup.';
+const newerStepStart = '  // The older worker finishes a job queued as the newer release writes it.';
+const harnesses = () => [
+  ['this tree', readFileSync(new URL('../test/smoke.mjs', import.meta.url), 'utf8')],
+  ['v0.10.1', execFileSync('git', ['show', 'v0.10.1:deploy/test/smoke.mjs'],
+    { cwd: fileURLToPath(new URL('../../', import.meta.url)), encoding: 'utf8' })],
+];
+const newerStep = adapted => adapted.slice(adapted.indexOf(newerStepStart), adapted.indexOf(rollbackMarker));
+
+test('the newer release jobs are queued with unknown fields directly before the rollback availability check', () => {
+  assert.deepEqual(newerReleaseJobs.map(job => job.name), ['intake-rate-limits.sweep']);
+  for (const [name, original] of harnesses()) {
+    const ids = [];
+    for (const deployment of ['/previous', '/current']) {
+      const adapted = adaptPreviousSmoke(original, deployment, '/current', 'project');
+      assert.ok(adapted.indexOf(newerStepStart) >= 0, name);
+      assert.ok(adapted.indexOf(newerStepStart) < adapted.indexOf(rollbackMarker), name);
+      const step = newerStep(adapted);
+      assert.ok(step.endsWith('\n  }\n'), `${name}: nothing between the step and the marker`);
+      assert.equal(adapted.split(rollbackMarker).length, 2, name);
+      assert.match(step, /INSERT INTO jobs .*'intake-rate-limits\.sweep'/s, name);
+      assert.ok(step.includes('\'{\\"version\\":1,\\"timezone\\":\\"UTC\\",\\"value\\":{\\"addedByNewerRelease\\":true},\\"addedByNewerRelease\\":true}\'::jsonb'), name);
+      ids.push(/previous-smoke-newer-([0-9a-f-]{36})/.exec(step)[1]);
+    }
+    assert.notEqual(ids[0], ids[1], name);
+  }
+});
+
+test('the newer release job step deletes a finished job and fails on any other state at its deadline', async () => {
+  const [[, original]] = harnesses();
+  const step = newerStep(adaptPreviousSmoke(original, '/previous', '/current', 'project'));
+  const run = async states => {
+    const queries = [];
+    let now = 0, reads = 0;
+    await runInNewContext(`(async () => {\n${step}})()`, {
+      assert, console: { log: () => {} }, Date: { now: () => now },
+      setTimeout: (done, milliseconds) => { now += milliseconds; done(); },
+      sql: query => {
+        queries.push(query);
+        return query.startsWith('SELECT') ? `${states[Math.min(reads++, states.length - 1)]}\n` : '';
+      },
+    });
+    return queries;
+  };
+  const queries = await run(['pending:', 'running:', 'succeeded:']);
+  assert.match(queries[0], /^INSERT INTO jobs .*NULL.*now\(\), 0, 3, 'pending'/s);
+  assert.equal(queries.length, 5);
+  const id = /previous-smoke-newer-([0-9a-f-]{36})/.exec(queries[0])[1];
+  assert.equal(queries.at(-1), `DELETE FROM jobs WHERE id = '${id}'`);
+  await assert.rejects(run(['failed:{"name":"ZodError"}']),
+    { message: 'Newer release job intake-rate-limits.sweep did not succeed: failed:{"name":"ZodError"}' });
+});
+
+test('a harness without the rollback availability marker is refused', () => {
+  for (const [, original] of harnesses()) {
+    assert.ok(original.includes(rollbackMarker));
+    assert.throws(() => adaptPreviousSmoke(original.replace(rollbackMarker, ''), '/previous', '/current', 'project'),
+      /Previous smoke harness has no supported .*Rollback availability/);
+  }
 });
 
 test('a killed compatibility smoke is cleaned before its error is returned', async () => {
