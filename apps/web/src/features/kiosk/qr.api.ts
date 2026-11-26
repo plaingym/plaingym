@@ -14,7 +14,7 @@ export async function qrCheckin(token: string, code: string, sessionId?: string 
   if (!response.ok) await readRefusal(response);
   if ([401, 403, 404].includes(response.status)) throw new KioskAuthError('Device not authorized');
   if (!response.ok) throw new QrRequestError(response.status);
-  return kioskCheckinResponseSchema.parse(await response.json()).data;
+  return parseResponse(kioskCheckinResponseSchema, await response.json()).data;
 }
 export async function staffCheckinCode(memberId: string, action: 'read' | 'regenerate' | 'revoke' = 'read', revision?: number): Promise<CheckinCode> {
   const contract = checkinCodeContracts[action];

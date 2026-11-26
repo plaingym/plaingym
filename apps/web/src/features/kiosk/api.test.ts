@@ -72,8 +72,16 @@ describe('kiosk device transport', () => {
       expect(observe).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 403, reason: ['demo_showcase_read_only'] }));
     } finally { stop(); }
   });
-  it('rejects lookup responses carrying extra private data', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: { status: 'see_front_desk', amount: 12345 } }))));
+  it('drops fields a newer server adds to a lookup answer and still rejects a malformed one', async () => {
+    const member = { id: '019a08bf-1234-7000-8000-000000000001', firstName: 'Alex', lastInitial: 'S', photoUrl: null };
+    const fetcher = vi.fn().mockResolvedValueOnce(Response.json({ release: 'next', data: { status: 'select_member', members: [{ ...member, added: 12345 }] } }));
+    vi.stubGlobal('fetch', fetcher);
+    const answer = await kioskApi.lookup('device', 'Rivera', '0042');
+    expect(answer).toEqual({ status: 'select_member', members: [member] });
+    expect(answer).not.toHaveProperty('release');
+    fetcher.mockResolvedValueOnce(Response.json({ data: { members: [member] } }));
+    await expect(kioskApi.lookup('device', 'Rivera', '0042')).rejects.toThrow();
+    fetcher.mockResolvedValueOnce(Response.json({ data: { status: 'select_member', members: [{ ...member, lastInitial: 'Smith' }] } }));
     await expect(kioskApi.lookup('device', 'Rivera', '0042')).rejects.toThrow();
   });
 });

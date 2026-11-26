@@ -87,8 +87,9 @@ it('keeps a failed kiosk handoff in the fragment and explains blocked storage be
 it('retries saving a private-copy token without consuming its handoff again', async () => {
   window.history.replaceState(null, '', '/demo#copyToken=' + 'a'.repeat(43));
   const storage = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+  // The handoff answer carries a field this bundle doesn't know, as one from a newer server would.
   fetcher.mockImplementation(async path => Response.json({ data: path === '/api/demo/handoff'
-    ? { kioskToken: 'copy-device', redirect: '/demo' } : { mode: 'disabled' } }));
+    ? { kioskToken: 'copy-device', redirect: '/demo', added: true } : { mode: 'disabled' } }));
   start();
   // The link worked; only this browser's storage failed, so the visitor is not sent to make another copy.
   expect((await screen.findByRole('alert')).textContent).toContain('Allow browser storage, then try again');

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { checkServerVersion, isVersionReloadPending } from '../../app/version.js';
 import { readRefusal } from '../../lib/api.js';
+import { parseResponse, type ResponseSchema } from '../../lib/response.js';
 import {
   kioskFamilyCheckinResponseSchema, kioskLookupResponseSchema,
   type KioskCheckinResult, type KioskLookupResponse, type KioskNamePinCheckinRequest,
@@ -43,11 +44,11 @@ export async function checkKioskVersion() {
     if (isVersionReloadPending()) throw new KioskReloadError('Loading the current kiosk');
   } catch (error) {
     // A guard that cannot act (blocked session storage, a reload that did not fix the mismatch) must not
-    // stop check-in: the strict response parsing still protects the device.
+    // stop check-in: response parsing still checks every field the device reads.
     if (error instanceof KioskReloadError) throw error;
   }
 }
-async function post<T>(token: string, path: string, body: unknown, schema: { parse(input: unknown): T }): Promise<T> {
+async function post<T>(token: string, path: string, body: unknown, schema: ResponseSchema<T>): Promise<T> {
   await checkKioskVersion();
   // No cookies: the kiosk authenticates only with its device token, never a staff session.
   const response = await fetch(path, { method: 'POST', credentials: 'omit', cache: 'no-store', redirect: 'error',
@@ -56,7 +57,7 @@ async function post<T>(token: string, path: string, body: unknown, schema: { par
   if (!response.ok) await readRefusal(response);
   if (response.status === 401 || response.status === 403 || response.status === 404) throw new KioskAuthError('Device not authorized');
   if (!response.ok) throw new Error('Request failed');
-  return schema.parse(await response.json());
+  return parseResponse(schema, await response.json());
 }
 export const kioskApi = {
   async lookup(token: string, name: string, pin: string): Promise<KioskLookupResponse['data']> {

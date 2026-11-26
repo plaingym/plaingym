@@ -32,7 +32,7 @@ it.each(calls)('checks the release before each kiosk request', async (call) => {
   const fetcher = vi.fn().mockResolvedValue(Response.json({ data: { status: 'see_front_desk' } }));
   vi.stubGlobal('fetch', fetcher);
   vi.mocked(checkServerVersion).mockImplementation(async () => { expect(fetcher).not.toHaveBeenCalled(); });
-  // The family response uses an array; strict parsing can reject this fixture after the guard.
+  // The family response uses an array, so its schema can reject this fixture after the guard.
   await call().catch(() => undefined);
   expect(checkServerVersion).toHaveBeenCalledOnce();
   expect(fetcher).toHaveBeenCalledOnce();
@@ -62,7 +62,7 @@ it.each(calls)('still sends the request when the release guard itself fails', as
 it.each([
   { direction: 'backward', jump: -3_600_000 },
   { direction: 'forward', jump: 3_600_000 },
-])('rechecks at the reload deadline after a $direction clock jump and parses stale lookup replies strictly', async ({ jump }) => {
+])('rechecks at the reload deadline after a $direction clock jump and drops fields a newer server adds to stale lookup replies', async ({ jump }) => {
   vi.stubEnv('DEV', false);
   vi.useFakeTimers({ toFake: ['Date'] });
   const wallStart = 10_000_000;
@@ -93,8 +93,7 @@ it.each([
   expect(fetcher.mock.calls.map(([path]) => path)).toEqual(['/healthz', '/healthz', '/api/kiosk/lookup']);
   expect(version.isStaleVersion()).toBe(true);
   expect(reload).toHaveBeenCalledOnce();
-  await expect(kioskApi.lookup('device', 'Name', '1234')).rejects.toMatchObject({
-    issues: [expect.objectContaining({ code: 'unrecognized_keys', keys: ['amount'] })],
-  });
+  // A stale bundle drops a field the newer server adds instead of refusing the answer.
+  await expect(kioskApi.lookup('device', 'Name', '1234')).resolves.toStrictEqual({ status: 'see_front_desk' });
   expect(fetcher).toHaveBeenCalledTimes(4);
 });

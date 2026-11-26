@@ -44,7 +44,9 @@ The staff tab renders codes using zero-dependency `uqr` 0.1.3 (MIT).
 Camera access failures offer **Try again** directly; failed device enumeration
 uses the unavailable-camera message. Before each lookup or check-in, production
 kiosks check `/healthz` against their bundle's release and reload on a mismatch.
-Responses remain strictly parsed to reject unexpected private fields. The shared
+The kiosk parses answers with the web app's `parseResponse`: a field its bundle
+doesn't know is dropped and never shown, and every field it reads must still match
+the shared response schema. The shared
 version guard prevents repeated reloads if a stale bundle is served again.
 Whitespace-only setup fragments do not replace a saved device token. A failed
 replacement save still requires setup rather than silently using the old token.

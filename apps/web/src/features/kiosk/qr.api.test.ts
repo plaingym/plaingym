@@ -5,12 +5,15 @@ import { qrCheckin, QrRequestError, staffCheckinCode } from './qr.api.js';
 import { KioskAuthError } from './api.js';
 
 afterEach(() => vi.unstubAllGlobals());
-it('sends the QR only in the check-in body, omits cookies and rejects private fields in responses', async () => {
+it('sends the QR only in the check-in body, omits cookies and never returns fields the device does not know', async () => {
   const fetcher = vi.fn(async () => Response.json({ data: { status: 'see_front_desk' } })); vi.stubGlobal('fetch', fetcher);
   await qrCheckin('device-token', 'code');
   expect(fetcher).toHaveBeenCalledWith('/api/kiosk/checkin/qr', expect.objectContaining({ method: 'POST', credentials: 'omit', cache: 'no-store', redirect: 'error',
     body: JSON.stringify({ code: 'code' }), headers: expect.objectContaining({ Authorization: 'Bearer device-token' }) }));
-  fetcher.mockResolvedValueOnce(Response.json({ data: { status: 'see_front_desk', amount: 5000 } }));
+  const member = { id: '019a08bf-1234-7000-8000-000000000001', firstName: 'Alex', lastInitial: 'S', photoUrl: null };
+  fetcher.mockResolvedValueOnce(Response.json({ release: 'next', data: { status: 'checked_in', member: { ...member, added: 5000 }, added: true } }));
+  expect(await qrCheckin('device-token', 'code')).toEqual({ status: 'checked_in', member });
+  fetcher.mockResolvedValueOnce(Response.json({ data: { status: 'past_due' } }));
   await expect(qrCheckin('device-token', 'code')).rejects.toThrow();
   fetcher.mockResolvedValueOnce(new Response(null, { status: 404 }));
   await expect(qrCheckin('device-token', 'code')).rejects.toBeInstanceOf(KioskAuthError);

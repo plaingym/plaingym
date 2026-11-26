@@ -223,12 +223,15 @@ scrolling, 44 px shell targets, and axe WCAG 2.1 A/AA; `e2e/specs/mobile-admin-{
 
 ## API answer compatibility
 
-Staff and portal API consumers use `lib/response.ts` to parse JSON answers. It strips fields the
+Client reads of API answers (staff, portal, kiosk, waiver upload and demo) parse JSON
+through `parseResponse` in `lib/response.ts`. It strips fields the
 shared schema identifies as unknown, including nested records, so an open tab
-can read an answer with newly added fields. Required fields, field types and
+or a kiosk tablet can read an answer with newly added fields; a stripped field
+never reaches the page. Required fields, field types and
 refinements still apply. Request validation and the OpenAPI schemas remain strict.
-Kiosk lookup and check-in answers remain strict to reject unexpected private fields
-on shared devices.
+A test in `lib/response.test.ts` refuses the direct forms under `src/`:
+`.parse(await response.json())`, `.parse(await request(…))` and
+`.then(value => schema.parse(value))`.
 
 Emailed pay links, staff invitations and portal invitations keep pending send generations in tab-local session storage across reloads, keyed by the form and request identity. Confirmed sends clear the generation. An uncertain replay displays a warning and a Send again action; that deliberate action chooses a new generation. If the browser blocks session storage, retries retain their generation only while the form stays mounted.
 

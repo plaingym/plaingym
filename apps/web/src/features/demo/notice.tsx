@@ -64,7 +64,7 @@ export function DemoShell({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!copyToken) return;
     window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
-    handoff.current ??= request('/api/demo/handoff', { token: copyToken }).then(value => demoHandoffResponse.parse(value));
+    handoff.current ??= request('/api/demo/handoff', { token: copyToken }).then(value => parseResponse(demoHandoffResponse, value));
     let active = true;
     void handoff.current.then(({ data }) => {
       if (!active) return;
@@ -294,7 +294,7 @@ export function TryDemoButton({ navigate = (url: string) => window.location.assi
     try {
       const deadline = Date.now() + 3_600_000;
       while (Date.now() < deadline) {
-        const result = demoEntryResponse.parse(await request('/api/demo')).data;
+        const result = parseResponse(demoEntryResponse, await request('/api/demo')).data;
         if (result.mode === 'entry' && result.showcase) { navigate(result.showcase); return; }
         await new Promise(resolve => window.setTimeout(resolve, 2000));
       }

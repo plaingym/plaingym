@@ -213,7 +213,8 @@ For ten seconds of elapsed time after scheduling a reload,
 the guard skips navigation checks and holds kiosk credentials. If the same page
 is still open at the deadline, the next navigation or kiosk request checks again.
 If the reload leaves an older bundle running, the kiosk keeps check-in available
-with strict response parsing and asks staff to reload the tablet.
+and asks staff to reload the tablet. It drops answer fields its bundle doesn't
+know and still checks the fields it reads against the shared response schema.
 The portal service worker does not cache application pages or API responses.
 
 Versions with `+` build metadata are development builds. The release checker and

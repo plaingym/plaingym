@@ -6,6 +6,7 @@ import { Alert } from '../../components/ui/alert.js';
 import { Dialog } from '../../components/ui/dialog.js';
 import { ApiError, createJsonTransport, onApiError } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
+import { parseResponse } from '../../lib/response.js';
 
 const request = createJsonTransport();
 export function rememberDemoRole(role: string) {
@@ -16,7 +17,7 @@ async function copyTarget(signal: AbortSignal) {
   try { saved = sessionStorage.getItem('demo-role'); } catch { /* Storage is optional. */ }
   let role = demoRoleSchema.safeParse(saved).data ?? 'owner';
   try {
-    const { session } = shellBootstrapResponseSchema.parse(await request('/api/auth/bootstrap', undefined, signal)).data;
+    const { session } = parseResponse(shellBootstrapResponseSchema, await request('/api/auth/bootstrap', undefined, signal)).data;
     if (session?.roles.includes('owner') || session?.roles.includes('admin')) role = 'owner';
     else if (session?.roles.includes('coach')) role = 'coach';
     else if (session?.member) role = 'student';
@@ -65,7 +66,7 @@ export function CreateCopyButton({ navigate = (url: string) => window.location.a
     });
     try {
       const target = await copyTarget(abort.signal);
-      let data = demoCreationResponse.parse(await createCopy('/api/demo/sandboxes', target, abort.signal)).data;
+      let data = parseResponse(demoCreationResponse, await createCopy('/api/demo/sandboxes', target, abort.signal)).data;
       // A queue ticket remains on this origin. Polling never consumes the client creation budget.
       const deadline = Date.now() + 3_600_000;
       while ('pending' in data) {
@@ -77,7 +78,7 @@ export function CreateCopyButton({ navigate = (url: string) => window.location.a
           const timer = window.setTimeout(() => { abort.signal.removeEventListener('abort', stop); resolve(); }, queued.retryAfterSeconds * 1000);
           abort.signal.addEventListener('abort', stop, { once: true });
         });
-        data = demoCreationResponse.parse(await request('/api/demo/creations/' + data.ticket, undefined, abort.signal)).data;
+        data = parseResponse(demoCreationResponse, await request('/api/demo/creations/' + data.ticket, undefined, abort.signal)).data;
       }
       const destination = new URL('/demo', data.origin);
       destination.hash = new URLSearchParams(data.handoffToken ? { copyToken: data.handoffToken } : { kioskToken: data.kioskToken }).toString();

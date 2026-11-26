@@ -33,6 +33,7 @@ const sourceScanningTests = [
   'apps/web/src/app/styles.test.ts',
   'apps/web/src/components/ui/no-break-words.test.ts',
   'apps/web/src/lib/api.sources.test.ts',
+  'apps/web/src/lib/response.test.ts',
   'apps/web/src/lib/theme.test.ts',
   'apps/server/src/infra/pdf/coverage.test.ts',
   'apps/server/src/public/links/paths.test.ts',
