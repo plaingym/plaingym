@@ -5,7 +5,7 @@ import type { Clock } from '@plaingym/shared';
 import { z } from 'zod';
 import { withJobTransaction, type JobRecovery, type Jobs } from '../../infra/jobs/index.js';
 import type { Uploads } from '../../infra/storage/index.js';
-import type { ClearCustomerEmail, ClearedCustomerEmail } from '../../infra/payments/index.js';
+import { billingEmailKeyId, type ClearCustomerEmail, type ClearedCustomerEmail } from '../../infra/payments/index.js';
 import { detachJob } from '../billing/payments.mutations.js';
 import { logError, logInfo } from '../../core/log.js';
 import { billingEmailAbandonedAction, billingEmailClearedAction, billingEmailErasuresToRetry, billingEmailMissingAction, billingEmailNoMatchAction, billingEmailQueuedAction, billingEmailResets, billingEmailResetAction, billingEmailSkippedAction, customerRedactedAction, erasuresToRedact, lockBillingEmailErasure, redactionQueuedAction } from './erasure-redaction.query.js';
@@ -22,6 +22,7 @@ export const redactCustomerJob = 'members.erasure.redact_customer';
 export const clearBillingEmailJob = 'members.erasure.clear_billing_email';
 const billingEmailPayload = z.object({ householdId: z.uuid(), customerId: z.string().regex(/^cus_[A-Za-z0-9_]+$/),
   erasureId: z.uuid().optional(), emailDigest: z.string().regex(/^(?:k1:)?[a-f0-9]{64}$/),
+  keyId: z.string().regex(/^[a-f0-9]{16}$/).optional(), // The key the digest was made with; older jobs carry none.
   paymentMethodIds: z.array(z.string().regex(/^(?:pm|card|ba|src)_[A-Za-z0-9_]+$/)).optional(),
   paymentMethodId: z.string().regex(/^(?:pm|card|ba|src)_[A-Za-z0-9_]+$/).optional() }); // Imported cards and already queued jobs keep legacy IDs.
 export type ClearBillingEmail = (gymId: string, customerId: string, options: ClearCustomerEmail) => Promise<ClearedCustomerEmail>;
@@ -59,7 +60,7 @@ async function erasureRetired(tx: Transaction, gymId: string, householdId: strin
  */
 export async function clearErasedBillingEmail(payload: unknown, gymId: string, clear: ClearBillingEmail,
   config: { secret: string; clock: Clock; timezone: string; jobs?: Pick<Jobs, 'enqueue'> | undefined; scope?: typeof forGym }): Promise<void> {
-  const { customerId, erasureId, ...options } = billingEmailPayload.parse(payload);
+  const { customerId, erasureId, keyId, ...options } = billingEmailPayload.parse(payload);
   if (options.emailDigest.startsWith('k1:') && !config.secret) throw new Error('Billing email erasure is not configured');
   const jobs = config.jobs;
   if (!jobs) throw new Error('Billing email erasure is not configured');
@@ -69,6 +70,13 @@ export async function clearErasedBillingEmail(payload: unknown, gymId: string, c
   if (erasureId && settled(await scope(gymId, tx => erasureOutcomes(tx, gymId, options.householdId, erasureId)))) {
     logInfo('members.erasure.billing_email_replayed', { gymId, householdId: options.householdId });
     return;
+  }
+  // A digest made under an earlier install secret matches nothing now, so a placeholder method alone would certify an
+  // erasure while another method still holds the address. Such a run calls nothing and records nothing; the job retries
+  // until the earlier secret is back or the sweep abandons it.
+  if (keyId !== undefined && keyId !== billingEmailKeyId(config.secret)) {
+    logError('members.erasure.billing_email_key_changed', { gymId, householdId: options.householdId, ...(erasureId ? { erasureId } : {}) });
+    throw new Error('Billing email erasure key changed');
   }
   const linked = await scope(gymId, tx => tx.select({ id: households.id }).from(households)
     .where(eq(households.stripeCustomerId, customerId)));

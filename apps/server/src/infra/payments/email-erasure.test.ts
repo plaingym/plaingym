@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { FakePayments, billingEmailDigest } from './index.js';
+import { FakePayments, billingEmailDigest, billingEmailKeyId } from './index.js';
 import { StripePayments } from './stripe.js';
 import { StripeFixtures } from './stripe-fixtures.js';
 import { customerEmailErasureContract, type EmailErasureFixture } from './payments.contract.js';
@@ -20,6 +20,14 @@ it('keys and normalizes the digest using a distinct derived key', () => {
   expect(digest).not.toContain(createHash('sha256').update('payer@example.invalid').digest('hex'));
   expect(digest).not.toBe(billingEmailDigest('payer@example.invalid', 'another-fixture-secret'));
   expect(() => billingEmailDigest('payer@example.invalid', '')).toThrow('secret');
+});
+it('names the digest key with a stable short ID that reveals no digest', () => {
+  const keyId = billingEmailKeyId('a'.repeat(32));
+  expect(keyId).toMatch(/^[a-f0-9]{16}$/);
+  expect(billingEmailKeyId('a'.repeat(32))).toBe(keyId);
+  expect(billingEmailKeyId('b'.repeat(32))).not.toBe(keyId);
+  expect(billingEmailDigest('x@example.invalid', 'a'.repeat(32))).not.toContain(keyId);
+  expect(() => billingEmailKeyId('')).toThrow('secret');
 });
 function stripe(fixture: EmailErasureFixture = {}) {
   const transport = new StripeFixtures(gymId);

@@ -1,11 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash, createHmac, hkdfSync } from 'node:crypto';
 
+function erasureKey(secret: string): Buffer {
+  if (!secret) throw new Error('Billing email erasure secret is required');
+  return Buffer.from(hkdfSync('sha256', secret, new Uint8Array(0), 'plaingym billing email erasure v1', 32));
+}
+
 /** Identifies the address to clear without retaining its plaintext in a retry job. */
 export function billingEmailDigest(email: string, secret: string): string {
-  if (!secret) throw new Error('Billing email erasure secret is required');
-  const key = Buffer.from(hkdfSync('sha256', secret, new Uint8Array(0), 'plaingym billing email erasure v1', 32));
-  return 'k1:' + createHmac('sha256', key).update(email.trim().toLowerCase()).digest('hex');
+  return 'k1:' + createHmac('sha256', erasureKey(secret)).update(email.trim().toLowerCase()).digest('hex');
+}
+
+/**
+ * Names the key a digest was made with, so a retry under a changed install secret can tell its digest no longer matches.
+ * Derived from the same key as the digest; it reveals neither the secret nor an address.
+ */
+export function billingEmailKeyId(secret: string): string {
+  return createHmac('sha256', erasureKey(secret)).update('plaingym billing email erasure key id').digest('hex').slice(0, 16);
 }
 
 export interface ClearCustomerEmail {

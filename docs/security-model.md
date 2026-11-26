@@ -635,7 +635,15 @@ Old versions and documents referenced by signatures remain retained after retire
   customer, erasure audit and every unrevoked card ID, and a versioned HMAC of the
   normalized address under a separate key derived from `AUTH_SECRET`, never the
   plaintext email or secret; the digest is personal data
-  retained only under the job queue's retention policy. The household audit records
+  retained only under the job queue's retention policy. The payload also carries a
+  short ID of that derived key, which reveals neither the secret nor an address. A
+  run whose key ID differs from the current secret's (`AUTH_SECRET` changed since the
+  erasure) calls nothing and records nothing: it logs
+  `members.erasure.billing_email_key_changed` with identifiers only and fails, so the
+  job retries, and the sweep below resets it until it is abandoned, unless the earlier
+  secret is restored first. A digest under the wrong key matches nothing, so such a
+  run can't certify a clear. A payload queued without a key ID runs under the current
+  secret. The household audit records
   `billingEmailCleared: true`, without the address or digest. Before calling out,
   the job rechecks that only this household links the customer. A replacement local
   email does not prevent clearing the erased address at Stripe. The adapter checks customer gym and household metadata and

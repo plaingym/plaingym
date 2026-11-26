@@ -201,6 +201,19 @@ retention removed resolve with `members.erasure.billing_email_job_missing`, with
 claiming that any email was cleared. The sweep pages outstanding markers 200 at a time
 and resets at most 200 jobs per gym per run; it uses the queue's `failedJobs`,
 `retryFailed` and `existingJobs` recovery methods. No digest or secret enters these audits.
+
+The queued payload also carries `keyId`, a 16-hex-character ID of the key its digest was
+made with (`billingEmailKeyId`, derived from the same key as the digest; it reveals
+neither the secret nor an address). After the HMAC secret changes, the digest matches
+nothing, so a debit account already holding the placeholder could otherwise certify an
+erasure while another method still holds the address. A run whose `keyId` differs from
+the current secret's makes no provider call and writes nothing (no outcome audit, no
+retirement): it logs `members.erasure.billing_email_key_changed` at error with the gym,
+household and erasure IDs only and fails with `Billing email erasure key changed`, so
+the job retries and the sweep resets it as above until it is abandoned. Restoring the
+earlier secret lets the next retry finish as usual. A payload without `keyId`, queued
+before the payload carried one, runs under the current secret as before.
+
 When the household
 has no remaining identifiable members, its contact details and remaining portal
 and signed-link access are also removed. Other household members remain intact.

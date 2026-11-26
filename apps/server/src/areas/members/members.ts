@@ -14,7 +14,7 @@ import { hashHouseholdPin, type HouseholdPinSecret } from './pin.js';
 import { withJobTransaction, type Jobs, type JobTransaction } from '../../infra/jobs/index.js';
 import { logError } from '../../core/log.js';
 import { billingEmailQueuedAction, clearBillingEmailJob, eraseCreditReasons, redactCustomerJob, releaseErasedFilesJob } from './erasure-redaction.js';
-import { billingEmailDigest } from '../../infra/payments/index.js';
+import { billingEmailDigest, billingEmailKeyId } from '../../infra/payments/index.js';
 import { detachJob } from '../billing/payments.mutations.js';
 import { unscheduled } from '../billing/memberships.plan-change.js';
 import { endDiscount } from '../billing/discounts/apply.js';
@@ -305,7 +305,8 @@ export function createMembersService(options: MembersOptions = {}) {
           const cards = await tx.select({ processorId: paymentMethods.processorId }).from(paymentMethods)
             .where(and(eq(paymentMethods.householdId, home.id), isNull(paymentMethods.revokedAt))).orderBy(asc(paymentMethods.id));
           await cleanup.jobs.enqueue(clearBillingEmailJob, { householdId: home.id, customerId: billing.customerId,
-            erasureId: erasure.id, emailDigest: billingEmailDigest(before.emailAddress, options.billingEmailSecret), paymentMethodIds: cards.map(card => card.processorId) },
+            erasureId: erasure.id, emailDigest: billingEmailDigest(before.emailAddress, options.billingEmailSecret),
+            keyId: billingEmailKeyId(options.billingEmailSecret), paymentMethodIds: cards.map(card => card.processorId) },
           { ...queued, idempotencyKey: `clear-billing-email:${erasure.id}` }, transaction);
           await audit(tx, context, billingEmailQueuedAction, 'household', home.id, undefined, { erasure: erasure.id });
         }

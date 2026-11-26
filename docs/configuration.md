@@ -51,7 +51,7 @@ and the Repo compliance workflow runs them even for Markdown-only changes.
 | :--- | :--- | :--- |
 | `APP_ENCRYPTION_KEY` | none | 32 random bytes as 64 hex characters (`openssl rand -hex 32`). Encrypts the secrets stored in the database. Backups carry it, encrypted to the owner's backup key, so a restore can recover it; without it or a backup, stored Stripe, SMTP and backup credentials are lost. Never change it by hand: `rotate-key.sh` replaces it and re-encrypts the stored secrets ([self-hosting.md](self-hosting.md#rotating-the-encryption-key)). |
 | `NEW_APP_ENCRYPTION_KEY` | none | Set only by `rotate-key.sh` for the one container that re-encrypts the stored secrets: the key replacing `APP_ENCRYPTION_KEY` (64 hex characters). Never put it in `.env` ([self-hosting.md](self-hosting.md#rotating-the-encryption-key)). |
-| `AUTH_SECRET` | none | At least 32 characters. Signs sessions. Changing it signs everyone out. |
+| `AUTH_SECRET` | none | At least 32 characters. Signs sessions. Changing it signs everyone out, and holds queued payer email erasures at Stripe until the earlier value is back ([security-model.md](security-model.md)). |
 | `SETUP_TOKEN` | none | At least 32 characters. Proves control of the server when creating the first owner or restoring a backup; the setup link carries it. Print the link with `gym-app setup-link`. |
 | `DATABASE_URL` | none | The `app` role's connection URL. Compose builds it from `APP_PASSWORD` and `POSTGRES_DB`. |
 | `GYM_HOSTNAME` | none | The gym's hostname, such as `gym.example.org`. Caddy requests its certificate, and the app builds login links and checks request origins with `https://` plus this name. Single-gym mode needs it or `PUBLIC_ORIGIN`. |

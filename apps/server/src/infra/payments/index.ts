@@ -5,7 +5,7 @@ import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { clock as systemClock } from '../../core/clock.js';
 import { matchesBillingEmail, type ClearCustomerEmail } from './email-erasure.js';
 import { logWarn } from '../../core/log.js';
-export { billingEmailDigest, type ClearCustomerEmail } from './email-erasure.js';
+export { billingEmailDigest, billingEmailKeyId, type ClearCustomerEmail } from './email-erasure.js';
 
 export type ChargeReference = { kind: 'charge' | 'checkout'; id: string };
 export interface PaymentMetadata {

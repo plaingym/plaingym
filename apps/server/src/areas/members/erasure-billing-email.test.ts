@@ -7,7 +7,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
 import { FakeJobs, PostgresJobs } from '../../infra/jobs/index.js';
-import { billingEmailDigest, FakePayments } from '../../infra/payments/index.js';
+import { billingEmailDigest, billingEmailKeyId, FakePayments } from '../../infra/payments/index.js';
 import { createMembersService } from './members.js';
 import { createErasureJobs } from './members.routes.js';
 import { billingEmailClearedAction, billingEmailMaxResets, billingEmailResetDelayMs, clearBillingEmailJob, queueEarlierRedactions, redactEarlierJob } from './erasure-redaction.js';
@@ -56,7 +56,8 @@ describe.each(['fake', 'postgres'] as const)('%s payer email erasure', kind => {
     const { home, person, remaining, customerId, card, payments } = await fixture(), jobs = queue();
     const result = await service.eraseMember(context, person.id, { revision: 1 }, { jobs, timezone: 'UTC' });
     const payload = (await jobPayload(jobs, customerId))[0]!.payload as { erasureId: string };
-    const expected = { householdId: home.id, customerId, erasureId: payload.erasureId, paymentMethodIds: [card.processorId], emailDigest: billingEmailDigest('payer@example.invalid', billingEmailSecret) };
+    const expected = { householdId: home.id, customerId, erasureId: payload.erasureId, paymentMethodIds: [card.processorId], emailDigest: billingEmailDigest('payer@example.invalid', billingEmailSecret),
+      keyId: billingEmailKeyId(billingEmailSecret) };
     expect(await jobPayload(jobs, customerId)).toEqual([{ payload: expected,
       key: kind === 'fake' ? `clear-billing-email:${payload.erasureId}` : expect.stringMatching(/^[a-f0-9]{64}$/), attempts: 12 }]);
     expect(JSON.stringify(await jobPayload(jobs, customerId))).not.toContain('payer@example.invalid');

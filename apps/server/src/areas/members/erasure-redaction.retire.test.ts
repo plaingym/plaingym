@@ -4,7 +4,8 @@ import { expect, it, vi } from 'vitest';
 import { and, asc, eq, sql } from 'drizzle-orm';
 import { auditEvents, households, paymentMethods, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { FakeJobs, type Jobs } from '../../infra/jobs/index.js';
-import { billingEmailDigest, type ClearedCustomerEmail } from '../../infra/payments/index.js';
+import { billingEmailDigest, billingEmailKeyId, type ClearedCustomerEmail } from '../../infra/payments/index.js';
+import { setLogSink } from '../../core/log.js';
 import { StripePayments } from '../../infra/payments/stripe.js';
 import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
 import type { PaymentTransport } from '../../infra/payments/transport.js';
@@ -24,7 +25,7 @@ const outcomeActions = [billingEmailClearedAction, billingEmailNoMatchAction];
  * A surviving household of two members: a default debit account `pm_pad` with its mandate, a non-default card
  * `pm_card`, and an open invoice due now. The payer email clear is a stub returning `cleared` unless a run gives its own.
  */
-async function household(cleared: ClearedCustomerEmail, erasureId?: string) {
+async function household(cleared: ClearedCustomerEmail, erasureId?: string, keyed = true) {
   const f = await fixture();
   await factory('members', f.gymId, { householdId: f.home.id });
   const [pad] = await db.forGym(f.gymId, tx => tx.update(paymentMethods).set({ processorId: 'pm_pad', type: 'acss_debit',
@@ -34,10 +35,10 @@ async function household(cleared: ClearedCustomerEmail, erasureId?: string) {
   const jobs = new FakeJobs(f.clock);
   const clear = vi.fn<ClearBillingEmail>(async () => cleared);
   const payload = { householdId: f.home.id, customerId: 'cus_test', emailDigest: billingEmailDigest('payer@example.invalid', secret),
-    paymentMethodIds: ['pm_pad', 'pm_card'], ...(erasureId ? { erasureId } : {}) };
-  const run = (config: { clear?: ClearBillingEmail; jobs?: Pick<Jobs, 'enqueue'>; scope?: typeof db.forGym } = {}) =>
+    paymentMethodIds: ['pm_pad', 'pm_card'], ...(erasureId ? { erasureId } : {}), ...(keyed ? { keyId: billingEmailKeyId(secret) } : {}) };
+  const run = (config: { clear?: ClearBillingEmail; jobs?: Pick<Jobs, 'enqueue'>; scope?: typeof db.forGym; secret?: string } = {}) =>
     clearErasedBillingEmail(payload, f.gymId, config.clear ?? clear,
-      { secret, clock: f.clock, timezone: f.context.timezone, jobs: config.jobs ?? jobs, scope: config.scope ?? db.forGym });
+      { secret: config.secret ?? secret, clock: f.clock, timezone: f.context.timezone, jobs: config.jobs ?? jobs, scope: config.scope ?? db.forGym });
   const state = () => db.forGym(f.gymId, async tx => ({
     methods: await tx.select().from(paymentMethods).orderBy(asc(paymentMethods.processorId)),
     audits: await tx.select().from(auditEvents).orderBy(asc(auditEvents.id)),
@@ -57,16 +58,16 @@ function marker(f: Household, erasureId: string) {
 
 /**
  * A stateful provider: real `StripePayments` over `StripeFixtures`, with the household's customer and the erased payer's
- * address on the customer and the debit account (`padEmail`); the card holds another address.
+ * address on the customer and the debit account (`padEmail`); the card holds `cardEmail`, another address by default.
  */
-function provider(f: Household, padEmail: string) {
+function provider(f: Household, padEmail: string, cardEmail = 'other@example.invalid') {
   const transport = new StripeFixtures(f.gymId);
   transport.objects.set('cus_test', { id: 'cus_test', object: 'customer', name: 'Household', email: 'payer@example.invalid',
     metadata: { gym_id: f.gymId, household_id: f.home.id } });
   transport.objects.set('pm_pad', { id: 'pm_pad', object: 'payment_method', type: 'acss_debit', acss_debit: { last4: '6789' }, customer: 'cus_test',
     metadata: { gym_id: f.gymId }, billing_details: { email: padEmail, name: 'Account holder' } });
   transport.objects.set('pm_card', { id: 'pm_card', object: 'payment_method', type: 'card', customer: 'cus_test', metadata: { gym_id: f.gymId },
-    card: { brand: 'visa', last4: '4242', exp_month: 12, exp_year: 2030 }, billing_details: { email: 'other@example.invalid', name: 'Card holder' } });
+    card: { brand: 'visa', last4: '4242', exp_month: 12, exp_year: 2030 }, billing_details: { email: cardEmail, name: 'Card holder' } });
   const stripe = new StripePayments(f.gymId, { transport, webhookSecret: 'fixture-secret' });
   const clear = vi.fn<ClearBillingEmail>((_gymId, customerId, options) => stripe.clearCustomerEmail(customerId, options));
   return { transport, clear };
@@ -187,6 +188,62 @@ it('commits nothing when the detach enqueue fails, keeps the erasure for recover
   expect(recovered.audits.some(row => row.action === billingEmailNoMatchAction)).toBe(false);
   expect(jobs.jobs.map(job => job.options.idempotencyKey)).toEqual([`detach:${pad.id}`]);
   expect(await retry()).toEqual([]);
+});
+
+it('certifies nothing under a changed install secret, then clears every method once the earlier secret is back', async () => {
+  const erasureId = uuidv7();
+  const { f, pad, card, jobs, run, state } = await household({ matched: false, placeholderMethods: [], failedMethods: [] }, erasureId);
+  await marker(f, erasureId);
+  // An earlier attempt cleared the customer and left the debit account the placeholder; the card still holds the erased
+  // address. The payload's digest and key ID were made under `secret`; the install now has another.
+  const { transport, clear } = provider(f, 'erased-member@example.com', 'payer@example.invalid');
+  transport.objects.get('cus_test')!.email = null;
+  const retry = () => db.forGym(f.gymId, tx => billingEmailErasuresToRetry(tx, f.gymId, 10));
+  const before = await state();
+  const lines: string[] = [];
+  const previous = setLogSink(line => lines.push(line));
+  try {
+    await expect(run({ clear, secret: 'fixture-retire-rotated-secret' })).rejects.toThrow('Billing email erasure key changed');
+  } finally { setLogSink(previous); }
+  expect(clear).not.toHaveBeenCalled();
+  expect(transport.requests).toEqual([]);
+  const after = await state();
+  expect(after.audits).toEqual(before.audits);
+  expect(after.methods).toEqual(before.methods);
+  expect(after.audits.filter(row => [billingEmailClearedAction, billingEmailNoMatchAction, 'billing.card.revoked'].includes(row.action))).toEqual([]);
+  expect(jobs.jobs).toEqual([]);
+  expect(await retry()).toMatchObject([{ erasureId, householdId: f.home.id }]);
+  const logged = lines.map(line => JSON.parse(line) as Record<string, unknown>).filter(line => line.event === 'members.erasure.billing_email_key_changed');
+  expect(logged).toHaveLength(1);
+  expect(logged[0]).toEqual({ time: expect.any(String), level: 'error', event: 'members.erasure.billing_email_key_changed', gymId: f.gymId, householdId: f.home.id, erasureId });
+  const line = lines.find(entry => entry.includes('billing_email_key_changed'))!;
+  expect(line).not.toContain('payer@example.invalid');
+  expect(line).not.toContain(billingEmailDigest('payer@example.invalid', secret).slice(3));
+
+  // The same job after the owner restores the earlier secret: the card matches and is cleared, the debit account retired.
+  await run({ clear });
+  expect(clear).toHaveBeenCalledOnce();
+  expect(transport.objects.get('pm_card')!.billing_details).toMatchObject({ email: null });
+  const done = await state();
+  expect(done.cleared).toHaveLength(1);
+  expect(done.cleared[0]!.after).toMatchObject({ erasure: erasureId });
+  expect(done.outcomes).toHaveLength(1);
+  expect(done.revoked.map(row => row.targetId)).toEqual([pad.id]);
+  expect(done.methods.find(row => row.id === card.id)).toMatchObject({ revokedAt: null });
+  expect(jobs.jobs.map(job => job.options.idempotencyKey)).toEqual([`detach:${pad.id}`]);
+  expect(await retry()).toEqual([]);
+});
+
+it('runs a payload queued without a key ID as before, under whatever secret the install has', async () => {
+  const erasureId = uuidv7();
+  const { f, clear, run, state } = await household({ matched: true, placeholderMethods: [], failedMethods: [] }, erasureId, false);
+  await marker(f, erasureId);
+  await run({ secret: 'fixture-retire-rotated-secret' });
+  expect(clear).toHaveBeenCalledOnce();
+  expect(clear.mock.calls[0]![2]).toMatchObject({ secret: 'fixture-retire-rotated-secret' });
+  expect(clear.mock.calls[0]![2]).not.toHaveProperty('keyId');
+  expect((await state()).cleared).toHaveLength(1);
+  expect(await db.forGym(f.gymId, tx => billingEmailErasuresToRetry(tx, f.gymId, 10))).toEqual([]);
 });
 
 it('records an erasure once: a replay of the same erasure writes no audit, revokes nothing and queues no job', async () => {
