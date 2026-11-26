@@ -99,8 +99,8 @@ export function HealthTiles({ tiles, extras = {}, timezone }: { tiles: readonly 
       {tile.details && <dl className="mt-4 space-y-2 text-sm">{detailRows(tile).map(([key, name, value]) =>
         <div key={key} className="flex flex-wrap justify-between gap-2"><dt className="text-muted-foreground">{name}</dt><dd className="break-all">{detailValue(key, value, timezone)}</dd></div>)}</dl>}
       {tile.details && 'keyReminder' in tile.details && tile.details.keyReminder && <p className="mt-4 text-sm font-medium">{label('keyReminder')}</p>}
-      {tile.id === 'last_backup' && tile.details?.damagedGuardSnapshot && <p className="mt-4 wrap-anywhere text-sm font-medium">{t('health/status:backupDamagedGuard', { snapshot: tile.details.damagedGuardSnapshot })}</p>}
-      {tile.id === 'last_backup' && tile.details?.missingGuardSnapshot && <p className="mt-4 wrap-anywhere text-sm font-medium">{t('health/status:backupMissingGuard', { snapshot: tile.details.missingGuardSnapshot })}</p>}
+      {tile.id === 'last_backup' && tile.details?.damagedGuardSnapshot && <p className="mt-4 text-sm font-medium">{t('health/status:backupDamagedGuard', { snapshot: tile.details.damagedGuardSnapshot })}</p>}
+      {tile.id === 'last_backup' && tile.details?.missingGuardSnapshot && <p className="mt-4 text-sm font-medium">{t('health/status:backupMissingGuard', { snapshot: tile.details.missingGuardSnapshot })}</p>}
       {extras[id]}
       {tile.checkedAt && <p className="mt-4 text-xs text-muted-foreground">{label('checkedAt')}: <time dateTime={tile.checkedAt}>{instantLabel(tile.checkedAt, timezone)}</time></p>}
     </Card>;

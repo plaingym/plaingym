@@ -55,7 +55,7 @@ export function AnnouncementEditor({ gymName, programs, client, close, sent, own
   function toggle<T>(values: T[], value: T, checked: boolean) { return checked ? [...values, value] : values.filter(item => item !== value); }
   return <Dialog title={text(startingOver ? 'startOverTitle' : confirming ? 'confirmTitle' : preview ? 'previewTitle' : 'compose')} closeLabel={text('close')}
     onClose={close} dismissible={!busy} unsavedChanges={!!subject || !!body}>
-    <div className="min-w-0 space-y-4 wrap-anywhere">
+    <div className="min-w-0 space-y-4">
       {startingOver ? <>
         <Alert role="note">{text('startOverHelp')}</Alert>
         <DialogActions>

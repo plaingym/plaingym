@@ -66,7 +66,7 @@ export function PortalAccessTab({ memberId }: ExtensionViewProps) {
   const usesOlderEmail = (entry: Pick<HouseholdUser, 'scope' | 'memberId'> & { email?: string | undefined }) =>
     !!currentEmail && entry.scope === 'member' && entry.memberId === memberId && !!entry.email
     && entry.email.trim().toLowerCase() !== currentEmail.toLowerCase();
-  const currentEmailNote = currentEmail && <p className="wrap-anywhere text-sm text-muted-foreground">{t('portal/access:notCurrentEmail', { current: currentEmail })}</p>;
+  const currentEmailNote = currentEmail && <p className="text-sm text-muted-foreground">{t('portal/access:notCurrentEmail', { current: currentEmail })}</p>;
   const error = operation.error;
   const refusal = edit === 'invite' && error instanceof ApiError ? refusalReasons.find(reason => error.reason.includes(reason)) : undefined;
   const label = edit === 'invite' ? 'invite' : edit?.kind === 'reset' ? 'reset' : edit?.kind === 'withdraw' ? 'withdraw' : 'revoke';

@@ -46,7 +46,7 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
     {code.isPending || (!code.data && scope.settling) ? <LoadingState label={text('loading')} />
       : code.isError ? <ErrorState message={text(code.error instanceof ApiError && code.error.status === 503 ? 'unavailable' : 'error')} onRetry={() => void code.refetch()} />
         : <section className="space-y-4" aria-label={text('codeFor', { name: member?.name ?? '' })}>
-          {member && members.data.length > 1 && <h2 className="wrap-anywhere text-lg font-semibold">{member.name}</h2>}
+          {member && members.data.length > 1 && <h2 className="text-lg font-semibold">{member.name}</h2>}
           {active ? <><CodeImage code={active} name={member?.name ?? ''} /><p className="text-center text-sm text-muted-foreground">{text('help')}</p></>
             : <Alert>{text('inactive')}</Alert>}
           {error && !confirming && <Alert variant="error" focusOnReveal role="alert">{text(error)}</Alert>}

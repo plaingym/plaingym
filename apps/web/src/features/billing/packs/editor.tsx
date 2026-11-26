@@ -40,7 +40,7 @@ export function PackEditor({ record, currency, taxes, client, close, saved }: {
     } finally { inFlight.current = false; setBusy(false); }
   }
   return <Dialog title={text(record ? 'editPack' : 'createPack')} closeLabel={text('close')} onClose={close} dismissible={!busy}>
-    <form onSubmit={event => void submit(event)} className="min-w-0 space-y-4 wrap-anywhere">
+    <form onSubmit={event => void submit(event)} className="min-w-0 space-y-4">
       {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
       <fieldset disabled={busy} className="grid min-w-0 gap-4 sm:grid-cols-2">
         <Label className="block min-w-0 sm:col-span-2">{text('name')}<Input name="name" required defaultValue={record?.name}/></Label>

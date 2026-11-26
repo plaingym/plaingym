@@ -54,7 +54,7 @@ export function CardList({ gymId, householdId, allowed, client = invoiceClient, 
       {cards.isPending && <LoadingState/>}{cards.isError && <ErrorState onRetry={() => void cards.refetch()}/>}
       {cards.data?.data.length === 0 && <EmptyState title={text('noCards')}/>}
       <StackedList>{cards.data?.data.map(card => <StackedItem key={card.id}>
-        <span className="wrap-anywhere">{paymentMethodLabel(card, text)}{card.type === 'card' && card.expiryMonth != null && card.expiryYear != null && <> · {String(card.expiryMonth).padStart(2, '0')}/{card.expiryYear}</>}</span>
+        <span>{paymentMethodLabel(card, text)}{card.type === 'card' && card.expiryMonth != null && card.expiryYear != null && <> · {String(card.expiryMonth).padStart(2, '0')}/{card.expiryYear}</>}</span>
         {card.isDefault && <Badge className="self-start">{text('default')}</Badge>}
         {card.revokedAt && <Badge className="self-start">{text(card.removal === 'finished' ? 'removedFromStripe' : card.removal === 'pending' ? 'removalPending' : 'removed')}</Badge>}
         {allowed && (!card.revokedAt || card.removal === 'pending') && <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
@@ -70,7 +70,7 @@ export function CardList({ gymId, householdId, allowed, client = invoiceClient, 
       <h3 id={title} ref={heading} tabIndex={-1} className="text-lg font-semibold">{text(action.kind)}</h3>
       <form onSubmit={event => void submit(event)} className="space-y-4">
         {error && <Alert variant="error" focusOnReveal>{error}</Alert>}
-        <p className="wrap-anywhere">{paymentMethodLabel(selectedCard, (key, values) => text(key === 'cardLabel' ? 'cardConfirmationLabel' : key, values))}
+        <p>{paymentMethodLabel(selectedCard, (key, values) => text(key === 'cardLabel' ? 'cardConfirmationLabel' : key, values))}
           {' · '}{text(action.kind === 'revoke' ? 'removeHelp' : 'defaultHelp')}</p>
         {action.kind === 'revoke' && selectedCard.isDefault && !selectedCard.revokedAt && <p>{text('removeDefaultHelp')}</p>}
         <Button type="submit" disabled={busy || !allowed} className="w-full sm:w-auto">{text(busy ? 'saving' : 'confirm')}</Button>

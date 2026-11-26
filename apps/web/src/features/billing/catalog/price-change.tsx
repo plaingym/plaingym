@@ -134,7 +134,7 @@ export function PriceChange(props: Props) {
     try { await reload(); } catch { setError(text('error')); } finally { setBusy(false); }
   }
   const name = (id: string) => preview.memberships.find(row => row.id === id)?.memberName ?? id;
-  return <div className="min-w-0 space-y-4 wrap-anywhere">
+  return <div className="min-w-0 space-y-4">
       <p>{say('pcPrice', { name: plan.name, amount: money(Number(input.amountCents ?? opening.amountCents), String(input.currency ?? plan.currency)) })}</p>
       {newOnly && !result && <p role="note">{text('pcTermsNewOnly')}</p>}
       {error && <Alert variant="error" focusOnReveal role="alert" className="space-y-3"><p>{error}</p>{(conflict || attempted) && <Button disabled={busy} onClick={() => void reloadPlan()}>{text('pcReload')}</Button>}</Alert>}

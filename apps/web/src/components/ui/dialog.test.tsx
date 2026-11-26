@@ -371,6 +371,29 @@ it('blocks Escape, backdrop and close during operations, then permits dismissal'
   view.rerender(<Dialog title="Edit" closeLabel="Close" onClose={close}><Operation busy={false} /></Dialog>);
   fireEvent(screen.getByRole('dialog'), new Event('cancel', { cancelable: true })); expect(close).toHaveBeenCalledOnce();
 });
+it('ignores sub-pixel zoom rounding in fitViewport and keeps real scrollbar gutters', () => {
+  stubRoot({ innerWidth: 1000.5, clientWidth: 1000, left: 0, width: 1000 });
+  const view = render(<Dialog title="Editor" closeLabel="Close" onClose={vi.fn()}>Body</Dialog>);
+  const firstStyle = screen.getByRole('dialog').style;
+  expect(firstStyle.getPropertyValue('--dialog-scrollbar-gutter')).toBe('0px');
+  expect(firstStyle.getPropertyValue('--dialog-gutter-left')).toBe('0px');
+  expect(firstStyle.getPropertyValue('--dialog-gutter-right')).toBe('0px');
+  view.unmount();
+
+  stubRoot({ innerWidth: 1015, clientWidth: 1000, left: 0, width: 1000 });
+  render(<Dialog title="Editor" closeLabel="Close" onClose={vi.fn()}>Body</Dialog>);
+  const secondStyle = screen.getByRole('dialog').style;
+  expect(secondStyle.getPropertyValue('--dialog-scrollbar-gutter')).toBe('15px');
+  expect(secondStyle.getPropertyValue('--dialog-gutter-left')).toBe('0px');
+  expect(secondStyle.getPropertyValue('--dialog-gutter-right')).toBe('15px');
+});
+it('keeps the title wrapping even when className sets wrap-normal', () => {
+  const longTitle = 'A'.repeat(60);
+  render(<Dialog title={longTitle} closeLabel="Close" className="wrap-normal" onClose={vi.fn()}>Body</Dialog>);
+  const heading = screen.getByRole('heading', { level: 2, name: longTitle });
+  expect(heading.classList.contains('wrap-anywhere')).toBe(false);
+  expect(breaksAnywhere(heading)).toBe(true);
+});
 it('inherits overflow-wrap: anywhere on the title without repeating wrap-anywhere', () => {
   const longTitle = 'A'.repeat(60);
   render(<Dialog title={longTitle} closeLabel="Close" onClose={vi.fn()}>Body</Dialog>);

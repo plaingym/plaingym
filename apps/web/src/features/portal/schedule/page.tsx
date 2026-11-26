@@ -11,7 +11,7 @@ import { ApiError } from '../../../lib/api.js';
 import { t } from '../../../lib/i18n.js';
 import { cn } from '../../../lib/utils.js';
 import { Alert } from '../../../components/ui/alert.js';
-import { Button } from '../../../components/ui/button.js';
+import { Button, nameWrapClass, nameWrapMarker } from '../../../components/ui/button.js';
 import { Dialog, useDialogOperation } from '../../../components/ui/dialog.js';
 import { Badge } from '../../../components/ui/table.js';
 import { EmptyState, ErrorState, LoadingState } from '../../../components/ui/states.js';
@@ -194,10 +194,10 @@ export function PortalSchedulePage({ client = portalClient, now = currentTime }:
             formatShortDay={date => dateFormatter('dayShort', timezone).format(localMidnight(date, timezone))}
             itemKey={item => item.id} renderItem={item => {
               const badge = classBadge(actionFor(item), item, whenLabel), time = timeRange(item);
-              return <button type="button" id={cardId(item.id)} aria-haspopup="dialog" data-name-wrap=""
+              return <button type="button" id={cardId(item.id)} aria-haspopup="dialog" {...nameWrapMarker}
                 aria-label={text('openClass', { session: item.name, time, status: badge.label })}
                 onClick={() => { setMessage(undefined); setSelection({ id: item.id, weekStart: range.start, memberId }); }}
-                className="flex min-h-11 w-full flex-col items-start gap-1 rounded-lg border border-border bg-card p-2 text-left wrap-anywhere hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                className={cn(nameWrapClass, 'flex min-h-11 w-full flex-col items-start gap-1 rounded-lg border border-border bg-card p-2 text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring')}>
                 <span className={cn('text-sm font-semibold', item.status === 'cancelled' && 'line-through')}>{item.name}</span>{' '}
                 <span className="order-first text-xs font-medium tabular-nums">{time}</span>{' '}
                 <Badge tone={badge.tone} className="max-w-full wrap-anywhere">{badge.label}</Badge>

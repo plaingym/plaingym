@@ -18,7 +18,7 @@ const label = (key: string, values?: Parameters<typeof t>[1]) => t('dashboard/bi
 function BillingMetric({ widget }: { widget: DashboardWidget }) {
   if (!('money' in widget)) return null;
   return <div className="min-w-0 space-y-3 pt-3">
-    <p className="wrap-anywhere text-3xl font-semibold tabular-nums">{money(widget.money.amountCents, widget.money.currency)}</p>
+    <p className="text-3xl font-semibold tabular-nums">{money(widget.money.amountCents, widget.money.currency)}</p>
     {'invoiceCount' in widget && <p className="text-sm text-muted-foreground">{label(widget.id === 'upcoming_charges' ? 'chargeCount' : 'invoiceCount', { count: formatCount(widget.invoiceCount) })}</p>}
     {widget.id === 'disputes' && <p className="text-sm text-muted-foreground">{label('disputeCount', { count: formatCount(widget.count) })}</p>}
     {widget.id === 'upcoming_charges' && <p className="text-sm text-muted-foreground">{label('range', { from: calendarDate(widget.from), through: calendarDate(widget.through) })}</p>}

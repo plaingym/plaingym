@@ -465,10 +465,13 @@ describe('portal schedule page', () => {
     client.members.mockResolvedValue(answer([{ id: parent, name: 'Pat Parent' }, { id: child, name: longMember }]));
     client.schedule.mockResolvedValue(answer([{ ...session, name: long, bookings: [booking] }]));
     page();
-    const cardName = await screen.findByText(long);
+    const cardButton = await screen.findByRole('button', cardName(long));
+    expect(cardButton.getAttribute('data-name-wrap')).toBe('');
+    expect(cardButton.classList.contains('wrap-anywhere')).toBe(true);
+    const cardNameText = await screen.findByText(long);
     const dialog = await openClass(userEvent.setup(), long);
     // Browser checks measure overflow at 360 px and on desktop.
-    for (const element of [cardName, dialog.getByRole('heading', { name: long }), dialog.getByText(longMember)]) {
+    for (const element of [cardNameText, dialog.getByRole('heading', { name: long }), dialog.getByText(longMember)]) {
       expect(breaksAnywhere(element)).toBe(true);
     }
   });

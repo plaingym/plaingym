@@ -30,7 +30,7 @@ export function MembershipDiscount({ row, gymId, client, discounts, reload }: {
       if (revisionConflict(cause)) setStale(true);
     } finally { inFlight.current = false; setBusy(false); }
   }
-  return <div className="min-w-0 space-y-3 border-t pt-3 wrap-anywhere">
+  return <div className="min-w-0 space-y-3 border-t pt-3">
     {row.discount && <div className="space-y-1 text-sm"><p className="font-medium">{text('current', { name: row.discount.name })}</p>
       <p>{benefit(row.discount)}</p>
       {row.discount.duration && <p>{row.discount.cyclesLeft === null ? text('forever') : text('cyclesLeft', { count: formatCount(row.discount.cyclesLeft) })}</p>}

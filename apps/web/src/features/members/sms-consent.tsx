@@ -38,9 +38,9 @@ export function SmsConsentControls({ sms, gymName, staff = false, disabled = fal
     <h3 className="font-semibold">{text('title')}</h3>
     {!sms.phoneValid && <p className="text-sm text-muted-foreground">{text('invalidPhone')}</p>}
     {sms.phoneE164 && <p className="break-all text-sm">{sms.phoneE164}</p>}
-    {sms.optedOutAt && <p className="wrap-anywhere text-sm">{text('optedOut', { date: dateLabel(sms.optedOutAt, timezone), gym: gymName })}</p>}
-    {sms.optedOutAt && staff && <p className="wrap-anywhere text-sm text-muted-foreground">{text('optedOutStaff')}</p>}
-    {samePhone && sms.phoneE164 && <p className="wrap-anywhere text-sm text-muted-foreground">
+    {sms.optedOutAt && <p className="text-sm">{text('optedOut', { date: dateLabel(sms.optedOutAt, timezone), gym: gymName })}</p>}
+    {sms.optedOutAt && staff && <p className="text-sm text-muted-foreground">{text('optedOutStaff')}</p>}
+    {samePhone && sms.phoneE164 && <p className="text-sm text-muted-foreground">
       {samePhone.other === 'household' ? text('sameAsHousehold_' + (samePhone.notices ? 'on' : 'off'))
         : text('sameAsMember_' + (samePhone.notices ? 'on' : 'off'), { name: samePhone.name ?? '' })}</p>}
     {kinds.map(kind => {

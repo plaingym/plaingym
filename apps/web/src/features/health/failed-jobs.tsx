@@ -75,7 +75,7 @@ function AcknowledgeFailedJobs({ gymId, observed }: { gymId: string; observed: O
   return <div className="mt-4 border-t border-border pt-4">
     {observed && <Button variant="outline" className="w-full sm:w-auto" onClick={() => { mutation.reset(); setConfirming(observed); }}>{label('acknowledge')}</Button>}
     {confirming && <Dialog title={label('acknowledgeTitle')} closeLabel={label('acknowledgeClose')} onClose={close} dismissible={!mutation.isPending}>
-      <div className="space-y-4 wrap-anywhere">
+      <div className="space-y-4">
         <p>{label('acknowledgeHelp')}</p>
         {mutation.isError && <Alert variant="error" focusOnReveal>
           {label(changed ? 'acknowledgeChanged' : 'acknowledgeFailed')}</Alert>}

@@ -9,6 +9,9 @@ const OperationContext = createContext<Dispatch<SetStateAction<number>> | undefi
 const DraftContext = createContext<((form?: HTMLFormElement) => void) | undefined>(undefined);
 const CancelContext = createContext<(() => void) | undefined>(undefined);
 
+// Reserve the scrollbar's gutter only when the page had a scrollbar (a difference of 1 px or less is zoom rounding, not a scrollbar), so a short page doesn't shift.
+const scrollbarTolerancePx = 1;
+
 let pageScrollLocks = 0;
 let restorePageScroll: (() => void) | undefined;
 
@@ -17,8 +20,7 @@ export function lockPageScroll() {
   if (pageScrollLocks++ === 0) {
     const { scrollX, scrollY } = window;
     const { style } = document.documentElement;
-    // Reserve the scrollbar's gutter only when the page had a scrollbar (a difference of 1 px or less is zoom rounding, not a scrollbar), so a short page doesn't shift.
-    const hadScrollbar = window.innerWidth - document.documentElement.clientWidth > 1;
+    const hadScrollbar = window.innerWidth - document.documentElement.clientWidth > scrollbarTolerancePx;
     // A shorthand can read as empty when only one axis has an inline value.
     const overflowProperties = style.overflow ? ['overflow'] : ['overflow', 'overflow-x', 'overflow-y'];
     const properties = [...overflowProperties, 'scrollbar-gutter'].map(name => ({
@@ -192,7 +194,8 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
     // width and alignment relative to the full viewport.
     const fitViewport = () => {
       const rect = document.documentElement.getBoundingClientRect();
-      const gutter = Math.max(0, window.innerWidth - rect.width);
+      const measured = window.innerWidth - rect.width;
+      const gutter = measured > scrollbarTolerancePx ? measured : 0;
       // The root scrollbar sits on the left in a right-to-left page.
       const onLeft = rect.left > 0;
       dialog.style.setProperty('--dialog-scrollbar-gutter', `${gutter}px`);
@@ -227,7 +230,7 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
       size === 'wide' ? 'sm:max-w-4xl' : 'sm:max-w-2xl', className)}>
     <div className="flex min-h-0 w-full flex-1 flex-col">
       <div className="flex items-start gap-3 border-b border-border px-4 py-3 sm:px-6">
-        <div className="min-w-0 flex-1 space-y-1 py-2">
+        <div className={cn('min-w-0 flex-1 space-y-1 py-2', userNames)}>
           <h2 id={titleId} className="text-lg font-semibold">{title}</h2>
           {description && <p id={descriptionId} className="text-sm text-muted-foreground">{description}</p>}
         </div>

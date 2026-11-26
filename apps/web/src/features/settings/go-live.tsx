@@ -167,19 +167,19 @@ export function GoLiveSettings() {
       {busy && <p role="status" className="text-sm text-muted-foreground">{label(checking ? 'reconcileRunning' : 'saving')}</p>}
       <h3 className="font-semibold">{label('checklist')}</h3>
       <ul className="divide-y divide-border rounded-lg border border-border">{checklist.items.map((item) => <li key={item.id} className="flex flex-col items-start gap-2 p-3 sm:flex-row sm:justify-between sm:gap-3">
-        <span className="min-w-0"><span className="block font-medium">{label('item.' + item.id)}</span><span role={hasRestoreModeNote(item) ? 'note' : undefined} className="block wrap-anywhere text-sm text-muted-foreground">{item.message}</span></span>
+        <span className="min-w-0"><span className="block font-medium">{label('item.' + item.id)}</span><span role={hasRestoreModeNote(item) ? 'note' : undefined} className="block text-sm text-muted-foreground">{item.message}</span></span>
         <Badge tone={statusTone[item.status]} className="shrink-0">{label('status.' + item.status)}</Badge>
       </li>)}</ul>
       {checklist.restoreReconciliation && <div className="space-y-3 rounded-lg border border-border p-3" aria-label={label('reconcileTitle')}>
         <h3 className="font-semibold">{label('reconcileTitle')}</h3>
         <p className="text-sm text-muted-foreground">{label('reconcileHelp')}</p>
-        <p role="status" className="wrap-anywhere text-sm">{checklist.restoreReconciliation.checkedAt
+        <p role="status" className="text-sm">{checklist.restoreReconciliation.checkedAt
           ? label(checklist.restoreReconciliation.stripeConfigured === false ? 'reconcileStoredResult' : 'reconcileResult', {
             at: instantLabel(checklist.restoreReconciliation.checkedAt, settings?.timezone),
             inspected: checklist.restoreReconciliation.inspected === null ? label('unknown') : formatCount(checklist.restoreReconciliation.inspected),
             unresolved: checklist.restoreReconciliation.unresolved === null ? label('unknown') : formatCount(checklist.restoreReconciliation.unresolved) })
           : label('reconcilePending')}</p>
-        {checklist.restoreReconciliation.stripeConfigured === false && <p className="wrap-anywhere text-sm">
+        {checklist.restoreReconciliation.stripeConfigured === false && <p className="text-sm">
           {label(restoreStripeNote(checklist.items))}</p>}
         {checkError && <Alert variant="error" focusOnReveal>{label(checkError)}</Alert>}
         {checklist.billingEnabled && <p className="text-sm text-muted-foreground">{label('reconcilePause')}</p>}
@@ -213,7 +213,7 @@ export function GoLiveSettings() {
 
 function PastDueList({ memberships }: { memberships: Checklist['pastDueMemberships'] }) {
   return <ul className="divide-y divide-border rounded-lg border border-border">{memberships.map(membership => <li key={membership.id}
-    className="space-y-1 wrap-anywhere p-3">
+    className="space-y-1 p-3">
     <p className="font-medium">{membership.memberName}</p><p className="text-sm">{membership.planName}</p>
     <p className="text-sm text-muted-foreground">{label('nextDueOn', { date: membership.nextDueOn })}</p>
   </li>)}</ul>;

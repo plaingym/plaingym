@@ -11,7 +11,7 @@ export function useWaiverDocument(template: WaiverTemplate, key: readonly unknow
     enabled: !!template.document, refetchInterval: 240_000, staleTime: 240_000, gcTime: 0, refetchOnWindowFocus: true });
 }
 export function WaiverDocument({ template, query }: { template: WaiverTemplate; query: ReturnType<typeof useWaiverDocument> }) {
-  if (!template.document) return <div className="max-h-96 overflow-y-auto whitespace-pre-wrap wrap-anywhere rounded-lg border border-border p-3" dir="auto" tabIndex={0}>{template.body}</div>;
+  if (!template.document) return <div className="max-h-96 overflow-y-auto whitespace-pre-wrap rounded-lg border border-border p-3" dir="auto" tabIndex={0}>{template.body}</div>;
   if (query.isPending) return <LoadingState />;
   if (!query.data) return <ErrorState onRetry={() => void query.refetch()} />;
   return <LoadedDocument key={template.id} template={template} url={query.data.data.url} />;
@@ -21,7 +21,7 @@ function LoadedDocument({ template, url }: { template: WaiverTemplate; url: stri
   const [previewUrl] = useState(url);
   return <div className="min-w-0 space-y-2">
     <iframe className="h-96 w-full rounded-lg border border-border" src={previewUrl} title={template.name} referrerPolicy="no-referrer" />
-    <a className="inline-flex min-h-11 items-center wrap-anywhere underline" href={url} target="_blank" rel="noopener noreferrer">{t('waivers/waivers:openDocument')}</a>
+    <a className="inline-flex min-h-11 items-center underline" href={url} target="_blank" rel="noopener noreferrer">{t('waivers/waivers:openDocument')}</a>
     <p className="text-sm text-muted-foreground">{t('waivers/waivers:documentHelp')}</p>
   </div>;
 }

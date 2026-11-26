@@ -6,6 +6,7 @@ import tseslint from 'typescript-eslint';
 import { systemTableRule } from './packages/db/system-table-lint.mjs';
 import { userFacingStringsRule } from './scripts/user-facing-strings-lint.mjs';
 import { rawColorRule } from './scripts/raw-color-lint.mjs';
+import { displayLocaleRule } from './scripts/display-locale-lint.mjs';
 
 const vendor = {
   group: [
@@ -113,13 +114,8 @@ export default defineConfig(
   {
     files: ['apps/web/src/**/*.{js,jsx,ts,tsx}'],
     ignores: ['**/*.{test,spec}.*', '**/{test,tests,__tests__}/**'],
-    rules: { 'no-restricted-syntax': ['error',
-      ...((missing) => [
-        `CallExpression[callee.property.name=/^toLocale(String|DateString|TimeString)$/]${missing}`,
-        `:matches(NewExpression, CallExpression)[callee.object.name='Intl'][callee.property.name=/^(NumberFormat|DateTimeFormat|RelativeTimeFormat|PluralRules|ListFormat|DisplayNames|Collator|Segmenter)$/]${missing}:not(MemberExpression[property.name='resolvedOptions'] > *)`,
-      ])(":matches([arguments.length=0], [arguments.0.type='Identifier'][arguments.0.name='undefined'], [arguments.0.type='ArrayExpression'][arguments.0.elements.length=0], [arguments.0.type='Literal'][arguments.0.value=null], [arguments.0.type='UnaryExpression'][arguments.0.operator='void'], [arguments.0.type='TSAsExpression'][arguments.0.expression.type='Identifier'][arguments.0.expression.name='undefined'], [arguments.0.type='TSNonNullExpression'][arguments.0.expression.type='Identifier'][arguments.0.expression.name='undefined'], [arguments.0.type='SpreadElement'])")
-        .map(selector => ({ selector, message: 'Display formatting uses the fixed en locale: formatCount (lib/count.ts), lib/instant.ts, or an explicit \'en\'.' })),
-    ] },
+    plugins: { locale: { rules: { 'display-locale': displayLocaleRule } } },
+    rules: { 'locale/display-locale': 'error' },
   },
   {
     files: ['apps/server/src/**'],

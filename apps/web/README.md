@@ -28,13 +28,14 @@ and legal-record timestamps unchanged. Choose singular/plural messages using
 the numeric value before formatting.
 
 Vitest pins the default number and date locale to `en` in `test/locale.ts`, so tests can't
-see a locale-less `Intl` call; lint refuses those (no arguments, `undefined`, `undefined as …`,
-`undefined!`, `[]`, `null`, `void 0`, or a spread first argument) and locale-less
-`toLocaleString()` / `toLocaleDateString()` / `toLocaleTimeString()` across all eight
-`Intl` constructors (`NumberFormat`, `DateTimeFormat`, `RelativeTimeFormat`, `PluralRules`,
-`ListFormat`, `DisplayNames`, `Collator`, `Segmenter`) in `apps/web/src`
-(`no-restricted-syntax` in `eslint.config.mjs`). CI also runs the suite with a German
-system locale.
+see a locale-less call. In `apps/web/src` (test files aside), `locale/display-locale`
+(`scripts/display-locale-lint.mjs`, configured in `eslint.config.mjs`) refuses
+`toLocaleString()` / `toLocaleDateString()` / `toLocaleTimeString()` and the eight `Intl`
+constructors (`NumberFormat`, `DateTimeFormat`, `RelativeTimeFormat`, `PluralRules`,
+`ListFormat`, `DisplayNames`, `Collator`, `Segmenter`) with no arguments or a first argument
+of `undefined`, `null`, `void 0`, `[]` or `...[]`, also wrapped in `as`, `satisfies`, `<T>`
+or `!`. It allows every other spread, since lint can't see whether it carries a locale. CI
+also runs the suite with a German system locale.
 
 **Mobile-first.** Build every screen for a 360 px wide phone first, then scale
 up: Tailwind base classes are the phone layout, and `sm:` / `md:` / `lg:` add
@@ -101,7 +102,7 @@ App labels stay whole: `Button` and `Badge` reset the rule with `wrap-normal` (a
 its word. A button whose text carries a user-supplied name (such as "Edit {name}") uses `<Button wrap>`
 (or `nameWrapClass` and `nameWrapMarker` on a raw `<button>`);
 this applies `wrap-anywhere` and a `data-name-wrap` marker for layout probes, including when `asChild` renders a link.
-On name text outside `Page`, the portal shell and `Dialog` (the kiosk, the QR screen), set `wrap-anywhere` yourself; never `break-words`, which a test refuses under `apps/web/src`.
+On name text outside `Page`, the portal shell and `Dialog` (the kiosk, the QR screen, the setup wizard, the admin header) or inside a table, `Button` or `Badge`, set `wrap-anywhere` yourself; never `break-words`, which a test refuses under `apps/web/src`.
 `Autocomplete` options set it themselves. A screen
 rendered outside a `Page` (the billing catalog) applies the exported `userNames` rule on its own root. Put a table in `TableContainer` so it scrolls instead of widening the page.
 

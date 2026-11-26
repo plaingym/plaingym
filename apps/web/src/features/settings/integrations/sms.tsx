@@ -81,7 +81,7 @@ export function SmsIntegrationSection({ sms, editable, state }: { sms: SmsIntegr
     <h3 className="font-semibold">{label('title')}</h3>
     {sms.unreadable && <p role="alert" className="text-sm">{label('unreadable')}</p>}
     {/* A sandbox texts through the demo outbox (the page's intro says so), never through a saved provider. */}
-    {!state.integrations?.sandbox && <p className="text-sm wrap-anywhere">{sms.configured ? text('sms.configured', { account: sms.accountSid ?? '', sender: sms.from ?? sms.messagingServiceSid ?? '' }) : label('notConfigured')}</p>}
+    {!state.integrations?.sandbox && <p className="text-sm">{sms.configured ? text('sms.configured', { account: sms.accountSid ?? '', sender: sms.from ?? sms.messagingServiceSid ?? '' }) : label('notConfigured')}</p>}
     {sms.configured && <p className="text-sm text-muted-foreground">{label('stored')}</p>}
     <FormMessage message={message}/>
     {gym.settings && <form aria-label={label('capForm')} onSubmit={event => void saveCap(event)}>

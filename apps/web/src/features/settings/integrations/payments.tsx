@@ -93,9 +93,9 @@ export function PaymentsIntegrationSection({ payments, editable, lastEventAt, st
       {lastEventAt ? text('payments.lastEvent', { time: instantLabel(lastEventAt) }) : label('noEvent')}</p>}
     {editable && payments.accountLocked && <p className="text-sm text-muted-foreground">{label(payments.mode === 'test' ? 'lockedTest' : 'locked')}</p>}
     {editable && payments.importedCustomersOnly && <p className="text-sm text-muted-foreground">{label('importedOnly')}</p>}
-    {editable && payments.configured && restore?.stripeConfigured === false && <p className="wrap-anywhere text-sm" role="note">
+    {editable && payments.configured && restore?.stripeConfigured === false && <p className="text-sm" role="note">
       {t('settings/go-live:reconcileStripeConnected')}</p>}
-    {editable && payments.configured && reconciliation && hasRestoreModeNote(reconciliation) && <p className="wrap-anywhere text-sm" role="note">{reconciliation.message}</p>}
+    {editable && payments.configured && reconciliation && hasRestoreModeNote(reconciliation) && <p className="text-sm" role="note">{reconciliation.message}</p>}
     {gym.settings && <div className="grid min-w-0 gap-1">
       <CheckboxField role="switch" label={text('bankDebitsLabel')} checked={gym.settings.bankDebitsEnabled && eligible}
         disabled={!editable || !eligible || busy || gym.failed} aria-describedby="bank-debits-help" onChange={event => void toggleBankDebits(event.target.checked)}/>

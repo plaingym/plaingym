@@ -143,7 +143,7 @@ function ScheduleContent({ gymId, roles, enabledModules }: { gymId: string | und
         <PageSection title={text('templates')} description={text('templateHelp')}>
           {templates.length === 0 ? <EmptyState title={text('noTemplates')} description={text('noTemplatesHelp')}/>
             : <StackedList>{templates.map((template) => <StackedItem key={template.id} className="sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0"><p className="wrap-anywhere font-medium">{template.name}</p>
+              <div className="min-w-0"><p className="font-medium">{template.name}</p>
                 <p className="text-sm text-muted-foreground">{text('day' + template.weekday)} {wallTimeLabel(template.localStartTime)} · {template.durationMinutes} {text('minutes')}
                   {template.coachId && ' · ' + (options.coaches.find((coach) => coach.id === template.coachId)?.name ?? '')}</p></div>
               <div className="grid grid-cols-2 gap-2 pt-2 sm:flex sm:pt-0">

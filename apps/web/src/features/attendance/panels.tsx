@@ -318,7 +318,7 @@ function Roster({ sessionId }: { sessionId: string }) {
       const memberId = entry.booking?.memberId ?? entry.attendance!.memberId, name = entry.displayName, attendance = entry.attendance, done = !!attendance;
       const rank = entry.booking?.status === 'waitlisted' ? entry.booking.queueRank : null;
       return <li key={memberId} className="flex flex-wrap items-center justify-between gap-3 px-4 py-2">
-        <div className="min-w-0 wrap-anywhere"><span className="font-medium">{name}</span>
+        <div className="min-w-0"><span className="font-medium">{name}</span>
           {rank !== null && <Badge className="ml-2">{text('waitlisted', { rank: formatCount(rank) })}</Badge>}
           {attendance && showConfirmation?.attendanceId !== attendance.id && needsCredits.has(attendance.id) &&<p role="status" className="text-sm text-warning">{text('needsCredits')}</p>}</div>
         <div className="flex flex-wrap items-center gap-2">

@@ -7,9 +7,10 @@ import { describe, expect, it } from 'vitest';
 const root = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../..');
 const eslint = new ESLint({ cwd: root });
 const probe = resolve(root, 'apps/web/src/features/probe/probe.tsx');
+const probeTs = resolve(root, 'apps/web/src/features/probe/probe.ts');
 const restricted = async (code: string, filePath = probe) => {
   const [result] = await eslint.lintText(code, { filePath });
-  return result!.messages.filter(message => message.ruleId === 'no-restricted-syntax');
+  return result!.messages.filter(message => message.ruleId === 'locale/display-locale');
 };
 
 describe('display locale lint rule', () => {
@@ -35,9 +36,17 @@ describe('display locale lint rule', () => {
     'new Intl.NumberFormat(undefined as never);',
     '(5).toLocaleString(undefined!);',
     '(5).toLocaleString(...[]);',
-    'new Intl.DateTimeFormat(...args);',
+    'new Intl.NumberFormat(null as never);',
+    'new Intl.NumberFormat(undefined satisfies string | undefined);',
+    '(5).toLocaleString(undefined as any as string);',
+    'new Intl.DateTimeFormat(...([] as string[]));',
+    'new Intl.Collator(undefined!, {});',
   ])('refuses %s', async code => {
     expect(await restricted(code)).toHaveLength(1);
+  });
+
+  it('refuses angle-bracket type assertion around undefined in .ts', async () => {
+    expect(await restricted('new Intl.NumberFormat(<any>undefined);', probeTs)).toHaveLength(1);
   });
 
   it.each([
@@ -53,6 +62,10 @@ describe('display locale lint rule', () => {
     "new Intl.Collator('en').compare('a', 'b');",
     "new Intl.Segmenter('en', { granularity: 'word' });",
     "new Intl.NumberFormat('en' as const);",
+    'new Intl.DateTimeFormat(...args);',
+    "new Intl.NumberFormat(...['en', { style: 'percent' }]);",
+    "new Intl.NumberFormat('en' satisfies string);",
+    "new Intl.DateTimeFormat('en' as string, {});",
   ])('allows %s', async code => {
     expect(await restricted(code)).toHaveLength(0);
   });

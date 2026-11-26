@@ -41,7 +41,7 @@ export function PersonPicker({ name, kind, initialId = '', services, onChange }:
     <Input id={inputId} type="search" value={search} onChange={event => { setSearch(event.target.value); setOffset(0); }}
       onKeyDown={event => { if (event.key === 'Enter') event.preventDefault(); }}/>
     {selected && <div className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-border p-3">
-      <p className="min-w-0 wrap-anywhere text-sm"><span className="font-medium">{text('selectedPerson')}: </span>{selected.displayName}
+      <p className="min-w-0 text-sm"><span className="font-medium">{text('selectedPerson')}: </span>{selected.displayName}
         {selected.email && selected.email !== selected.displayName && <span className="block break-all text-muted-foreground">{selected.email}</span>}</p>
       <Button type="button" variant="outline" onClick={() => choose(null)}>{text('clearPerson')}</Button>
     </div>}

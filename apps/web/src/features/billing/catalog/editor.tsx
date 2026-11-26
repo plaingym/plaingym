@@ -94,7 +94,7 @@ export function CatalogEditor({ kind, record, currency, taxes, busy, locked = fa
     if (value === undefined || sameDraftValue(field, value, draft[field], currency)) return null;
     const display = typeof value === 'boolean' ? text(value ? 'yes' : 'no')
       : field === 'interval' ? text(String(value)) : String(value) || text('emptyValue');
-    return <p role="note" className="wrap-anywhere text-sm text-destructive">{say('latestValue', { value: display })}</p>;
+    return <p role="note" className="text-sm text-destructive">{say('latestValue', { value: display })}</p>;
   };
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (stale || busy || locked) return;

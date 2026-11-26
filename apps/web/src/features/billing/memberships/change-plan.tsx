@@ -74,7 +74,7 @@ export function ChangePlanDialog({ row, plans, client, close, changed, reload, g
     } finally { inFlight.current = false; setBusy(false); }
   }
   return <Dialog title={text('changePlanTitle')} closeLabel={text('close')} onClose={close} dismissible={!busy}>
-    <form className="min-w-0 space-y-4 wrap-anywhere" onSubmit={event => void submit(event)}>
+    <form className="min-w-0 space-y-4" onSubmit={event => void submit(event)}>
       {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
       {!options.length ? <p>{text('noOtherPlans')}</p> : <fieldset disabled={busy} className="min-w-0 space-y-4">
         <p className="text-sm text-muted-foreground">{text('changePlanCurrent', { plan: plans.find(item => item.id === row.planId)?.name ?? text('membership'), price: money(row.amountCents, row.currency), interval: text(row.interval) })}</p>
