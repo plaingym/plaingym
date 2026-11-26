@@ -41,6 +41,11 @@ describe('display locale lint rule', () => {
     '(5).toLocaleString(undefined as any as string);',
     'new Intl.DateTimeFormat(...([] as string[]));',
     'new Intl.Collator(undefined!, {});',
+    'new globalThis.Intl.NumberFormat();',
+    'window.Intl.DateTimeFormat();',
+    '(5).toLocaleString([,]);',
+    'new Intl.NumberFormat(...[,]);',
+    'new Intl.DateTimeFormat([,,]);',
   ])('refuses %s', async code => {
     expect(await restricted(code)).toHaveLength(1);
   });
@@ -66,8 +71,20 @@ describe('display locale lint rule', () => {
     "new Intl.NumberFormat(...['en', { style: 'percent' }]);",
     "new Intl.NumberFormat('en' satisfies string);",
     "new Intl.DateTimeFormat('en' as string, {});",
+    "new globalThis.Intl.NumberFormat('en');",
+    "window.Intl.DateTimeFormat('en', {});",
   ])('allows %s', async code => {
     expect(await restricted(code)).toHaveLength(0);
+  });
+
+  it.each(['probe.mjs', 'probe.cts'])('covers %s', async name => {
+    const file = resolve(root, 'apps/web/src/features/probe', name);
+    expect(await restricted('new Intl.NumberFormat();', file)).toHaveLength(1);
+  });
+
+  it('leaves .test.mjs files alone', async () => {
+    const ignored = resolve(root, 'apps/web/src/features/probe/probe.test.mjs');
+    expect(await restricted('new Intl.NumberFormat();', ignored)).toHaveLength(0);
   });
 
   it('leaves test files alone', async () => {

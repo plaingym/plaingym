@@ -9,7 +9,8 @@ import type { Page } from '@playwright/test';
 test.skip(process.env.DEMO_CAPTURE !== '1' || !!process.env.CI, 'Manual product screenshot capture only');
 const root = new URL('../../apps/server/src/demo/', import.meta.url);
 const destination = new URL('screenshots/', root);
-const fixedTime = new Date('2026-11-16T12:00:00.000Z');
+// Set by product.mjs, which also freezes the demo container's clock at it.
+const fixedTime = new Date(process.env.CAPTURE_CLOCK_INSTANT ?? '');
 
 test('capture ten seeded product screens in both themes and densities', async ({ browser, sandboxes }) => {
   await mkdir(destination, { recursive: true });
@@ -21,7 +22,8 @@ test('capture ten seeded product screens in both themes and densities', async ({
   const signer = (await owner.json<{ data: RecordId }>('/api/members', 'POST',
     { householdId: household.id, firstName: 'Sam', lastName: 'Unsigned', dateOfBirth: '1990-01-01' })).data;
   const link = (await owner.json<{ data: { token: string } }>('/api/links', 'POST',
-    { purpose: 'sign_waiver', householdId: household.id, memberId: signer.id, expiresAt: '2026-11-17T12:00:00.000Z' })).data;
+    { purpose: 'sign_waiver', householdId: household.id, memberId: signer.id,
+      expiresAt: new Date(fixedTime.getTime() + 86_400_000).toISOString() })).data;
   const screens = adminScreens({ populated: true, owner });
   const manifest: Record<string, { width: number; height: number; light: string[]; dark: string[] }> = {};
   const evidence: { file: string; bytes: number }[] = [];

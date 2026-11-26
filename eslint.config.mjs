@@ -112,7 +112,7 @@ export default defineConfig(
     languageOptions: { globals: globals.browser },
   },
   {
-    files: ['apps/web/src/**/*.{js,jsx,ts,tsx}'],
+    files: ['apps/web/src/**/*.{js,jsx,ts,tsx,mjs,mts,cjs,cts}'],
     ignores: ['**/*.{test,spec}.*', '**/{test,tests,__tests__}/**'],
     plugins: { locale: { rules: { 'display-locale': displayLocaleRule } } },
     rules: { 'locale/display-locale': 'error' },

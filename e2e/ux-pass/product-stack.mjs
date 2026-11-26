@@ -8,7 +8,8 @@ export async function productOverlay() {
   const path = fileURLToPath(new URL('../coverage/product-compose.json', import.meta.url));
   await writeFile(path, JSON.stringify({ services: { demo: {
     // Two ready copies satisfy the shared fixture without needing a later scheduler tick under frozen time.
-    environment: { NODE_OPTIONS: '--max-old-space-size=256 --import=/capture-clock.mjs', DEMO_POOL_SIZE: '2' },
+    environment: { NODE_OPTIONS: '--max-old-space-size=256 --import=/capture-clock.mjs', DEMO_POOL_SIZE: '2',
+      CAPTURE_CLOCK_INSTANT: process.env.CAPTURE_CLOCK_INSTANT },
     volumes: [{ type: 'bind', source: fileURLToPath(new URL('./product-clock.mjs', import.meta.url)), target: '/capture-clock.mjs', read_only: true }],
   } } }));
   return path;

@@ -35,6 +35,11 @@ function unwrap(node) {
   return current;
 }
 
+/** An array with no values: `[]`, or only holes such as `[,]`. @param {Syntax | undefined} node @returns {boolean} */
+function isEmptyArray(node) {
+  return node?.type === 'ArrayExpression' && (node.elements ?? []).every(element => element === null);
+}
+
 /** @param {Syntax} node @returns {boolean} */
 function isEmptyLocaleArg(node) {
   const unwrapped = unwrap(node);
@@ -42,11 +47,8 @@ function isEmptyLocaleArg(node) {
   if (unwrapped.type === 'Identifier' && unwrapped.name === 'undefined') return true;
   if (unwrapped.type === 'Literal' && unwrapped.value === null && !unwrapped.regex) return true;
   if (unwrapped.type === 'UnaryExpression' && unwrapped.operator === 'void') return true;
-  if (unwrapped.type === 'ArrayExpression' && (unwrapped.elements?.length ?? 0) === 0) return true;
-  if (unwrapped.type === 'SpreadElement') {
-    const spreadTarget = unwrap(unwrapped.argument);
-    return spreadTarget?.type === 'ArrayExpression' && (spreadTarget.elements?.length ?? 0) === 0;
-  }
+  if (isEmptyArray(unwrapped)) return true;
+  if (unwrapped.type === 'SpreadElement') return isEmptyArray(unwrap(unwrapped.argument));
   return false;
 }
 
@@ -58,6 +60,17 @@ function isResolvedOptionsObject(node) {
   return prop?.type === 'Identifier' && prop.name === 'resolvedOptions';
 }
 
+/** `Intl`, `globalThis.Intl` or `window.Intl`. @param {Syntax | undefined} node @returns {boolean} */
+function isIntlObject(node) {
+  if (node?.type === 'Identifier') return node.name === 'Intl';
+  if (node?.type !== 'MemberExpression' || node.computed) return false;
+  const object = syntax(node.object), property = syntax(node.property);
+  return object?.type === 'Identifier'
+    && (object.name === 'globalThis' || object.name === 'window')
+    && property?.type === 'Identifier'
+    && property.name === 'Intl';
+}
+
 /** @param {Syntax} node @returns {boolean} */
 function isTarget(node) {
   const callee = syntax(node.callee);
@@ -65,9 +78,7 @@ function isTarget(node) {
   const prop = syntax(callee.property);
   if (!prop || prop.type !== 'Identifier' || !prop.name) return false;
   if (node.type === 'CallExpression' && localeStringMethods.has(prop.name)) return true;
-  const object = syntax(callee.object);
-  return object?.type === 'Identifier'
-    && object.name === 'Intl'
+  return isIntlObject(syntax(callee.object))
     && intlConstructors.has(prop.name)
     && !isResolvedOptionsObject(node);
 }

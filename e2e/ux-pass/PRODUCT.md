@@ -15,11 +15,17 @@ pass's Compose install, sandbox fixture, seed, sign-ins, screen inventory and
 settling helper. It runs only the product project and refuses CI execution.
 `E2E_IMAGE` can reuse an image built from the source being captured.
 
-The capture overlay freezes only the disposable demo container's JavaScript clock
-at `2026-11-16T12:00:00Z`; Playwright fixes each page to that instant. The normal
-UX pass uses live time. The clock shim is mounted, never included in the app image.
-Update the instant in both `product-clock.mjs` and `product.spec.ts` deliberately
-when refreshing the sample date. No production clock or setting changes.
+`product.mjs` sets `CAPTURE_CLOCK_INSTANT` to the most recent Monday 12:00 UTC
+at or before the run starts, so the sample week looks the same on every refresh.
+The instant controls three things: the disposable demo container's JavaScript clock
+(frozen by the capture overlay), each Playwright page's clock, and the waiver link's
+expiry (one day later). It doesn't change PostgreSQL's `now()` or the browser's
+cookie jar, which keep real time. The normal UX pass uses live time. The clock
+shim is mounted, never included in the app image. No production clock or setting
+changes.
+
+`node --test e2e/ux-pass/product.test.mjs` checks the instant and the clock shim
+without Docker.
 
 The ten screens go to `apps/server/src/demo/screenshots/` as WebP at 1x and 2x,
 in light and dark. Portal and waiver screens are 390×844, kiosk 768×900, and
