@@ -114,14 +114,14 @@ with at most 10,000 in-memory buckets per process. `clientKey` keeps an IPv4
 address as it is, counts an IPv4-mapped IPv6 address as IPv4, and groups other
 IPv6 addresses by /64, as Better Auth's limiter does; every limiter uses it. A
 full table (`RateBuckets`) evicts rather than refusing new clients, so a flood
-can't lock new visitors out: ended windows and the oldest buckets still within
-their limits go first, and a bucket over its limit goes only once every other
-bucket is too, so lifting a refusal takes a flood that fills the whole table
-with refused clients. A walk making room sets the over-limit buckets it meets
-aside in a second map, once, so a table full of refused clients costs no full
-walk per new key; set-aside buckets go after the rest, the one whose window
-ends first first, keeping that place even if a count later drops below its
-limit. Refusals keep their
+can't lock new visitors out: set-aside buckets whose window has ended go first,
+then ended or within-limit buckets in the order they were made, and a live
+bucket over its limit goes only once every other bucket is too, so lifting a
+refusal takes a flood that fills the whole table with refused clients. A walk
+making room sets the over-limit buckets it meets aside in a second map, once,
+so a table full of refused clients costs no full walk per new key; live
+set-aside buckets go after the rest, the one whose window ends first first,
+keeping that place even if a count later drops below its limit. Refusals keep their
 `Retry-After`. This is process-local flood protection; auth
 retains its database-backed limiter. `peerAddress` defaults to the Node socket
 address. Set `trustedProxy` to a predicate matching only the immediate reverse

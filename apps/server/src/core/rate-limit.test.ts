@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createApp } from './app.js';
 import { TestClock } from './clock.js';
 import { clientKey, contractRequest, failureBudget, type RateBucket, RateBuckets, rateLimit, type RateLimitOptions, type SharedRateLimitStore } from './rate-limit.js';
@@ -348,6 +348,52 @@ it('brings a table that kept keys held over its bound back to it, preferring wit
   // The next key evicts two: the within-limit bucket first, then the oldest over-limit one.
   buckets.add('next', { count: 0, resetAt: 100 }, 0);
   expect(['blocked', 'kept', 'open', 'next'].map((key) => buckets.get(key, 0) !== undefined)).toEqual([false, true, false, true]);
+});
+
+describe('a set-aside bucket whose window has ended', () => {
+  // `ended` is set aside and `first` evicted when `second` arrives; `ended`'s window then ends at 50.
+  const table = () => {
+    const blocked = overOne(), buckets = new RateBuckets(3, blocked);
+    const ended = buckets.add('ended', { count: 1, resetAt: 50 }, 0);
+    buckets.add('first', { count: 0, resetAt: 100 }, 0);
+    buckets.add('live', { count: 0, resetAt: 100 }, 0);
+    buckets.add('second', { count: 0, resetAt: 100 }, 10);
+    expect(['ended', 'first', 'live', 'second'].map((key) => buckets.get(key, 10) !== undefined)).toEqual([true, false, true, true]);
+    return { blocked, buckets, ended };
+  };
+
+  it('goes before a live, within-limit bucket that has not been set aside, without asking about any bucket', () => {
+    const { blocked, buckets, ended } = table();
+    const before = blocked.mock.calls.length;
+    const live = buckets.get('live', 60)!, second = buckets.get('second', 60)!;
+    const third = buckets.add('third', { count: 0, resetAt: 100 }, 60);
+    expect(blocked.mock.calls.length).toBe(before);
+    expect(buckets.holds('ended', ended)).toBe(false);
+    expect([buckets.holds('live', live), buckets.holds('second', second), buckets.holds('third', third)]).toEqual([true, true, true]);
+  });
+
+  it('stays while its own request keeps it, and goes on the next addition', () => {
+    const { buckets, ended } = table();
+    const live = buckets.get('live', 60)!;
+    buckets.add('third', { count: 0, resetAt: 100 }, 60, ['ended']);
+    expect(buckets.holds('ended', ended)).toBe(true);
+    expect(buckets.holds('live', live)).toBe(false);
+    buckets.add('fourth', { count: 0, resetAt: 100 }, 60);
+    expect(buckets.holds('ended', ended)).toBe(false);
+    expect(['second', 'third', 'fourth'].map((key) => buckets.get(key, 60) !== undefined)).toEqual([true, true, true]);
+  });
+
+  it('goes in window order when several have ended', () => {
+    const buckets = new RateBuckets(3, (bucket) => bucket.count >= 1);
+    const at40 = buckets.add('at40', { count: 1, resetAt: 40 }, 0);
+    const at50 = buckets.add('at50', { count: 1, resetAt: 50 }, 0);
+    buckets.add('open', { count: 0, resetAt: 100 }, 0);
+    // Sets both aside and evicts `open`.
+    const next = buckets.add('next', { count: 0, resetAt: 100 }, 10);
+    expect(buckets.get('open', 10)).toBeUndefined();
+    buckets.add('last', { count: 0, resetAt: 100 }, 60);
+    expect([buckets.holds('at40', at40), buckets.holds('at50', at50), buckets.holds('next', next)]).toEqual([false, true, true]);
+  });
 });
 
 it('shares a conservative bucket when no socket address is available', async () => {

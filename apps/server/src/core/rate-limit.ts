@@ -99,10 +99,11 @@ const windowOrder = <Bucket extends RateBucket>(a: SetAside<Bucket>, b: SetAside
 /**
  * Fixed-window buckets in two maps: `#open` holds buckets in creation order until a walk making room finds them
  * over their limit (`blocked`), and then sets them aside in `#blocked`, once. A full table evicts buckets rather
- * than refusing new keys, so a flood of new keys can't lock out new visitors. Ended windows and the oldest buckets
- * still within their limits go first; a bucket over its limit goes only once every other bucket is too, so lifting a
- * refusal takes a flood that fills the whole table with refused keys, and a table full of them costs no full walk
- * per new key.
+ * than refusing new keys, so a flood of new keys can't lock out new visitors. Set-aside buckets whose window has
+ * ended go first, then the first ended or within-limit buckets in `#open` (in creation order), then the remaining
+ * set-aside ones not kept, in window order. A live bucket over its limit goes only once every other bucket is too,
+ * so lifting a refusal takes a flood that fills the whole table with refused keys, and a table full of them costs no
+ * full walk per new key.
  *
  * Set-aside buckets go in window order: the one whose window ends first goes first, ties in the order set aside, and
  * a bucket keeps that place even if its count later drops below its limit. A min-heap beside `#blocked` holds that
@@ -123,8 +124,9 @@ export class RateBuckets<Bucket extends RateBucket = RateBucket> {
     return bucket;
   }
   /**
-   * Starts the key's bucket, first making room in a full table: the first ended or within-limit buckets in `#open`
-   * (over-limit ones met on the way are set aside, kept ones too), else the set-aside ones not kept, in window order.
+   * Starts the key's bucket, first making room in a full table: set-aside buckets whose window has ended, the
+   * earliest first, then the first ended or within-limit buckets in `#open` in creation order (over-limit ones met on
+   * the way are set aside, kept ones too), then the remaining set-aside ones not kept, in window order.
    * The buckets of `keep` (the request's own) stay, so they can hold the table over its bound until a later addition
    * makes room for them as well.
    */
@@ -132,15 +134,24 @@ export class RateBuckets<Bucket extends RateBucket = RateBucket> {
     this.delete(key);
     let excess = this.#open.size + this.#blocked.size - this.maxBuckets + 1;
     if (excess > 0) {
-      for (const [id, value] of this.#open) {
-        const kept = keep.includes(id), ended = value.resetAt <= now;
-        if (kept && ended) continue;
-        if (!ended && this.blocked(value)) { this.#open.delete(id); this.#setAside(id, value); continue; }
-        if (kept) continue;
-        this.#open.delete(id);
-        if (--excess === 0) break;
-      }
       const passed: SetAside<Bucket>[] = [];
+      while (excess > 0 && this.#heap.length > 0 && this.#heap[0]!.bucket.resetAt <= now) {
+        const entry = this.#pop();
+        if (this.#blocked.get(entry.key) !== entry) continue;
+        if (keep.includes(entry.key)) { passed.push(entry); continue; }
+        this.#blocked.delete(entry.key);
+        excess--;
+      }
+      if (excess > 0) {
+        for (const [id, value] of this.#open) {
+          const kept = keep.includes(id), ended = value.resetAt <= now;
+          if (kept && ended) continue;
+          if (!ended && this.blocked(value)) { this.#open.delete(id); this.#setAside(id, value); continue; }
+          if (kept) continue;
+          this.#open.delete(id);
+          if (--excess === 0) break;
+        }
+      }
       while (excess > 0 && this.#heap.length > 0) {
         const entry = this.#pop();
         if (this.#blocked.get(entry.key) !== entry) continue;
