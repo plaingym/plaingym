@@ -453,6 +453,24 @@ describe('kiosk check-in screen', () => {
     startOver.focus(); fireEvent.click(startOver);
     expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'How would you like to check in?' }));
   });
+  it('leaves focus on the body when a tap that focuses nothing chooses a member', async () => {
+    render(<KioskApp/>);
+    await search();
+    const member = screen.getByRole('checkbox', { name: /Dana/ });
+    member.focus(); member.blur();
+    expect(document.activeElement).toBe(document.body);
+    fireEvent.click(member);
+    expect(member.getAttribute('aria-checked')).toBe('false');
+    expect(document.activeElement).toBe(document.body);
+  });
+  it('moves focus to the who is here step again after changing the family selection', async () => {
+    vi.mocked(kioskApi.checkin).mockResolvedValueOnce([{ status: 'checked_in', member: parent }, { status: 'checked_in', member: child }]);
+    render(<KioskApp/>);
+    await submit();
+    const change = screen.getByRole('button', { name: 'Change family selection' });
+    change.focus(); fireEvent.click(change);
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: /Who/ }));
+  });
   it('returns focus to the QR step when progress removes the focused session choice', async () => {
     vi.mocked(scanQrCamera).mockImplementation(async (_video, found) => { found('pgci1_' + 'a'.repeat(43)); return { stop: vi.fn() }; });
     vi.mocked(qrCheckin).mockResolvedValueOnce({ status: 'select_session', member: parent, sessions: [session] })
@@ -473,35 +491,78 @@ describe('kiosk check-in screen', () => {
     expect(name.classList).toContain('[@media(max-height:500px)]:h-12');
     expect(name.classList).toContain('sm:h-16');
   });
-  it('scrolls the focused name field into view on focus and when the visible viewport resizes', () => {
-    const viewport = new EventTarget();
-    vi.stubGlobal('visualViewport', viewport);
+  describe('keeping the name field visible', () => {
     const scroll = vi.fn();
-    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
-    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scroll });
-    try {
+    let original: PropertyDescriptor | undefined;
+    beforeEach(() => {
+      original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+      Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scroll });
+    });
+    afterEach(() => {
+      if (original) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', original);
+      else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+    });
+    const rect = (element: Element, top: number) =>
+      vi.spyOn(element, 'getBoundingClientRect').mockReturnValue(DOMRect.fromRect({ y: top, height: 48 }));
+    /** Opens name and PIN with the name field blurred at the given position, so a test controls its next focus. */
+    function open(height: number, top: number) {
+      const viewport = Object.assign(new EventTarget(), { height, offsetTop: 0, scale: 1 });
+      vi.stubGlobal('visualViewport', viewport);
       render(<KioskApp/>);
       choosePin();
       const name = screen.getByLabelText('Your name');
+      rect(name, top);
       act(() => name.blur());
       scroll.mockClear();
+      return { viewport, name, resize: () => viewport.dispatchEvent(new Event('resize')) };
+    }
+    it('centres a hidden name field on focus on a short screen', () => {
+      const { name } = open(400, 450);
       act(() => name.focus());
       expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: 'center' });
       expect(scroll.mock.contexts[0]).toBe(name);
-      viewport.dispatchEvent(new Event('resize'));
-      expect(scroll).toHaveBeenCalledTimes(2);
-      expect(scroll).toHaveBeenLastCalledWith({ block: 'center' });
+    });
+    it('leaves a tall screen where it is', () => {
+      const { name, resize } = open(800, 450);
+      act(() => name.focus());
+      resize();
+      expect(scroll).not.toHaveBeenCalled();
+    });
+    it('leaves a fully visible name field where it is', () => {
+      const { name } = open(400, 100);
+      act(() => name.focus());
+      expect(scroll).not.toHaveBeenCalled();
+    });
+    it('scrolls on a resize only at an unchanged zoom while the name field is focused', () => {
+      const { viewport, name, resize } = open(400, 450);
+      act(() => name.focus());
+      scroll.mockClear();
+      viewport.scale = 1.5;
+      resize();
+      expect(scroll).not.toHaveBeenCalled();
+      resize();
+      expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: 'center' });
       act(() => screen.getByLabelText('Household PIN').focus());
       scroll.mockClear();
-      viewport.dispatchEvent(new Event('resize'));
+      resize();
       expect(scroll).not.toHaveBeenCalled();
       const removed = vi.spyOn(viewport, 'removeEventListener');
       fireEvent.click(screen.getByRole('button', { name: 'Start over' }));
       expect(removed).toHaveBeenCalledWith('resize', expect.any(Function));
-    } finally {
-      if (original) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', original);
-      else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
-    }
+    });
+    it('brings a hidden not found note to the top, even with the name field visible', async () => {
+      vi.mocked(kioskApi.lookup).mockResolvedValueOnce({ status: 'see_front_desk' });
+      const { name } = open(400, 100);
+      await search();
+      expect(screen.getByRole('status').textContent).not.toBe('');
+      const form = name.closest('form')!;
+      rect(form, -40);
+      act(() => name.blur());
+      scroll.mockClear();
+      act(() => name.focus());
+      expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: 'start' });
+      expect(scroll.mock.contexts[0]).toBe(form);
+    });
   });
   it('takes the name field focus without a visual viewport', () => {
     vi.stubGlobal('visualViewport', undefined);

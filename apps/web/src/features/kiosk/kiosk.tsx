@@ -87,9 +87,12 @@ function CheckIn({ token, onUnauthorized }: { token: string; onUnauthorized: () 
   const [focusCheck, setFocusCheck] = useState(0);
   // Replacing a step or a session choice can remove the focused control.
   // Keep focus in the current step, but preserve focus on controls still present.
+  // Choosing members removes no control, so only a new member list counts as a change there. Safari leaves focus on
+  // the body after a tap, and focusing the heading again would scroll a long list back to the top.
+  const focusKey = screen.kind === 'select' ? screen.members : screen;
   useEffect(() => {
     if (document.activeElement === document.body) root.current?.querySelector<HTMLElement>('[data-kiosk-focus]')?.focus();
-  }, [flow, screen, focusCheck]);
+  }, [flow, focusKey, focusCheck]);
   const qrProgress = useCallback((result?: KioskCheckinResult) => {
     setQrDone(!!result && result.status !== 'select_session');
     setActivity((value) => value + 1);
@@ -172,17 +175,32 @@ function Search({ busy, message, onSearch }: { busy: boolean; message?: 'not_fou
   const [name, setName] = useState(''), [pin, setPin] = useState('');
   const press = (digit: string) => setPin((value) => value.length < 8 ? value + digit : value);
   const nameRef = useRef<HTMLInputElement>(null);
-  // A landscape phone's keyboard covers most of the screen, so keep the focused name field in view.
-  const scrollName = useCallback(() => nameRef.current?.scrollIntoView?.({ block: 'center' }), []);
+  const form = useRef<HTMLFormElement>(null);
+  const scale = useRef(window.visualViewport?.scale);
+  // A landscape phone's keyboard covers most of the screen, so bring the focused name field, and any note above it,
+  // into view when the screen is short and they aren't already fully visible.
+  const scrollName = useCallback(() => {
+    const viewport = window.visualViewport, field = nameRef.current;
+    if (!viewport || !field || viewport.height > 500) return;
+    const top = (message && form.current ? form.current : field).getBoundingClientRect().top;
+    const bottom = field.getBoundingClientRect().bottom;
+    if (top >= viewport.offsetTop && bottom <= viewport.offsetTop + viewport.height) return;
+    if (message) form.current?.scrollIntoView?.({ block: 'start' });
+    else field.scrollIntoView?.({ block: 'center' });
+  }, [message]);
   useEffect(() => {
     const viewport = window.visualViewport;
     if (!viewport) return;
-    const resized = () => { if (document.activeElement === nameRef.current) scrollName(); };
+    const resized = () => {
+      // A pinch zoom resizes the visual viewport too; scrolling then would fight the gesture.
+      if (viewport.scale !== scale.current) { scale.current = viewport.scale; return; }
+      if (document.activeElement === nameRef.current) scrollName();
+    };
     viewport.addEventListener('resize', resized);
     return () => viewport.removeEventListener('resize', resized);
   }, [scrollName]);
   function submit(event: FormEvent) { event.preventDefault(); if (name.trim() && pin.length >= 4 && !busy) { onSearch(name.trim(), pin); setPin(''); } }
-  return <form className="space-y-4 sm:space-y-6" onSubmit={submit}>
+  return <form ref={form} className="space-y-4 sm:space-y-6" onSubmit={submit}>
     {message && <Alert variant={message === 'error' ? 'error' : 'info'} focusOnReveal>{text(message === 'error' ? 'error' : 'notFound')}</Alert>}
     <Label className="grid gap-2 text-lg sm:text-xl [@media(max-height:500px)]:text-base">{text('name')}<Input ref={nameRef} data-kiosk-focus onFocus={scrollName}
       className="h-12 text-lg sm:h-16 sm:text-2xl [@media(max-height:500px)]:h-12 [@media(max-height:500px)]:text-lg" value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" autoCapitalize="words" required/></Label>
