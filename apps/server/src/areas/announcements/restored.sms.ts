@@ -7,7 +7,7 @@ import { smsInFlightMs } from '../../infra/sms/deliveries.js';
 import { holdGymSettings, readGymSettings } from '../settings/settings.js';
 import { memberNoticePhones } from '../members/sms-recipients.js';
 import { noticeCapSettings, noticeSender, noticeWhen, readNoticePhones, shareNoticeRecipients, type ClassNoticeDeliveryOptions } from '../bookings/bookings.sms.js';
-import { groupKey, memberKey, recordCovered, selfNotice } from './cancellation.sms.js';
+import { groupKey, memberKey, recordNamed, selfNotice } from './cancellation.sms.js';
 import messages from '../../../../../locales/en/announcements/restored.json' with { type: 'json' };
 
 interface Restore { sessionId: string; memberIds: string[]; round: number }
@@ -92,7 +92,6 @@ export function createRestoreSms(options: ClassNoticeDeliveryOptions) {
             return { reserved, session: session!, memberIds: current.memberIds };
           });
           if (!reservation) continue;
-          let covered: readonly string[] | undefined;
           const guarded: Sms = {
             verifyAccount: () => noticeSender(options, gymId, group, undefined, run).verifyAccount(),
             async sendSms() {
@@ -111,7 +110,7 @@ export function createRestoreSms(options: ClassNoticeDeliveryOptions) {
               // Lock order matches promotion and cancellation texts: settings key share, session FOR SHARE,
               // then reserved members and their households FOR SHARE NOWAIT so a busy row rolls back and retries.
               const lastCheck: NonNullable<MemberSmsOptions['recheck']> = async tx => {
-                moved = false; covered = undefined;
+                moved = false;
                 await holdGymSettings(tx, gymId);
                 const gym = await readGymSettings(tx, gymId);
                 const [session] = await tx.select({ status: classSessions.status, restoreCount: classSessions.restoreCount, startsAt: classSessions.startsAt })
@@ -129,7 +128,7 @@ export function createRestoreSms(options: ClassNoticeDeliveryOptions) {
                   return 'phone_changed';
                 }
                 if (!now || !now.memberIds.length) return 'no_consent';
-                covered = now.memberIds;
+                await recordNamed(tx, gymId, reservation.reserved.id, reservation.memberIds, now.memberIds);
                 return {
                   ...noticeCapSettings(gym),
                   memberIds: now.memberIds,
@@ -143,8 +142,7 @@ export function createRestoreSms(options: ClassNoticeDeliveryOptions) {
               return result;
             },
           };
-          const result = await deliveries.attempt(reservation.reserved, guarded, { to: group.phoneE164, body: '' });
-          if (result.status === 'sent') await recordCovered(scope, gymId, reservation.reserved.id, reservation.memberIds, covered);
+          await deliveries.attempt(reservation.reserved, guarded, { to: group.phoneE164, body: '' });
         } catch (error) { failure ??= error; }
       }
       // A failed phone must not strand the rest of the roster. Unknown reservations never send again on retry.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, isNotNull, isNull, like, ne, or } from 'drizzle-orm';
-import { classSessions, members, smsDeliveries } from '@plaingym/db';
+import { classSessions, members, smsDeliveries, type Transaction } from '@plaingym/db';
 import { AppError, createTranslator } from '@plaingym/shared';
 import { createSmsDeliveries, DeliveryError, onceResolver, type MemberSmsOptions, type Sms } from '../../infra/sms/index.js';
 import { smsInFlightMs } from '../../infra/sms/deliveries.js';
@@ -28,28 +28,40 @@ export function selfNotice(group: {
 }
 
 type NoticeRow = Pick<typeof smsDeliveries.$inferSelect, 'key' | 'state' | 'commandResult'>;
-/** The members a class notice text row covers: its reserved group, or after a narrowed accepted send, who it named. */
-export const coveredMembers = (row: Pick<NoticeRow, 'commandResult'>) => (row.commandResult as { memberIds: string[] } | null)?.memberIds;
+/**
+ * A class notice text row's `command_result`: `memberIds` is always the reserved group. When the last check narrowed
+ * the text, `namedIds` holds the members it named. Rows written before `namedIds` existed hold the named members in
+ * `memberIds` after a narrowed accepted send.
+ */
+type NoticeResult = { memberIds: string[]; namedIds?: string[] };
+/** The members a class notice text row named: who its last check named when it narrowed, else its reserved group. */
+export const coveredMembers = (row: Pick<NoticeRow, 'commandResult'>) => {
+  const result = row.commandResult as NoticeResult | null;
+  return result?.namedIds ?? result?.memberIds;
+};
 /** The member key a class notice text key belongs to, without a regrouped `.<n>` suffix. */
 export const memberKey = (key: string) => key.replace(/\.\d+$/, '');
 /**
- * A phone group's text is keyed by its first member. When an accepted text under that key left the member out (its
- * last check narrowed the group), the member's own later group takes `<key>.<n>`, the smallest n of 2 or more that no
- * such text holds. `previous` must include the rows keyed `<key>.%`.
+ * A phone group's text is keyed by its first member. When a text under that key that may have gone out (accepted,
+ * uncertain or still sending) left the member out (its last check narrowed the group), the member's own later group
+ * takes `<key>.<n>`, the smallest n of 2 or more that no such text holds. `previous` must include the rows keyed `<key>.%`.
  */
 export function groupKey(previous: readonly NoticeRow[], base: string, anchor: string): string {
-  const passedOver = (key: string) => previous.some(row => row.key === key && row.state === 'accepted'
+  const passedOver = (key: string) => previous.some(row => row.key === key && row.state !== 'not_accepted'
     && coveredMembers(row)?.includes(anchor) === false);
   let key = base;
   for (let n = 2; passedOver(key); n++) key = `${base}.${n}`;
   return key;
 }
-/** A narrowed accepted text records the members it named, so a member it left out gets a key of their own on a retry. */
-export async function recordCovered(scope: ClassNoticeDeliveryOptions['scope'], gymId: string, id: string,
-  reserved: readonly string[], covered: readonly string[] | undefined): Promise<void> {
-  if (!covered || (covered.length === reserved.length && covered.every(memberId => reserved.includes(memberId)))) return;
-  await scope(gymId, tx => tx.update(smsDeliveries).set({ commandResult: { memberIds: [...covered] } })
-    .where(and(eq(smsDeliveries.gymId, gymId), eq(smsDeliveries.id, id), eq(smsDeliveries.state, 'accepted'))));
+/**
+ * Called in the last check's transaction, which commits before the provider call, so the row holds whom the text
+ * named whatever its outcome. A member it left out then gets a key of their own on a retry.
+ */
+export async function recordNamed(tx: Transaction, gymId: string, id: string,
+  reserved: readonly string[], named: readonly string[]): Promise<void> {
+  const same = named.length === reserved.length && named.every(memberId => reserved.includes(memberId));
+  await tx.update(smsDeliveries).set({ commandResult: same ? { memberIds: [...reserved] } : { memberIds: [...reserved], namedIds: [...named] } })
+    .where(and(eq(smsDeliveries.gymId, gymId), eq(smsDeliveries.id, id), eq(smsDeliveries.state, 'sending')));
 }
 
 /** A separate keyed send after email; neither channel's suppression nor outcome decides the other. */
@@ -114,7 +126,6 @@ export function createCancellationSms(options: ClassNoticeDeliveryOptions) {
             return { reserved, session, memberIds: current.memberIds };
           });
           if (!reservation) continue;
-          let covered: readonly string[] | undefined;
           const guarded: Sms = {
             verifyAccount: () => noticeSender(options, gymId, group, undefined, run).verifyAccount(),
             async sendSms() {
@@ -134,7 +145,7 @@ export function createCancellationSms(options: ClassNoticeDeliveryOptions) {
               // Lock order matches promotion and staff cancellation texts: settings key share, session FOR SHARE,
               // then reserved members and their households FOR SHARE NOWAIT so a busy row rolls back and retries.
               const lastCheck: NonNullable<MemberSmsOptions['recheck']> = async tx => {
-                moved = false; covered = undefined;
+                moved = false;
                 await holdGymSettings(tx, gymId);
                 const gym = await readGymSettings(tx, gymId);
                 const [session] = await tx.select({ status: classSessions.status, restoreCount: classSessions.restoreCount })
@@ -151,7 +162,7 @@ export function createCancellationSms(options: ClassNoticeDeliveryOptions) {
                   return 'phone_changed';
                 }
                 if (!now || !now.memberIds.length) return 'no_consent';
-                covered = now.memberIds;
+                await recordNamed(tx, gymId, reservation.reserved.id, reservation.memberIds, now.memberIds);
                 return {
                   ...noticeCapSettings(gym),
                   memberIds: now.memberIds,
@@ -165,8 +176,7 @@ export function createCancellationSms(options: ClassNoticeDeliveryOptions) {
               return result;
             },
           };
-          const result = await deliveries.attempt(reservation.reserved, guarded, { to: group.phoneE164, body: '' });
-          if (result.status === 'sent') await recordCovered(scope, gymId, reservation.reserved.id, reservation.memberIds, covered);
+          await deliveries.attempt(reservation.reserved, guarded, { to: group.phoneE164, body: '' });
         } catch (error) { failure ??= error; }
       }
       // A failed phone must not strand the rest of the roster. Unknown reservations never send again on retry.

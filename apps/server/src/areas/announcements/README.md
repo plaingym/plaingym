@@ -282,13 +282,17 @@ settings (SMS switch, daily cap, usage-day timezone and phone country), the
 locked recipient group's consent holders and the wording (`sms_self` or `sms`)
 chosen for the locked group to `MemberSms` for the final consent, phone and cap
 checks, while the message body keeps the job's timezone. The delivery row's
-`command_result` holds the reserved group's member IDs; once such a narrowed
-text is accepted it holds only the members the text named.
+`command_result` always holds the reserved group's member IDs (`memberIds`); a
+narrowed text's last check also records whom it named (`namedIds`) in its own
+transaction, which commits before the provider is called, so the row holds them
+whatever the send's outcome. A row written before `namedIds` existed holds the
+named members in `memberIds` after a narrowed accepted send, and is read that way.
 
-`sms_deliveries` keys are `schedule-cancel-sms:<scope>:<firstMemberId>`. When an
-accepted text under that key left its first member out, that member's own later
-group (on a retry of the same job) takes `<firstMemberId>.<n>` instead, the
-smallest `n` of 2 or more not held by an accepted text that left them out.
+`sms_deliveries` keys are `schedule-cancel-sms:<scope>:<firstMemberId>`. When a
+text under that key that may have gone out (accepted, uncertain or still
+sending) left its first member out, that member's own later group (on a retry of
+the same job) takes `<firstMemberId>.<n>` instead, the smallest `n` of 2 or more
+not held by such a text that left them out.
 A scope-prefixed keyed phone digest also prevents another text to the same
 destination after the first member leaves the group or groups converge. Neither
 the phone nor message content is stored in those keys or digests. Live attempts
@@ -297,6 +301,11 @@ non-send can retry. A failure on one phone does not strand the remaining phones.
 Erasure clears cancellation delivery digests on the erased member's keys,
 including their `.<n>` keys.
 Accepted or uncertain reservations can still prevent replay using member IDs.
+Once erasure has cleared a row's digest, its reserved group stands in for the
+phone: a later group with any of those members counts as covered by it. So a
+reserved member a narrowed text didn't name gets no text of their own on a
+retry after its first member's erasure, even at a new phone, since without the
+digest that can't be told apart from their being back at the phone it reached.
 The optional constructor `sms: { resolver, phoneDigest }` enables this pass:
 `resolver` is the gym-aware `SmsResolver` and `phoneDigest` comes from
 `createSmsPhoneDigest(AUTH_SECRET)`. Without that injection the service sends only
@@ -347,8 +356,9 @@ job retries and regroups; when the locked group at the phone is a smaller non-em
 the reserved group, it sends to the members still covered, naming only them (suppressing
 with `no_consent` if none remain), returning the locked
 settings, consent holders and wording (`sms_self` or `sms`) while the message body keeps the
-job's timezone. An accepted narrowed text records the members it named, and a first member
-it left out takes a `.<n>` key of their own on a retry, as for cancellation texts. Each address
+job's timezone. As for cancellation texts, `command_result` keeps the reserved group, a
+narrowed text's last check records whom it named (`namedIds`) before the provider call, and a
+first member it left out takes a `.<n>` key of their own on a retry. Each address
 gets a `schedule.restore_notice_decided` audit with the member ID, round and outcome.
 Accepted and uncertain deliveries are never resent. Restore notices have no recovery
 sweep: the job's own retries (12 attempts) are their retry. Erasure clears their digests

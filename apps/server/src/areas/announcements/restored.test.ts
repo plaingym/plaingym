@@ -447,9 +447,12 @@ it('records whom a narrowed restore text named, so a first member it left out is
   await consentedPhone(f, first!.id, phone);
   const payload = { sessionId: f.session.id, memberIds: [f.mia.id, f.noa.id, f.ari.id], round: 1, channels: ['sms'] as const };
   // The shared phone sorts first: its first member drops out while the run resolves; then Ari's text fails.
-  let sends = 0;
+  const prefix = `schedule-restore-sms:${f.session.id}.1:`;
+  let sends = 0, atSend: unknown;
   const failingSecond: Sms = { verifyAccount: () => f.sms.verifyAccount(), async sendSms(message) {
     if (++sends === 2) throw new DeliveryError('not_accepted', 'Provider unavailable');
+    // Whom the text names is committed before the provider is called.
+    atSend = (await states(f.gymId)).find(row => row.key === prefix + first!.id)?.commandResult;
     return f.sms.sendSms(message);
   } };
   f.resolver.resolve.mockImplementationOnce(async id => {
@@ -459,8 +462,9 @@ it('records whom a narrowed restore text named, so a first member it left out is
   await expect(f.notice.run(payload, f.gymId)).rejects.toThrow();
   expect(f.sms.messages.map(message => message.to)).toEqual([phone]);
   expect(f.sms.messages[0]!.body).toContain(second!.firstName); expect(f.sms.messages[0]!.body).not.toContain(first!.firstName);
-  const prefix = `schedule-restore-sms:${f.session.id}.1:`;
-  expect(await states(f.gymId)).toContainEqual({ key: prefix + first!.id, state: 'accepted', commandResult: { memberIds: [second!.id] } });
+  expect(atSend).toEqual({ memberIds: [first!.id, second!.id], namedIds: [second!.id] });
+  expect(await states(f.gymId)).toContainEqual({ key: prefix + first!.id, state: 'accepted',
+    commandResult: { memberIds: [first!.id, second!.id], namedIds: [second!.id] } });
 
   await consentedPhone(f, first!.id, newOwn);
   await f.notice.run(payload, f.gymId); await f.notice.run(payload, f.gymId);
@@ -472,4 +476,190 @@ it('records whom a narrowed restore text named, so a first member it left out is
   await db.forGym(f.gymId, tx => forgetErasedAddressDigests(tx, f.gymId, first!.id));
   const rows = await db.forGym(f.gymId, tx => tx.select().from(smsDeliveries));
   expect(rows.filter(row => row.key.startsWith(prefix + first!.id)).map(row => row.commandDigest)).toEqual([null, null]);
+});
+
+const byId = <T extends { id: string }>(...rows: T[]) => rows.sort((a, b) => (a.id < b.id ? -1 : 1));
+const sentTo = (f: Awaited<ReturnType<typeof fixture>>) => f.sms.messages.map(message => message.to);
+
+it('texts a first member left out of a narrowed restore text at their own phone on the retry when its outcome is uncertain', async () => {
+  const f = await fixture(), newOwn = '+12025550188';
+  const [first, second] = byId(f.mia, f.noa);
+  await f.cancel(); await f.restore(['sms']);
+  const otherHome = await factory('households', f.gymId);
+  await db.forGym(f.gymId, tx => tx.update(members).set({ householdId: otherHome.id }).where(eq(members.id, first!.id)));
+  await consentedPhone(f, first!.id, phone);
+  const payload = { sessionId: f.session.id, memberIds: [first!.id, second!.id], round: 1, channels: ['sms'] as const };
+  f.resolver.resolve.mockImplementationOnce(async id => {
+    await consentedPhone(f, first!.id, null);
+    return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+  });
+  await f.notice.run(payload, f.gymId);
+  expect(sentTo(f)).toEqual([phone]);
+  const prefix = `schedule-restore-sms:${f.session.id}.1:`;
+  // As a failed outcome write leaves it.
+  await db.forGym(f.gymId, tx => tx.update(smsDeliveries).set({ state: 'unknown' }).where(eq(smsDeliveries.key, prefix + first!.id)));
+  await consentedPhone(f, first!.id, newOwn);
+  await f.notice.run(payload, f.gymId); await f.notice.run(payload, f.gymId);
+  expect(sentTo(f)).toEqual([phone, newOwn]);
+  expect(f.sms.messages[1]!.body).toBe(ownText);
+  expect(await states(f.gymId)).toContainEqual(expect.objectContaining({ key: `${prefix}${first!.id}.2`, state: 'accepted' }));
+});
+
+it('sends no second restore text to a phone after erasure clears the digest of a narrowed text that reached it', async () => {
+  const f = await fixture(), newOwn = '+12025550188';
+  const [a, b, c] = byId(f.mia, f.noa, f.ari);
+  await f.cancel(); await f.restore(['sms']);
+  // A and C have their own consent at the household's billing phone; B is reached through the household.
+  const otherHome = await factory('households', f.gymId);
+  for (const member of [a!, c!]) {
+    await db.forGym(f.gymId, tx => tx.update(members).set({ householdId: otherHome.id }).where(eq(members.id, member.id)));
+    await consentedPhone(f, member.id, phone);
+  }
+  await db.forGym(f.gymId, tx => tx.update(members).set({ householdId: f.home.id }).where(eq(members.id, b!.id)));
+  await consentedPhone(f, b!.id, null);
+  const payload = { sessionId: f.session.id, memberIds: [a!.id, b!.id, c!.id], round: 1, channels: ['sms'] as const };
+  f.resolver.resolve.mockImplementationOnce(async id => {
+    await consentedPhone(f, a!.id, null); await consentedPhone(f, c!.id, null);
+    return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+  });
+  await f.notice.run(payload, f.gymId);
+  expect(sentTo(f)).toEqual([phone]);
+  expect(f.sms.messages[0]!.body).toContain(b!.firstName);
+  const prefix = `schedule-restore-sms:${f.session.id}.1:`;
+  expect(await states(f.gymId)).toEqual([{ key: prefix + a!.id, state: 'accepted',
+    commandResult: { memberIds: [a!.id, b!.id, c!.id], namedIds: [b!.id] } }]);
+  await db.forGym(f.gymId, tx => forgetErasedAddressDigests(tx, f.gymId, a!.id));
+  await consentedPhone(f, b!.id, newOwn); await consentedPhone(f, c!.id, phone);
+  await f.notice.run(payload, f.gymId);
+  expect(sentTo(f)).toEqual([phone]);
+});
+
+it('keeps a narrowed restore text\'s digest when a reserved member it left out is erased, so its first member is still texted at a new phone', async () => {
+  const f = await fixture(), newOwn = '+12025550188';
+  const [a, b, c] = byId(f.mia, f.noa, f.ari);
+  await f.cancel(); await f.restore(['sms']);
+  const otherHome = await factory('households', f.gymId);
+  for (const member of [a!, c!]) {
+    await db.forGym(f.gymId, tx => tx.update(members).set({ householdId: otherHome.id }).where(eq(members.id, member.id)));
+    await consentedPhone(f, member.id, phone);
+  }
+  await db.forGym(f.gymId, tx => tx.update(members).set({ householdId: f.home.id }).where(eq(members.id, b!.id)));
+  await consentedPhone(f, b!.id, null);
+  const payload = { sessionId: f.session.id, memberIds: [a!.id, b!.id, c!.id], round: 1, channels: ['sms'] as const };
+  f.resolver.resolve.mockImplementationOnce(async id => {
+    await consentedPhone(f, a!.id, null); await consentedPhone(f, c!.id, null);
+    return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+  });
+  await f.notice.run(payload, f.gymId);
+  expect(sentTo(f)).toEqual([phone]);
+  const prefix = `schedule-restore-sms:${f.session.id}.1:`;
+  // Erasing C, who doesn't hold the row's key, leaves the digest of the row keyed by A, which named only B.
+  await db.forGym(f.gymId, tx => forgetErasedAddressDigests(tx, f.gymId, c!.id));
+  const rows = await db.forGym(f.gymId, tx => tx.select().from(smsDeliveries));
+  expect(rows.map(row => row.key)).toEqual([prefix + a!.id]); expect(rows[0]!.commandDigest).toBeTruthy();
+  // A back at the shared phone (grouped with B under `<A>.2`) matches the digest; A at a new phone gets their own text.
+  await consentedPhone(f, a!.id, phone);
+  await f.notice.run(payload, f.gymId);
+  await consentedPhone(f, a!.id, newOwn);
+  await f.notice.run(payload, f.gymId);
+  expect(sentTo(f)).toEqual([phone, newOwn]);
+  expect(f.sms.messages[1]!.body).toBe(ownText);
+  expect((await states(f.gymId)).map(row => row.key).sort()).toEqual([prefix + a!.id, `${prefix}${a!.id}.2`]);
+});
+
+it('keeps the reserved group on a restore text that names it, and only its key holder\'s erasure clears its own gym\'s digest', async () => {
+  const f = await fixture(), otherGym = uuidv7();
+  const [first, second] = byId(f.mia, f.noa);
+  await f.cancel(); await f.restore(['sms']);
+  const payload = { sessionId: f.session.id, memberIds: [first!.id, second!.id], round: 1, channels: ['sms'] as const };
+  await f.notice.run(payload, f.gymId);
+  expect(sentTo(f)).toEqual([phone]);
+  const prefix = `schedule-restore-sms:${f.session.id}.1:`;
+  const deliveries = (gymId: string) => db.forGym(gymId, tx => tx.select().from(smsDeliveries));
+  const [row] = await deliveries(f.gymId);
+  expect(row).toMatchObject({ key: prefix + first!.id, state: 'accepted' });
+  expect(row!.commandResult).toStrictEqual({ memberIds: [first!.id, second!.id] });
+  expect(row!.commandDigest).toBeTruthy();
+  await factory('gyms', otherGym);
+  const now = f.clock.now();
+  await db.forGym(otherGym, tx => tx.insert(smsDeliveries).values({ id: uuidv7(), gymId: otherGym, key: `schedule-restore-sms:${uuidv7()}.1:${first!.id}`,
+    state: 'accepted', attempts: 1, commandDigest: 'other-gym', commandResult: { memberIds: [first!.id, second!.id] }, createdAt: now, updatedAt: now }));
+  // The second member doesn't hold the key: the digest stays.
+  await db.forGym(f.gymId, tx => forgetErasedAddressDigests(tx, f.gymId, second!.id));
+  expect((await deliveries(f.gymId))[0]!.commandDigest).toBe(row!.commandDigest);
+  await db.forGym(f.gymId, tx => forgetErasedAddressDigests(tx, f.gymId, first!.id));
+  const [after] = await deliveries(f.gymId);
+  expect(after!.commandDigest).toBeNull();
+  expect(after!.commandResult).toStrictEqual({ memberIds: [first!.id, second!.id] });
+  expect((await deliveries(otherGym))[0]!.commandDigest).toBe('other-gym');
+  await f.notice.run(payload, f.gymId);
+  expect(sentTo(f)).toEqual([phone]);
+});
+
+it('retries a failed shared restore text after another member it reserved is erased', async () => {
+  const f = await fixture();
+  const [first, second] = byId(f.mia, f.noa);
+  await f.cancel(); await f.restore(['sms']);
+  const payload = { sessionId: f.session.id, memberIds: [first!.id, second!.id], round: 1, channels: ['sms'] as const };
+  const failing: Sms = { verifyAccount: () => f.sms.verifyAccount(), async sendSms() { throw new DeliveryError('not_accepted', 'Provider unavailable'); } };
+  f.resolver.resolve.mockImplementationOnce(async id => ({ gymId: id, name: 'Cedar Gym', sms: failing }));
+  await expect(f.notice.run(payload, f.gymId)).rejects.toThrow();
+  expect(sentTo(f)).toEqual([]);
+  const prefix = `schedule-restore-sms:${f.session.id}.1:`;
+  expect(await states(f.gymId)).toEqual([expect.objectContaining({ key: prefix + first!.id, state: 'not_accepted' })]);
+  await db.forGym(f.gymId, async tx => {
+    await forgetErasedAddressDigests(tx, f.gymId, second!.id);
+    await tx.update(members).set({ anonymizedAt: f.clock.now() }).where(eq(members.id, second!.id));
+  });
+  await f.notice.run(payload, f.gymId);
+  expect(sentTo(f)).toEqual([phone]);
+  expect(f.sms.messages[0]!.body).toContain(first!.firstName); expect(f.sms.messages[0]!.body).not.toContain(second!.firstName);
+  expect(await states(f.gymId)).toEqual([expect.objectContaining({ key: prefix + first!.id, state: 'accepted' })]);
+});
+
+it('texts a member a narrowed restore text never covered who shares a new phone with its left-out first member, after another reserved member\'s erasure', async () => {
+  const f = await fixture(), shared = '+12025550177';
+  const [a, b, c] = byId(f.mia, f.noa, f.ari);
+  await f.cancel(); await f.restore(['sms']);
+  const otherHome = await factory('households', f.gymId);
+  for (const member of [a!, c!]) {
+    await db.forGym(f.gymId, tx => tx.update(members).set({ householdId: otherHome.id }).where(eq(members.id, member.id)));
+    await consentedPhone(f, member.id, phone);
+  }
+  await db.forGym(f.gymId, tx => tx.update(members).set({ householdId: f.home.id }).where(eq(members.id, b!.id)));
+  await consentedPhone(f, b!.id, null);
+  const payload = { sessionId: f.session.id, memberIds: [a!.id, b!.id, c!.id], round: 1, channels: ['sms'] as const };
+  f.resolver.resolve.mockImplementationOnce(async id => {
+    await consentedPhone(f, a!.id, null); await consentedPhone(f, c!.id, null);
+    return { gymId: id, name: 'Cedar Gym', sms: f.sms };
+  });
+  await f.notice.run(payload, f.gymId);
+  expect(sentTo(f)).toEqual([phone]);
+  await db.forGym(f.gymId, tx => forgetErasedAddressDigests(tx, f.gymId, c!.id));
+  // D, from another household, booked and created after A, sorts after A and shares A's new phone.
+  const user = await factory('authUser', f.gymId);
+  const d = await factory('members', f.gymId, { householdId: (await factory('households', f.gymId)).id, firstName: 'Dee', lastName: 'Fourth' });
+  await factory('classBookings', f.gymId, { sessionId: f.session.id, memberId: d.id, bookedBy: user.id, status: 'booked' });
+  await consentedPhone(f, a!.id, shared); await consentedPhone(f, d.id, shared);
+  await f.notice.run({ ...payload, memberIds: [a!.id, b!.id, c!.id, d.id] }, f.gymId);
+  expect(sentTo(f)).toEqual([phone, shared]);
+  expect(f.sms.messages[1]!.body).toContain(d.firstName);
+  const prefix = `schedule-restore-sms:${f.session.id}.1:`;
+  expect(await states(f.gymId)).toContainEqual(expect.objectContaining({ key: `${prefix}${a!.id}.2`, state: 'accepted' }));
+});
+
+it('reads a narrowed restore text row in the earlier shape as naming only its stored members', async () => {
+  const f = await fixture(), newOwn = '+12025550188';
+  const [first, second] = byId(f.mia, f.noa);
+  await f.cancel(); await f.restore(['sms']);
+  const otherHome = await factory('households', f.gymId);
+  await db.forGym(f.gymId, tx => tx.update(members).set({ householdId: otherHome.id }).where(eq(members.id, first!.id)));
+  await consentedPhone(f, first!.id, newOwn);
+  const prefix = `schedule-restore-sms:${f.session.id}.1:`, now = f.clock.now();
+  await db.forGym(f.gymId, tx => tx.insert(smsDeliveries).values({ id: uuidv7(), gymId: f.gymId, key: prefix + first!.id, state: 'accepted',
+    attempts: 1, commandDigest: prefix + digest(phone), commandResult: { memberIds: [second!.id] }, createdAt: now, updatedAt: now }));
+  await f.notice.run({ sessionId: f.session.id, memberIds: [first!.id, second!.id], round: 1, channels: ['sms'] }, f.gymId);
+  expect(sentTo(f)).toEqual([newOwn]);
+  expect(f.sms.messages[0]!.body).toBe(ownText);
+  expect(await states(f.gymId)).toContainEqual(expect.objectContaining({ key: `${prefix}${first!.id}.2`, state: 'accepted' }));
 });
