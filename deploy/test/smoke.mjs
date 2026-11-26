@@ -141,7 +141,10 @@ try {
   assert.equal(compose(['exec', '-T', 'app', 'gym-app', 'setup-link']).trim(), 'https://gym.localhost/setup#token=' + env.SETUP_TOKEN);
   const source = await get(https, httpsPort, ca, '/source');
   assert.equal(source.status, 302);
-  assert.equal(source.headers.location, process.env.SOURCE_URL ?? 'https://github.com/plaingym/plaingym');
+  const imageSourceUrl = configuration.Config.Env.find((entry) => entry.startsWith('IMAGE_SOURCE_URL='))?.slice('IMAGE_SOURCE_URL='.length);
+  assert.ok(imageSourceUrl, 'the image keeps its source link as IMAGE_SOURCE_URL');
+  if (process.env.SMOKE_IMAGE_SOURCE_URL) assert.equal(imageSourceUrl, process.env.SMOKE_IMAGE_SOURCE_URL);
+  assert.equal(source.headers.location, process.env.SOURCE_URL || imageSourceUrl);
   assert.ok(configuration.Config.Env.includes('APP_VERSION=' + health.version));
   assert.ok(configuration.Config.Env.includes('APP_REVISION=' + health.commit));
   if (process.env.VERSION) assert.equal(health.version, process.env.VERSION);

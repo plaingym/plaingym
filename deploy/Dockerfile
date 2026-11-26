@@ -67,6 +67,8 @@ RUN chmod 0555 /app/deploy/*.sh \
       cat /app/licenses/THIRD_PARTY_LICENSES; } > /app/THIRD_PARTY_LICENSES
 ARG SOURCE_URL=https://github.com/plaingym/plaingym
 ENV SOURCE_URL=${SOURCE_URL}
+# A second name keeps the baked link when Compose passes an empty SOURCE_URL.
+ENV IMAGE_SOURCE_URL=${SOURCE_URL}
 ARG VERSION
 ENV APP_VERSION=${VERSION}
 ARG REVISION

@@ -146,9 +146,11 @@ A stale save (`RevisionConflictError`) becomes a 409 with `details.reason:
 ['revision_conflict']`, so screens tell a changed record from a refusal that
 carries its own reason.
 
-`SOURCE_URL` is read when constructing the app, defaults to the public source
-repository, and is passed through Docker and Compose. Footers can use `/source`
-or load `/api/source` to follow a runtime override. For a release build, the SPA
+`SOURCE_URL` is read when constructing the app and is passed through Docker and
+Compose. When it is unset or empty, the link is the image's `IMAGE_SOURCE_URL`
+(the source the image was built from, a release's tag), then the public source
+repository. Footers can use `/source` or load `/api/source` to follow a runtime
+override. For a release build, the SPA
 footer loads `/api/source` and links the version once it has a repository URL
 that supports the release link.
 

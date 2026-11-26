@@ -111,6 +111,10 @@ jobs:
       - name: Check the built architecture
         run: test "$(docker image inspect "$IMAGE" --format '{{.Architecture}}')" = "${{ matrix.arch }}"
       - name: Test the production stack
+        # An empty SOURCE_URL, as .env.example leaves it, serves the link baked into the image.
+        env:
+          SOURCE_URL: ''
+          SMOKE_IMAGE_SOURCE_URL: ${{ env.SOURCE_URL }}
         run: node deploy/test/smoke.mjs "$IMAGE"
       - name: Test compatibility harness with the current image
         if: matrix.arch == 'amd64'
@@ -135,6 +139,7 @@ jobs:
           grep -qxF "APP_VERSION=$archive_version" "$RUNNER_TEMP/archive-env.txt"
           grep -qxF 'APP_REVISION=unknown' "$RUNNER_TEMP/archive-env.txt"
           grep -qxF "SOURCE_URL=$SOURCE_URL" "$RUNNER_TEMP/archive-env.txt"
+          grep -qxF "IMAGE_SOURCE_URL=$SOURCE_URL" "$RUNNER_TEMP/archive-env.txt"
       - name: Run the previous code on this schema
         if: matrix.arch == 'amd64'
         env:

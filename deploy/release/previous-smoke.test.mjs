@@ -136,7 +136,7 @@ test('current deployment keeps health, migration, CLI and source assertions whil
   const cliCheck = adapted.match(/ {2}assert.equal\(cli.status, 2\);/)[0];
   assert.throws(() => runInNewContext(cliCheck, { assert, cli: { status: 1 } }), { code: 'ERR_ASSERTION' });
   const sourceCheck = adapted.match(/ {2}assert.equal\(source.headers.location, .*;/)[0];
-  assert.throws(() => runInNewContext(sourceCheck, { assert, source: { headers: { location: 'wrong' } }, process: { env: {} } }), { code: 'ERR_ASSERTION' });
+  assert.throws(() => runInNewContext(sourceCheck, { assert, source: { headers: { location: 'wrong' } }, imageSourceUrl: 'https://example.org/tree/v1', process: { env: {} } }), { code: 'ERR_ASSERTION' });
 });
 
 test('smoke timeout stops an in-flight descendant before project cleanup', async t => {

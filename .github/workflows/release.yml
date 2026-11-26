@@ -151,6 +151,10 @@ jobs:
           test "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" = "$VERSION"
           test "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$GITHUB_SHA"
       - name: Test the production stack
+        # An empty SOURCE_URL, as .env.example leaves it, serves the link baked into the image.
+        env:
+          SOURCE_URL: ''
+          SMOKE_IMAGE_SOURCE_URL: ${{ env.SOURCE_URL }}
         run: node deploy/test/smoke.mjs "$IMAGE"
       - name: Run the previous minor on the new schema
         if: matrix.arch == 'amd64' && needs.prepare.outputs.publish == 'true'

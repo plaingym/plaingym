@@ -7,7 +7,7 @@ import { route, type PermissionMiddleware } from './registry.js';
 export const defaultSourceUrl = 'https://github.com/plaingym/plaingym';
 
 export function sourceUrl(value?: string): string {
-  const url = new URL(value || process.env.SOURCE_URL || defaultSourceUrl);
+  const url = new URL(value || process.env.SOURCE_URL || process.env.IMAGE_SOURCE_URL || defaultSourceUrl);
   if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error('Invalid SOURCE_URL');
   return url.href;
 }

@@ -78,22 +78,52 @@ it.each(['javascript:alert(1)', 'file:///private/key', 'https://user:password@ex
   expect(() => sourceUrl(value)).toThrow();
 });
 
-it('reads the source override at factory creation', () => {
-  const previous = process.env.SOURCE_URL;
+function withSourceVariables(run: () => void): void {
+  const previous = { SOURCE_URL: process.env.SOURCE_URL, IMAGE_SOURCE_URL: process.env.IMAGE_SOURCE_URL };
   try {
-    process.env.SOURCE_URL = 'https://example.org/modified/tag';
-    expect(sourceUrl()).toBe('https://example.org/modified/tag');
-    expect(sourceUrl('')).toBe('https://example.org/modified/tag');
-    process.env.SOURCE_URL = '';
-    expect(sourceUrl()).toBe('https://github.com/plaingym/plaingym');
-    delete process.env.SOURCE_URL;
-    expect(sourceUrl()).toBe('https://github.com/plaingym/plaingym');
-    expect(sourceUrl('')).toBe('https://github.com/plaingym/plaingym');
+    run();
   } finally {
-    if (previous === undefined) delete process.env.SOURCE_URL;
-    else process.env.SOURCE_URL = previous;
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
   }
-});
+}
+
+it('reads the source override at factory creation', () => withSourceVariables(() => {
+  delete process.env.IMAGE_SOURCE_URL;
+  process.env.SOURCE_URL = 'https://example.org/modified/tag';
+  expect(sourceUrl()).toBe('https://example.org/modified/tag');
+  expect(sourceUrl('')).toBe('https://example.org/modified/tag');
+  process.env.SOURCE_URL = '';
+  expect(sourceUrl()).toBe('https://github.com/plaingym/plaingym');
+  delete process.env.SOURCE_URL;
+  expect(sourceUrl()).toBe('https://github.com/plaingym/plaingym');
+  expect(sourceUrl('')).toBe('https://github.com/plaingym/plaingym');
+}));
+
+it('falls back to the link baked into the image when SOURCE_URL is unset or empty', () => withSourceVariables(() => {
+  const release = 'https://example.org/plaingym/tree/v1.2.3';
+  delete process.env.SOURCE_URL;
+  process.env.IMAGE_SOURCE_URL = release;
+  expect(sourceUrl()).toBe(release);
+  expect(sourceUrl('')).toBe(release);
+  process.env.SOURCE_URL = '';
+  expect(sourceUrl()).toBe(release);
+  expect(sourceUrl('')).toBe(release);
+  process.env.SOURCE_URL = 'https://example.org/modified/tag';
+  expect(sourceUrl()).toBe('https://example.org/modified/tag');
+  expect(sourceUrl('https://example.org/explicit/tag')).toBe('https://example.org/explicit/tag');
+  delete process.env.SOURCE_URL;
+  delete process.env.IMAGE_SOURCE_URL;
+  expect(sourceUrl()).toBe('https://github.com/plaingym/plaingym');
+}));
+
+it('rejects an unsafe link baked into the image', () => withSourceVariables(() => {
+  delete process.env.SOURCE_URL;
+  process.env.IMAGE_SOURCE_URL = 'javascript:x';
+  expect(() => sourceUrl()).toThrow('Invalid SOURCE_URL');
+}));
 
 it('logs an unexpected error by request ID and route, without bound parameters or the request path', async () => {
   const lines: string[] = [], previous = setLogSink((line) => lines.push(line));

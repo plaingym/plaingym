@@ -28,9 +28,7 @@ settings, `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, `SOURCE_URL`, `APP_ENCR
 reads the Compose and Caddy variables at the end of this page. Empty values for
 `AUTH_PASSWORD_LOGIN`, `RATE_LIMIT_PER_MINUTE`, `DATABASE_POOL_MAX`, `PUBLIC_ORIGIN`,
 `PACKS_DIR`, `SOURCE_URL` and `UPLOADS_S3_*` count as unset: the server uses the defaults listed
-below. Compose passes these values through without choosing a second default,
-except `SOURCE_URL`, which it sets to the project repository when `.env` leaves it
-unset or empty.
+below. Compose passes these values through without choosing a second default.
 `PACKS_DIR` must name a directory inside the container; using custom packs requires
 mounting that directory with a Compose override. With no overrides, a single-gym
 install is served at `https://GYM_HOSTNAME` and keeps uploads on its data volume.
@@ -66,7 +64,8 @@ and the Repo compliance workflow runs them even for Markdown-only changes.
 | `TRUST_PROXY` | unset | `true` makes the last `X-Forwarded-For` entry the client address (for rate limits and sign-in). Set only when a reverse proxy is the app's only peer, as Caddy is in Compose. |
 | `TRUST_CLOUDFLARE` | unset | `true` (written by the installer, and by the demo installer, when the hostname is proxied by Cloudflare) reads the client address from `CF-Connecting-IP` when the address the trusted proxy forwarded is in Cloudflare's published ranges (`deploy/cloudflare-ranges.txt`); from any other address the header is ignored. Needs `TRUST_PROXY=true`. Any other value leaves it off. See [cloudflare.md](cloudflare.md) and its limits in [security-model.md](security-model.md). |
 | `PLAINGYM_ORIGIN_NONCE` | unset | Written by the installer: a random value Caddy serves at `/.well-known/plaingym-origin`, which the installer fetches through the hostname before printing the setup link. Not a secret. |
-| `SOURCE_URL` | `https://github.com/plaingym/plaingym` | Where the "Source code" link points (AGPL section 13). A modified install must point it at its own source. |
+| `SOURCE_URL` | the source the image was built from (a release's `…/tree/<tag>`, baked into the image as `IMAGE_SOURCE_URL`), else `https://github.com/plaingym/plaingym` | Where the "Source code" link points (AGPL section 13). A modified install must point it at its own source. |
+| `IMAGE_SOURCE_URL` | set by the image build | The source link the image was built with, used when `SOURCE_URL` is unset or empty. Not set in `.env`. |
 
 ## Database
 
