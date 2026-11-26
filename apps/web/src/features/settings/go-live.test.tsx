@@ -646,36 +646,104 @@ describe('go-live settings', () => {
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Turn on: Billing' }).disabled).toBe(false);
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Turn on: Member emails' }).disabled).toBe(false);
   });
-  it('shows a failed read with no dialog open without moving the focus to its alert', async () => {
-    live.mockResolvedValueOnce(reply(200, checklist())).mockResolvedValueOnce(reply(500));
+  it('keeps the focus on the alert that explains when the read after a refusal fails with no dialog open', async () => {
+    let answerRead!: (value: unknown) => void;
+    live.mockResolvedValueOnce(reply(200, checklist())).mockReturnValueOnce(new Promise(resolve => { answerRead = resolve; }));
     client.PATCH.mockResolvedValueOnce(reply(409));
     const user = userEvent.setup(); start();
     await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
     const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('These settings changed elsewhere, so the switch was not changed');
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
-    expect(document.activeElement).not.toBe(alert);
+    expect(alert.textContent).toBe('These settings changed elsewhere. The latest values are shown; try again.');
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    await act(async () => { answerRead(reply(500)); });
+    const reason = 'These settings changed elsewhere, so the switch was not changed';
+    await waitFor(() => expect(alert.textContent).toContain('The request failed. Please try again.'));
+    expect(alert.textContent!.indexOf(reason)).toBe(0);
+    expect(screen.getByRole('alert')).toBe(alert);
+    expect(document.activeElement).toBe(alert);
   });
   it.each([
     { status: 409, code: 'conflict', refusal: 'no_provider',
+      plain: 'Save a working SMS provider in Settings before turning member texts on.',
       reason: 'No working SMS provider is saved, so member texts were not turned on, and the latest values could not be loaded.' },
     { status: 503, code: 'unavailable', refusal: 'read_failed',
+      plain: 'The SMS provider could not be checked. Try turning member texts on again.',
       reason: 'The SMS provider could not be checked, so member texts were not turned on, and the latest values could not be loaded.' },
-  ])('keeps the $refusal SMS reason when the checklist read after it fails, and clears it on a good retry', async ({ status, code, refusal, reason }) => {
-    live.mockResolvedValueOnce(reply(200, checklist())).mockResolvedValueOnce(reply(500)).mockResolvedValue(reply(200, checklist()));
+  ])('keeps the $refusal SMS reason when the checklist read after it fails, and clears it on a good retry', async ({ status, code, refusal, plain, reason }) => {
+    let answerRead!: (value: unknown) => void;
+    live.mockResolvedValueOnce(reply(200, checklist())).mockReturnValueOnce(new Promise(resolve => { answerRead = resolve; }))
+      .mockResolvedValue(reply(200, checklist()));
     client.PATCH.mockResolvedValue({ response: { ok: false, status },
       error: { error: { code, details: { memberSmsEnabled: [refusal] } } } });
     const user = userEvent.setup(); start();
     await user.click(await screen.findByRole('button', { name: 'Turn on: Member texts' }));
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('The request failed. Please try again.'));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe(plain);
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    await act(async () => { answerRead(reply(500)); });
+    await waitFor(() => expect(alert.textContent).toContain('The request failed. Please try again.'));
     expect(screen.getAllByRole('alert')).toHaveLength(1);
-    const alert = screen.getByRole('alert'), text = alert.textContent!;
+    expect(screen.getByRole('alert')).toBe(alert);
+    const text = alert.textContent!;
     expect(text.indexOf(reason)).toBe(0);
     expect(text.indexOf('The request failed. Please try again.')).toBeGreaterThan(reason.length - 1);
-    const retry = within(alert).getByRole('button', { name: 'Try again' });
+    expect(document.activeElement).toBe(alert);
+    await user.click(within(alert).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Turn on: Member texts' }).disabled).toBe(false);
+  });
+  const noProvider = { refusal: 'a missing SMS provider', name: 'Member texts', status: 409,
+    details: { memberSmsEnabled: ['no_provider'] }, plain: 'Save a working SMS provider in Settings before turning member texts on.' };
+  /** Refuses a switch, with a good reload after it, then returns the client to move the settings. */
+  const refuse = async ({ name, status, details, plain }: { name: string; status: number; details: object | undefined; plain: string }) => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } });
+    client.PATCH.mockResolvedValue({ response: { ok: false, status }, error: { error: { code: 'refused', details } } });
+    const user = userEvent.setup(); start(queryClient);
+    await user.click(await screen.findByRole('button', { name: 'Turn on: ' + name }));
+    await waitFor(() => expect(live).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.getByRole('alert').textContent).toBe(plain);
+    return queryClient;
+  };
+  const moveSettings = (queryClient: QueryClient) => act(() => {
+    queryClient.setQueryData<{ settings: GymSettings; epoch: number }>(gymSettingsKey,
+      old => old && { ...old, settings: gymSettings(4) });
+  });
+  it.each([
+    noProvider,
+    { refusal: 'a change elsewhere', name: 'Billing', status: 409, details: undefined,
+      plain: 'These settings changed elsewhere. The latest values are shown; try again.' },
+    { refusal: 'an unchecked SMS provider', name: 'Member texts', status: 503, details: { memberSmsEnabled: ['read_failed'] },
+      plain: 'The SMS provider could not be checked. Try turning member texts on again.' },
+    { refusal: 'an unchecked Stripe', name: 'Billing', status: 503, details: { billingEnabled: ['read_failed'] },
+      plain: 'Stripe could not be checked. Try turning billing on again.' },
+  ])('drops the reason for $refusal once the settings move past it, so a later failed read does not repeat it', async refusal => {
+    const queryClient = await refuse(refusal);
+    live.mockResolvedValue(reply(500));
+    moveSettings(queryClient);
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('The request failed. Please try again.'));
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    // Any reason, in either alert, would come before the read error or replace it.
+    expect(screen.getByRole('alert').textContent!.indexOf('The request failed. Please try again.')).toBe(0);
+  });
+  it('shows a failed read that follows no refusal without moving the focus to its alert', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } });
+    start(queryClient);
+    await screen.findByRole('button', { name: 'Turn on: Billing' });
+    live.mockResolvedValue(reply(500));
+    moveSettings(queryClient);
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('The request failed. Please try again.');
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
     expect(document.activeElement).not.toBe(alert);
-    await user.click(retry);
+  });
+  it('removes a refused switch\'s alert once the settings move past it and the new checklist loads', async () => {
+    const queryClient = await refuse(noProvider);
+    live.mockResolvedValue(reply(200, checklist(4)));
+    moveSettings(queryClient);
+    await waitFor(() => expect(live.mock.calls.length).toBeGreaterThan(2));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Turn on: Member texts' }).disabled).toBe(false);
   });

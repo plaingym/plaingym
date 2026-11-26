@@ -44,6 +44,8 @@ export function GoLiveSettings() {
   const [saving, setBusy] = useState(false);
   const [message, setMessage] = useState<'error' | 'timeout' | 'changed' | 'justSaved' | 'smsProviderRequired'
     | 'smsProviderReadFailed' | 'paymentsReadFailed' | null>(null);
+  // The shared settings revision a refusal was answered at: a later revision may have changed what it says.
+  const [messageRevision, setMessageRevision] = useState<number | null>(null);
   // The tick is kept as the past-due list it was given for, so it never counts for a list that has since changed.
   const [confirmBilling, setConfirmBilling] = useState(false), [confirmedKey, setConfirmedKey] = useState<string | null>(null);
   // Set when a failed read closed the dialog: the read alert then takes the focus the dialog would return to a disabled switch.
@@ -91,6 +93,9 @@ export function GoLiveSettings() {
   const refusedUnread = readFailed && (message === 'changed' || message === 'justSaved' || message === 'timeout'
     || message === 'paymentsReadFailed' || message === 'smsProviderRequired' || message === 'smsProviderReadFailed') ? message : null;
   useEffect(() => { if (behind) void query.refetch(); }, [behind, settings?.revision, query.refetch]);
+  useEffect(() => {
+    if (messageRevision !== null && settings && settings.revision > messageRevision) { setMessage(null); setMessageRevision(null); }
+  }, [messageRevision, settings?.revision]);
   // The past-due dialog is modal, so it closes once no save is running if a read failed (the page's retry is behind it),
   // billing is already on (a save that timed out may have turned it on, leaving nothing to confirm), or the list it asks
   // about is empty.
@@ -108,12 +113,12 @@ export function GoLiveSettings() {
   function conflict(result: SaveResult, read: number) {
     setConfirmBilling(false); setConfirmedKey(null);
     // A save refused unsent because another section of this page saved first is not another user's change.
-    setMessage(result.refused === 'saved' ? 'justSaved' : 'changed');
+    setMessage(result.refused === 'saved' ? 'justSaved' : 'changed'); setMessageRevision(result.settings.revision);
     if (result.settings.revision <= read) reloadChecklist();
   }
   /** Retries every read that failed: the shared settings, and the checklist. */
   function retry() {
-    setMessage(null); setReadAlertFocus(false);
+    setMessage(null); setMessageRevision(null); setReadAlertFocus(false);
     if (gym.failed) gym.reload();
     if (checklistFailed || query.isError) reloadChecklist();
   }
@@ -122,7 +127,7 @@ export function GoLiveSettings() {
     if (name === 'billingEnabled' && !checklist.billingEnabled && checklist.pastDueMemberships.length && !confirmDates) {
       setConfirmedKey(null); setConfirmBilling(true); return;
     }
-    setBusy(true); setMessage(null);
+    setBusy(true); setMessage(null); setMessageRevision(null);
     try {
       const result = await gym.save((revision, signal) => api.PATCH('/api/settings/go-live', { signal, body: { revision,
         // The dialog's confirm only ever turns billing on, whatever a reload since it opened shows.
@@ -132,24 +137,24 @@ export function GoLiveSettings() {
       const details = (result.error as { error?: { details?: { memberSmsEnabled?: unknown; billingEnabled?: unknown } } } | undefined)?.error?.details;
       const smsReasons = details?.memberSmsEnabled, billingReasons = details?.billingEnabled;
       if (result.status === 409 && Array.isArray(smsReasons) && smsReasons.includes('no_provider')) {
-        setMessage('smsProviderRequired'); reloadChecklist(); return;
+        setMessage('smsProviderRequired'); setMessageRevision(result.settings.revision); reloadChecklist(); return;
       }
       if (result.status === 409) { conflict(result, checklist.revision); return; }
       if (result.status === 503 && Array.isArray(smsReasons) && smsReasons.includes('read_failed')) {
-        setMessage('smsProviderReadFailed'); reloadChecklist(); return;
+        setMessage('smsProviderReadFailed'); setMessageRevision(result.settings.revision); reloadChecklist(); return;
       }
       if (result.status === 503 && Array.isArray(billingReasons) && billingReasons.includes('read_failed')) {
-        setMessage('paymentsReadFailed'); reloadChecklist(); return;
+        setMessage('paymentsReadFailed'); setMessageRevision(result.settings.revision); reloadChecklist(); return;
       }
       if (result.status >= 300) throw new Error();
       setChecklist(parseChecklist(result.data));
       setConfirmBilling(false); setConfirmedKey(null);
-    } catch (error) { setMessage(error instanceof SaveTimeoutError ? 'timeout' : 'error'); }
+    } catch (error) { setMessage(error instanceof SaveTimeoutError ? 'timeout' : 'error'); setMessageRevision(null); }
     finally { setBusy(false); }
   }
   async function rerunReconciliation() {
     if (!checklist?.restoreReconciliation || !settings || locked) return;
-    setBusy(true); setChecking(true); setCheckError(null); setMessage(null);
+    setBusy(true); setChecking(true); setCheckError(null); setMessage(null); setMessageRevision(null);
     try {
       const restoreId = checklist.restoreReconciliation.restoreId;
       const result = await gym.check((revision, signal) => api.POST('/api/settings/go-live/reconciliation', { signal, body: { revision, restoreId } }),
