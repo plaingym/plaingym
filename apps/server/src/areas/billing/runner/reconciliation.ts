@@ -2,13 +2,13 @@
 import { and, desc, eq, inArray, isNull, lt, lte, not, notExists, or } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Extract two fields from the gym-scoped late processing audit to match its intent and Stripe generation.
 import { sql } from 'drizzle-orm';
-import { AppError } from '@plaingym/shared';
-import { auditEvents, households, invoices, paymentAttempts, payments, refunds, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
+import { AppError, type Clock } from '@plaingym/shared';
+import { auditEvents, type forGym, households, invoices, paymentAttempts, payments, refunds, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import type { ChargeOutcome, CheckoutSession, PaymentObject, PaymentObjectReference, Payments } from '../../../infra/payments/index.js';
 import { invoiceLateProcessing, invoiceProcessing } from '../transitions/bank.js';
 import { applyChargeOutcome } from '../transitions/outcomes.js';
-import { knownRefundRelease, refundEffectSearch } from '../transitions/refunds.js';
-import { createAbandoned, terminal, terminalInvoiceStatuses } from '../transitions/store.js';
+import { knownRefundRelease, recordRefundProvenance, refundEffectSearch } from '../transitions/refunds.js';
+import { createAbandoned, lockInvoice, terminal, terminalInvoiceStatuses } from '../transitions/store.js';
 import { createDisputeRefundWriter } from '../disputes-refunds.js';
 import { testModeDispute } from '../alerts/disputes.query.js';
 import { assertStripeSnapshot, latestTestSwitchId, stripeSwitchSnapshot, stripeWriteScope, StripeTestModeSwitched,
@@ -44,7 +44,8 @@ type CheckoutDebit = { invoiceId: string; paymentIntentId: string; late: boolean
  * Of the processor refund IDs the processor answered don't exist, those billing has since released as missing: the row
  * is `failed` and its failure released it as missing, as its failure or provenance audit records, or for an older failure
  * with neither, as its `refund_missing` staff notice shows. A row still pending, or failed any other way, still needs the
- * owner. Reads only; the refund transitions record provenance. Exported for its tests.
+ * owner. Reads only: `recordMissingRefundProvenance` records an older failure's answer first, so this searches effects
+ * only for a refund that gained neither record. Exported for its tests.
  */
 export async function releasedAsMissing(tx: Transaction, gymId: string, processorIds: ReadonlySet<string>) {
   const released = new Set<string>();
@@ -55,6 +56,28 @@ export async function releasedAsMissing(tx: Transaction, gymId: string, processo
     if (await knownRefundRelease(tx, gymId, row) ?? await refundEffectSearch(tx, gymId, row.invoiceId, row)) released.add(processorId);
   }
   return released;
+}
+/**
+ * Record, once, the provenance of each older failed refund among those the processor answered don't exist that has
+ * neither a failure audit flag nor a provenance audit, so later restore checks read it instead of searching the gym's
+ * effects. Each refund's answer commits in a short transaction of its own under its invoice lock, with the system actor,
+ * as the refund transitions record it. Exported for its tests.
+ */
+export async function recordMissingRefundProvenance(scope: typeof forGym, clock: Clock, gymId: string,
+  processorIds: ReadonlySet<string>) {
+  const legacy = await scope(gymId, async tx => {
+    const rows: { processorId: string; invoiceId: string }[] = [];
+    for (const processorId of processorIds) {
+      const [row] = await tx.select({ id: refunds.id, status: refunds.status, invoiceId: payments.invoiceId })
+        .from(refunds).innerJoin(payments, eq(payments.id, refunds.paymentId)).where(eq(refunds.processorId, processorId));
+      if (row?.status === 'failed' && await knownRefundRelease(tx, gymId, row) === null) rows.push({ processorId, invoiceId: row.invoiceId });
+    }
+    return rows;
+  });
+  for (const { processorId, invoiceId } of legacy) await scope(gymId, async tx => {
+    await lockInvoice(tx, invoiceId);
+    await recordRefundProvenance(tx, system(gymId), clock, invoiceId, [processorId]);
+  });
 }
 /**
  * The open disputes restore reads with the gym's key. One on a Stripe test-mode payment (marked by a switch to live) is in
@@ -462,6 +485,7 @@ export function createReconciliation(options: Options) {
         for (const row of settling) if (!unresolvedInvoices.has(row.id)) issues.push({ kind: 'invoice', id: row.id, reason: 'unresolved' });
         const pendingRefunds = await scope(gymId, tx => tx.select({ id: refunds.id }).from(refunds).where(eq(refunds.status, 'pending')));
         issues.push(...pendingRefunds.map(row => ({ kind: 'refund', id: row.id, reason: 'unresolved' })));
+        if (missingRefunds.size) await recordMissingRefundProvenance(scope, clock, gymId, missingRefunds);
         const released = missingRefunds.size ? await scope(gymId, tx => releasedAsMissing(tx, gymId, missingRefunds)) : new Set<string>();
         const kept = issues.filter(issue =>
           !(issue.kind === 'refund' && issue.reason === 'manual_resolution_required' && released.has(issue.id)));

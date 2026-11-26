@@ -338,8 +338,10 @@ its release as missing (the row `failed` with its `refund_missing` staff notice,
 when an external refund needs its room); one still pending, read uncertainly, or
 failed any other way stays in the report. The check reads the release from the
 refund's failure audit (`releasedMissing`), then its `billing.refund.provenance`
-audit, and only for an older failure with neither searches the gym's effects for its
-`refund_missing` notice; it writes no provenance itself. Enumeration errors fail
+audit. For an older failure with neither, it first searches the gym's effects for its
+`refund_missing` notice once and records the answer as that provenance audit, with the
+system actor, in a short transaction of its own under the invoice lock
+(`recordMissingRefundProvenance`), so later passes read it. Enumeration errors fail
 the pass. There is no search-based outcome inference or automatic billing resume.
 Refunds and disputes are recorded by the writer shared with webhook processing
 (`../disputes-refunds.ts`): another dispute already attached to the invoice is a

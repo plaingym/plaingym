@@ -2,13 +2,15 @@
 import { beforeAll, describe, expect, inject, it } from 'vitest';
 // eslint-disable-next-line database/system-tables -- Read transaction-local statistics from the disposable test database.
 import { sql } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { auditEvents, uuidv7, type Transaction } from '@plaingym/db';
 // eslint-disable-next-line no-restricted-imports, database/system-tables -- ANALYZE uses the disposable database's admin connection.
 import { openConnection } from '@plaingym/db/client';
 import { databaseUrl, useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
+import { TestClock } from '../../../core/clock.js';
 import { effectCreated } from '../transitions/store.js';
-import { releasedAsMissing } from './reconciliation.js';
+import { recordMissingRefundProvenance, releasedAsMissing } from './reconciliation.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 const occurredAt = new Date('2028-03-10T17:00:00Z');
@@ -32,6 +34,21 @@ async function released(processorIds: string[]) {
   });
 }
 
+/** One restore check's provenance write for these processor IDs, and the `audit_events` tuples it read across its
+ * transactions. */
+async function recorded(processorIds: ReadonlySet<string>) {
+  let tuples = 0;
+  const scope: typeof db.forGym = (id, work) => db.forGym(id, async tx => {
+    const before = await auditTuplesRead(tx);
+    try { return await work(tx); } finally { tuples += (await auditTuplesRead(tx)) - before; }
+  });
+  await recordMissingRefundProvenance(scope, new TestClock(occurredAt.toISOString()), gymId, processorIds);
+  return { tuples };
+}
+
+const provenance = (refundId: string) => db.forGym(gymId, tx => tx.select().from(auditEvents)
+  .where(and(eq(auditEvents.action, 'billing.refund.provenance'), eq(auditEvents.targetId, refundId))));
+
 /** A failed processor refund on the gym's payment, with its failure audit and, as given, its provenance audit and its
  * `refund_missing` staff notice. */
 async function failedRefund(processorId: string, { flag, provenance, notice }:
@@ -53,7 +70,8 @@ beforeAll(async () => {
   gymId = uuidv7();
   await factory('gyms', gymId);
   const household = await factory('households', gymId);
-  ({ id: invoiceId } = await factory('invoices', gymId, { householdId: household.id, currency: 'USD' }));
+  // Issued, since recording provenance locks the invoice.
+  ({ id: invoiceId } = await factory('invoices', gymId, { householdId: household.id, status: 'open', number: 1, currency: 'USD' }));
   ({ id: paymentId } = await factory('payments', gymId, { invoiceId, currency: 'USD', method: 'card' }));
   for (let batch = 0; batch < 20; batch++) {
     await db.forGym(gymId, tx => tx.insert(auditEvents).values(Array.from({ length: 1000 }, () => ({
@@ -103,6 +121,26 @@ describe('the restore check\'s missing processor refunds, over a long effect his
     await factory('auditEvents', otherGym, { action: effectCreated, targetType: 'invoice_effect', occurredAt,
       after: { kind: 'staff_notice', notice: 'refund_missing', invoiceId, paymentId, refundId } });
     expect((await released(['re_other_gym'])).released).toEqual([]);
+  });
+
+  it('records an older failure\'s provenance once, so later passes read it instead of searching effects', async () => {
+    const legacyId = await failedRefund('re_record_legacy', { notice: true });
+    const flaggedId = await failedRefund('re_record_flagged', { flag: true, notice: true });
+    const missing = new Set(['re_record_legacy', 're_record_flagged', 're_record_unknown']);
+    const first = await recorded(missing);
+    expect(first.tuples).toBeGreaterThan(10_000);
+    expect(await provenance(legacyId)).toMatchObject([
+      { actorKind: 'system', actorUserId: null, targetType: 'refund', after: { releasedMissing: true } },
+    ]);
+    expect(await provenance(flaggedId)).toHaveLength(0);
+
+    const second = await recorded(missing);
+    expect(second.tuples).toBeLessThanOrEqual(50);
+    expect(await provenance(legacyId)).toHaveLength(1);
+    expect(await provenance(flaggedId)).toHaveLength(0);
+    const result = await released(['re_record_legacy']);
+    expect(result.released).toEqual(['re_record_legacy']);
+    expect(result.tuples).toBeLessThanOrEqual(50);
   });
 
   it('keeps a refund that is still pending or unknown', async () => {

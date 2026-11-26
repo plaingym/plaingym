@@ -66,16 +66,18 @@ beforeAll(async () => {
   try { await admin.sql`analyze audit_events`; } finally { await admin.close(); }
 });
 
-/** The `audit_events` tuples a processor refund report reads across all its transactions, including one that throws. */
+/** The `audit_events` tuples a processor refund report reads across all its transactions, including one that throws, and
+ * how many transactions it opens. */
 async function measureReport(request: ProcessorRefundTransition) {
-  let tuples = 0;
+  let tuples = 0, transactions = 0;
   const scope: typeof db.forGym = (gymId, work) => db.forGym(gymId, async tx => {
+    transactions++;
     const before = await auditTuplesRead(tx);
     try { return await work(tx); } finally { tuples += (await auditTuplesRead(tx)) - before; }
   });
   const report = createInvoiceTransitions({ scope, clock: measured.clock }).processorRefund(measured.context, request);
   const settled = await report.then(value => ({ value, error: undefined }), (error: unknown) => ({ value: undefined, error }));
-  return { tuples, ...settled };
+  return { tuples, transactions, ...settled };
 }
 
 async function measure(request: ProcessorRefundTransition) {
@@ -152,10 +154,10 @@ it('finds a legacy release once, records provenance for older failures, and skip
 });
 
 /** Another paid 10000 invoice in the measured gym, with its own charge. */
-async function paidInvoice(name: string) {
+async function paidInvoice(name: string, number = 2) {
   const { gymId, household, clock, context } = measured;
   const paymentId = uuidv7(), chargeId = `ch_${name}`;
-  const { id: invoiceId } = await factory('invoices', gymId, { householdId: household.id, status: 'open', number: 2, amountCents: 10000, currency: 'USD' });
+  const { id: invoiceId } = await factory('invoices', gymId, { householdId: household.id, status: 'open', number, amountCents: 10000, currency: 'USD' });
   await createInvoiceTransitions({ scope: db.forGym, clock }).cardSucceeded(context, { invoiceId, paymentId, paymentIntentId: `pi_${name}`,
     chargeId, amountCents: 10000, currency: 'USD', paidAt: clock.now().toISOString(), method: 'card' });
   const refund = (id: string, amount: number, status: ProcessorRefundTransition['processorRefund']['status']):
@@ -189,6 +191,65 @@ it('keeps an older failure\'s provenance when the report then conflicts, so a re
   expect((second.error as Error).message).toBe(conflictMessage);
   expect(second.tuples).toBeLessThanOrEqual(50);
   expect(await events(refundProvenance, legacyId)).toHaveLength(1);
+});
+
+/** An older failed refund on the payment: its failure audit has no `releasedMissing` flag and it has no provenance audit,
+ * but its `refund_missing` staff notice shows it was released as missing. */
+async function legacyRow(invoiceId: string, paymentId: string, processorId: string, amountCents: number) {
+  const { gymId, clock } = measured;
+  const refundId = uuidv7(), resolvedAt = clock.now();
+  const after = { paymentId, processorId, amountCents, currency: 'USD', status: 'failed', resolvedAt };
+  await factory('refunds', gymId, { id: refundId, ...after });
+  await factory('auditEvents', gymId, { action: refundRecorded, targetType: 'refund', targetId: refundId, after, occurredAt: resolvedAt });
+  await factory('auditEvents', gymId, { action: effectCreated, targetType: 'invoice_effect', occurredAt: resolvedAt,
+    after: { kind: 'staff_notice', notice: 'refund_missing', invoiceId, paymentId, refundId } });
+  return refundId;
+}
+
+it('runs a report on a payment with no failed refund in one transaction', async () => {
+  const { invoiceId, paymentId, refund } = await paidInvoice('single', 3);
+  const request: ProcessorRefundTransition = { invoiceId, paymentId, refundId: uuidv7(), pendingRefunds: [],
+    processorRefund: refund('re_single', 1000, 'succeeded') };
+  const first = await measureReport(request);
+  expect(first.error).toBeUndefined();
+  expect(first.value!.outcome).toBe('applied');
+  expect(first.transactions).toBe(1);
+  const replay = await measureReport(request);
+  expect(replay.value!.outcome).toBe('ignored');
+  expect(replay.transactions).toBe(1);
+});
+
+it('records no provenance for a report rejected before it asks about any refund', async () => {
+  const { events } = measured;
+  const { invoiceId, paymentId, refund } = await paidInvoice('foreign', 4);
+  const legacyId = await legacyRow(invoiceId, paymentId, 're_foreign_legacy', 2000);
+  const request: ProcessorRefundTransition = { invoiceId, paymentId, refundId: uuidv7(),
+    pendingRefunds: [refund('re_foreign_legacy', 2000, 'failed')],
+    processorRefund: { ...refund('re_foreign_external', 1000, 'succeeded'), metadata: { gymId: uuidv7() } } };
+  const rejected = await measureReport(request);
+  expect(rejected.error).toMatchObject({ code: 'not_found' });
+  expect(rejected.tuples).toBeLessThanOrEqual(50);
+  expect(rejected.transactions).toBe(1);
+  expect(await events(refundProvenance, legacyId)).toHaveLength(0);
+});
+
+it('records no provenance for a pending report on its own older failure or a mismatched pending read', async () => {
+  const { events } = measured;
+  const { invoiceId, paymentId, refund } = await paidInvoice('unasked', 5);
+  const ownId = await legacyRow(invoiceId, paymentId, 're_unasked_own', 2000);
+  const pending = await measureReport({ invoiceId, paymentId, refundId: uuidv7(), pendingRefunds: [],
+    processorRefund: refund('re_unasked_own', 2000, 'pending') });
+  expect(pending.value!.outcome).toBe('ignored');
+  expect(pending.tuples).toBeLessThanOrEqual(50);
+  expect(await events(refundProvenance, ownId)).toHaveLength(0);
+
+  const otherId = await legacyRow(invoiceId, paymentId, 're_unasked_other', 2000);
+  const mismatched = await measureReport({ invoiceId, paymentId, refundId: uuidv7(),
+    pendingRefunds: [refund('re_unasked_other', 1500, 'failed')], processorRefund: refund('re_unasked_external', 1000, 'succeeded') });
+  expect(mismatched.value!.outcome).toBe('applied');
+  expect(mismatched.tuples).toBeLessThanOrEqual(50);
+  expect(await events(refundProvenance, otherId)).toHaveLength(0);
+  expect(await events(refundProvenance, ownId)).toHaveLength(0);
 });
 
 it('leaves one provenance audit per older failure when two reports for the invoice race', async () => {

@@ -12,7 +12,7 @@ import { isAssignmentInvoice } from '../assignment-invoices.js';
 import { bankAttemptsExhausted, invoiceLateProcessing, invoiceProcessing, processingIntents, retriesStopped, revokeBankMethod } from './bank.js';
 import { logError, logWarn } from '../../../core/log.js';
 import { readBillingRules } from '../../settings/settings.js';
-import { applyProcessorRefund, applyRefund, provenanceProcessorIds, recordRefundProvenance, type RefundWarning } from './refunds.js';
+import { applyProcessorRefund, applyRefund, provenanceNeeded, recordRefundProvenance, type RefundWarning } from './refunds.js';
 import { createInvoiceVoid } from './void.js';
 import { latestTestSwitchId, stripeWriteScope } from '../stripe-writes.js';
 import { accepted, audit, canceledAttempt, confirmAbandoned, effect, lockInvoice, paymentRecorded, recorded, result, snapshot, terminal,
@@ -227,18 +227,28 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Billi
     },
     async processorRefund(context: MutationContext, request: ProcessorRefundTransition) {
       let warnings: RefundWarning[] = [];
-      // Older failures' provenance commits on its own, so a report that then fails with a conflict doesn't search again.
-      await scope(context.gymId, async tx => {
-        const invoice = await lockInvoice(tx, request.invoiceId);
-        await recordRefundProvenance(tx, context, clock, invoice.id, provenanceProcessorIds(request));
-      });
-      const value = await scope(context.gymId, async tx => {
+      const apply = (asked: boolean) => scope(context.gymId, async (tx): Promise<{ needed: string[] } | { value: InvoiceTransitionResult }> => {
         warnings = [];
         const invoice = await lockInvoice(tx, request.invoiceId);
-        return applyProcessorRefund(tx, context, clock, invoice, request, warnings);
+        if (!asked) {
+          const needed = await provenanceNeeded(tx, context, invoice, request);
+          if (needed.length) return { needed };
+        }
+        return { value: await applyProcessorRefund(tx, context, clock, invoice, request, warnings) };
       });
+      let applied = await apply(false);
+      if ('needed' in applied) {
+        // An older failure's provenance commits on its own, so a report that then fails with a conflict doesn't search again.
+        const { needed } = applied;
+        await scope(context.gymId, async tx => {
+          const invoice = await lockInvoice(tx, request.invoiceId);
+          await recordRefundProvenance(tx, context, clock, invoice.id, needed);
+        });
+        applied = await apply(true);
+      }
+      if ('needed' in applied) throw new Error('Refund provenance asked twice');
       for (const { event, fields } of warnings) logWarn(event, fields);
-      return value;
+      return applied.value;
     },
   };
   async function failedInvoice(tx: Transaction, context: MutationContext, invoice: InvoiceRow, attemptId?: string,

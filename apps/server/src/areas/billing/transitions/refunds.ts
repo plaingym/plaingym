@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm';
 import { auditEvents, classPackSales, invoices, payments, refunds, uuidv7, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { idSchema, moneySchema, refundReleased } from '@plaingym/shared/contracts';
@@ -247,21 +247,43 @@ export async function refundEffectSearch(tx: Transaction, gymId: string, invoice
     .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.action, effectCreated), eq(auditEvents.after, work))).limit(1)).length > 0;
 }
 
-/** Record the provenance of the invoice's failed refunds with these processor IDs that have none yet, so a processor
- * refund report that then fails keeps it. The report passes the IDs it may ask about: its own and those its pending reads
- * show failed. The caller holds the invoice lock, which every provenance writer takes and then rereads under, so a refund
- * gets at most one provenance audit. */
+/** Record the provenance of the invoice's failed refunds with these processor IDs that have none yet, in a transaction of
+ * its own, so a processor refund report that then fails keeps it and the restore check reads it on later passes. A report
+ * passes the IDs `provenanceNeeded` returned. The caller holds the invoice lock, which every provenance writer takes and
+ * then rereads under, so a refund gets at most one provenance audit. */
 export async function recordRefundProvenance(tx: Transaction, context: MutationContext, clock: Clock, invoiceId: string,
   processorIds: readonly string[]) {
+  if (!processorIds.length) return;
   const failed = await tx.select({ refund: refunds }).from(refunds).innerJoin(payments, eq(payments.id, refunds.paymentId))
     .where(and(eq(payments.invoiceId, invoiceId), eq(refunds.status, 'failed'), inArray(refunds.processorId, [...processorIds])));
   for (const { refund } of failed) await releasedAsMissing(tx, context, clock, invoiceId, refund);
 }
 
-/** The processor IDs a processor refund report may ask `releasedAsMissing` about: its own, and other refunds its pending
- * reads show failed. */
-export function provenanceProcessorIds(input: ProcessorRefundTransition) {
-  return [input.processorRefund.id, ...input.pendingRefunds.filter(refund => refund.status === 'failed').map(refund => refund.id)];
+/** The processor IDs of the failed refunds a processor refund report would ask `releasedAsMissing` about that have no
+ * recorded release yet, read under the invoice lock without writing. A report for another payment, gym, currency or charge,
+ * or on a processing invoice, asks about none, since `applyProcessorRefund` rejects it first. Otherwise the report asks
+ * about its own failed row when it reports that row succeeded or failed with the same amount and currency, and about
+ * another failed row its pending read for that ID shows failed with the same refund. */
+export async function provenanceNeeded(tx: Transaction, context: MutationContext, invoice: InvoiceRow,
+  input: ProcessorRefundTransition): Promise<string[]> {
+  const value = input.processorRefund;
+  if (invoice.status === 'processing') return [];
+  const [payment] = await tx.select().from(payments).where(eq(payments.id, input.paymentId));
+  if (!payment || payment.invoiceId !== invoice.id || value.metadata.gymId !== context.gymId
+    || value.currency.toUpperCase() !== payment.currency || ![payment.paymentIntentId, payment.chargeId].includes(value.chargeId))
+    return [];
+  const failed = await tx.select().from(refunds)
+    .where(and(eq(refunds.paymentId, payment.id), eq(refunds.status, 'failed'), isNotNull(refunds.processorId)));
+  const asked = failed.filter(row => {
+    if (row.processorId === value.id)
+      return (value.status === 'succeeded' || value.status === 'failed') && row.amountCents === value.amount
+        && row.currency === payment.currency;
+    const current = input.pendingRefunds.find(refund => refund.id === row.processorId);
+    return current?.status === 'failed' && sameRefund(current, row, payment, context.gymId);
+  });
+  const needed: string[] = [];
+  for (const row of asked) if (await knownRefundRelease(tx, context.gymId, row) === null) needed.push(row.processorId!);
+  return needed;
 }
 
 /** Whether the row's failure released it because the processor couldn't find the refund: as recorded, or for an older

@@ -350,13 +350,19 @@ the notice's `missingEffectId`. Inside their write, success and verified failure
 the found and failure-first markers before looking up provenance. They read the indexed refund audits
 for new failures; for an older failure, the first report searches for the matching
 `refund_missing` effect and records the answer as a `billing.refund.provenance` audit,
-which later reports read instead. A processor refund report records that provenance
-in its own short transaction under the invoice lock before its write, for the failed
-refunds it may ask about (its own processor ID and those its pending reads show failed),
-so a report that then fails with a conflict keeps it and a retry doesn't search again.
-Every writer rereads under the invoice lock, so a refund gets at most one provenance
-audit. `knownRefundRelease` and `refundEffectSearch` in `refunds.ts` are the same
-reads the restore check uses.
+which later reports read instead. A processor refund report first checks itself under
+the invoice lock (`provenanceNeeded`): a report for another payment, gym, currency or
+charge, or on a processing invoice, asks about no refund. Otherwise it asks only about
+the failed refunds it could reach: its own row, when it reports that row succeeded or
+failed with the same amount and currency, and another failed row its pending read shows
+failed with the same refund. When none of those lacks a recorded release, the report
+applies in that one transaction. Otherwise that transaction writes nothing, a second
+records their provenance under the invoice lock, and a third applies the report without
+asking again, so a report that then fails with a conflict keeps the provenance and a
+retry doesn't search again. Every writer rereads under the invoice lock, so a refund
+gets at most one provenance audit. The restore check uses the same reads
+(`knownRefundRelease`, `refundEffectSearch`) and the same writer
+(`recordRefundProvenance`) in `refunds.ts`.
 
 A release as missing stands if Stripe later reports the released refund `succeeded`: the row stays `failed`
 and the invoice keeps its status and refunded total, even when the two refunds together
