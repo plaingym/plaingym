@@ -552,4 +552,84 @@ describe('portal check-in code', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(document.activeElement).toBe(opener);
   });
+  it('keeps a newer code that a read fetched before an older replacement answer arrives', async () => {
+    const newer = 'pgci1_' + 'c'.repeat(43);
+    const user = userEvent.setup(); page();
+    await screen.findByAltText('QR check-in code for Pat Parent');
+    await user.click(screen.getByRole('button', { name: 'Replace this code' }));
+    let finish!: (value: unknown) => void;
+    client.regenerateCheckin.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    client.checkinCode.mockImplementation(async (memberId: string) => answer({ memberId, code: newer, version: 3, revision: 6 }));
+    await user.click(replace());
+    refocus();
+    await waitFor(() => expect(vi.mocked(qrDataUrl).mock.lastCall![0]).toBe(newer));
+    await act(async () => finish(answer({ memberId: parent, code: 'pgci1_' + 'b'.repeat(43), version: 2, revision: 5 })));
+    // The cache tells the page on a later timer, so an older answer would be drawn only after it.
+    await act(() => new Promise<void>(resolve => setTimeout(resolve, 10)));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(vi.mocked(qrDataUrl).mock.lastCall![0]).toBe(newer);
+    await user.click(screen.getByRole('button', { name: 'Replace this code' }));
+    await user.click(replace());
+    expect(client.regenerateCheckin).toHaveBeenLastCalledWith(parent, 6, 'household');
+  });
+  it("moves the focus to the replace button when the page's retry reads the code", async () => {
+    client.checkinCode.mockRejectedValueOnce(new ApiError(500, 'request_failed'));
+    const user = userEvent.setup(); page();
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+    await screen.findByAltText('QR check-in code for Pat Parent');
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Replace this code' }));
+  });
+  it("moves the focus to the new retry when the page's retry fails too", async () => {
+    client.checkinCode.mockRejectedValueOnce(new ApiError(500, 'request_failed'));
+    let fail!: (cause: unknown) => void;
+    client.checkinCode.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+    const user = userEvent.setup(); page();
+    const first = await screen.findByRole('button', { name: 'Try again' });
+    await user.click(first);
+    await waitFor(() => expect(first.isConnected).toBe(false));
+    await act(async () => fail(new ApiError(500, 'request_failed')));
+    const next = await screen.findByRole('button', { name: 'Try again' });
+    expect(document.activeElement).toBe(next);
+  });
+  it("moves the focus to the replace button when the page's retry goes away after the dialog closes", async () => {
+    const user = userEvent.setup(); page();
+    await user.click(await screen.findByRole('button', { name: 'Replace this code' }));
+    client.regenerateCheckin.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    client.checkinCode.mockRejectedValueOnce(new ApiError(500, 'request_failed'));
+    await user.click(replace());
+    const retry = await within(screen.getByRole('dialog')).findByRole('button', { name: 'Try again' }) as HTMLButtonElement;
+    await waitFor(() => expect(retry.disabled).toBe(false));
+    let read!: () => void;
+    client.checkinCode.mockImplementationOnce((memberId: string) => new Promise(resolve => { read = () => resolve(made(memberId)); }));
+    await user.click(retry);
+    await waitFor(() => expect(retry.disabled).toBe(true));
+    await user.click(screen.getAllByRole('button', { name: 'Keep the current code' }).at(-1)!);
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Try again' }));
+    await act(async () => read());
+    await screen.findByAltText('QR check-in code for Pat Parent');
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Replace this code' }));
+  });
+  // The dialog gives the focus back to the button that opened it.
+  const closedOnReplace = async () => {
+    const user = userEvent.setup(); page();
+    const opener = await screen.findByRole('button', { name: 'Replace this code' });
+    await user.click(opener);
+    await user.click(screen.getAllByRole('button', { name: 'Keep the current code' }).at(-1)!);
+    expect(document.activeElement).toBe(opener);
+    client.checkinCode.mockRejectedValueOnce(new ApiError(500, 'request_failed'));
+  };
+  it("moves the focus to the page's retry when a failed read removes the focused button", async () => {
+    await closedOnReplace();
+    refocus();
+    const retry = await screen.findByRole('button', { name: 'Try again' });
+    await waitFor(() => expect(document.activeElement).toBe(retry));
+  });
+  it('leaves the focus on the member picker when a failed read replaces the section', async () => {
+    await closedOnReplace();
+    const picker = screen.getByLabelText('Code for');
+    act(() => picker.focus());
+    refocus();
+    await screen.findByRole('button', { name: 'Try again' });
+    expect(document.activeElement).toBe(picker);
+  });
 });

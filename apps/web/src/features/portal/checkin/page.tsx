@@ -61,6 +61,17 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
     if (code.isError) errorState.current?.querySelector('button')?.focus();
     else action.current?.focus();
   }, [confirming]);
+  const view = code.isPending || (!code.data && scope.settling) ? 'loading' : code.isError ? 'error' : 'section';
+  // Whether the focus was last inside the loading, error or section view. When one view replaces another and takes the
+  // focused control with it, the new view's button takes the focus.
+  const held = useRef(false);
+  // A closing dialog gives the focus back to its opener while React reports no focus events, so that return is marked here.
+  useEffect(() => { if (confirming === null && document.activeElement === action.current) held.current = true; }, [confirming]);
+  useEffect(() => {
+    if (!held.current || document.activeElement !== document.body) return;
+    if (view === 'error') errorState.current?.querySelector('button')?.focus();
+    else if (view === 'section') action.current?.focus();
+  }, [view, waiting]);
   async function regenerate() {
     if (!code.data || code.isError || rereading.has(memberId) || locked.current) return;
     const id = memberId, creating = !code.data.code;
@@ -73,7 +84,9 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
       const reading = cache.isFetching(own) > 0;
       await cache.cancelQueries(own);
       if ((cache.getQueryCache().find(own)?.getObserversCount() ?? 0) > 0) {
-        cache.setQueryData([...scope.key, 'checkin-code', id], answer);
+        // A read may already hold a later change than this answer, and a member's revision only goes up.
+        const cached = cache.getQueryData<{ revision: number }>([...scope.key, 'checkin-code', id]);
+        if (!cached || cached.revision <= answer.revision) cache.setQueryData([...scope.key, 'checkin-code', id], answer);
         // The cancelled read may have been answered after a newer change, so it is made again.
         if (reading) void cache.invalidateQueries(own);
       } else {
@@ -103,17 +116,20 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
   return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>
     <PageHeader title={text('title')} description={text('description')} />
     <MemberPicker label={text('member')} members={members.data} value={memberId} onChange={id => { setError(''); setConfirming(null); choose(id); }} />
-    {code.isPending || (!code.data && scope.settling) ? <LoadingState label={text('loading')} />
-      : code.isError ? <div ref={errorState}><ErrorState message={text(code.error instanceof ApiError && code.error.status === 503 ? 'unavailable' : 'error')} onRetry={() => void code.refetch()} /></div>
-        : <section className="space-y-4" aria-label={text('codeFor', { name: member?.name ?? '' })}>
-          {member && members.data.length > 1 && <h2 className="text-lg font-semibold">{member.name}</h2>}
-          {active ? waiting ? <Alert>{text('rereading')}</Alert>
-            : <><CodeImage code={active} name={member?.name ?? ''} /><p className="text-center text-sm text-muted-foreground">{text('help')}</p></>
-            : <Alert>{text(waiting ? 'createRereading' : 'inactive')}</Alert>}
-          {error && confirming !== memberId && <Alert ref={errorBox} variant="error" focusOnReveal role="alert">{errorText}</Alert>}
-          <Button ref={action} variant={active ? 'outline' : 'default'} className="w-full sm:w-auto" disabled={busy || waiting} onClick={() => { setError(''); if (active) setConfirming(memberId); else void regenerate(); }}>
-            {text(active ? 'regenerate' : 'create')}</Button>
-        </section>}
+    {/* A focused control removed with its view sends no blur that names another element, so the mark stays. */}
+    <div onFocus={() => { held.current = true; }} onBlur={event => { if (event.relatedTarget) held.current = false; }}>
+      {view === 'loading' ? <LoadingState label={text('loading')} />
+        : view === 'error' ? <div ref={errorState}><ErrorState message={text(code.error instanceof ApiError && code.error.status === 503 ? 'unavailable' : 'error')} onRetry={() => void code.refetch()} /></div>
+          : <section className="space-y-4" aria-label={text('codeFor', { name: member?.name ?? '' })}>
+            {member && members.data.length > 1 && <h2 className="text-lg font-semibold">{member.name}</h2>}
+            {active ? waiting ? <Alert>{text('rereading')}</Alert>
+              : <><CodeImage code={active} name={member?.name ?? ''} /><p className="text-center text-sm text-muted-foreground">{text('help')}</p></>
+              : <Alert>{text(waiting ? 'createRereading' : 'inactive')}</Alert>}
+            {error && confirming !== memberId && <Alert ref={errorBox} variant="error" focusOnReveal role="alert">{errorText}</Alert>}
+            <Button ref={action} variant={active ? 'outline' : 'default'} className="w-full sm:w-auto" disabled={busy || waiting} onClick={() => { setError(''); if (active) setConfirming(memberId); else void regenerate(); }}>
+              {text(active ? 'regenerate' : 'create')}</Button>
+          </section>}
+    </div>
     {confirming !== null && confirming === memberId && <Dialog title={text('confirmTitle')} closeLabel={text('keep')} onClose={dismiss} dismissible={!busy}>
       <div className="space-y-4"><p>{text('confirmBody')}</p>{error && <Alert variant="error" focusOnReveal role="alert">{errorText}</Alert>}
         {unread && <p className="text-sm text-muted-foreground">{text('waiting')}</p>}
