@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it } from 'vitest';
-import { announcementSmsBody, smsSegments } from './sms-segments.js';
+import { announcementSmsBody, announcementSmsText, smsSegments } from './sms-segments.js';
 
 it.each([
   ['', 'GSM-7', 0, 0], ['a'.repeat(160), 'GSM-7', 160, 1], ['a'.repeat(161), 'GSM-7', 161, 2],
@@ -15,4 +15,5 @@ it('includes the gym name and mandatory STOP line in the shared composer text', 
   const body = announcementSmsBody('Cedar Gym', '  Hello  ');
   expect(body).toBe('Cedar Gym: Hello\nReply STOP to opt out');
   expect(smsSegments(body)).toEqual({ encoding: 'GSM-7', units: body.length, segments: 1 });
+  expect(announcementSmsBody('Cedar Gym', ' Hi ')).toBe('Cedar Gym: ' + announcementSmsText(' Hi '));
 });

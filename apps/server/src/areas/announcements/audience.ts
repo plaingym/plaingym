@@ -54,9 +54,9 @@ export async function readAudience(tx: Transaction, audience: AnnouncementAudien
 /** Texts use announcements consent only; email preferences and household notice consent do not apply. */
 export async function readSmsAudience(tx: Transaction, audience: AnnouncementAudience, country: string | null | undefined,
   { memberIds, snapshot = false }: { memberIds?: string[]; snapshot?: boolean } = {}) {
-  if (audience.programIds.length) {
+  if (audience.programIds.length && !memberIds) {
     const existing = await tx.select({ id: programs.id }).from(programs).where(inArray(programs.id, audience.programIds));
-    if (!memberIds && existing.length !== new Set(audience.programIds).size) throw new AppError('not_found', 'Program not found');
+    if (existing.length !== new Set(audience.programIds).size) throw new AppError('not_found', 'Program not found');
   }
   const candidates = tx.select({ id: members.id, phone: members.phone, phoneE164: members.phoneE164 }).from(members)
     .where(and(isNull(members.anonymizedAt), isNotNull(members.smsAnnouncementsConsentAt),

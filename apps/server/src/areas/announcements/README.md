@@ -41,10 +41,14 @@ consent and quiet hours, but consumes the gym's daily cap.
 send only from 08:00 inclusive to 21:00 exclusive in the current gym timezone.
 Outside this window, including a batch crossing 21:00, a transactional enqueue
 sets `runAt` to the next 08:00 and records `smsScheduledFor`. Shared time helpers
-handle clock changes. A final check at the provider boundary catches slow
-preparation crossing 21:00. Independent `announcement_sms_recipients` rows and
-persisted SMS counts leave email outcomes unchanged. `smsCompletedAt` marks text
-completion, independently of the email `status`.
+handle clock changes. The window is also checked in `MemberSms`'s cap transaction
+before a slot is taken, and again at the provider boundary for slow preparation
+crossing 21:00. Provider credentials and the gym settings are read once per page
+of 25 recipients; the switch, cap, timezone and country are read again under
+lock in each text's cap transaction. Independent `announcement_sms_recipients` rows and persisted SMS
+counts (written once per page and before a deferral) leave email outcomes
+unchanged. `smsCompletedAt` marks text completion, independently of the email
+`status`.
 
 Text reservations use `announcement-sms:<announcementId>:<recipientRowId>` and
 a keyed phone digest under the announcement lock. Existing member-keyed

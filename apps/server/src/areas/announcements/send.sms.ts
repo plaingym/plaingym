@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, count, eq, inArray } from 'drizzle-orm';
 import { announcementSmsRecipients as recipients, announcements, smsDeliveries, writeAudit, type forGym, type Transaction } from '@plaingym/db';
-import { announcementSmsBody, announcementStopLine, AppError, type Clock } from '@plaingym/shared';
+import { announcementSmsBody, announcementSmsText, AppError, type Clock } from '@plaingym/shared';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { withJobTransaction, type Jobs } from '../../infra/jobs/index.js';
 import { createSmsDeliveries, deliveryAcceptance, DeliveryError, MemberSms } from '../../infra/sms/index.js';
 import { smsInFlightMs } from '../../infra/sms/deliveries.js';
+import { noticeCapSettings } from '../bookings/bookings.sms.js';
+import { holdGymSettings, readGymSettings } from '../settings/settings.js';
 import type { SmsResolver } from '../settings/sms.js';
 import { readSmsAudience } from './audience.js';
 
@@ -34,16 +36,23 @@ export function createAnnouncementSmsDelivery(options: {
   scope: typeof forGym; clock: Clock; jobs: Jobs; settings: GymSettingsAccessor; sms?: AnnouncementSmsOptions;
 }) {
   const { scope, clock, settings } = options, deliveries = createSmsDeliveries({ scope, clock });
-  async function totals(tx: Transaction, id: string) {
+  async function totals(tx: Transaction, id: string): Promise<boolean> {
     const rows = await tx.select({ state: recipients.state, count: count() }).from(recipients)
       .where(eq(recipients.announcementId, id)).groupBy(recipients.state);
     const total = (state: string) => rows.find(row => row.state === state)?.count ?? 0;
+    const done = !total('pending');
     await tx.update(announcements).set({ smsSent: total('sent'), smsFailed: total('failed'), smsSkipped: total('skipped'),
-      ...(!total('pending') ? { smsCompletedAt: clock.now(), smsScheduledFor: null } : {}) }).where(eq(announcements.id, id));
+      ...(done ? { smsCompletedAt: clock.now(), smsScheduledFor: null } : {}) }).where(eq(announcements.id, id));
+    return done;
+  }
+  async function flush(gymId: string, id: string) {
+    await scope(gymId, async tx => {
+      await tx.select({ id: announcements.id }).from(announcements).where(eq(announcements.id, id)).for('update');
+      await totals(tx, id);
+    });
   }
   async function decide(tx: Transaction, gymId: string, row: typeof recipients.$inferSelect, outcome: Outcome) {
     await tx.update(recipients).set({ ...outcome, updatedAt: clock.now() }).where(eq(recipients.id, row.id));
-    await totals(tx, row.announcementId);
     await writeAudit(tx, { gymId, actorKind: 'system', action: 'announcement.sms_recipient_decided', targetType: 'announcement_sms_recipient',
       targetId: row.id, after: outcome, occurredAt: clock.now() });
   }
@@ -51,6 +60,8 @@ export function createAnnouncementSmsDelivery(options: {
     await withJobTransaction(scope, gymId, async transaction => {
       const [row] = await transaction.tx.select().from(announcements).where(eq(announcements.id, id)).for('update');
       if (!row || row.smsCompletedAt) return;
+      // Writes the page's counts; with no pending row left the text send completes instead of deferring.
+      if (await totals(transaction.tx, id)) return;
       await transaction.tx.update(announcements).set({ smsScheduledFor: runAt }).where(eq(announcements.id, id));
       await options.jobs.enqueue(announcementSmsJob, { announcementId: id }, { gymId, timezone, runAt,
         idempotencyKey: announcementSmsJobKey(id, runAt), maxAttempts: 12 }, transaction);
@@ -71,12 +82,14 @@ export function createAnnouncementSmsDelivery(options: {
         const rows = await scope(gymId, tx => tx.select().from(recipients).where(and(eq(recipients.announcementId, id), eq(recipients.state, 'pending')))
           .orderBy(asc(recipients.id)).limit(25));
         if (!rows.length) {
-          await scope(gymId, async tx => { await tx.select({ id: announcements.id }).from(announcements).where(eq(announcements.id, id)).for('update'); await totals(tx, id); });
+          await flush(gymId, id);
           return;
         }
+        const resolved = await sms.resolver.resolve(gymId);
+        const pageSettings: GymSettingsAccessor = { get: async () => gym };
         for (const snapshot of rows) {
-          const currentGym = await settings.get(gymId), next = nextAnnouncementSmsTime(clock.now(), currentGym.timezone);
-          if (next) { await defer(gymId, id, currentGym.timezone, next); return; }
+          const next = nextAnnouncementSmsTime(clock.now(), gym.timezone);
+          if (next) { await defer(gymId, id, gym.timezone, next); return; }
           const reservation = await scope(gymId, async tx => {
             await tx.select({ id: announcements.id }).from(announcements).where(eq(announcements.id, id)).for('update');
             const [row] = await tx.select().from(recipients).where(eq(recipients.id, snapshot.id)).for('update');
@@ -91,33 +104,41 @@ export function createAnnouncementSmsDelivery(options: {
             if (previous && previous.state !== 'not_accepted') {
               await decide(tx, gymId, row, { state: previous.state === 'accepted' ? 'sent' : 'failed', reason: previous.state === 'accepted' ? null : 'unknown' }); return;
             }
-            const groups = await readSmsAudience(tx, announcement.audience, currentGym.country, { memberIds: row.memberIds });
+            const groups = await readSmsAudience(tx, announcement.audience, gym.country, { memberIds: row.memberIds });
             const group = groups.find(group => sms.phoneDigest(group.phone) === row.phoneDigest);
             if (!group) { await decide(tx, gymId, row, { state: 'skipped', reason: 'ineligible' }); return; }
             const digest = `announcement-sms:${id}:${row.phoneDigest}`;
-            const [duplicate] = await tx.select({ key: smsDeliveries.key }).from(smsDeliveries)
-              .where(and(eq(smsDeliveries.gymId, gymId), eq(smsDeliveries.commandDigest, digest)));
-            if (duplicate && duplicate.key !== key) { await decide(tx, gymId, row, { state: 'skipped', reason: 'duplicate_phone' }); return; }
             // A definite non-send can retry after erasure without restoring a cleared digest.
             const reserved = previous ? await deliveries.reserve(tx, gymId, key) : await deliveries.reserve(tx, gymId, key, digest);
             if (reserved) return { row, group, reserved };
           });
           if (!reservation) continue;
           let quiet: { runAt: Date; timezone: string } | undefined;
-          // Check the clock at the final transport boundary too: provider resolution and consent reads can cross 21:00.
-          const resolver: SmsResolver = { ...sms.resolver, async resolve(gym) {
-            const resolved = await sms.resolver.resolve(gym);
+          let lockedTimezone = gym.timezone;
+          // Check the clock at the final transport boundary too: the moment after the cap transaction commits can cross 21:00.
+          const resolver: SmsResolver = { ...sms.resolver, async resolve() {
             return resolved && { ...resolved, sms: { verifyAccount: () => resolved.sms.verifyAccount(), async sendSms(message) {
-              const current = await settings.get(gymId), at = nextAnnouncementSmsTime(clock.now(), current.timezone);
-              if (at) { quiet = { runAt: at, timezone: current.timezone }; throw new DeliveryError('not_accepted', 'Quiet hours'); }
+              const at = nextAnnouncementSmsTime(clock.now(), lockedTimezone);
+              if (at) { quiet = { runAt: at, timezone: lockedTimezone }; throw new DeliveryError('not_accepted', 'Quiet hours'); }
               if (message.body.length > 480) throw new DeliveryError('not_accepted', 'Announcement text is too long');
               return resolved.sms.sendSms(message);
             } } };
           } };
-          const guarded = new MemberSms({ gymId, memberIds: reservation.group.memberIds, householdIds: [], kind: 'announcements', resolver, settings, scope, clock });
+          const guarded = new MemberSms({
+            gymId, memberIds: reservation.group.memberIds, householdIds: [], kind: 'announcements',
+            resolver, settings: pageSettings, scope, clock,
+            recheck: async tx => {
+              await holdGymSettings(tx, gymId);
+              const locked = await readGymSettings(tx, gymId);
+              const at = nextAnnouncementSmsTime(clock.now(), locked.timezone);
+              if (at) { quiet = { runAt: at, timezone: locked.timezone }; throw new DeliveryError('not_accepted', 'Quiet hours'); }
+              lockedTimezone = locked.timezone;
+              return noticeCapSettings(locked);
+            },
+          });
           let outcome: Outcome;
           try {
-            const result = await deliveries.attempt(reservation.reserved, guarded, { to: reservation.group.phone, body: `${announcement.smsBody}\n${announcementStopLine}` });
+            const result = await deliveries.attempt(reservation.reserved, guarded, { to: reservation.group.phone, body: announcementSmsText(announcement.smsBody) });
             outcome = result.status === 'sent' ? { state: 'sent', reason: null } : { state: 'skipped', reason: result.reason };
           } catch (error) { outcome = { state: 'failed', reason: deliveryAcceptance(error) }; }
           if (quiet) { await defer(gymId, id, quiet.timezone, quiet.runAt); return; }
@@ -126,6 +147,7 @@ export function createAnnouncementSmsDelivery(options: {
             await decide(tx, gymId, reservation.row, outcome);
           });
         }
+        await flush(gymId, id);
       }
     },
   };

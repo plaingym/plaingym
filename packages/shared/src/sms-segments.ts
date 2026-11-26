@@ -2,8 +2,11 @@
 const basic = new Set(Array.from('@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !"#¤%&\'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà'));
 const extension = new Set(Array.from('\f^{}\\[~]|€'));
 export const announcementStopLine = 'Reply STOP to opt out';
+export function announcementSmsText(body: string): string {
+  return `${body.trim()}\n${announcementStopLine}`;
+}
 export function announcementSmsBody(gymName: string, body: string): string {
-  return `${gymName}: ${body.trim()}\n${announcementStopLine}`;
+  return `${gymName}: ${announcementSmsText(body)}`;
 }
 /** GSM extension characters consume two septets; Unicode messages consume UTF-16 code units. */
 export function smsSegments(body: string) {

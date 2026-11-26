@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it, vi } from 'vitest';
+import { eq } from 'drizzle-orm';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { announcementOptOuts, announcementSmsRecipients, members, smsDailyUsage, smsDeliveries, uuidv7 } from '@plaingym/db';
+import { announcementOptOuts, announcements, announcementSmsRecipients, members, smsDailyUsage, smsDeliveries, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { createMembersService } from '../members/members.js';
@@ -15,11 +16,12 @@ import { FakeJobs } from '../../infra/jobs/index.js';
 import { createSmsPhoneDigest, DeliveryError, FakeSms } from '../../infra/sms/index.js';
 import { smsInFlightMs } from '../../infra/sms/deliveries.js';
 import { takeSmsSlot } from '../../infra/sms/daily-cap.js';
+import { createGymSettingsAccessor } from '../settings/settings.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { createAnnouncementJobs } from './jobs.js';
 import { createAnnouncementRoutes } from './send.routes.js';
 import { createAnnouncementsService } from './send.js';
-import { announcementSmsJob, announcementSmsKey, nextAnnouncementSmsTime } from './send.sms.js';
+import { announcementSmsJob, announcementSmsKey, createAnnouncementSmsDelivery, nextAnnouncementSmsTime } from './send.sms.js';
 
 const db = useTestDatabase(), factory = createFactories(db), phone = '+12025550123';
 const digest = createSmsPhoneDigest('announcement-text-tests');
@@ -267,4 +269,94 @@ it('answers the preview route with the remaining cap', async () => {
   const response = await f.app().request('/api/announcements/preview', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(draft) });
   expect(response.status).toBe(200);
   expect((await response.json() as { data: Record<string, unknown> }).data).toMatchObject({ smsCapRemaining: 2, smsCapDay: 'today' });
+});
+it('stops in the cap transaction at 21:00 without taking a slot and sends once at 08:00', async () => {
+  const f = await fixture('2026-11-11T01:59:59Z'); await f.member(); await usage(f, '2026-11-10', 1);
+  let armClock = false;
+  const service = createAnnouncementsService({
+    ...f.options,
+    sms: {
+      resolver: f.resolver,
+      phoneDigest(value) {
+        if (armClock) { armClock = false; f.clock.set(new Date('2026-11-11T02:00:00Z')); }
+        return digest(value);
+      },
+    },
+  });
+  const row = await service.send(f.actor, { ...draft, confirm: true, sendGeneration: uuidv7() });
+  armClock = true;
+  await service.runSms({ announcementId: row.id }, f.gymId);
+  expect(f.sms.messages).toHaveLength(0);
+  expect(await db.forGym(f.gymId, tx => tx.select().from(smsDailyUsage))).toEqual([expect.objectContaining({ day: '2026-11-10', sent: 1, refused: 0 })]);
+  expect(await db.forGym(f.gymId, tx => tx.select().from(announcementSmsRecipients))).toEqual([expect.objectContaining({ state: 'pending' })]);
+  expect(await service.get(f.gymId, row.id)).toMatchObject({ smsSent: 0, smsFailed: 0, smsSkipped: 0, smsScheduledFor: '2026-11-11T13:00:00.000Z', smsCompletedAt: null });
+  f.clock.set(new Date('2026-11-11T13:00:00Z'));
+  await service.runSms({ announcementId: row.id }, f.gymId);
+  await service.runSms({ announcementId: row.id }, f.gymId);
+  expect(f.sms.messages).toHaveLength(1);
+  expect(await service.get(f.gymId, row.id)).toMatchObject({ smsSent: 1, smsScheduledFor: null, smsCompletedAt: '2026-11-11T13:00:00.000Z' });
+});
+it('reads provider credentials and gym settings once per page of 25', async () => {
+  const f = await fixture('2026-11-10T15:00:00Z', 'owner', { smsDailyCap: 100 });
+  for (let index = 0; index < 60; index++) {
+    const number = `+1202555${String(100 + index).padStart(4, '0')}`;
+    await f.member({ phone: number, phoneE164: number });
+  }
+  const row = await f.send();
+  f.resolver.resolve.mockClear();
+  const baseSettings = createGymSettingsAccessor({ scope: db.forGym });
+  const settings = { get: vi.fn((gymId: string) => baseSettings.get(gymId)) };
+  const delivery = createAnnouncementSmsDelivery({ scope: db.forGym, clock: f.clock, jobs: f.jobs, settings, sms: f.options.sms });
+  await delivery.run(f.gymId, row.id);
+  expect(f.sms.messages).toHaveLength(60);
+  expect(await f.service.get(f.gymId, row.id)).toMatchObject({ smsSent: 60, smsCompletedAt: '2026-11-10T15:00:00.000Z', smsScheduledFor: null });
+  expect(f.resolver.resolve).toHaveBeenCalledTimes(3);
+  expect(settings.get).toHaveBeenCalledTimes(4);
+});
+it('flushes counts when deferring mid-page and completes instead of deferring with no pending row', async () => {
+  const f = await fixture('2026-11-11T01:59:59Z', 'owner', { smsDailyCap: 100 });
+  for (let index = 0; index < 15; index++) {
+    const number = `+1202555${String(100 + index).padStart(4, '0')}`;
+    await f.member({ phone: number, phoneE164: number });
+  }
+  const row = await f.send(), send = f.sms.sendSms.bind(f.sms);
+  vi.spyOn(f.sms, 'sendSms').mockImplementation(async message => {
+    const result = await send(message);
+    if (f.sms.messages.length === 10) f.clock.set(new Date('2026-11-11T02:00:00Z'));
+    return result;
+  });
+  await f.run(row.id);
+  expect(f.sms.messages).toHaveLength(10);
+  expect(await f.service.get(f.gymId, row.id)).toMatchObject({ smsSent: 10, smsScheduledFor: '2026-11-11T13:00:00.000Z', smsCompletedAt: null });
+
+  const done = await fixture('2026-11-11T01:59:59Z');
+  await done.member({ phone: '+12025550123', phoneE164: '+12025550123' });
+  await done.member({ phone: '+12025550124', phoneE164: '+12025550124' });
+  const finished = await done.send(), doneSend = done.sms.sendSms.bind(done.sms);
+  vi.spyOn(done.sms, 'sendSms').mockImplementation(async message => {
+    const result = await doneSend(message);
+    if (done.sms.messages.length === 2) done.clock.set(new Date('2026-11-11T02:00:00Z'));
+    return result;
+  });
+  await done.run(finished.id);
+  expect(done.sms.messages).toHaveLength(2);
+  expect(await done.service.get(done.gymId, finished.id)).toMatchObject({ smsSent: 2, smsCompletedAt: '2026-11-11T02:00:00.000Z', smsScheduledFor: null });
+  expect(done.jobs.jobs.filter(job => job.name === announcementSmsJob && job.runAt.toISOString() === '2026-11-11T13:00:00.000Z')).toHaveLength(0);
+
+  const unflushed = await fixture('2026-11-11T01:59:59Z');
+  await unflushed.member();
+  const stale = await unflushed.send();
+  await db.forGym(unflushed.gymId, tx => tx.update(announcementSmsRecipients).set({ state: 'sent' }).where(eq(announcementSmsRecipients.announcementId, stale.id)));
+  unflushed.clock.set(new Date('2026-11-11T02:00:00Z'));
+  await unflushed.run(stale.id);
+  expect(await unflushed.service.get(unflushed.gymId, stale.id)).toMatchObject({ smsSent: 1, smsCompletedAt: '2026-11-11T02:00:00.000Z', smsScheduledFor: null });
+  expect(unflushed.jobs.jobs.filter(job => job.name === announcementSmsJob && job.runAt.toISOString() === '2026-11-11T13:00:00.000Z')).toHaveLength(0);
+});
+it('builds the delivered body with the shared helper when spaces surround the body', async () => {
+  const f = await fixture(); await f.member();
+  const spaced = { ...draft, sms: { body: '  Classes resume Monday.  ' } };
+  const row = await f.service.send(f.actor, { ...spaced, confirm: true, sendGeneration: uuidv7() });
+  await db.forGym(f.gymId, tx => tx.update(announcements).set({ smsBody: spaced.sms.body }).where(eq(announcements.id, row.id)));
+  await f.run(row.id);
+  expect(f.sms.messages).toEqual([{ to: phone, body: announcementSmsBody('Cedar Gym', spaced.sms.body) }]);
 });
