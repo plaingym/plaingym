@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import '@hono/zod-openapi';
 import { describe, expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { auditEvents, householdUsers, households, members, uuidv7, writeAudit } from '@plaingym/db';
 // eslint-disable-next-line database/system-tables -- The scale test writes a thousand invitees and their invitations in one statement each.
 import { authUser, authVerification } from '@plaingym/db';
@@ -40,13 +40,20 @@ async function gym() {
   await factory('gyms', gymId);
   return gymId;
 }
-/** A household whose password-mode join awaits staff confirmation, with its first member. */
-async function waiting(gymId: string, name: string, overrides: { email?: string | null } = {}) {
+/** A household with an address and its first member, which hasn't asked for confirmation yet. */
+async function unrequested(gymId: string, name: string, overrides: { email?: string | null } = {}) {
   const home = await factory('households', gymId, { name, email: 'email' in overrides ? overrides.email : `${uuidv7()}@example.invalid` });
   const member = await factory('members', gymId, { householdId: home.id });
-  await database.forGym(gymId, (tx) => requestPortalConfirmation(tx, gymId, home.id, clock));
   return { home, member };
 }
+/** A household whose password-mode join awaits staff confirmation, with its first member. */
+async function waiting(gymId: string, name: string, overrides: { email?: string | null } = {}) {
+  const created = await unrequested(gymId, name, overrides);
+  await database.forGym(gymId, (tx) => requestPortalConfirmation(tx, gymId, created.home.id, clock));
+  return created;
+}
+const requests = (gymId: string, householdId: string) => database.forGym(gymId, (tx) => tx.select({ id: auditEvents.id }).from(auditEvents)
+  .where(and(eq(auditEvents.action, confirmationRequested), eq(auditEvents.targetType, 'household'), eq(auditEvents.targetId, householdId))));
 const read = (gymId: string, roles: readonly (typeof staffRoles)[number][] = ['owner']) => provider().read({ gymId, roles, clock });
 
 describe('portal confirmation widget', () => {
@@ -102,15 +109,15 @@ describe('portal confirmation widget', () => {
     const owner = await factory('staffRoles', gymId, { role: 'owner' }), theirOwner = await factory('staffRoles', other, { role: 'owner' });
     const at = (time: string) => new TestClock(`2026-10-30T${time}:00Z`), printed = { scope: 'payer' as const, delivery: 'print' as const };
     const readAt = (id: string, time: string) => provider().read({ gymId: id, roles: ['owner'], clock: at(time) });
-    const retried = await waiting(gymId, 'Retried household');
-    // Another gym's household, invited after its request, is left out there and never counts here.
-    const theirs = await waiting(other, 'Their household');
-    await invitations.invite({ gymId: other, userId: theirOwner.userId, clock: at('12:03') }, theirs.home.id, { ...printed, email: `${uuidv7()}@example.test` }, origin);
-    // The invitation at 12:00 shares the request's instant, so staff have acted.
+    const retried = await unrequested(gymId, 'Retried household');
+    // Another gym's household, invited before its request, is listed there once it asks and never counts here.
+    const theirs = await unrequested(other, 'Their household');
+    await invitations.invite({ gymId: other, userId: theirOwner.userId, clock: at('12:00') }, theirs.home.id, { ...printed, email: `${uuidv7()}@example.test` }, origin);
+    // Staff invite before the household's first request (while its join's invoice was unpaid, say).
     await invitations.invite({ gymId, userId: owner.userId, clock: at('12:00') }, retried.home.id, { ...printed, email: `${uuidv7()}@example.test` }, origin);
     expect(await readAt(gymId, '12:00')).toBeNull();
-    // A later request (a sign-in retry that asks for confirmation) lists it despite that invitation.
-    await database.forGym(gymId, (tx) => requestPortalConfirmation(tx, gymId, retried.home.id, at('12:01')));
+    // Its first request, later than that invitation, lists it despite the invitation.
+    expect(await database.forGym(gymId, (tx) => requestPortalConfirmation(tx, gymId, retried.home.id, at('12:01')))).toBe(true);
     expect(await readAt(gymId, '12:02')).toEqual({ id: portalConfirmationWidgetId, titleKey: 'portal/access:waitingTitle', status: 'ready', kind: 'count', count: 1,
       items: [{ label: 'Retried household', href: href(retried.member.id) }] });
     expect(await readAt(other, '12:02')).toBeNull();
@@ -118,10 +125,37 @@ describe('portal confirmation widget', () => {
     await invitations.invite({ gymId, userId: owner.userId, clock: at('12:03') }, retried.home.id, { ...printed, email: `${uuidv7()}@example.test` }, origin);
     expect(await readAt(gymId, '12:04')).toBeNull();
     // Another gym's later request, even one naming this household, never brings it back.
-    await database.forGym(other, (tx) => requestPortalConfirmation(tx, other, theirs.home.id, at('12:05')));
+    expect(await database.forGym(other, (tx) => requestPortalConfirmation(tx, other, theirs.home.id, at('12:05')))).toBe(true);
     await database.forGym(other, (tx) => requestPortalConfirmation(tx, other, retried.home.id, at('12:05')));
     expect(await readAt(gymId, '12:06')).toBeNull();
     expect(await readAt(other, '12:06')).toMatchObject({ count: 1, items: [{ label: 'Their household' }] });
+  });
+
+  it('writes no second request for a household already awaiting confirmation, so a retry after staff invited it leaves it out', async () => {
+    const gymId = await gym(), origin = 'https://gym.example.test', owner = await factory('staffRoles', gymId, { role: 'owner' });
+    const at = (time: string) => new TestClock(`2026-10-30T${time}:00Z`);
+    const retried = await waiting(gymId, 'Retried household');
+    await invitations.invite({ gymId, userId: owner.userId, clock: at('12:01') }, retried.home.id,
+      { scope: 'payer', delivery: 'print', email: `${uuidv7()}@example.test` }, origin);
+    // A sign-in retry asks again: its earlier request stands, so staff's invitation still counts.
+    expect(await database.forGym(gymId, (tx) => requestPortalConfirmation(tx, gymId, retried.home.id, at('12:02')))).toBe(false);
+    expect(await provider().read({ gymId, roles: ['owner'], clock: at('12:03') })).toBeNull();
+    expect(await requests(gymId, retried.home.id)).toHaveLength(1);
+  });
+
+  it('writes a request once while the household awaits confirmation, and again once it has a payer login', async () => {
+    const gymId = await gym(), other = await gym(), { home } = await unrequested(gymId, 'Asking household');
+    // Another gym's request naming this household never makes it await confirmation here.
+    expect(await database.forGym(other, (tx) => requestPortalConfirmation(tx, other, home.id, clock))).toBe(true);
+    expect(await database.forGym(gymId, (tx) => requestPortalConfirmation(tx, gymId, home.id, clock))).toBe(true);
+    expect(await requests(gymId, home.id)).toHaveLength(1);
+    expect(await database.forGym(gymId, (tx) => requestPortalConfirmation(tx, gymId, home.id, clock))).toBe(false);
+    expect(await requests(gymId, home.id)).toHaveLength(1);
+    // With a payer login it no longer awaits confirmation, so a request is written.
+    await factory('householdUsers', gymId, { householdId: home.id, scope: 'payer', memberId: null });
+    expect(await database.forGym(gymId, (tx) => requestPortalConfirmation(tx, gymId, home.id, clock))).toBe(true);
+    expect(await requests(gymId, home.id)).toHaveLength(2);
+    expect(await requests(other, home.id)).toHaveLength(1);
   });
 
   it('leaves out a thousand payer-invited households in one statement, never sending their list back', async () => {

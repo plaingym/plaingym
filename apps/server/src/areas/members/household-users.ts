@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, desc, eq, exists, inArray, isNotNull, isNull, notExists } from 'drizzle-orm';
+import { and, asc, desc, eq, exists, inArray, isNotNull, isNull, not, notExists } from 'drizzle-orm';
 import { auditEvents, databaseCode, forGym, householdUsers, households, members, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { createHouseholdUserRequestSchema, householdUserSchema, type CreateHouseholdUserRequest, type Pagination } from '@plaingym/shared/contracts';
@@ -24,19 +24,30 @@ export async function assertPortalLoginTarget(tx: Transaction, householdId: stri
 }
 
 export const confirmationRequested = 'household_user.confirmation_requested';
+/** The household (in the outer query) has a confirmation request in this gym. */
+const requested = (tx: Transaction, gymId: string) => exists(tx.select({ id: auditEvents.id }).from(auditEvents)
+  .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.action, confirmationRequested), eq(auditEvents.targetType, 'household'),
+    eq(auditEvents.targetId, households.id))));
+/** The household (in the outer query) has a payer login. */
+const payerLinked = (tx: Transaction) => exists(tx.select({ id: householdUsers.id }).from(householdUsers)
+  .where(and(eq(householdUsers.householdId, households.id), eq(householdUsers.scope, 'payer'))));
+
 /** Password mode has no mail to prove an address: the household's address awaits portal confirmation by staff
- * with `portal_access.manage`, who check the person and then issue the printed invitation. Identifiers only. */
-export async function requestPortalConfirmation(tx: Transaction, gymId: string, householdId: string, clock: Clock) {
+ * with `portal_access.manage`, who check the person and then issue the printed invitation. Identifiers only.
+ * A household that already awaits confirmation (a request and no payer login) gets no second request: its earlier
+ * one stands, so a sign-in retry after staff invited it doesn't list it again. Returns whether it wrote a request. */
+export async function requestPortalConfirmation(tx: Transaction, gymId: string, householdId: string, clock: Clock): Promise<boolean> {
+  const [awaiting] = await tx.select({ id: households.id }).from(households)
+    .where(and(eq(households.id, householdId), eq(households.gymId, gymId), requested(tx, gymId), not(payerLinked(tx))));
+  if (awaiting) return false;
   await writeAudit(tx, { gymId, actorKind: 'system', action: confirmationRequested, targetType: 'household', targetId: householdId, occurredAt: clock.now() });
+  return true;
 }
 
 /** The one rule for a household awaiting portal confirmation: an address, a confirmation request, and no payer login yet.
  * The household tab and the dashboard widget both apply it. */
 export function awaitingConfirmationCondition(tx: Transaction, gymId: string) {
-  return and(eq(households.gymId, gymId), isNotNull(households.email),
-    exists(tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.action, confirmationRequested),
-      eq(auditEvents.targetType, 'household'), eq(auditEvents.targetId, households.id)))),
-    notExists(tx.select({ id: householdUsers.id }).from(householdUsers).where(and(eq(householdUsers.householdId, households.id), eq(householdUsers.scope, 'payer')))));
+  return and(eq(households.gymId, gymId), isNotNull(households.email), requested(tx, gymId), not(payerLinked(tx)));
 }
 
 const record = (row: typeof householdUsers.$inferSelect) => householdUserSchema.parse({ id: row.id, householdId: row.householdId, userId: row.userId, scope: row.scope, memberId: row.memberId, createdAt: row.createdAt.toISOString() });

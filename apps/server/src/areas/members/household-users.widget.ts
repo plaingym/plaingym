@@ -18,7 +18,8 @@ const shown = 20;
  * A household with no member left to open (all anonymized) has no tab and isn't listed, and nor
  * is one with an outstanding payer invitation issued at or after its latest confirmation request: staff have acted, and it
  * returns if that invitation is revoked or expires (its tab still shows the invitation). An invitation issued before the
- * latest request (a failed join sign-in's, say) doesn't count. One query on the authentication pool finds and counts the shortlist (the invitations
+ * latest request (a failed join sign-in's, say) doesn't count. A household that already awaits confirmation gets no second
+ * request (`requestPortalConfirmation`), so a sign-in retry after staff invited it doesn't list it again. One query on the authentication pool finds and counts the shortlist (the invitations
  * live there), and a second, on the app pool, picks each one's member. */
 export function createPortalConfirmationWidgetProvider(options: { scope?: typeof forGym; invitations?: Pick<PortalInvitationStore, 'withPayerInvitations'> } = {}):
 DashboardWidgetProvider<z.infer<typeof extensionDashboardWidgetSchema>> {

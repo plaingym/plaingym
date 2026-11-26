@@ -135,6 +135,8 @@ Neither is one with an outstanding payer invitation issued at or after its lates
 confirmation request, since staff have acted; it returns if that invitation is revoked
 or expires, and its Portal access tab still lists the invitation. An invitation issued
 before the latest request, such as the one a failed join sign-in left, doesn't count.
+A household that already awaits confirmation gets no second request, so a sign-in retry
+after staff invited it doesn't list it again.
 
 ## Onboarding links
 

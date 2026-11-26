@@ -2158,6 +2158,32 @@ describe('the passwordless sign-in leaves the request', () => {
       .toMatchObject({ count: 1, items: [{ label: home.name }] });
   });
 
+  it('asks staff to confirm the address once when a second queued sign-in runs in password mode', async () => {
+    const f = await fixture(), email = 'password-twice@example.invalid';
+    vi.spyOn(f.invitations, 'accept').mockRejectedValueOnce(new Error('SMTP unavailable'));
+    const { home, cookie } = await complete(f, email);
+    await f.drain();
+    // A resend queued before the gym switched to password mode waits beside the failed attempt's retry.
+    expect((await f.post('/join/sign-in', undefined, cookie)).status).toBe(200);
+    vi.spyOn(f.invitations, 'passwordRequired').mockResolvedValue(true);
+    await logged(async lines => {
+      await f.drain();
+      expect(lines).toEqual([expect.objectContaining({ event: 'public.join.sign_in_skipped', householdId: home.id, reason: 'password_mode' })]);
+    });
+    expect(await confirmationRequests(f, home.id)).toHaveLength(1);
+    expect(signInJobs(f)).toMatchObject([{ status: 'queued', attempt: 1 }, { status: 'completed' }]);
+    // The second password-mode run finds the household already awaiting confirmation and asks no more.
+    await logged(async lines => {
+      f.clock.advance(1000);
+      await f.drain();
+      expect(lines).toEqual([expect.objectContaining({ event: 'public.join.sign_in_skipped', householdId: home.id, reason: 'password_mode' })]);
+    });
+    expect(signInJobs(f)).toMatchObject([{ status: 'completed', attempt: 2 }, { status: 'completed' }]);
+    expect(await confirmationRequests(f, home.id)).toHaveLength(1);
+    expect(await awaitingConfirmation(f)).toEqual([home.id]);
+    expect(f.sent).toEqual([]);
+  });
+
   it('asks for no confirmation on a password-mode retry after the join ended', async () => {
     const f = await fixture(), { home, accept } = await failedOnce(f, 'password-ended@example.invalid');
     await ended(f, home.id);
