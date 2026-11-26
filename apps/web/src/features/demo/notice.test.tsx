@@ -550,7 +550,7 @@ it('focuses the bar alert once when a sign-in fails with the menu closed and no 
   fireEvent.click(await screen.findByRole('button', { name: 'Page sign-in' }));
   const bar = screen.getByRole('complementary', { name: 'Demo controls' });
   const alert = await within(bar).findByRole('alert');
-  expect(document.activeElement).toBe(alert);
+  await waitFor(() => expect(document.activeElement).toBe(alert));
   const menu = await openMenu();
   fireEvent.click(within(menu).getByRole('button', { name: 'Close demo menu' }));
   expect(within(bar).getByRole('alert')).toBeDefined();
