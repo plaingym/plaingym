@@ -185,10 +185,10 @@ function Search({ busy, message, onSearch }: { busy: boolean; message?: 'not_fou
     const viewport = window.visualViewport, field = nameRef.current;
     // Zoom shrinks the visual viewport, so a screen is short by its height times its zoom.
     if (!viewport || !field || viewport.height * viewport.scale > 500) return;
-    const top = (message && form.current ? form.current : field).getBoundingClientRect().top;
-    const bottom = field.getBoundingClientRect().bottom;
-    if (top >= viewport.offsetTop && bottom <= viewport.offsetTop + viewport.height) return;
-    if (message && form.current && bottom - top <= viewport.height) form.current.scrollIntoView?.({ block: 'start' });
+    const box = field.getBoundingClientRect(), noteTop = message && form.current ? form.current.getBoundingClientRect().top : box.top;
+    const fits = box.bottom - noteTop <= viewport.height, top = fits ? noteTop : box.top;
+    if (top >= viewport.offsetTop && box.bottom <= viewport.offsetTop + viewport.height) return;
+    if (message && form.current && fits) form.current.scrollIntoView?.({ block: 'start' });
     else field.scrollIntoView?.({ block: 'center' });
   }, [message]);
   useEffect(() => {
@@ -196,7 +196,8 @@ function Search({ busy, message, onSearch }: { busy: boolean; message?: 'not_fou
     if (!viewport) return;
     const resized = () => {
       // Only a drop larger than a toolbar's means a keyboard opened; a toolbar's resize doesn't scroll.
-      const dropped = (height.current ?? viewport.height) - viewport.height > 120;
+      // The drop is measured in screen pixels, since zoom shrinks the visual viewport's change.
+      const dropped = ((height.current ?? viewport.height) - viewport.height) * viewport.scale > 120;
       height.current = viewport.height;
       // A pinch zoom resizes the visual viewport too; scrolling then would fight the gesture.
       if (viewport.scale !== scale.current) { scale.current = viewport.scale; return; }

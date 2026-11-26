@@ -587,6 +587,44 @@ describe('kiosk check-in screen', () => {
       expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: 'center' });
       expect(scroll.mock.contexts[0]).toBe(name);
     });
+    it('counts a zoomed keyboard by its drop in screen pixels', () => {
+      const { viewport, name, resize } = open(180, 450, 2);
+      act(() => name.focus());
+      scroll.mockClear();
+      viewport.height = 80;
+      resize();
+      expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: 'center' });
+      expect(scroll.mock.contexts[0]).toBe(name);
+    });
+    it('does not scroll for a drop of 100 at no zoom', () => {
+      const { viewport, name, resize } = open(400, 450);
+      act(() => name.focus());
+      scroll.mockClear();
+      viewport.height = 300;
+      resize();
+      expect(scroll).not.toHaveBeenCalled();
+    });
+    /** Shows the not found note, taller than the screen with the field, and focuses a name field at the given position. */
+    async function focusUnderTallNote(top: number) {
+      vi.mocked(kioskApi.lookup).mockResolvedValueOnce({ status: 'see_front_desk' });
+      const { name } = open(300, top);
+      await search();
+      expect(screen.getByRole('status').textContent).not.toBe('');
+      rect(name.closest('form')!, -300);
+      act(() => name.blur());
+      scroll.mockClear();
+      act(() => name.focus());
+      return name;
+    }
+    it('leaves a fully visible name field under a tall note where it is', async () => {
+      await focusUnderTallNote(100);
+      expect(scroll).not.toHaveBeenCalled();
+    });
+    it('centres only the name field when it is below the view under a tall note', async () => {
+      const name = await focusUnderTallNote(280);
+      expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: 'center' });
+      expect(scroll.mock.contexts[0]).toBe(name);
+    });
     it('does not count a zoomed tall screen as short', () => {
       const { name } = open(400, 450, 2);
       act(() => name.focus());
