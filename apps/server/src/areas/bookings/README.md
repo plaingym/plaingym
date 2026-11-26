@@ -290,9 +290,10 @@ members who have no check-in at the session, then orders booked members, the
 waitlist by `queueRank`, and walk-ins, member ID breaking ties, before paging; the
 total and `counts` then cover only those members. A member already checked in stays
 listed whatever their status, so `counts.checkedIn` equals the unflagged roster's.
-The roster reads the session's members, bookings and check-ins in
+The roster reads the session's bookings and check-ins, then only those members, in
 one statement (`bookings.roster.query.ts`), so its rows, places in line, total and
-counts describe one moment even while check-ins and booking changes commit. The
+counts describe one moment even while check-ins and booking changes commit, and
+its work follows the session's size rather than the gym's membership. The
 statement orders, ranks and counts the whole session in the database and returns
 names and full booking and attendance records for the requested page only. The coach check-in roster uses
 the flag; the staff bookings roster does not. The
