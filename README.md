@@ -26,9 +26,8 @@ Run your gym on your terms, with your data on your own server.</p>
 </p>
 
 > [!NOTE]
-> PlainGym has no stable release yet. `main` is published as nightly `v0.Y.Z`
-> prereleases, and there is no compatibility promise before 1.0
-> ([versioning](docs/versioning.md)).
+> PlainGym 1.0.0 is the first stable release. Patch releases (1.0.Z) carry fixes only
+> and installs apply them each night, with rollback ([versioning](docs/versioning.md)).
 
 ## Why PlainGym
 

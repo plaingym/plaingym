@@ -6,8 +6,8 @@ PlainGym uses [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html),
 [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 The root `package.json` is the product version. Every workspace package is private
 and has that same version; packages are not released separately. The current
-development version is `0.4.0`. Public stable releases start at `1.0.0`; before that,
-`main` is published as nightly `v0.Y.Z` prereleases, signed with their own key
+version is `1.0.0`, the first public stable release. Before it, `main` was published
+as nightly `v0.Y.Z` prereleases, signed with their own key; none is published after it
 (`deploy/README.md`, "Prereleases").
 
 ## Compatibility from 1.0

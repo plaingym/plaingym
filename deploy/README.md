@@ -847,7 +847,7 @@ ownership and plain modes, so rebuilding it from the tag gives the same bytes, a
 `bootstrap.sh` is its `bootstrap.sh` with the version, repository and public key
 filled in. The manifest lists the archive's SHA-256. The public key is
 `deploy/release-signing.pem`, and the installer copies it into the install
-directory. No stable release has been published yet.
+directory. The first stable release is `v1.0.0`.
 
 `release/publish.sh` requires an explicit `--rollback-floor`; the workflow supplies
 the value recorded by `pnpm release` in `release/rollback-floor.txt`. The historical
