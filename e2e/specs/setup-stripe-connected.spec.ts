@@ -21,6 +21,8 @@ for (const width of [360, 1280]) {
       const request = route.request();
       const path = new URL(request.url()).pathname;
       if (path === '/api/demo') return route.fulfill({ json: { data: { mode: 'disabled' } } });
+      // A build on a release tag shows a plain version, and the footer then reads the source repository.
+      if (path === '/api/source') return route.fulfill({ json: { data: { url: 'https://github.com/plaingym/plaingym' } } });
       if (path === '/api/auth/bootstrap') return route.fulfill({ json: { data: { gym, session, login } } });
       if (path === '/api/setup' && request.method() === 'GET') return route.fulfill({ json: { data: connected ? after : before } });
       if (path === '/api/setup/stripe' && request.method() === 'PUT') {
