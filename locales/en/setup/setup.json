@@ -27,6 +27,7 @@
   "changed": "Setup changed in another window. Your progress has been refreshed.",
   "unavailable": "Setup is unavailable for this install. Sign in to manage your gym.",
   "reloadFailed": "Could not load the latest setup progress. Check your connection and try again.",
+  "restoreHeld": "A restore is running on this server, or is staged and waiting to finish, so setup can't be loaded yet. Wait a few minutes, then try again. If this stays, restart the app (sudo docker compose up -d); if it still stays, resume the restore with the maintenance command in the restore guide.",
   "sessionFailed": "Could not check who is signed in. Check your connection, then try again.",
   "ownerName": "Your name",
   "email": "Email address",

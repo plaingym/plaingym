@@ -125,6 +125,9 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   const [restoreUnanswered, setRestoreUnanswered] = useState(false);
   // When the last restore request went unanswered, until a status read works: a later 404 or 503 keeps the form too.
   const [unansweredAt, setUnansweredAt] = useState<number | null>(null);
+  // The status read failures counted when a resend after an unanswered request failed with its own message; a later read
+  // that meets a restore's hold brings the "may be running" message back.
+  const [failedAtReads, setFailedAtReads] = useState<number | null>(null);
   // A restore, from its request on, makes the status answer 404, and that answer would outlive a restore that then fails.
   const status = useQuery({ queryKey: key, queryFn: () => client.call('status'), retry: false,
     refetchOnWindowFocus: !jobId && !restoreSending, refetchOnReconnect: !jobId && !restoreSending });
@@ -241,7 +244,8 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   }, [client, queries, jobId, unreachable, throttled, restoreAnswer]);
   const complete = done || restoreState === 'restored';
   const finished = status.error instanceof ApiError && status.error.status === 404;
-  // The status read answers 503 while a restore holds the server; that matters only after an unanswered restore request.
+  // The status read answers 503 while a restore holds the server: the reload alert says so, and after an unanswered
+  // restore request the form stays.
   const gateClosed = status.error instanceof ApiError && status.error.status === 503;
   // With no status data, any restore answer keeps its screen. Once the status was read, a 404 ends the steps unless a
   // restore is running, done, or failed with a staged copy while step 0 is still on screen.
@@ -286,26 +290,33 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
     unavailableBox.current?.focus();
   }, [restore]);
   // A 404 or 503 read after the request's own wait was over: its message replaces the earlier error, and takes the focus
-  // only when nothing else holds it, as after a retry removed the reload alert. A message a refused resend left on screen
-  // stays, and takes the focus the same way. While a request is being sent, its own action decides the message and takes
-  // the focus to it.
+  // only when nothing else holds it, as after a retry removed the reload alert. A message a failed resend left on screen
+  // takes the focus the same way. While a request is being sent, its own action decides the message and takes the focus
+  // to it.
   useEffect(() => {
     if (!awaitingAnswer || restoreSending) return;
     const unfocused = document.activeElement === null || document.activeElement === document.body;
     if (restoreUnanswered) { if (unfocused) errorBox.current?.focus(); return; }
     setQuietError(!unfocused); setRestoreUnanswered(true); setError('restoreUnanswered');
   }, [awaitingAnswer, restoreSending, restoreUnanswered, errorBox]);
+  // That resend's message is replaced once a read that failed after it meets the hold. The read count is watched only
+  // here, so a further read with the same answer doesn't pull the focus back to a message already shown.
+  useEffect(() => {
+    if (!awaitingAnswer || restoreSending || failedAtReads === null || status.errorUpdateCount <= failedAtReads) return;
+    setFailedAtReads(null); setQuietError(document.activeElement !== null && document.activeElement !== document.body);
+    setError('restoreUnanswered');
+  }, [awaitingAnswer, restoreSending, failedAtReads, status.errorUpdateCount]);
   // A status read that works ends the unanswered state and its message, so a still later 404 is news of its own.
   useEffect(() => {
     if (!status.isSuccess || unansweredAt === null || status.dataUpdatedAt < unansweredAt) return;
-    setUnansweredAt(null); setRestoreUnanswered(false);
+    setUnansweredAt(null); setFailedAtReads(null); setRestoreUnanswered(false);
     // Removing the focused message would leave the focus on the page body, so the step's heading takes it.
     if (error === 'restoreUnanswered' && errorBox.current?.contains(document.activeElement)) heading.current?.focus();
     setError((shown) => shown === 'restoreUnanswered' ? null : shown);
   }, [status.isSuccess, status.dataUpdatedAt, unansweredAt, error, errorBox]);
   const retryStatus = <Button type="button" disabled={status.isFetching}
     onClick={() => { retried.current = unavailable || !status.data; void readAgain(); }}>{t('setup/setup:retry')}</Button>;
-  const reloadAlert = <Alert ref={reloadBox} variant="error"><p>{t('setup/setup:reloadFailed')}</p>{retryStatus}</Alert>;
+  const reloadAlert = <Alert ref={reloadBox} variant="error"><p>{t(gateClosed ? 'setup/setup:restoreHeld' : 'setup/setup:reloadFailed')}</p>{retryStatus}</Alert>;
   const deferBackups = <Button type="button" disabled={busy} variant="outline" onClick={() => void run(async () => {
     await client.call('decide', { revision, decision: 'backups_later' }); setBackupKey(null); draft.clear(); await refresh();
   })}>{t('setup/setup:skipBackups')}</Button>;
@@ -337,7 +348,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
       {step === 0 && (restore ? <Form action={async (data) => {
         // The request takes the restore's hold on the gym: no status read runs until it has answered.
         const wasUnanswered = restoreUnanswered || unansweredAt !== null;
-        setRestoreSending(true); setRestoreUnanswered(false); setUnansweredAt(null); await queries.cancelQueries({ queryKey: key });
+        setRestoreSending(true); setRestoreUnanswered(false); setUnansweredAt(null); setFailedAtReads(null); await queries.cancelQueries({ queryKey: key });
         try {
           const result = await client.call('restore', { choice: 'restore', source: destination(data), snapshotPrefix: text(data, 'snapshotPrefix'), privateKey: text(data, 'privateKey') });
           setRestoreFailure(null); setUnreachable(false); setThrottled(false); setPhase(null);
@@ -347,15 +358,17 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
           const unanswered = failure instanceof TypeError || (failure instanceof ApiError && (failure.status === 502 || failure.status === 504));
           if (!unanswered) {
             // After an unanswered request, a 409 (a restore is already running) or a 404 (it holds the gym, or has
-            // closed setup) is most likely that restore's doing. A 429, a server error, a request that never went out or
-            // an answer the page couldn't read doesn't rule that restore out, so it may still be running while the owner
-            // is told what failed.
+            // closed setup) is most likely that restore's doing. Any other refusal (a 400 for the snapshot ID and a 403
+            // for the setup link are checked before a running restore is; a 429; a server error), a request that never
+            // went out or an answer the page couldn't read doesn't rule that restore out, so it may still be running
+            // while the owner is told what failed.
             if (wasUnanswered && failure instanceof ApiError && (failure.status === 404 || failure.status === 409)) {
               setUnansweredAt(Date.now()); setRestoreUnanswered(true);
               throw new RestoreUnansweredError({ cause: failure });
             }
-            if (wasUnanswered && (!(failure instanceof ApiError) || failure.status === 429 || failure.status >= 500)) {
+            if (wasUnanswered) {
               setUnansweredAt(Date.now()); setRestoreUnanswered(true);
+              setFailedAtReads(queries.getQueryState(key)?.errorUpdateCount ?? 0);
               throw failure;
             }
             void status.refetch(); throw failure;
@@ -374,7 +387,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
         } finally { setRestoreSending(false); }
       }} submit="restore" secondary={<Button type="button" variant="outline" disabled={busy}
         onClick={() => {
-          setRestore(false); setRestoreUnanswered(false); setUnansweredAt(null);
+          setRestore(false); setRestoreUnanswered(false); setUnansweredAt(null); setFailedAtReads(null);
           // Where this swaps in the unavailable screen, the focus goes to it; where the steps stay, no focus moves later.
           if (finished && !restoreStays) backedOut.current = true;
           // Only the form's own request can have gone unanswered: the choice screen mustn't say a restore may be running.

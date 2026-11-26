@@ -2164,15 +2164,41 @@ describe('setup wizard restore progress', () => {
     expect(screen.queryByLabelText('Backup private key')).toBeNull();
     expect(statusReads(fetcher)).toBe(before + 1);
   });
-  it('drops the unanswered message’s hold on the form when a later restore request is refused', async () => {
-    const answers = [dropped, () => Promise.resolve(Response.json({ error: { code: 'invalid_request', message: 'Refused' } }, { status: 422 }))];
-    await sendRestoreEnding(() => answers.shift()!(), gone);
+  const snapshotRefused = () => Response.json({ error: { code: 'invalid_request', message: 'Invalid snapshot prefix' } }, { status: 400 });
+  const linkRefused = () => Response.json({ error: { code: 'forbidden', message: 'Forbidden' } }, { status: 403 });
+  const setupLinkText = 'Open the private setup link printed by the installer. You can reprint it with gym-app setup-link on the server.';
+  /** An unanswered restore request, its status read answering 404, then a resend answered with `refusal`. */
+  async function sendRefusedAgain(refusal: () => Response) {
+    const answers = [dropped, () => Promise.resolve(refusal())];
+    const started = await sendRestoreEnding(() => answers.shift()!(), gone);
     expect(await screen.findByText(unansweredText)).toBeDefined();
-
     await sendRestore();
+    return started;
+  }
+  it.each([
+    ['400, for the snapshot ID', snapshotRefused, saveFailedText],
+    ['403, for the setup link', linkRefused, setupLinkText],
+  ])('keeps the form when sending again is refused with %s, and a later 404 says the restore may be running', async (_, refusal, message) => {
+    const { fetcher, shown } = await sendRefusedAgain(refusal);
 
-    expect(await screen.findByText(unavailableText)).toBeDefined();
-    expect(screen.queryByLabelText('Backup private key')).toBeNull();
+    expect(await screen.findByText(message)).toBeDefined();
+    await settle();
+    expect(screen.queryByText(unansweredText)).toBeNull();
+    expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
+    expect(shown()).toBe(false);
+    const errorAlert = alertOf(message);
+    const reads = statusReads(fetcher);
+
+    statusAnswer = gone;
+    await refocus();
+    await settle();
+
+    expect(statusReads(fetcher)).toBe(reads + 1);
+    expect(alertOf(unansweredText)).toBe(errorAlert);
+    expect(document.activeElement).toBe(errorAlert);
+    expect(screen.queryByText(message)).toBeNull();
+    expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
+    expect(shown()).toBe(false);
   });
   it('drops the unanswered message on Back, so a later status read that works doesn’t repeat it', async () => {
     await sendRestoreEnding(dropped, gone);
@@ -2330,6 +2356,7 @@ describe('setup wizard restore progress', () => {
   });
   const busy503 = () => Response.json({ error: { code: 'unavailable', message: 'A restore is in progress.' } }, { status: 503 });
   const rateLimitedText = 'Too many attempts. Please wait before trying again.';
+  const heldText = "A restore is running on this server, or is staged and waiting to finish, so setup can't be loaded yet. Wait a few minutes, then try again. If this stays, restart the app (sudo docker compose up -d); if it still stays, resume the restore with the maintenance command in the restore guide.";
 
   it('treats a 503 status read after an unanswered restore request as the restore still running', async () => {
     const { fetcher, before } = await sendRestoreEnding(dropped, busy503);
@@ -2338,7 +2365,7 @@ describe('setup wizard restore progress', () => {
     await settle();
     expect(document.activeElement).toBe(alertOf(unansweredText));
     expect(screen.queryByText(saveFailedText)).toBeNull();
-    expect(screen.queryByText(reloadText)).toBeNull();
+    expect(screen.queryByText(heldText)).toBeNull();
     expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
     expect(statusReads(fetcher)).toBe(before + 1);
   });
@@ -2353,7 +2380,7 @@ describe('setup wizard restore progress', () => {
     await settle();
     expect(alertOf(unansweredText)).toBe(errorAlert);
     expect(document.activeElement).toBe(errorAlert);
-    expect(screen.queryByText(reloadText)).toBeNull();
+    expect(screen.queryByText(heldText)).toBeNull();
     expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
     expect(shown()).toBe(false);
   });
@@ -2368,13 +2395,18 @@ describe('setup wizard restore progress', () => {
     expect(await screen.findByText(rateLimitedText)).toBeDefined();
     expect(screen.queryByText(unansweredText)).toBeNull();
     expect(fetcher.mock.calls.filter(([path]) => String(path) === '/api/setup/restore')).toHaveLength(2);
+    await settle();
+    // The status error cached from before the resend doesn't bring the message back.
+    expect(screen.getByText(rateLimitedText)).toBeDefined();
+    expect(screen.queryByText(unansweredText)).toBeNull();
+    const errorAlert = alertOf(rateLimitedText);
 
     statusAnswer = gone;
     await refocus();
     await settle();
     expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
-    expect(screen.getByText(rateLimitedText)).toBeDefined();
-    expect(screen.queryByText(unansweredText)).toBeNull();
+    expect(alertOf(unansweredText)).toBe(errorAlert);
+    expect(screen.queryByText(rateLimitedText)).toBeNull();
     expect(shown()).toBe(false);
   });
   it('clears the message when a status read works, leaving the focus in a field', async () => {
@@ -2419,7 +2451,7 @@ describe('setup wizard restore progress', () => {
     expect(screen.queryByText(unansweredText)).toBeNull();
     expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Start fresh or restore a backup' }));
   });
-  it('focuses the message already shown when Try again answers 503 and removes its own button', async () => {
+  it('focuses the message that replaces a refused resend’s when Try again answers 503 and removes its own button', async () => {
     const answers = [dropped,
       () => Promise.resolve(Response.json({ error: { code: 'rate_limited', message: 'Slow down' } }, { status: 429 }))];
     await sendRestoreEnding(() => answers.shift()!(), serverError);
@@ -2433,7 +2465,9 @@ describe('setup wizard restore progress', () => {
 
     await waitFor(() => expect(screen.queryByText(reloadText)).toBeNull());
     await settle();
-    expect(document.activeElement).toBe(alertOf(rateLimitedText));
+    expect(screen.queryByText(heldText)).toBeNull();
+    expect(screen.queryByText(rateLimitedText)).toBeNull();
+    expect(document.activeElement).toBe(alertOf(unansweredText));
     expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
   });
   const failedAnswer = (status: number) => () => Promise.resolve(Response.json({ error: { code: 'internal', message: 'Failed' } }, { status }));
@@ -2450,13 +2484,15 @@ describe('setup wizard restore progress', () => {
     expect(restoreRequests(fetcher)).toHaveLength(2);
     await settle();
     const reads = statusReads(fetcher);
+    const errorAlert = alertOf(saveFailedText);
 
     statusAnswer = gone;
     await refocus();
     await settle();
     expect(statusReads(fetcher)).toBe(reads + 1);
     expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
-    expect(screen.getByText(saveFailedText)).toBeDefined();
+    expect(alertOf(unansweredText)).toBe(errorAlert);
+    expect(screen.queryByText(saveFailedText)).toBeNull();
     expect(shown()).toBe(false);
   });
   it('keeps the unanswered state, showing the save error, when sending again is refused before it is sent', async () => {
@@ -2477,12 +2513,15 @@ describe('setup wizard restore progress', () => {
     expect(restoreRequests(fetcher)).toHaveLength(1);
     expect(statusReads(fetcher)).toBe(reads);
 
+    const errorAlert = alertOf(saveFailedText);
+
     statusAnswer = gone;
     await refocus();
     await settle();
     expect(statusReads(fetcher)).toBe(reads + 1);
     expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', 'not-a-key');
-    expect(screen.getByText(saveFailedText)).toBeDefined();
+    expect(alertOf(unansweredText)).toBe(errorAlert);
+    expect(screen.queryByText(saveFailedText)).toBeNull();
     expect(shown()).toBe(false);
   });
   it('shows the unavailable screen when a restore request with none unanswered before it answers 500', async () => {
@@ -2490,5 +2529,106 @@ describe('setup wizard restore progress', () => {
 
     expect(await screen.findByText(unavailableText)).toBeDefined();
     expect(screen.queryByLabelText('Backup private key')).toBeNull();
+  });
+  it('says a restore holds the server when the first status read answers 503, and loads the steps on Try again', async () => {
+    statusAnswer = busy503;
+    start(0);
+
+    expect(await screen.findByText(heldText)).toBeDefined();
+    expect(screen.queryByText(reloadText)).toBeNull();
+
+    statusAnswer = null;
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByRole('button', { name: 'Start fresh' })).toBeDefined();
+    expect(screen.queryByText(heldText)).toBeNull();
+    expect(screen.queryByText(reloadText)).toBeNull();
+  });
+  it('shows the usual load error when the first status read answers 500', async () => {
+    statusAnswer = serverError;
+    start(0);
+
+    expect(await screen.findByText(reloadText)).toBeDefined();
+    expect(screen.queryByText(heldText)).toBeNull();
+  });
+  it('says the restore may be running when a status read answers 503 after a refused resend', async () => {
+    const { shown } = await sendRefusedAgain(snapshotRefused);
+    expect(await screen.findByText(saveFailedText)).toBeDefined();
+    await settle();
+    const errorAlert = alertOf(saveFailedText);
+
+    statusAnswer = busy503;
+    await refocus();
+    await settle();
+
+    expect(alertOf(unansweredText)).toBe(errorAlert);
+    expect(screen.queryByText(saveFailedText)).toBeNull();
+    expect(screen.queryByText(heldText)).toBeNull();
+    expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
+    expect(shown()).toBe(false);
+  });
+  it('leaves the focus in a field when a later 404 replaces a refused resend’s message', async () => {
+    await sendRefusedAgain(snapshotRefused);
+    expect(await screen.findByText(saveFailedText)).toBeDefined();
+    await settle();
+    const field = screen.getByLabelText('Storage bucket');
+    await userEvent.click(field);
+
+    statusAnswer = gone;
+    await refocus();
+    await settle();
+
+    expect(screen.getByText(unansweredText)).toBeDefined();
+    expect(document.activeElement).toBe(field);
+  });
+  it('leaves the focus on the page when a further status read meets the restore’s hold', async () => {
+    const { fetcher } = await sendRefusedAgain(snapshotRefused);
+    expect(await screen.findByText(saveFailedText)).toBeDefined();
+    await settle();
+    statusAnswer = gone;
+    await refocus();
+    await settle();
+    expect(document.activeElement).toBe(alertOf(unansweredText));
+    await act(async () => { (document.activeElement as HTMLElement).blur(); });
+    const reads = statusReads(fetcher);
+
+    await refocus();
+    await settle();
+
+    expect(statusReads(fetcher)).toBe(reads + 1);
+    expect(screen.getByText(unansweredText)).toBeDefined();
+    expect(document.activeElement).toBe(document.body);
+  });
+  it('ends the unanswered state with a status read that works after a refused resend', async () => {
+    await sendRefusedAgain(snapshotRefused);
+    expect(await screen.findByText(saveFailedText)).toBeDefined();
+    await settle();
+
+    statusAnswer = null;
+    await refocus();
+    await settle();
+    expect(screen.getByText(saveFailedText)).toBeDefined();
+    expect(screen.queryByText(unansweredText)).toBeNull();
+
+    statusAnswer = gone;
+    await refocus();
+
+    expect(await screen.findByText(unavailableText)).toBeDefined();
+    expect(screen.queryByLabelText('Backup private key')).toBeNull();
+  });
+  it('focuses the message already shown when Try again answers 503 after a failed read', async () => {
+    await sendRestoreEnding(dropped, gone);
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+    statusAnswer = serverError;
+    await refocus();
+    expect(await screen.findByText(reloadText)).toBeDefined();
+
+    statusAnswer = busy503;
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => expect(screen.queryByText(reloadText)).toBeNull());
+    await settle();
+    expect(screen.queryByText(heldText)).toBeNull();
+    expect(document.activeElement).toBe(alertOf(unansweredText));
   });
 });

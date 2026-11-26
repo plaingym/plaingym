@@ -132,8 +132,11 @@ restore failed, it names the cause: rejected storage credentials, a refused acce
 permissions, or the snapshot ID), a missing bucket or snapshot,
 an endpoint it couldn't reach, a private key that doesn't open the snapshot or isn't one, or a
 damaged snapshot. Fix that (the [errors](#restore-errors) say what to check), then start it
-again. The wizard mentions the maintenance command only when a verified restore is staged. If
-the server stops answering while a restore runs, the page says so and keeps checking.
+again. A failed restore's message mentions the maintenance command only when a verified
+restore is staged. If the server stops answering while a restore runs, the page says so and
+keeps checking. A setup page that can't load because a restore holds the server (one running,
+or one staged and waiting to finish) says to wait and try again; if that stays, to restart the
+app; and only if it still stays, to resume the restore with the maintenance command.
 
 Under the backup lock, starting a new restore removes abandoned `restore-*` staging
 folders when no restore is active. `resume` does the same when the journal is absent
