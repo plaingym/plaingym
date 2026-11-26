@@ -108,6 +108,8 @@ export function PortalLayout({ name, person, scope, entries, children, onSignOut
     /** Shows the link to the login's own account page; the household picker has no page to show it in. */
     account?: boolean }) {
   const [open, setOpen] = useState(false), [online, setOnline] = useState(navigator.onLine);
+  // A menu with nothing to list closes, so it never holds the page.
+  if (open && !entries.length) setOpen(false);
   const root = useRef<HTMLDivElement>(null), header = useRef<HTMLElement>(null);
   const menuButton = useRef<HTMLButtonElement>(null), nav = useRef<HTMLElement>(null), backdrop = useRef<HTMLDivElement>(null), cover = useRef<HTMLDivElement>(null);
   const [headerHeight, setHeaderHeight] = useState(0), [menuTop, setMenuTop] = useState<number>(), [capTop, setCapTop] = useState<number>();
@@ -175,7 +177,7 @@ export function PortalLayout({ name, person, scope, entries, children, onSignOut
   return <div ref={root} className="flex min-h-dvh min-w-0 flex-col" style={{ '--portal-header-height': `${headerHeight}px` } as CSSProperties}>
     {/* A docked header would take too much of a screen 500 px tall or less (a phone in landscape). */}
     <header ref={header} className="sticky top-0 z-30 flex flex-wrap items-center gap-2 border-b border-border bg-background px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))] [@media(max-height:500px)]:static">
-      <Button ref={menuButton} variant="outline" className="md:hidden" aria-expanded={open} aria-controls="portal-navigation" onClick={() => setOpen(!open)}>{text('menu')}</Button>
+      {entries.length > 0 && <Button ref={menuButton} variant="outline" className="md:hidden" aria-expanded={open} aria-controls="portal-navigation" onClick={() => setOpen(!open)}>{text('menu')}</Button>}
       {/* Reserve space for the gym and the person before the household switcher. */}
       <div className="min-w-0 flex-1 basis-40">
         <p className="truncate font-semibold" title={name}>{name}</p>
@@ -193,11 +195,11 @@ export function PortalLayout({ name, person, scope, entries, children, onSignOut
       {open && menuTop !== undefined && <div ref={cover} aria-hidden="true" className="fixed inset-x-0 top-0 z-10 md:hidden" style={{ height: menuTop }} onClick={close} />}
       {/* The open panel is as tall as its links, but stops 3rem short of the screen's bottom so a strip of backdrop shows. It never gets shorter than one link,
           and when one wouldn't fit below its top, it starts higher, over the header's lower edge if need be. */}
-      <nav ref={nav} id="portal-navigation" aria-label={text('navigation')} style={open && menuTop !== undefined ? { top: capTop ?? menuTop, maxHeight: `max(calc(100dvh - ${menuTop}px - 3rem), calc(4.25rem + 1px))` } : undefined}
+      {entries.length > 0 && <nav ref={nav} id="portal-navigation" aria-label={text('navigation')} style={open && menuTop !== undefined ? { top: capTop ?? menuTop, maxHeight: `max(calc(100dvh - ${menuTop}px - 3rem), calc(4.25rem + 1px))` } : undefined}
         className={`${open ? `fixed inset-x-0 ${capTop === undefined ? 'z-20' : 'z-40'} block overflow-y-auto overscroll-contain bg-background shadow-lg` : 'hidden'} border-b border-border p-3
           md:sticky md:top-[var(--portal-header-height)] md:bottom-auto md:block md:max-h-[calc(100dvh-var(--portal-header-height))] md:w-56 md:shrink-0 md:self-start md:overflow-y-auto md:border-b-0 md:border-r md:shadow-none`}>
         <ul className="space-y-1">{entries.map(entry => <li key={entry.id}><Link to={entry.href} onClick={() => setOpen(false)} className="flex min-h-11 items-center rounded-md px-3 hover:bg-muted" activeOptions={{ exact: true }} activeProps={{ className: 'bg-muted font-semibold', 'aria-current': 'page' }}>{t(entry.labelKey)}</Link></li>)}</ul>
-      </nav>
+      </nav>}
       {/* The page the open panel covers takes no focus or presses. */}
       <main id="main-content" inert={open} className="min-w-0 flex-1 px-4 py-6 sm:px-6">{!online && <Alert>{text('offline')}</Alert>}{children}</main>
     </div>
@@ -225,7 +227,10 @@ function AuthenticatedPortal() {
     if (previousPath.current !== pathname) clearPortalRecoveryNotice(cache, portalLoginKey(gymId, userId));
     previousPath.current = pathname;
   }, [pathname, cache, gymId, userId]);
-  const households = useQuery(portalHouseholdsOptions(login, member));
+  const signOut = useMutation({ mutationFn: async () => { await services.signOut(); await cache.cancelQueries(); cache.clear(); location.assign('/login'); } });
+  // While a sign-out is being sent, a failed view isn't read again under it, so its status stays.
+  const unheld = (query: { state: { data: unknown } }) => !(signOut.isPending && query.state.data === undefined);
+  const households = useQuery({ ...portalHouseholdsOptions(login, member), refetchOnWindowFocus: unheld, refetchOnReconnect: unheld });
   const current = households.data?.current ?? null;
   // The shell's own context query lives in the open household's subtree like every portal query, so it is unreachable from any
   // other, under the reserved `shell` segment no page key uses, so no page's query or invalidation reaches it.
@@ -239,7 +244,7 @@ function AuthenticatedPortal() {
       return runPortalOperation(async () => ownAnswer(cache, householdKey, parseResponse(portalContracts.context.response, await createJsonTransport()(portalContracts.context.path)), listsVersion).data,
         expected => { void refreshHouseholds(cache, householdKey, listsVersion, expected).catch(() => undefined); });
     },
-    retry: false, staleTime: 0 });
+    retry: false, staleTime: 0, refetchOnWindowFocus: unheld, refetchOnReconnect: unheld });
   // While the name may still be the previous household's, the header says nothing about who is signed in. Only the shell's own
   // entries (the mark and the bootstrap) can change that, so no other cache event wakes this.
   const nameStale = useSyncExternalStore(useCallback(notify => cache.getQueryCache().subscribe(event => { if (event.query.queryKey[0] === 'shell') notify(); }), [cache]),
@@ -284,7 +289,6 @@ function AuthenticatedPortal() {
     const change = markNameStale(cache, userId);
     void refreshName(cache, userId, change);
   }, [loaded, current, userId, gymId, cache]);
-  const signOut = useMutation({ mutationFn: async () => { await services.signOut(); await cache.cancelQueries(); cache.clear(); location.assign('/login'); } });
   useEffect(() => {
     const manifest = document.createElement('link'); manifest.rel = 'manifest'; manifest.href = '/portal/manifest.webmanifest'; document.head.append(manifest);
     if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/portal/sw.js', { scope: '/portal' }).catch(() => undefined);
@@ -305,8 +309,13 @@ function AuthenticatedPortal() {
   // A retry or a household choice puts that message away. A sign-out still being sent is left alone, so its failure is told.
   const clearSignOutError = () => { if (signOut.isError) signOut.reset(); };
   // The status is mounted with the view, so a sign-out sent from here is announced, and a retry waits for it. Empty, it takes no room.
-  const failed = (retry: () => void) => <Page><ErrorState message={text('failed')} onRetry={() => { clearSignOutError(); retry(); }} retryDisabled={signOut.isPending} /><Button onClick={() => signOut.mutate()} disabled={signOut.isPending}>{text('signOut')}</Button><p role="status" className={signOut.isPending ? 'text-sm text-muted-foreground' : 'sr-only'}>{signOut.isPending && t('shell/shell:signingOut')}</p>{signOutError}</Page>;
-  if (households.isPending || choose.isPending) return <PortalLoading />;
+  const failed = (retry: () => void) => <Page className="px-4 py-6 sm:px-6"><ErrorState message={text('failed')} onRetry={() => { clearSignOutError(); retry(); }} retryDisabled={signOut.isPending} /><Button onClick={() => signOut.mutate()} disabled={signOut.isPending}>{text('signOut')}</Button><p role="status" className={signOut.isPending ? 'text-sm text-muted-foreground' : 'sr-only'}>{signOut.isPending && t('shell/shell:signingOut')}</p>{signOutError}</Page>;
+  // A loading step keeps the portal layout while a sign-out is being sent or after it failed, so the account menu and its status
+  // stay mounted and the failure is told above the loading state.
+  const loading = () => signOut.isPending || signOut.isError
+    ? <PortalLayout name={bootstrap.data!.gym.name} person={person} entries={[]} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending} account={!!current}>{signOutError}<LoadingState /></PortalLayout>
+    : <PortalLoading />;
+  if (households.isPending || choose.isPending) return loading();
   // A list load that fails while the portal has lists to show keeps it up, like the bootstrap: every key follows the lists.
   if (households.isError && !households.data) return failed(() => void households.refetch());
   if (!current) {
@@ -315,10 +324,10 @@ function AuthenticatedPortal() {
       <PortalRecoveryNotice />{signOutError}<HouseholdPicker households={households.data.households} onChoose={id => { clearSignOutError(); choose.mutate(id); }} pending={choose.isPending || signOut.isPending} failed={choose.isError} />
     </PortalLayout>;
   }
-  // A context read that failed waits only for the lists being read again; if they still name this household, it is an error.
   if (!context.data) {
-    // While a sign-out is being sent, a household the server opened loads inside the layout, so the account menu and its status stay mounted.
-    if (context.isPending || households.isFetching) return signOut.isPending ? <PortalLayout name={bootstrap.data.gym.name} person={person} entries={[]} onSignOut={() => signOut.mutate()} signingOut account><LoadingState /></PortalLayout> : <PortalLoading />;
+    // A context read that failed waits for the lists being read again, except while a sign-out is being sent: then the
+    // failed-load view stays, with its status. If the lists still name this household, it is an error.
+    if (context.isPending || (households.isFetching && !signOut.isPending)) return loading();
     return failed(() => { void households.refetch(); void context.refetch(); });
   }
   const switcher = households.data.households.length > 1
