@@ -60,13 +60,17 @@ function isResolvedOptionsObject(node) {
   return prop?.type === 'Identifier' && prop.name === 'resolvedOptions';
 }
 
-/** `Intl`, `globalThis.Intl` or `window.Intl`. @param {Syntax | undefined} node @returns {boolean} */
+/**
+ * `Intl`, `globalThis.Intl`, `window.Intl` or `self.Intl`, each part possibly in a type wrapper.
+ * @param {Syntax | undefined} node @returns {boolean}
+ */
 function isIntlObject(node) {
-  if (node?.type === 'Identifier') return node.name === 'Intl';
-  if (node?.type !== 'MemberExpression' || node.computed) return false;
-  const object = syntax(node.object), property = syntax(node.property);
+  const target = unwrap(node);
+  if (target?.type === 'Identifier') return target.name === 'Intl';
+  if (target?.type !== 'MemberExpression' || target.computed) return false;
+  const object = unwrap(target.object), property = syntax(target.property);
   return object?.type === 'Identifier'
-    && (object.name === 'globalThis' || object.name === 'window')
+    && (object.name === 'globalThis' || object.name === 'window' || object.name === 'self')
     && property?.type === 'Identifier'
     && property.name === 'Intl';
 }

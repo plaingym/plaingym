@@ -42,6 +42,8 @@ jobs:
           node scripts/release/check-rollback.mjs "$migration_base" "$head"
       - name: Test release tooling in scratch repositories
         run: node --test scripts/release/*.test.mjs
+      - name: Test the product capture clock
+        run: node --test e2e/ux-pass/product.test.mjs
       - name: Dry-run scheduled failure reporting
         if: ${{ startsWith(github.ref, 'refs/heads/task/') }}
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0

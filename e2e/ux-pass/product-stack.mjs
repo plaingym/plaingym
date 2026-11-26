@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 /** A capture-only overlay on the UX pass's existing demo install and seed. */
 export async function productOverlay() {
   if (process.env.CI) throw new Error('Product screenshots are captured by hand, never in CI');
+  if (Number.isNaN(Date.parse(process.env.CAPTURE_CLOCK_INSTANT ?? ''))) throw new Error('CAPTURE_CLOCK_INSTANT must be an ISO instant');
   const path = fileURLToPath(new URL('../coverage/product-compose.json', import.meta.url));
   await writeFile(path, JSON.stringify({ services: { demo: {
     // Two ready copies satisfy the shared fixture without needing a later scheduler tick under frozen time.

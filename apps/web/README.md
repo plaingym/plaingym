@@ -39,9 +39,10 @@ constructors (`NumberFormat`, `DateTimeFormat`, `RelativeTimeFormat`, `PluralRul
 `ListFormat`, `DisplayNames`, `Collator`, `Segmenter`) with no arguments or a first argument
 of `undefined`, `null`, `void 0`, `[]` or `...[]` (an array of only holes, such as `[,]`,
 counts as `[]`), also wrapped in `as`, `satisfies`, `<T>` or `!`. The constructors are also
-matched as `globalThis.Intl.X` and `window.Intl.X`. It doesn't follow aliases
-(`const I = Intl`), destructuring, computed access (`Intl['Collator']`) or `.call` /
-`.apply`. It allows every other spread, since lint can't see whether it carries a locale. CI
+matched as `globalThis.Intl.X`, `window.Intl.X` and `self.Intl.X`, with `Intl` or its object
+also wrapped in `as`, `satisfies`, `<T>` or `!`. It doesn't follow aliases (`const I = Intl`),
+destructuring, computed access (`Intl['Collator']`) or `.call` / `.apply`. It allows every
+other spread, since lint can't see whether it carries a locale. CI
 also runs the suite with a German system locale.
 
 **Mobile-first.** Build every screen for a 360 px wide phone first, then scale

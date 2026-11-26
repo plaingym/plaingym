@@ -46,6 +46,12 @@ describe('display locale lint rule', () => {
     '(5).toLocaleString([,]);',
     'new Intl.NumberFormat(...[,]);',
     'new Intl.DateTimeFormat([,,]);',
+    'new (globalThis as typeof globalThis).Intl.NumberFormat();',
+    'window!.Intl.DateTimeFormat();',
+    'new self.Intl.Collator();',
+    'Intl!.NumberFormat();',
+    'new (Intl as typeof Intl).PluralRules();',
+    '(globalThis.Intl satisfies typeof Intl).NumberFormat();',
   ])('refuses %s', async code => {
     expect(await restricted(code)).toHaveLength(1);
   });
@@ -73,8 +79,15 @@ describe('display locale lint rule', () => {
     "new Intl.DateTimeFormat('en' as string, {});",
     "new globalThis.Intl.NumberFormat('en');",
     "window.Intl.DateTimeFormat('en', {});",
+    "new self.Intl.Collator('en');",
+    "globalThis['Intl'].NumberFormat();",
   ])('allows %s', async code => {
     expect(await restricted(code)).toHaveLength(0);
+  });
+
+  it('refuses angle-bracket type assertions around Intl and its object in .ts', async () => {
+    expect(await restricted('new (<any>Intl).NumberFormat();', probeTs)).toHaveLength(1);
+    expect(await restricted('new (<any>self).Intl.NumberFormat();', probeTs)).toHaveLength(1);
   });
 
   it.each(['probe.mjs', 'probe.cts'])('covers %s', async name => {

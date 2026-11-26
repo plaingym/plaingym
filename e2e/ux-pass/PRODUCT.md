@@ -22,10 +22,11 @@ The instant controls three things: the disposable demo container's JavaScript cl
 expiry (one day later). It doesn't change PostgreSQL's `now()` or the browser's
 cookie jar, which keep real time. The normal UX pass uses live time. The clock
 shim is mounted, never included in the app image. No production clock or setting
-changes.
+changes. The capture overlay refuses a missing or unparsable `CAPTURE_CLOCK_INSTANT`
+before any image build.
 
-`node --test e2e/ux-pass/product.test.mjs` checks the instant and the clock shim
-without Docker.
+`node --test e2e/ux-pass/product.test.mjs` checks the instant, the clock shim and
+the overlay's check without Docker; Repo compliance runs it on every push.
 
 The ten screens go to `apps/server/src/demo/screenshots/` as WebP at 1x and 2x,
 in light and dark. Portal and waiver screens are 390×844, kiosk 768×900, and
