@@ -21,7 +21,7 @@ import { markRefundSending, markRefundSent, pastRefundWindow, sameRefund, settle
 import { duplicateReservation } from './transitions/store.js';
 import { withJobTransaction } from '../../infra/jobs/index.js';
 import { CardImportRefused, isProviderOutage } from '../../infra/payments/index.js';
-import { readGymSettings } from '../settings/settings.js';
+import { holdGymSettings, readGymSettings } from '../settings/settings.js';
 import { bankAccountType, cardImportSnapshotVersion, customerCardImportJob } from './customer-card-import.js';
 import { customerAdoptedAction, recordCustomerAdoption } from './customer-adoption.js';
 
@@ -45,11 +45,20 @@ export function transientFailure(error: unknown): boolean {
       || value instanceof TypeError;
   });
 }
-/** A revoked row reports `removal` only when its path queued or finished a detach; an active row has none. */
-const masked = (r: typeof paymentMethods.$inferSelect, state?: RemovalState) => c.maskedPaymentMethodSchema.parse({
+/** Matches `promoteDefaultCard`'s eligibility rule: cards are always eligible; bank accounts require the gym currency's type, and Canadian PADs require a stored mandate. */
+function defaultRefusal(row: { type: string; mandateId: string | null }, currency: string): 'currency' | 'mandate' | null {
+  if (row.type === 'card') return null;
+  if (row.type !== bankAccountType(currency)) return 'currency';
+  if (row.type === 'acss_debit' && row.mandateId === null) return 'mandate';
+  return null;
+}
+
+/** A revoked row reports `removal` only when its path queued or finished a detach; an active row has none. Only the staff list passes `canBeDefault`, which appears on active rows only. */
+const masked = (r: typeof paymentMethods.$inferSelect, state?: RemovalState, canBeDefault?: boolean) => c.maskedPaymentMethodSchema.parse({
   id: r.id, createdAt: r.createdAt.toISOString(), householdId: r.householdId,
   type: r.type, bankName: r.bankName, brand: r.brand, last4: r.last4,
   expiryMonth: r.expiryMonth, expiryYear: r.expiryYear, isDefault: r.isDefault, revokedAt: r.revokedAt?.toISOString() ?? null,
+  ...(r.revokedAt === null && canBeDefault !== undefined ? { canBeDefault } : {}),
   ...(r.revokedAt && state ? { removal: state } : {}),
 });
 
@@ -80,6 +89,7 @@ export async function promoteDefaultCard(tx: Transaction, context: MutationConte
     .where(and(active, eq(paymentMethods.isDefault, true))).limit(1);
   if (current) return;
 
+  await holdGymSettings(tx, context.gymId);
   const { currency } = await readGymSettings(tx, context.gymId);
   const bank = bankAccountType(currency);
   const month = localDate(clock.now(), timezone).slice(0, 7);
@@ -153,6 +163,7 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
       const q = c.billingPaymentMethodListQuerySchema.parse(input);
       return scope(gymId, async tx => {
         await loadHousehold(tx, householdId);
+        const { currency } = await readGymSettings(tx, gymId);
         const where = eq(paymentMethods.householdId, householdId), total = await tx.$count(paymentMethods, where);
         const rows = await tx.select().from(paymentMethods).where(where).orderBy(desc(paymentMethods.createdAt), desc(paymentMethods.id)).limit(q.limit).offset(q.offset);
         const revoked = rows.filter(r => r.revokedAt).map(r => r.id);
@@ -161,14 +172,23 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
         const detached = new Set(audits.filter(a => a.action === cardDetachedAction).map(a => a.targetId));
         const queued = new Set(audits.filter(a => a.action === cardRevokedAction).map(a => a.targetId));
         const removalState = (id: string): RemovalState | undefined => detached.has(id) ? 'finished' : queued.has(id) ? 'pending' : undefined;
-        return { data: rows.map(r => masked(r, r.revokedAt ? removalState(r.id) : undefined)), pagination: { limit: q.limit, offset: q.offset, total } };
+        return {
+          data: rows.map(r => masked(r, r.revokedAt ? removalState(r.id) : undefined, r.revokedAt === null ? defaultRefusal(r, currency) === null : undefined)),
+          pagination: { limit: q.limit, offset: q.offset, total },
+        };
       });
     },
     async setDefault(context: MutationContext, householdId: string, id: string) {
       return scope(context.gymId, async tx => {
+        // The gym row before the household row, as the Stripe test-to-live clear locks them (see `stripeWriteCurrent`).
+        await holdGymSettings(tx, context.gymId);
         await loadHousehold(tx, householdId, true);
         const row = (await tx.select().from(paymentMethods).where(and(eq(paymentMethods.id, c.idSchema.parse(id)), eq(paymentMethods.householdId, householdId))))[0] ?? notFound();
         if (row.revokedAt) paymentConflict('card_removed', 'Card has been removed');
+        const { currency } = await readGymSettings(tx, context.gymId);
+        const refusal = defaultRefusal(row, currency);
+        if (refusal === 'currency') paymentConflict('payment_method_currency', "This bank account can't be charged in the gym's currency");
+        if (refusal === 'mandate') paymentConflict('payment_method_mandate', 'This pre-authorized debit has no mandate');
         await tx.update(paymentMethods).set({ isDefault: false }).where(and(eq(paymentMethods.householdId, householdId), eq(paymentMethods.isDefault, true)));
         const changed = (await tx.update(paymentMethods).set({ isDefault: true }).where(eq(paymentMethods.id, id)).returning())[0]!;
         await catalogAudit(tx, context, clock, 'billing.card.default_changed', 'payment_method', id, undefined, { householdId });
@@ -184,6 +204,8 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
       if (!detachCard) paymentUnavailable('detach_unavailable', 'Card removal is not configured');
       const { timezone } = await settings.get(context.gymId);
       const outcome = await scope(context.gymId, async tx => {
+        // Promotion holds the gym settings; take them before the household lock, as `setDefault` does.
+        await holdGymSettings(tx, context.gymId);
         await loadHousehold(tx, householdId, true);
         // Card state may have changed since the ownership check. Decide under the household lock.
         const card = (await tx.select().from(paymentMethods).where(and(eq(paymentMethods.id, id), eq(paymentMethods.householdId, householdId))))[0] ?? notFound();

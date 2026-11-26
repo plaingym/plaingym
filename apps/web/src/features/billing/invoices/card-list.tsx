@@ -57,8 +57,9 @@ export function CardList({ gymId, householdId, allowed, client = invoiceClient, 
         <span>{paymentMethodLabel(card, text)}{card.type === 'card' && card.expiryMonth != null && card.expiryYear != null && <> · {String(card.expiryMonth).padStart(2, '0')}/{card.expiryYear}</>}</span>
         {card.isDefault && <Badge className="self-start">{text('default')}</Badge>}
         {card.revokedAt && <Badge className="self-start">{text(card.removal === 'finished' ? 'removedFromStripe' : card.removal === 'pending' ? 'removalPending' : 'removed')}</Badge>}
+        {!card.revokedAt && !card.isDefault && card.canBeDefault === false && <p className="text-sm text-muted-foreground">{text('cannotBeDefault')}</p>}
         {allowed && (!card.revokedAt || card.removal === 'pending') && <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-          {!card.revokedAt && !card.isDefault && <Button variant="outline" onClick={() => open('default', card)}>{text('makeDefault')}</Button>}
+          {!card.revokedAt && !card.isDefault && card.canBeDefault !== false && <Button variant="outline" onClick={() => open('default', card)}>{text('makeDefault')}</Button>}
           <Button variant="outline" onClick={() => open('revoke', card)}>{text(card.revokedAt ? 'retryRemoval' : 'removeCard')}</Button>
         </div>}
       </StackedItem>)}</StackedList>

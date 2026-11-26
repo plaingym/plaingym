@@ -155,10 +155,24 @@ error for an unparseable body. The invoice editor hides the custom amount from
 front desk, who bill catalog charge types priced by managers. Charging an existing
 invoice is unchanged.
 
+Staff can make an active payment method the default only when the gym's current
+currency can charge it automatically (the same rule as promotion below): a card, a US
+bank account in USD, or a Canadian PAD with a stored mandate in CAD. `setDefault` holds
+the gym settings (`holdGymSettings`) before the household lock, as removal does, so it
+waits for an in-flight currency change and can't deadlock with the Stripe test-to-live
+clear, which locks the gym row and then households. It refuses a bank type the currency cannot charge with conflict reason
+`payment_method_currency`, or a Canadian PAD without a mandate with
+`payment_method_mandate`, leaving the default and audit log unchanged. The staff
+payment-methods list (`listPaymentMethods`) reports this eligibility as `canBeDefault`
+on each active row (omitted on revoked rows) so the UI hides Make default and explains
+why.
+
 Removing a payment method first revokes it locally and clears its default flag.
 Removing the default promotes the household's newest active method the gym's current
 currency can charge: a card, or the currency's own bank type (US bank accounts in USD,
-Canadian PADs with a stored mandate in CAD, and no bank type otherwise). It prefers a method with no stored
+Canadian PADs with a stored mandate in CAD, and no bank type otherwise). Before reading
+the gym currency, promotion holds the gym settings (`holdGymSettings`) so it observes
+any in-flight currency change. It prefers a method with no stored
 expiry or an expiry that has not passed in the gym's timezone, and falls back to the
 newest when all eligible methods have expired. An account the currency cannot charge,
 or a Canadian PAD without a mandate,

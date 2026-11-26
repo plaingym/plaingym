@@ -18,6 +18,8 @@ export const maskedPaymentMethodSchema = z.strictObject({
   expiryMonth: z.int32().min(1).max(12).nullable(),
   expiryYear: z.int32().min(2000).nullable(),
   isDefault: z.boolean(),
+  /** Only on an active method in the staff list: false when the gym can't charge it automatically (a bank account of another currency's type, or a Canadian PAD with no mandate), so it can't be the default. */
+  canBeDefault: z.boolean().optional(),
   revokedAt: instantSchema.nullable(),
   /** Only on a revoked method: `finished` once Stripe's detach returned, `pending` until then. */
   removal: z.enum(['pending', 'finished']).optional(),

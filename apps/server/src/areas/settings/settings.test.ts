@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { beforeAll, describe, expect, it } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { eq } from 'drizzle-orm';
-import { auditEvents, gyms, uuidv7, RevisionConflictError } from '@plaingym/db';
+// eslint-disable-next-line database/system-tables -- One test reads backend PIDs to verify a currency change waits on an uncommitted payment-method insert.
+import { eq, sql } from 'drizzle-orm';
+import { auditEvents, gyms, paymentMethods, uuidv7, RevisionConflictError } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError, canStaff, staffRoles, errorResponse, type StaffRole } from '@plaingym/shared';
@@ -192,6 +193,71 @@ describe('settings service and routes', () => {
     expect((await service.get(gymId)).currency).toBe('CAD');
     expect((await patch(server('owner', gymId), '/api/settings/currency', { revision: 2, currency: 'USD' })).status).toBe(409);
     await service.update({ ...mutation, gymId }, 'currency', { revision: 2, currency: 'CAD' });
+  });
+  it('locks currency while active bank accounts of the current currency exist, and allows change when revoked or of another currency type', async () => {
+    const usdGym = uuidv7(); await factory('gyms', usdGym, { currency: 'USD' });
+    const usdHome = await factory('households', usdGym);
+    const usBank = await factory('paymentMethods', usdGym, { householdId: usdHome.id, processorId: 'pm_us_lock', type: 'us_bank_account', last4: '6789' });
+
+    await expect(service.update({ ...mutation, gymId: usdGym }, 'currency', { revision: 1, currency: 'CAD' }))
+      .rejects.toMatchObject({ code: 'conflict', message: 'Currency cannot change after billing records exist' });
+    expect((await patch(server('owner', usdGym), '/api/settings/currency', { revision: 1, currency: 'CAD' })).status).toBe(409);
+    expect(await service.get(usdGym)).toMatchObject({ currency: 'USD', revision: 1 });
+
+    await database.forGym(usdGym, tx => tx.update(paymentMethods).set({ revokedAt: clock.now() }).where(eq(paymentMethods.id, usBank.id)));
+    expect(await service.update({ ...mutation, gymId: usdGym }, 'currency', { revision: 1, currency: 'CAD' }))
+      .toMatchObject({ currency: 'CAD', revision: 2 });
+
+    const usdWithPad = uuidv7(); await factory('gyms', usdWithPad, { currency: 'USD' });
+    const usdWithPadHome = await factory('households', usdWithPad);
+    await factory('paymentMethods', usdWithPad, { householdId: usdWithPadHome.id, processorId: 'pm_pad_in_usd', type: 'acss_debit', mandateId: 'mandate_cad', last4: '1111' });
+    expect(await service.update({ ...mutation, gymId: usdWithPad }, 'currency', { revision: 1, currency: 'CAD' }))
+      .toMatchObject({ currency: 'CAD', revision: 2 });
+
+    const cadGym = uuidv7(); await factory('gyms', cadGym, { currency: 'CAD' });
+    const cadHome = await factory('households', cadGym);
+    await factory('paymentMethods', cadGym, { householdId: cadHome.id, processorId: 'pm_cad_lock', type: 'acss_debit', mandateId: 'mandate_cad', last4: '2222' });
+    await expect(service.update({ ...mutation, gymId: cadGym }, 'currency', { revision: 1, currency: 'USD' }))
+      .rejects.toMatchObject({ code: 'conflict', message: 'Currency cannot change after billing records exist' });
+    expect(await service.get(cadGym)).toMatchObject({ currency: 'CAD', revision: 1 });
+  });
+  it('waits for an uncommitted US bank account insert and refuses the currency change once it commits', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId, { currency: 'USD' });
+    const home = await factory('households', gymId);
+    const locked = Promise.withResolvers<number>(), release = Promise.withResolvers<void>();
+    const inserting = database.forGym(gymId, async tx => {
+      // eslint-disable-next-line database/system-tables -- The holder's backend PID, for the lock-wait probe.
+      const { pid } = (await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0]!;
+      await tx.insert(paymentMethods).values({
+        id: uuidv7(), gymId, householdId: home.id, processorId: 'pm_concurrent_us', type: 'us_bank_account',
+        last4: '6789', isDefault: false, createdAt: clock.now(),
+      });
+      locked.resolve(pid);
+      await release.promise;
+    });
+    const pid = await locked.promise;
+
+    let finished = false;
+    const changing = service.update({ ...mutation, gymId }, 'currency', { revision: 1, currency: 'CAD' })
+      .finally(() => { finished = true; })
+      .then(value => ({ value }), (error: unknown) => ({ error }));
+    let sawWait = false;
+    try {
+      const deadline = Date.now() + 2000;
+      while (!sawWait && !finished && Date.now() < deadline) {
+        // eslint-disable-next-line database/system-tables -- The lock-wait probe.
+        sawWait = (await database.system.db.execute<{ n: number }>(
+          sql`select count(*)::int as n from pg_stat_activity where ${pid} = any(pg_blocking_pids(pid))`))[0]!.n > 0;
+        if (!sawWait) await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(sawWait).toBe(true);
+      expect(finished).toBe(false);
+    } finally {
+      release.resolve();
+      await inserting;
+    }
+    expect(await changing).toMatchObject({ error: { code: 'conflict', message: 'Currency cannot change after billing records exist' } });
+    expect(await service.get(gymId)).toMatchObject({ currency: 'USD', revision: 1 });
   });
   it('does not accept switches, encrypted fields, a target gym or private settings through general updates', async () => {
     const app = server('owner');

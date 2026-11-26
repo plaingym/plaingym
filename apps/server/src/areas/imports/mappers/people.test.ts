@@ -107,8 +107,12 @@ it.each([
   expect(saved).toMatchObject([{ processorId: 'pm_Match', type, bankName: 'Test bank',
     last4: '1234', expiryMonth: null, expiryYear: null, mandateId, isDefault: true }]);
   expect((await input.run()).job.committedRows).toBe(0);
+  // An active bank account the gym's currency charges keeps that currency in place.
   const settings = createSettingsService({ scope: database.forGym, clock });
-  await settings.update(input.actor, 'currency', { revision: (await settings.get(gymId)).revision, currency: currency === 'USD' ? 'CAD' : 'USD' });
+  const before = await settings.get(gymId);
+  await expect(settings.update(input.actor, 'currency', { revision: before.revision, currency: currency === 'USD' ? 'CAD' : 'USD' }))
+    .rejects.toMatchObject({ code: 'conflict' });
+  expect(await settings.get(gymId)).toMatchObject({ currency, revision: before.revision });
   const savedRow = await load(csvLine(['First Name', 'Last Name', 'Stripe Customer ID', 'Stripe Payment Method ID'])
     + csvLine(['First', 'Family', 'cus_Match', 'pm_Match']), { duplicatePolicy: 'skip' }, gymId);
   const rerun = await savedRow.run();

@@ -39,7 +39,7 @@ import { stripeTestClearedAction } from './stripe-writes.js';
 import { refundSending, refundSendLeaseMs, refundSent, refundSettleSkewMs } from './transitions/lapsed-refunds.js';
 
 const db = useTestDatabase(), factory = createFactories(db), origin = 'https://gym.example.test';
-async function fixture(currency: 'USD' | 'CAD' | 'GBP' = 'USD') {
+async function fixture(currency: 'USD' | 'CAD' | 'GBP' | 'EUR' = 'USD') {
   const gymId = uuidv7(), clock = new TestClock('2026-10-25T12:00:00Z');
   await factory('gyms', gymId, { currency, billingEnabled: true, memberEmailsEnabled: true });
   const user = await factory('authUser', gymId), home = await factory('households', gymId, { stripeCustomerId: 'cus_fixture', email: 'payer@example.invalid' });
@@ -1911,5 +1911,72 @@ describe('one-off collection and payment durability', () => {
     await f.links.send(f.context, { ...input, sendGeneration: uuidv7() }); expect(f.email.messages[0]?.text).toContain(origin + '/l/');
     const sibling = await factory('households', f.gymId);
     await expect(f.links.create(f.context, { ...input, householdId: sibling.id })).rejects.toMatchObject({ code: 'not_found' });
+  });
+  it('refuses setting a bank account the gym currency cannot charge or an unmandated CAD PAD as default, and reports canBeDefault in the staff list', async () => {
+    const defaultIds = async (f: Fixture) => (await db.forGym(f.gymId, tx => tx.select({ id: paymentMethods.id, isDefault: paymentMethods.isDefault })
+      .from(paymentMethods).where(eq(paymentMethods.householdId, f.home.id)))).filter(row => row.isDefault).map(row => row.id);
+    const defaultAudits = (f: Fixture) => db.forGym(f.gymId, tx => tx.select().from(auditEvents)
+      .where(eq(auditEvents.action, 'billing.card.default_changed')));
+
+    const cad = await fixture('CAD');
+    const usBank = await factory('paymentMethods', cad.gymId, { householdId: cad.home.id, processorId: 'pm_us', type: 'us_bank_account', last4: '6789' });
+    const unmandatedPad = await factory('paymentMethods', cad.gymId, { householdId: cad.home.id, processorId: 'pm_pad_nomandate', type: 'acss_debit', mandateId: null, last4: '1111' });
+    const mandatedPad = await factory('paymentMethods', cad.gymId, { householdId: cad.home.id, processorId: 'pm_pad_ok', type: 'acss_debit', mandateId: 'mandate_cad', last4: '2222' });
+    const secondCard = await factory('paymentMethods', cad.gymId, { householdId: cad.home.id, processorId: 'pm_card_2', last4: '3333' });
+    const revoked = await factory('paymentMethods', cad.gymId, { householdId: cad.home.id, processorId: 'pm_revoked', revokedAt: cad.clock.now(), last4: '4444' });
+
+    const listed = (await cad.service.listPaymentMethods(cad.gymId, cad.home.id, {})).data;
+    const byId = new Map(listed.map(row => [row.id, row]));
+    expect(byId.get(cad.card.id)?.canBeDefault).toBe(true);
+    expect(byId.get(secondCard.id)?.canBeDefault).toBe(true);
+    expect(byId.get(mandatedPad.id)?.canBeDefault).toBe(true);
+    expect(byId.get(usBank.id)?.canBeDefault).toBe(false);
+    expect(byId.get(unmandatedPad.id)?.canBeDefault).toBe(false);
+    expect(byId.get(revoked.id)).toBeDefined();
+    expect('canBeDefault' in byId.get(revoked.id)!).toBe(false);
+
+    await expect(cad.service.setDefault(cad.context, cad.home.id, usBank.id))
+      .rejects.toMatchObject({ code: 'conflict', details: { reason: ['payment_method_currency'] } });
+    expect(await defaultIds(cad)).toEqual([cad.card.id]);
+    expect(await defaultAudits(cad)).toHaveLength(0);
+
+    await expect(cad.service.setDefault(cad.context, cad.home.id, unmandatedPad.id))
+      .rejects.toMatchObject({ code: 'conflict', details: { reason: ['payment_method_mandate'] } });
+    expect(await defaultIds(cad)).toEqual([cad.card.id]);
+    expect(await defaultAudits(cad)).toHaveLength(0);
+
+    const setPad = await cad.service.setDefault(cad.context, cad.home.id, mandatedPad.id);
+    expect(setPad).toMatchObject({ id: mandatedPad.id, isDefault: true });
+    expect('canBeDefault' in setPad).toBe(false);
+    expect(await defaultIds(cad)).toEqual([mandatedPad.id]);
+    expect(await defaultAudits(cad)).toHaveLength(1);
+
+    const setCard = await cad.service.setDefault(cad.context, cad.home.id, secondCard.id);
+    expect(setCard).toMatchObject({ id: secondCard.id, isDefault: true });
+    expect('canBeDefault' in setCard).toBe(false);
+    expect(await defaultIds(cad)).toEqual([secondCard.id]);
+    expect(await defaultAudits(cad)).toHaveLength(2);
+
+    const usd = await fixture('USD');
+    const usdPad = await factory('paymentMethods', usd.gymId, { householdId: usd.home.id, processorId: 'pm_usd_pad', type: 'acss_debit', mandateId: 'mandate_cad', last4: '5555' });
+    const usdBank = await factory('paymentMethods', usd.gymId, { householdId: usd.home.id, processorId: 'pm_usd_bank', type: 'us_bank_account', mandateId: null, last4: '6666' });
+    await expect(usd.service.setDefault(usd.context, usd.home.id, usdPad.id))
+      .rejects.toMatchObject({ code: 'conflict', details: { reason: ['payment_method_currency'] } });
+    expect(await defaultIds(usd)).toEqual([usd.card.id]);
+    expect(await defaultAudits(usd)).toHaveLength(0);
+
+    await expect(usd.service.setDefault(usd.context, usd.home.id, usdBank.id)).resolves.toMatchObject({ id: usdBank.id, isDefault: true });
+    expect(await defaultIds(usd)).toEqual([usdBank.id]);
+    expect(await defaultAudits(usd)).toHaveLength(1);
+
+    const eur = await fixture('EUR');
+    const eurUsBank = await factory('paymentMethods', eur.gymId, { householdId: eur.home.id, processorId: 'pm_eur_us', type: 'us_bank_account', last4: '7777' });
+    const eurPad = await factory('paymentMethods', eur.gymId, { householdId: eur.home.id, processorId: 'pm_eur_pad', type: 'acss_debit', mandateId: 'mandate_cad', last4: '8888' });
+    await expect(eur.service.setDefault(eur.context, eur.home.id, eurUsBank.id))
+      .rejects.toMatchObject({ code: 'conflict', details: { reason: ['payment_method_currency'] } });
+    await expect(eur.service.setDefault(eur.context, eur.home.id, eurPad.id))
+      .rejects.toMatchObject({ code: 'conflict', details: { reason: ['payment_method_currency'] } });
+    expect(await defaultIds(eur)).toEqual([eur.card.id]);
+    expect(await defaultAudits(eur)).toHaveLength(0);
   });
 });

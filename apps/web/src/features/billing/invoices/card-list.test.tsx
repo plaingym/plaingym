@@ -11,8 +11,11 @@ afterEach(cleanup);
 const gymId = '00000000-0000-7000-8000-000000000001', householdId = '00000000-0000-7000-8000-000000000002';
 const base: MaskedPaymentMethod = { id: '00000000-0000-7000-8000-000000000003', householdId, createdAt: '2026-01-01T00:00:00Z',
   type: 'card', bankName: null, brand: 'visa', last4: '4242', expiryMonth: 12, expiryYear: 2035, isDefault: false, revokedAt: null };
-function start(cards: MaskedPaymentMethod[], onActionChange?: (open: boolean) => void) {
-  const fetcher = vi.fn<typeof fetch>(async () => Response.json({ data: cards, pagination: { total: cards.length, offset: 0, limit: 25 } }));
+function start(cards: MaskedPaymentMethod[], onActionChange?: (open: boolean) => void, onCall?: typeof fetch) {
+  const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+    if (onCall && init?.method && init.method !== 'GET') return onCall(input, init);
+    return Response.json({ data: cards, pagination: { total: cards.length, offset: 0, limit: 25 } });
+  });
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
     <CardList gymId={gymId} householdId={householdId} allowed client={createInvoiceClient(fetcher)} {...(onActionChange ? { onActionChange } : {})}/>
   </QueryClientProvider>);
@@ -59,4 +62,43 @@ it('reports a confirmation opening and closing, and closing when the list goes a
   fireEvent.click(await screen.findByRole('button', { name: 'Remove payment method' }));
   cleanup();
   expect(seen).toHaveBeenLastCalledWith(false);
+});
+it('hides Make default and shows the note when canBeDefault is false, and shows Make default when true or omitted', async () => {
+  const bank: MaskedPaymentMethod = { ...base, id: '00000000-0000-7000-8000-000000000004', type: 'us_bank_account',
+    bankName: 'Test Bank', brand: null, last4: '6789', expiryMonth: null, expiryYear: null, canBeDefault: false };
+  const eligible: MaskedPaymentMethod = { ...base, id: '00000000-0000-7000-8000-000000000005', last4: '1111', canBeDefault: true };
+  const defaultBank: MaskedPaymentMethod = { ...bank, id: '00000000-0000-7000-8000-000000000006', last4: '9999', isDefault: true };
+  start([bank, eligible, base, defaultBank]);
+
+  const bankItem = (await screen.findByText('Test Bank account ending 6789')).closest('li')!;
+  expect(within(bankItem).getByText("This bank account can't be used for automatic charges at this gym, so it can't be the default.")).toBeDefined();
+  expect(within(bankItem).queryByRole('button', { name: 'Make default' })).toBeNull();
+  expect(within(bankItem).getByRole('button', { name: 'Remove payment method' })).toBeDefined();
+
+  const eligibleItem = (await screen.findByText('Visa · 1111 · 12/2035')).closest('li')!;
+  expect(within(eligibleItem).getByRole('button', { name: 'Make default' })).toBeDefined();
+  expect(within(eligibleItem).queryByText("This bank account can't be used for automatic charges at this gym, so it can't be the default.")).toBeNull();
+
+  const omittedItem = (await screen.findByText('Visa · 4242 · 12/2035')).closest('li')!;
+  expect(within(omittedItem).getByRole('button', { name: 'Make default' })).toBeDefined();
+  expect(within(omittedItem).queryByText("This bank account can't be used for automatic charges at this gym, so it can't be the default.")).toBeNull();
+
+  const defaultBankItem = (await screen.findByText('Test Bank account ending 9999')).closest('li')!;
+  expect(within(defaultBankItem).getByText('Default payment method')).toBeDefined();
+  expect(within(defaultBankItem).queryByRole('button', { name: 'Make default' })).toBeNull();
+  expect(within(defaultBankItem).queryByText("This bank account can't be used for automatic charges at this gym, so it can't be the default.")).toBeNull();
+});
+it('shows the currency and mandate refusal texts when setting default returns 409', async () => {
+  for (const [reason, expected] of [
+    ['payment_method_currency', "This bank account can't be charged in this gym's currency. Choose a card or another account."],
+    ['payment_method_mandate', "This pre-authorized debit has no mandate on file, so it can't be the default. Choose another payment method."],
+  ] as const) {
+    start([base], undefined, async () => Response.json(
+      { error: { code: 'conflict', message: 'Refused', details: { reason: [reason] } } }, { status: 409 },
+    ));
+    fireEvent.click(await screen.findByRole('button', { name: 'Make default' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm' }));
+    expect(await screen.findByText(expected)).toBeDefined();
+    cleanup();
+  }
 });

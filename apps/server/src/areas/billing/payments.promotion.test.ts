@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it, vi } from 'vitest';
-import { and, eq } from 'drizzle-orm';
-import { auditEvents, paymentMethods, uuidv7 } from '@plaingym/db';
+// eslint-disable-next-line database/system-tables -- One test holds the gym row and reads backend PIDs to verify promotion waits for an in-flight currency change.
+import { and, eq, sql } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- One test locks and updates the gym row the way a settings save does.
+import { auditEvents, gyms, paymentMethods, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
@@ -155,5 +157,47 @@ describe('default promotion by the gym currency', () => {
     const auditRows = await db.forGym(f.gymId, tx => tx.select().from(auditEvents));
     expect(auditRows.filter(row => row.action === 'billing.card.revoked')).toHaveLength(1);
     expect(auditRows.filter(row => row.action === 'billing.card.default_changed')).toHaveLength(0);
+  });
+
+  it('waits for an in-flight currency change holding the gym row and promotes by the new currency rule', async () => {
+    const f = await fixture('USD');
+    await f.method({ processorId: 'pm_card', processorCreatedAt: at(20) });
+    const pad = await f.method({ type: 'acss_debit', mandateId: 'mandate_cad', last4: '2222', processorId: 'pm_pad', processorCreatedAt: at(22) });
+    await f.method({ type: 'us_bank_account', last4: '6789', processorId: 'pm_us', processorCreatedAt: at(24) });
+
+    const locked = Promise.withResolvers<number>(), release = Promise.withResolvers<void>();
+    const holder = db.forGym(f.gymId, async tx => {
+      // eslint-disable-next-line database/system-tables -- The holder's backend PID, for the lock-wait probe.
+      const { pid } = (await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0]!;
+      await tx.select({ id: gyms.id }).from(gyms).where(eq(gyms.id, f.gymId)).for('update');
+      await tx.update(gyms).set({ currency: 'CAD' }).where(eq(gyms.id, f.gymId));
+      locked.resolve(pid);
+      // Held until the probe below has seen the promotion wait, then released after 200 ms.
+      await release.promise;
+      await new Promise(resolve => setTimeout(resolve, 200));
+    });
+    const pid = await locked.promise;
+
+    let finished = false;
+    const promoting = f.promote().finally(() => { finished = true; });
+    let sawWait = false;
+    try {
+      const deadline = Date.now() + 5000;
+      while (!sawWait && !finished && Date.now() < deadline) {
+        // eslint-disable-next-line database/system-tables -- The lock-wait probe.
+        sawWait = (await db.system.db.execute<{ n: number }>(
+          sql`select count(*)::int as n from pg_stat_activity where ${pid} = any(pg_blocking_pids(pid))`))[0]!.n > 0;
+        if (!sawWait) await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(sawWait).toBe(true);
+      expect(finished).toBe(false);
+    } finally {
+      release.resolve();
+    }
+    await Promise.all([holder, promoting]);
+
+    expect(await f.defaults()).toEqual([pad.id]);
+    expect(await f.audits()).toHaveLength(1);
+    expect((await f.audits())[0]).toMatchObject({ targetId: pad.id, after: { householdId: f.household.id } });
   });
 });
