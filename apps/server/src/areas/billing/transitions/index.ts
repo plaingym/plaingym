@@ -28,8 +28,11 @@ export interface TransitionOptions {
 type PaymentRow = typeof payments.$inferSelect;
 type CheckoutFailureCode = Extract<ChargeOutcome, { status: 'failed' }>['code'];
 type CheckoutProcessingFailure = Omit<ProcessingFailure, 'code'> & { code: CheckoutFailureCode };
-/** Staff stop waiting for a Checkout debit that Stripe, read after their click, reports failed. */
-export interface ProcessingRelease { invoiceId: string; paymentIntentId: string; code: CheckoutFailureCode }
+/**
+ * Staff stop waiting for a Checkout debit that Stripe, read after their click, reports failed. `paymentMethodId` is the
+ * debit's bank method, given only when Stripe reported the account unusable; the release then revokes it.
+ */
+export interface ProcessingRelease { invoiceId: string; paymentIntentId: string; code: CheckoutFailureCode; paymentMethodId?: string }
 export const processingReleased = 'billing.invoice.processing_released';
 export type BillingInvoiceTransitions = Omit<InvoiceTransitions, 'processingFailed'> & {
   processingFailed: (context: MutationContext, request: CheckoutProcessingFailure) => Promise<InvoiceTransitionResult>;
@@ -168,10 +171,14 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Billi
       });
     },
     // The caller read the failed intent from Stripe. Unlike processingFailed, the invoice only becomes collectible again:
-    // no notice, dunning or retries, and payments, attempts and saved methods stay as they are.
+    // no notice, dunning or retries, and payments and attempts stay as they are. Saved methods stay too, except that an
+    // account Stripe reported unusable has its bank method revoked, as processingFailed does.
     async releaseProcessing(context, request) {
       idSchema.parse(request.invoiceId);
+      const unusable = request.code === 'payment_method_unusable' ? request.paymentMethodId : undefined;
       return scope(context.gymId, async tx => {
+        // The gym first, as the Stripe key switch's clear takes the gym before invoices.
+        if (unusable !== undefined) await holdGymSettings(tx, context.gymId);
         const invoice = await lockInvoice(tx, request.invoiceId);
         if (invoice.status !== 'processing' || (await processingIntents(tx, invoice.id)).at(-1) !== request.paymentIntentId)
           return result('ignored', invoice);
@@ -181,6 +188,7 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Billi
           .where(eq(invoices.id, invoice.id));
         await audit(tx, context, clock, processingReleased, 'invoice', invoice.id,
           { ...snapshot(next), paymentIntentId: request.paymentIntentId, code: request.code }, snapshot(invoice));
+        if (unusable !== undefined) await revokeBankMethod(tx, context, clock, invoice, unusable);
         return result('applied', next);
       });
     },

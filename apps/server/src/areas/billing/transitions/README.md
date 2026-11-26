@@ -83,9 +83,12 @@ debit, called after the payments service read the intent from Stripe as failed
 or cancelled. Under the invoice lock it is ignored unless the invoice is still
 processing that intent; otherwise it makes a cycle or assignment invoice past due
 and any other open, clears the Checkout session fields and records
-`billing.invoice.processing_released` with the intent and failure code. It sends
-no notice, starts no dunning or retries and changes no payment, attempt or saved
-method.
+`billing.invoice.processing_released` with the intent and failure code. With
+`payment_method_unusable` and the debit's `paymentMethodId`, it takes the gym
+settings lock before the invoice lock (the order of `processingFailed`) and, after
+the release, revokes that method with `revokeBankMethod`; an ignored release
+revokes nothing. It sends no notice, starts no dunning or retries and changes no
+payment, attempt or other saved method.
 
 `createInvoiceTransitions({ scope?, clock?, paymentsFor? })` implements the frozen
 `InvoiceTransitions` interface. Its billing-local type, `BillingInvoiceTransitions`,

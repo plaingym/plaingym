@@ -62,8 +62,8 @@ while memberships and future invoices stay as they are. Pending card or Checkout
 payments must be resolved first. A processing invoice offers the same staff
 **Stop waiting for this bank debit**: the server checks Stripe first and makes the
 invoice collectible again only when the flagged debit failed or was cancelled;
-a refusal (debit still open, paid, processing or not flagged) shows its reason in
-the form. Server routes enforce the same permissions. A
+a refusal (debit still open, paid, processing or not flagged, or Stripe
+unreachable or with no record of the debit) shows its reason in the form. Server routes enforce the same permissions. A
 failed charge reports that the invoice remains open; unresolved outcomes tell
 staff to check the invoice before collecting another payment. Save errors stay in
 the open dialog, preserving the staff member's draft.

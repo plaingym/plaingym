@@ -154,7 +154,9 @@ export function createPaymentService(options: PaymentOptions = {}) {
     },
     /**
      * Stops waiting for a Checkout bank debit the sweep flagged for checking. Stripe is read after the click, and only an
-     * intent it reports failed or cancelled releases the invoice; nothing is written to Stripe.
+     * intent it reports failed or cancelled releases the invoice; nothing is written to Stripe. A debit that failed on an
+     * unusable bank account also revokes that saved method. An intent Stripe has no record of under the current key is
+     * refused `debit_unknown`; a Stripe that can't be read is `payments_unavailable`.
      */
     async releaseProcessing(context: MutationContext, invoiceId: string) {
       const paymentIntentId = await scope(context.gymId, async tx => {
@@ -170,7 +172,7 @@ export function createPaymentService(options: PaymentOptions = {}) {
       let current: ChargeOutcome;
       try { current = await (await providerFor(context.gymId)).findCharge({ kind: 'charge', id: paymentIntentId }); }
       catch { return paymentUnavailable('payments_unavailable', 'Stripe is unavailable; check the bank debit again shortly'); }
-      if (current.status === 'unknown') paymentUnavailable('payments_unavailable', 'Stripe is unavailable; check the bank debit again shortly');
+      if (current.status === 'unknown') paymentConflict('debit_unknown', 'Stripe has no record of this debit under the current key');
       if (current.id !== paymentIntentId || current.metadata.gymId !== context.gymId
         || (current.metadata.invoiceId !== undefined && current.metadata.invoiceId !== invoiceId))
         paymentConflict('debit_mismatch', "Stripe's record of this debit does not match this invoice");
@@ -181,7 +183,8 @@ export function createPaymentService(options: PaymentOptions = {}) {
         case 'failed': break;
         default: { const exhaustive: never = current; return exhaustive; }
       }
-      const released = await transitions.releaseProcessing(context, { invoiceId, paymentIntentId, code: current.code });
+      const released = await transitions.releaseProcessing(context, { invoiceId, paymentIntentId, code: current.code,
+        ...(current.code === 'payment_method_unusable' && current.paymentMethodId ? { paymentMethodId: current.paymentMethodId } : {}) });
       if (released.outcome === 'ignored') notProcessing();
       return scope(context.gymId, async tx => presentInvoice(await loadInvoice(tx, invoiceId)));
     },

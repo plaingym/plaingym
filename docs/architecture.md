@@ -305,6 +305,8 @@ source of truth; Stripe is the processor. In outline:
   debit is unresolved. Owners and admins can stop waiting for a flagged debit
   from the invoice once a Stripe read made after their click reports it failed or
   cancelled; the invoice becomes collectible again without dunning or retries.
+  When the debit failed on an unusable bank account, its saved bank method is
+  removed.
   The sweep also checks late processing audits on terminal invoices. A settled debit
   on one of those invoices is recorded as a duplicate and reserved for refund
   once the customer matches. A late debit Stripe reports as failed gets a

@@ -5,7 +5,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { refundReleased, type Household, type Member, type InvoiceDetail, type Payment } from '@plaingym/shared/contracts';
 import { AmountInputError, cardChargeIssue } from '@plaingym/shared/money';
-import { invoiceClient, invoiceError, type InvoiceClient } from './api.js';
+import { InvoiceRequestError, invoiceClient, invoiceError, type InvoiceClient } from './api.js';
 import { text, money, minorUnitsToInput, parseMinorUnits } from './format.js';
 import { Button } from '../../../components/ui/button.js';
 import { useDialogOperation, useDialogSaved } from '../../../components/ui/dialog.js';
@@ -93,7 +93,9 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
       if (action.kind !== 'link') setAction(null);
     } catch (error) {
       if (error instanceof AmountInputError) { setError(text(error.reason === 'step' ? 'errors.refund_off_step' : 'errors.invalid_amount')); return; }
-      setError(invoiceError(error)); await cache.invalidateQueries({ queryKey: key });
+      setError(action.kind === 'releaseProcessing' && error instanceof InvoiceRequestError && error.reason === 'payments_unavailable'
+        ? text('errors.release_unavailable') : invoiceError(error));
+      await cache.invalidateQueries({ queryKey: key });
     } finally { setBusy(false); }
   }
   if (detail.isPending) return <LoadingState/>;

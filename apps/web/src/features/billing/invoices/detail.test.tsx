@@ -162,3 +162,20 @@ it('shows why a bank debit release was refused in the form', async () => {
   const alert = await screen.findByRole('alert');
   expect(alert.textContent).toContain('Stripe still shows this debit as open. Cancel the payment in the Stripe Dashboard, then try again.');
 });
+
+it("gives a bank debit release its own text when Stripe can't be reached or has no record of the debit", async () => {
+  startProcessing(true, () => Response.json({ error: { code: 'unavailable', message: 'Stripe is unavailable',
+    details: { reason: ['payments_unavailable'] } } }, { status: 503 }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Stop waiting for this bank debit' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Confirm' }));
+  const unavailable = await screen.findByRole('alert');
+  expect(unavailable.textContent).toContain("Stripe couldn't be reached, so the invoice still waits for the bank debit. Try again shortly.");
+  expect(unavailable.textContent).not.toContain('Any existing card or pay-link payment');
+  cleanup();
+  startProcessing(true, () => Response.json({ error: { code: 'conflict', message: 'Stripe has no record of this debit under the current key',
+    details: { reason: ['debit_unknown'] } } }, { status: 409 }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Stop waiting for this bank debit' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Confirm' }));
+  expect((await screen.findByRole('alert')).textContent).toContain("Stripe has no record of this debit under the gym's current Stripe key, "
+    + 'for example after the key was changed, so the invoice keeps waiting for it. Check the debit in the Stripe Dashboard of the account that made it.');
+});

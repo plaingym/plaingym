@@ -2,7 +2,7 @@
 import '@hono/zod-openapi';
 import { describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-import { auditEvents, invoices, uuidv7 } from '@plaingym/db';
+import { auditEvents, invoices, paymentMethods, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { type StaffRole } from '@plaingym/shared';
@@ -17,6 +17,7 @@ import { createPaymentService } from './payments.js';
 import { createPaymentRoutes } from './payments.routes.js';
 import { checkoutReviewAction } from './runner/reconciliation.js';
 import { createInvoiceTransitions, processingReleased } from './transitions/index.js';
+import { retriesStopped } from './transitions/bank.js';
 
 const db = useTestDatabase(), factory = createFactories(db), origin = 'https://gym.example.test';
 type Answer = ChargeOutcome | Error;
@@ -98,7 +99,7 @@ describe('releasing an invoice stuck on a flagged Checkout bank debit', () => {
       [{ ...f.identity, status: 'failed', code: 'canceled', metadata: { gymId: f.gymId, invoiceId: uuidv7() } }, refused('debit_mismatch')],
       [{ ...f.identity, status: 'failed', code: 'canceled', metadata: { gymId: uuidv7(), invoiceId: f.bill.id } }, refused('debit_mismatch')],
       [{ ...f.identity, id: 'pi_other', status: 'failed', code: 'canceled' }, refused('debit_mismatch')],
-      [{ status: 'unknown', reference: { kind: 'charge', id: 'pi_1' } }, refused('payments_unavailable', 'unavailable')],
+      [{ status: 'unknown', reference: { kind: 'charge', id: 'pi_1' } }, refused('debit_unknown')],
       [new Error('Stripe timed out'), refused('payments_unavailable', 'unavailable')],
     ];
     const before = (await f.audits()).length;
@@ -159,6 +160,88 @@ describe('releasing an invoice stuck on a flagged Checkout bank debit', () => {
     expect((await f.row()).status).toBe('open');
     expect(await f.audits(processingReleased)).toHaveLength(1);
     expect(await read()).toBeNull();
+  });
+});
+
+describe('releasing a flagged bank debit that failed on an unusable account', () => {
+  /** The household's default bank method `pm_bank` and a non-default unexpired card. */
+  async function withMethods(f: Fixture) {
+    const bank = await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_bank', type: 'us_bank_account',
+      bankName: 'Test Bank', brand: null, last4: '6789', expiryMonth: null, expiryYear: null, isDefault: true });
+    const card = await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_card', type: 'card',
+      expiryYear: 2030, expiryMonth: 12, isDefault: false });
+    return { bank, card };
+  }
+  const method = (f: Fixture, id: string) => db.forGym(f.gymId, async tx =>
+    (await tx.select().from(paymentMethods).where(eq(paymentMethods.id, id)))[0]!);
+  const revoked = 'billing.payment_method.revoked', unsavedRevoked = 'billing.payment_method.unsaved_revoked';
+
+  it('revokes the bank method once, promotes the card, and starts no notice, dunning or retries', async () => {
+    const f = await fixture();
+    const { bank, card } = await withMethods(f);
+    f.answers.push({ ...f.identity, status: 'failed', code: 'payment_method_unusable', paymentMethodId: 'pm_bank' });
+    const before = await f.audits();
+    expect(await f.service.releaseProcessing(f.context, f.bill.id)).toMatchObject({ status: 'open' });
+    expect(await method(f, bank.id)).toMatchObject({ revokedAt: f.clock.now(), isDefault: false });
+    expect(await method(f, card.id)).toMatchObject({ revokedAt: null, isDefault: true });
+    const added = await f.since(before);
+    expect(added.filter(event => event.action === processingReleased)).toEqual([
+      expect.objectContaining({ targetId: f.bill.id, after: expect.objectContaining({ code: 'payment_method_unusable' }) })]);
+    expect(added.filter(event => event.action === revoked)).toEqual([
+      expect.objectContaining({ targetType: 'payment_method', targetId: bank.id, after: { invoiceId: f.bill.id } })]);
+    for (const action of ['billing.invoice.payment_failed', 'billing.invoice.dunning_started', retriesStopped])
+      expect(await f.audits(action)).toEqual([]);
+    expect(await f.transitions.releaseProcessing(f.system, { invoiceId: f.bill.id, paymentIntentId: 'pi_1',
+      code: 'payment_method_unusable', paymentMethodId: 'pm_bank' })).toMatchObject({ outcome: 'ignored' });
+    expect(await f.audits(revoked)).toHaveLength(1);
+  });
+
+  it.each(['insufficient_funds', 'declined', 'canceled'] as const)('leaves the bank method saved for %s', async code => {
+    const f = await fixture();
+    const { bank } = await withMethods(f);
+    f.answers.push({ ...f.identity, status: 'failed', code, paymentMethodId: 'pm_bank' });
+    expect(await f.service.releaseProcessing(f.context, f.bill.id)).toMatchObject({ status: 'open' });
+    expect(await method(f, bank.id)).toMatchObject({ revokedAt: null, isDefault: true });
+    expect(await f.audits(revoked)).toEqual([]);
+  });
+
+  it('changes no method without a payment method ID', async () => {
+    const f = await fixture();
+    const { bank, card } = await withMethods(f);
+    f.answers.push({ ...f.identity, status: 'failed', code: 'payment_method_unusable' });
+    expect(await f.service.releaseProcessing(f.context, f.bill.id)).toMatchObject({ status: 'open' });
+    expect(await method(f, bank.id)).toMatchObject({ revokedAt: null, isDefault: true });
+    expect(await method(f, card.id)).toMatchObject({ revokedAt: null, isDefault: false });
+    expect(await f.audits(revoked)).toEqual([]);
+    expect(await f.audits(unsavedRevoked)).toEqual([]);
+  });
+
+  // A processor ID is unique within a gym, so the other household holds the ID this household has no row for.
+  it("records an unsaved method's revocation and leaves another household's method with that ID saved", async () => {
+    const f = await fixture();
+    const { bank } = await withMethods(f);
+    const neighbour = await factory('households', f.gymId);
+    const theirs = await factory('paymentMethods', f.gymId, { householdId: neighbour.id, processorId: 'pm_gone', type: 'us_bank_account',
+      bankName: 'Test Bank', brand: null, last4: '1111', expiryMonth: null, expiryYear: null, isDefault: true });
+    f.answers.push({ ...f.identity, status: 'failed', code: 'payment_method_unusable', paymentMethodId: 'pm_gone' });
+    expect(await f.service.releaseProcessing(f.context, f.bill.id)).toMatchObject({ status: 'open' });
+    expect(await f.audits(unsavedRevoked)).toEqual([expect.objectContaining({ targetType: 'household', targetId: f.home.id,
+      after: { invoiceId: f.bill.id, paymentMethodId: 'pm_gone' } })]);
+    expect(await f.audits(revoked)).toEqual([]);
+    expect(await method(f, bank.id)).toMatchObject({ revokedAt: null, isDefault: true });
+    expect(await method(f, theirs.id)).toMatchObject({ revokedAt: null, isDefault: true });
+  });
+
+  it('applies two concurrent releases once and revokes once', async () => {
+    const f = await fixture();
+    await withMethods(f);
+    f.answers.push({ ...f.identity, status: 'failed', code: 'payment_method_unusable', paymentMethodId: 'pm_bank' });
+    const settled = await Promise.allSettled([f.service.releaseProcessing(f.context, f.bill.id), f.service.releaseProcessing(f.context, f.bill.id)]);
+    expect(settled.filter(item => item.status === 'fulfilled')).toHaveLength(1);
+    const rejected = settled.filter(item => item.status === 'rejected');
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject(refused('not_processing'));
+    expect(await f.audits(revoked)).toHaveLength(1);
   });
 });
 

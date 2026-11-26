@@ -53,14 +53,19 @@ transaction it reads that intent from Stripe: a failed or cancelled debit releas
 the invoice, `succeeded` refuses `debit_paid`, `processing` refuses
 `debit_processing`, a pending or action-needed intent refuses `debit_open` (staff
 cancel it in the Stripe Dashboard first), an intent whose ID, gym or invoice
-metadata differs refuses `debit_mismatch`, and an unknown answer or unavailable
-Stripe is 503 `payments_unavailable`. The release transition takes the invoice
-lock, makes a cycle or assignment invoice `past_due` and any other `open`, clears
-the Checkout session fields and writes one `billing.invoice.processing_released`
-audit with the intent and failure code. It makes no Stripe write, sends no notice,
-starts no dunning or retries, leaves payments, attempts and saved methods as they
-are, and doesn't count toward failed bank attempts. A later failure for that
-intent finds the invoice no longer processing and is ignored.
+metadata differs refuses `debit_mismatch`, an unknown answer (Stripe has no
+record of the intent under the gym's current key) refuses `debit_unknown`, and a
+Stripe that can't be read or isn't configured is 503 `payments_unavailable`. The
+release transition takes the invoice lock, makes a cycle or assignment invoice
+`past_due` and any other `open`, clears the Checkout session fields and writes one
+`billing.invoice.processing_released` audit with the intent and failure code.
+When Stripe reports the debit failed with `payment_method_unusable` and names its
+payment method, the same transaction revokes that household's saved bank method
+(or records an unsaved one's revocation) as an ordinary bank failure does. It
+makes no Stripe write, sends no notice, starts no dunning or retries, leaves
+payments, attempts and other saved methods as they are, and doesn't count toward
+failed bank attempts. A later failure for that intent finds the invoice no longer
+processing and is ignored.
 
 They may also void an open or past-due invoice through
 `POST /api/billing/invoices/{invoiceId}/void` (`refunds.create`) with a required
