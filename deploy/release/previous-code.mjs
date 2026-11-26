@@ -4,27 +4,32 @@
 // its migration lands, not when the Release workflow's previous-minor check meets it.
 //
 //   node deploy/release/previous-code.mjs IMAGE BASE
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { compare } from '../../scripts/release/release.mjs';
 import { git, releasePattern } from '../../scripts/release/version.mjs';
-import { smokePreviousImage, removeImage, withPreviousTree, holdInterrupts, interruptExitCode } from './previous-smoke.mjs';
+import {
+  smokePreviousImage, removeImage, withPreviousTree, holdInterrupts, interruptExitCode, childInterruptCode, checkInterrupt, runChild,
+} from './previous-smoke.mjs';
 
 const migrations = 'packages/db/src/migrations';
 const floorFile = 'deploy/release/rollback-floor.txt';
 /** The commit whose code must run on HEAD's schema, or why there is nothing to check. */
-export function previousCode(base, cwd = process.cwd()) {
-  const run = (...args) => git(args, cwd);
+export function previousCode(base, cwd = process.cwd(), runGit = git) {
+  const run = (...args) => runGit(args, cwd);
   const tag = run('tag', '--merged', 'HEAD', '--list', 'v*').split('\n').filter((name) => releasePattern.test(name.slice(1)))
     .sort((a, b) => compare(b, a))[0];
   const commit = tag ?? base;
   if (!commit) throw new Error('Give the commit this branch started from');
   if (!run('diff', '--name-only', commit, 'HEAD', '--', migrations)) return { skip: `No migration since ${commit}.` };
   try { run('cat-file', '-e', `${commit}:${floorFile}`); }
-  catch { return { skip: `${commit} predates the compatibility promise.` }; }
+  catch (error) {
+    // An interrupted read is not a missing file: the check must not pass as skipped.
+    if (childInterruptCode(error) !== undefined) throw error;
+    return { skip: `${commit} predates the compatibility promise.` };
+  }
   const floor = readFileSync(join(cwd, floorFile), 'utf8').trim();
   if (tag && compare(tag, floor) < 0) return { skip: `The rollback floor ${floor} declares a boundary above ${tag}.` };
   return { commit };
@@ -39,12 +44,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (!commit) console.log(`::notice::Previous code check skipped. ${skip}`);
     else {
       const previousImage = `plaingym:previous-code-${randomUUID()}`;
-      withPreviousTree(commit, (worktree) => {
+      await withPreviousTree(commit, async (worktree) => {
+        checkInterrupt();
         try {
-          execFileSync(process.execPath, ['scripts/release/build-image.mjs', previousImage], { cwd: worktree, stdio: 'inherit', timeout: 1_800_000 });
-          smokePreviousImage(previousImage, image, worktree, commit);
+          await runChild(process.execPath, ['scripts/release/build-image.mjs', previousImage], { cwd: worktree, stdio: 'inherit', timeout: 1_800_000 });
+          await smokePreviousImage(previousImage, image, worktree, commit);
         } finally {
-          removeImage(previousImage);
+          await removeImage(previousImage);
         }
       });
     }
@@ -52,6 +58,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const code = interruptExitCode(error);
     if (code === undefined) throw error;
     console.error(error.message);
-    process.exitCode = code;
+    if (process.exitCode !== 130 && process.exitCode !== 143) process.exitCode = code;
   }
 }

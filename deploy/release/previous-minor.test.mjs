@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { git } from '../../scripts/release/version.mjs';
 import { prereleaseFloor, withFetchedPreviousTree } from './previous-minor.mjs';
 
-test('fetches just the previous tag into a shallow checkout and removes its worktree on success or failure', () => {
+test('fetches just the previous tag into a shallow checkout and removes its worktree on success or failure', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'previous-minor-'));
   try {
     const origin = join(directory, 'origin'), checkout = join(directory, 'checkout');
@@ -32,38 +32,38 @@ test('fetches just the previous tag into a shallow checkout and removes its work
         tree = path; assert.equal(readFileSync(join(path, 'fixture'), 'utf8'), 'old');
         if (fails) throw new Error('schema mismatch');
       }, checkout, checkedGit);
-      if (fails) assert.throws(operation, /schema mismatch/); else operation();
+      if (fails) await assert.rejects(operation(), /schema mismatch/); else await operation();
       assert.equal(existsSync(tree), false);
     }
-    assert.throws(() => withFetchedPreviousTree('v9.9.0', () => assert.fail('must not run'), checkout), /fetch/);
+    await assert.rejects(withFetchedPreviousTree('v9.9.0', () => assert.fail('must not run'), checkout), /fetch/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('a prerelease keeps the previous one as its floor only when that image passes on the new schema', () => {
+test('a prerelease keeps the previous one as its floor only when that image passes on the new schema', async () => {
   const logs = [];
   const log = (line) => logs.push(line);
   const smoked = [];
-  const passes = (image, previous) => { smoked.push([image, previous]); };
-  const fails = () => { throw new Error('schema mismatch'); };
-  assert.equal(prereleaseFloor('plaingym:new', 'v0.5.0', undefined, { smoke: () => assert.fail('no previous to run'), log }), 'v0.5.0');
+  const passes = async (image, previous) => { smoked.push([image, previous]); };
+  const fails = async () => { throw new Error('schema mismatch'); };
+  assert.equal(await prereleaseFloor('plaingym:new', 'v0.5.0', undefined, { smoke: () => assert.fail('no previous to run'), log }), 'v0.5.0');
   assert.match(logs.pop(), /first prerelease/);
-  assert.equal(prereleaseFloor('plaingym:new', 'v0.5.1', 'v0.5.0', { smoke: passes, log }), 'v0.5.0');
+  assert.equal(await prereleaseFloor('plaingym:new', 'v0.5.1', 'v0.5.0', { smoke: passes, log }), 'v0.5.0');
   assert.deepEqual(smoked, [['plaingym:new', 'v0.5.0']]);
   // A failure, including one pulling the previous image, only raises the floor to the release itself.
-  assert.equal(prereleaseFloor('plaingym:new', 'v0.6.0', 'v0.5.1', { smoke: fails, log }), 'v0.6.0');
+  assert.equal(await prereleaseFloor('plaingym:new', 'v0.6.0', 'v0.5.1', { smoke: fails, log }), 'v0.6.0');
   assert.match(logs.pop(), /^::warning::v0\.5\.1 did not pass on v0\.6\.0's schema \(schema mismatch\)/);
   for (const [tag, previous] of [['v1.0.0', undefined], ['v0.6.0', 'v1.0.0'], ['0.6.0', undefined], ['v0.6.0+0.gabc1234', undefined]])
-    assert.throws(() => prereleaseFloor('plaingym:new', tag, previous, { smoke: passes, log }), /v0\.Y\.Z/);
+    await assert.rejects(prereleaseFloor('plaingym:new', tag, previous, { smoke: passes, log }), /v0\.Y\.Z/);
 });
 
-test('an interrupted pull is rethrown instead of raising the floor', () => {
+test('an interrupted pull is rethrown instead of raising the floor', async () => {
   const logs = [];
   const log = (line) => logs.push(line);
   const interrupted = Object.assign(new Error('pull'), { status: 130 });
-  assert.throws(() => prereleaseFloor('plaingym:new', 'v0.6.0', 'v0.5.1', { smoke: () => { throw interrupted; }, log }),
+  await assert.rejects(prereleaseFloor('plaingym:new', 'v0.6.0', 'v0.5.1', { smoke: async () => { throw interrupted; }, log }),
     (error) => error === interrupted);
   assert.deepEqual(logs, []);
-  assert.equal(prereleaseFloor('plaingym:new', 'v0.6.0', 'v0.5.1', { smoke: () => { throw new Error('schema mismatch'); }, log }), 'v0.6.0');
+  assert.equal(await prereleaseFloor('plaingym:new', 'v0.6.0', 'v0.5.1', { smoke: () => { throw new Error('schema mismatch'); }, log }), 'v0.6.0');
   assert.match(logs.pop(), /did not pass/);
 });
 
@@ -117,4 +117,75 @@ if (args[0] === 'worktree' && args[1] === 'remove') fs.rmSync(args[3], { recursi
     // The smoke's own description lines go to stdout too; only the floor line is the result.
     assert.equal(result.stdout.split('\n').filter((line) => line.startsWith('floor=')).map((line) => `${line}\n`).join(''), floor, result.stdout + result.stderr);
   }
+});
+
+/**
+ * The real prerelease run in its own process group, with docker, git and gh on PATH logging their calls: the previous
+ * image is missing, and its pull prints `ready` and then runs for pullMs unless a signal stops it first.
+ */
+const startPrerelease = (t, pullMs) => {
+  const directory = mkdtempSync(join(tmpdir(), 'prerelease-interrupt-'));
+  const calls = join(directory, 'calls.log');
+  for (const name of ['docker', 'git', 'gh']) {
+    writeFileSync(join(directory, name), `#!/usr/bin/env node
+const fs = require('node:fs'), args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(calls)}, ${JSON.stringify(name)} + ' ' + args.join(' ') + '\\n');
+if (${JSON.stringify(name)} === 'gh') process.exit(1);
+if (${JSON.stringify(name)} === 'docker' && args[0] === 'image' && args[1] === 'inspect') process.exit(1);
+if (${JSON.stringify(name)} === 'docker' && args[0] === 'pull') {
+  console.log('ready');
+  setTimeout(() => process.exit(0), ${pullMs});
+}
+`, { mode: 0o755 });
+  }
+  const child = spawn(process.execPath, [fileURLToPath(new URL('./previous-minor.mjs', import.meta.url)), 'plaingym:new', 'v0.6.0', '--prerelease', 'v0.5.1'], {
+    detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, PATH: `${directory}${delimiter}${process.env.PATH}` },
+  });
+  let output = '', closed = false;
+  child.stdout.on('data', (data) => { output += data; });
+  child.stderr.on('data', (data) => { output += data; });
+  t.after(() => {
+    if (!closed) {
+      try { process.kill(-child.pid, 'SIGKILL'); }
+      catch (error) { if (error.code !== 'ESRCH') throw error; }
+    }
+    rmSync(directory, { recursive: true, force: true });
+  });
+  const result = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Prerelease run did not exit: ${output}`)), 30_000);
+    child.once('close', (code, signal) => {
+      closed = true;
+      clearTimeout(timer);
+      resolve({ code, signal, output, calls: existsSync(calls) ? readFileSync(calls, 'utf8') : '' });
+    });
+    child.once('error', (error) => { clearTimeout(timer); reject(error); });
+  });
+  const ready = (async () => {
+    for (let attempt = 0; attempt < 500 && !output.includes('ready'); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+    if (!output.includes('ready')) throw new Error(`The pull never started: ${output}`);
+  })();
+  return { child, ready, result };
+};
+
+test('a terminal SIGINT during a prerelease pull exits 130 and prints no floor', { skip: process.platform === 'win32' }, async (t) => {
+  const { child, ready, result } = startPrerelease(t, 60_000);
+  await ready;
+  process.kill(-child.pid, 'SIGINT');
+  const { code, output, calls } = await result;
+  assert.equal(code, 130, output + calls);
+  assert.doesNotMatch(output, /floor=|did not pass/);
+  // The image was missing before the pull, so it is removed after the interrupted one.
+  assert.match(calls, /^docker image rm --force /m, calls);
+});
+
+test('a SIGTERM to the prerelease run alone during its pull stops it before the fetch and prints no floor', { skip: process.platform === 'win32' }, async (t) => {
+  const { child, ready, result } = startPrerelease(t, 2_000);
+  await ready;
+  process.kill(child.pid, 'SIGTERM');
+  const { code, output, calls } = await result;
+  assert.equal(code, 143, output + calls);
+  assert.doesNotMatch(output, /floor=|did not pass/);
+  assert.match(calls, /^docker pull /m, calls);
+  assert.doesNotMatch(calls, /fetch/, calls);
 });

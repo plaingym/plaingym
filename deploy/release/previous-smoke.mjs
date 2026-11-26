@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { git, root } from '../../scripts/release/version.mjs';
+import { root } from '../../scripts/release/version.mjs';
 
 /** An interrupted compatibility run, carried through callers that only clean up and rethrow. */
 export class SmokeInterrupted extends Error {
@@ -52,8 +52,73 @@ export function recordInterrupt(error, target = process) {
 }
 
 /**
+ * Run a child without blocking the event loop, so signal listeners run while it works. It takes the options
+ * execFileSync takes here and settles the same way: stdout (a string with `encoding`, else a Buffer, or '' when
+ * stdout isn't piped); on a timeout, kills the child with `killSignal` and rejects with code ETIMEDOUT; on a
+ * non-zero exit, rejects with `status`, `signal`, `stdout` and `stderr`. As there, a piped stdin is closed at once, and
+ * without `stdio` the child's stderr is also written to this process's stderr.
+ */
+export function runChild(binary, args, options = {}) {
+  const { cwd, env, stdio = 'pipe', encoding, timeout, killSignal = 'SIGTERM' } = options;
+  const echoStderr = options.stdio === undefined;
+  const command = [binary, ...args].join(' ');
+  return new Promise((resolvePromise, reject) => {
+    let child, timer, timedOut = false, settled = false;
+    const settle = (action) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      action();
+    };
+    try { child = spawn(binary, args, { cwd, env, stdio, windowsHide: true }); }
+    catch (error) { reject(error); return; }
+    child.stdin?.on('error', () => { /* A child that exits first closes its end. */ });
+    child.stdin?.end();
+    const stdout = [], stderr = [];
+    child.stdout?.on('data', (chunk) => stdout.push(chunk));
+    child.stderr?.on('data', (chunk) => stderr.push(chunk));
+    const output = (chunks, stream) => {
+      if (!stream) return encoding ? '' : null;
+      const buffer = Buffer.concat(chunks);
+      return encoding ? buffer.toString(encoding) : buffer;
+    };
+    // A descendant holding a pipe open must not keep a timed-out call waiting, whether the child exits before or after
+    // the timeout.
+    let exited = false;
+    const release = () => { child.stdout?.destroy(); child.stderr?.destroy(); };
+    if (timeout > 0) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        if (exited) release();
+        else try { child.kill(killSignal); } catch { /* The child already exited. */ }
+      }, timeout);
+    }
+    child.once('error', (error) => settle(() => reject(error)));
+    child.once('exit', () => { exited = true; if (timedOut) release(); });
+    child.once('close', (status, signal) => settle(() => {
+      if (echoStderr && stderr.length) process.stderr.write(Buffer.concat(stderr));
+      const out = output(stdout, child.stdout), err = output(stderr, child.stderr);
+      if (timedOut) {
+        reject(Object.assign(new Error(`${command} ETIMEDOUT after ${timeout} ms`),
+          { code: 'ETIMEDOUT', status, signal: signal ?? killSignal, stdout: out, stderr: err }));
+      } else if (status !== 0 || signal) {
+        const detail = err?.length ? `\n${err.toString()}` : '';
+        reject(Object.assign(new Error(`Command failed: ${command}${detail}`), { status, signal, stdout: out, stderr: err }));
+      } else resolvePromise(child.stdout ? out : '');
+    }));
+  });
+}
+
+/** `git` from scripts/release/version.mjs, through runChild. */
+export async function gitChild(args, cwd = root, { timeout = 120_000 } = {}) {
+  const output = await runChild('git', args, { cwd, encoding: 'utf8', timeout, killSignal: 'SIGKILL',
+    env: { ...process.env, LC_ALL: 'C' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  return output.trim();
+}
+
+/**
  * Keep the process alive until a blocked child returns, then let its caller's finally blocks finish.
- * A second signal that reaches these listeners gets its default action.
+ * The first code recorded stays. A second signal that reaches these listeners gets its default action.
  */
 export function holdInterrupts(signals = process, kill = (pid, signal) => process.kill(pid, signal)) {
   let held = false;
@@ -61,7 +126,7 @@ export function holdInterrupts(signals = process, kill = (pid, signal) => proces
     const listener = () => {
       if (!held) {
         held = true;
-        signals.exitCode = code;
+        if (signals.exitCode !== 130 && signals.exitCode !== 143) signals.exitCode = code;
         return;
       }
       for (const [name, added] of listeners) signals.off(name, added);
@@ -72,10 +137,15 @@ export function holdInterrupts(signals = process, kill = (pid, signal) => proces
   });
 }
 
+/** Stop before starting another child once an interrupt is held. Never called before a cleanup child. */
+export function checkInterrupt(target = process) {
+  if (target.exitCode === 130 || target.exitCode === 143) throw new SmokeInterrupted(target.exitCode);
+}
+
 /** Cleanup must neither replace the check's result nor skip subsequent cleanup. */
-export function removeImage(image, run = execFileSync, warn = console.warn, target = process) {
-  // SIGKILL: the default SIGTERM leaves execFileSync blocked past its timeout if the client ignores it.
-  try { run('docker', ['image', 'rm', '--force', image], { stdio: 'pipe', timeout: 120_000, killSignal: 'SIGKILL' }); }
+export async function removeImage(image, run = runChild, warn = console.warn, target = process) {
+  // SIGKILL: the default SIGTERM leaves the call blocked past its timeout if the client ignores it.
+  try { await run('docker', ['image', 'rm', '--force', image], { stdio: 'pipe', timeout: 120_000, killSignal: 'SIGKILL' }); }
   catch (error) {
     warn(`::warning::Could not remove image ${image}: ${error.message}`);
     recordInterrupt(error, target);
@@ -83,12 +153,14 @@ export function removeImage(image, run = execFileSync, warn = console.warn, targ
 }
 
 /** Keep the smoke script beside its own Compose configuration and other fixtures. */
-export function withPreviousTree(commit, operation, runGit = git, warn = console.warn, target = process) {
-  const worktree = resolve(runGit(['rev-parse', '--path-format=absolute', '--git-common-dir']), '..', '.worktrees', `previous-code-${randomUUID()}`);
-  runGit(['worktree', 'add', '--detach', worktree, commit]);
-  try { return operation(worktree); }
+export async function withPreviousTree(commit, operation, runGit = gitChild, warn = console.warn, target = process) {
+  checkInterrupt(target);
+  const worktree = resolve(await runGit(['rev-parse', '--path-format=absolute', '--git-common-dir']), '..', '.worktrees', `previous-code-${randomUUID()}`);
+  checkInterrupt(target);
+  await runGit(['worktree', 'add', '--detach', worktree, commit]);
+  try { return await operation(worktree); }
   finally {
-    try { runGit(['worktree', 'remove', '--force', worktree]); }
+    try { await runGit(['worktree', 'remove', '--force', worktree]); }
     catch (error) {
       warn(`::warning::Could not remove worktree ${worktree}: ${error.message}`);
       recordInterrupt(error, target);
@@ -143,39 +215,46 @@ export function compatibilityAssertions(source) {
 
 /**
  * Remove only the caller's unique project, even when the child never gets to its finally block.
- * Every kind is still attempted after an interrupted call; returns the first interrupt's exit code.
+ * Every kind is still attempted after an interrupted call, and a pass that recorded an interrupt gets one more pass
+ * over every kind for what it left; returns the first interrupt's exit code.
  */
-export function removeSmokeProject(project, run = execFileSync, warn = console.warn, target = process) {
+export async function removeSmokeProject(project, run = runChild, warn = console.warn, target = process) {
   let interrupted;
   const failed = (error, message) => {
     warn(`::warning::${message}: ${error.message}`);
     const code = recordInterrupt(error, target);
     interrupted ??= code;
   };
-  for (const [kind, list, remove] of [
-    ['containers', ['ps', '-aq'], ['rm', '-f', '-v']],
-    ['networks', ['network', 'ls', '-q'], ['network', 'rm']],
-    ['volumes', ['volume', 'ls', '-q'], ['volume', 'rm']],
-  ]) {
-    try {
-      const names = run('docker', [...list, '--filter', `label=com.docker.compose.project=${project}`],
-        { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' }).trim().split(/\s+/).filter(Boolean);
-      for (const name of names) {
-        try { run('docker', [...remove, name], { stdio: 'pipe', timeout: 120_000, killSignal: 'SIGKILL' }); }
-        catch (error) { failed(error, `Could not remove ${project} ${kind} ${name}`); }
-      }
-    } catch (error) { failed(error, `Could not list ${project} ${kind}`); }
-  }
+  const pass = async () => {
+    for (const [kind, list, remove] of [
+      ['containers', ['ps', '-aq'], ['rm', '-f', '-v']],
+      ['networks', ['network', 'ls', '-q'], ['network', 'rm']],
+      ['volumes', ['volume', 'ls', '-q'], ['volume', 'rm']],
+    ]) {
+      try {
+        const names = (await run('docker', [...list, '--filter', `label=com.docker.compose.project=${project}`],
+          { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' })).trim().split(/\s+/).filter(Boolean);
+        for (const name of names) {
+          try { await run('docker', [...remove, name], { stdio: 'pipe', timeout: 120_000, killSignal: 'SIGKILL' }); }
+          catch (error) { failed(error, `Could not remove ${project} ${kind} ${name}`); }
+        }
+      } catch (error) { failed(error, `Could not list ${project} ${kind}`); }
+    }
+  };
+  await pass();
+  if (interrupted !== undefined) await pass();
   return interrupted;
 }
 
 /** Both supported host-file paths: an upgraded install, and an install using the current deployment files. */
-export function smokePreviousImage(previousImage, image, tree, commit, run = execFileSync) {
+export async function smokePreviousImage(previousImage, image, tree, commit, run = runChild) {
   const original = resolve(tree, 'deploy/test/smoke.mjs');
   const source = readFileSync(original, 'utf8');
-  const configuration = JSON.parse(run('docker', ['image', 'inspect', previousImage], { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' }))[0];
+  checkInterrupt();
+  const configuration = JSON.parse(await run('docker', ['image', 'inspect', previousImage], { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' }))[0];
   const variable = key => configuration.Config.Env.find(entry => entry.startsWith(key + '='))?.slice(key.length + 1);
   for (const deployment of new Set([resolve(tree, 'deploy'), resolve(root, 'deploy')])) {
+    checkInterrupt();
     const project = `plaingym-compat-${randomUUID()}`;
     const script = resolve(tree, 'deploy/test', `${project}.mjs`);
     const description = `Smoke test ${commit}:deploy/test/smoke.mjs (${original}) against ${previousImage}, schema migrated by ${image}, deployment files ${deployment}`;
@@ -183,7 +262,7 @@ export function smokePreviousImage(previousImage, image, tree, commit, run = exe
     let interrupted;
     try {
       writeFileSync(script, adaptPreviousSmoke(source, deployment, resolve(root, 'deploy'), project));
-      run(process.execPath, [fileURLToPath(new URL('./run-smoke.mjs', import.meta.url)), script, previousImage],
+      await run(process.execPath, [fileURLToPath(new URL('./run-smoke.mjs', import.meta.url)), script, previousImage],
         { cwd: tree, stdio: 'inherit', timeout: 915_000, killSignal: 'SIGKILL',
         env: { ...process.env, SMOKE_MIGRATE_IMAGE: image, VERSION: variable('APP_VERSION'), SOURCE_URL: variable('SOURCE_URL') } });
     } catch (error) {
@@ -191,7 +270,7 @@ export function smokePreviousImage(previousImage, image, tree, commit, run = exe
       if (exitCode !== undefined) throw new SmokeInterrupted(exitCode, { cause: error });
       throw new Error(`${description} failed: ${error.message}`, { cause: error });
     } finally {
-      interrupted = removeSmokeProject(project, run);
+      interrupted = await removeSmokeProject(project, run);
       try { rmSync(script, { force: true }); }
       catch (error) { console.warn(`::warning::Could not remove compatibility harness ${script}: ${error.message}`); }
     }
