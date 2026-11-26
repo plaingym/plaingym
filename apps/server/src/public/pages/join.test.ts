@@ -2,6 +2,7 @@
 import { jsonInit, requestWithLength } from '../../../test/request.js';
 import { describe, expect, it, vi } from 'vitest';
 import { configureSharedRateLimits } from '../../core/rate-limit.js';
+import { appCookieName, configureCookies } from '../../core/cookies.js';
 import { createIntakeRateLimitStore } from '../../core/rate-limit-store.js';
 import { publicIntakeLimits } from '../../core/rate-limit-intake.js';
 import { randomBytes } from 'node:crypto';
@@ -1222,7 +1223,8 @@ describe('public join pages through the production registrations', () => {
     expect(response.status, await response.clone().text()).toBe(200);
     expect(publicSubmissionResponseSchema.parse(await response.json())).toEqual({ data: { status: 'received' } });
     const header = response.headers.get('set-cookie')!;
-    for (const part of ['HttpOnly', 'Secure', 'SameSite=Lax', 'Path=/join', 'Max-Age=7200']) expect(header).toContain(part);
+    for (const part of ['HttpOnly', 'Secure', 'SameSite=Lax', 'Path=/', 'Max-Age=7200']) expect(header).toContain(part);
+    expect(header).not.toContain('Path=/join');
     const [, payload] = cookieValue(cookie).split('.');
     expect(Object.keys(JSON.parse(Buffer.from(payload!, 'base64url').toString()))).toEqual(['g', 'l', 'x']);
     expect(header).not.toContain('payer'); expect(header).not.toContain('@');
@@ -1412,6 +1414,24 @@ describe('public join pages through the production registrations', () => {
     expect((await f.post('/join/signatures', admission())).status).toBe(503);
     expect((await f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: nativeForm(f, f.plan.id, 'bot@example.invalid') }))).status).toBe(503);
     expect((await f.rows()).homes).toHaveLength(before); expect(create).not.toHaveBeenCalled();
+  });
+
+  it.each(['single', 'multi'] as const)('sets the join cookie __Host- at Path=/ over HTTPS and continues an old one only in %s mode', async tenancy => {
+    configureCookies({ hostPrefix: true, legacyNames: tenancy === 'single' });
+    try {
+      const f = await fixture(), { response, cookie } = await f.submit();
+      expect(response.status).toBe(200);
+      const header = response.headers.get('set-cookie')!;
+      expect(header).toMatch(/^__Host-plaingym_join=/); expect(header).toMatch(/;\s*Path=\/(;|$)/); expect(header).toMatch(/;\s*Secure(;|$)/);
+      expect(header).toMatch(/;\s*HttpOnly(;|$)/); expect(header).toMatch(/;\s*SameSite=Lax(;|$)/); expect(header).not.toMatch(/domain=/i);
+      const missing = 'This browser no longer has your sign-up';
+      const current = await f.get('/join/checkout', cookie);
+      expect(current.headers.get('location')).not.toBeNull();
+      // The cookie as an earlier version set it (unprefixed, at /join), or as another host could plant it in multi mode.
+      const old = await f.get('/join/checkout', joinCookie + '=' + cookie.slice(appCookieName(joinCookie).length + 1));
+      if (tenancy === 'single') expect(old.headers.get('location')).toBe(current.headers.get('location'));
+      else { expect(old.headers.get('location')).toBeNull(); expect(await old.text()).toContain(missing); }
+    } finally { configureCookies({ hostPrefix: false, legacyNames: false }); }
   });
 
   it('isolates the join to its own gym and newly admitted household', async () => {

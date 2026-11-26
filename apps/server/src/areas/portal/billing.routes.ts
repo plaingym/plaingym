@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { Context } from 'hono';
-import { setCookie } from 'hono/cookie';
 import { AppError } from '@plaingym/shared';
 import { portalContracts as contracts } from '@plaingym/shared/contracts';
 import type { RequestEnvironment } from '../../core/context.js';
 import { rateLimit } from '../../core/rate-limit.js';
+import { setAppCookie } from '../../core/cookies.js';
 import type { Uploads } from '../../infra/storage/index.js';
 import { checkoutReceipts } from '../../public/links/receipt.js';
 // The `/l/*` cookie: Stripe returns to `/l/return`, which reopens the internal link's page to confirm the result.
@@ -27,7 +27,7 @@ export function createPortalBillingRoutes(service: PortalBillingService = create
   const { classCredits, invoices, invoice, receipt, payInvoice, paymentMethods, updateCard } = contracts;
   function redirect(c: Context<RequestEnvironment>, started: PortalCheckoutStart) {
     const now = c.get('context').clock.now().getTime(), expires = Date.parse(started.expiresAt);
-    setCookie(c, receiptCookie, receipts().seal({ token: started.token, gymId: c.get('context').gym.gymId, linkId: started.linkId,
+    setAppCookie(c, receiptCookie, receipts().seal({ token: started.token, gymId: c.get('context').gym.gymId, linkId: started.linkId,
       sessionId: started.session.id, expires, tablet: false, portal: true }), { httpOnly: true, secure: true, sameSite: 'Lax', path: '/', maxAge: Math.max(1, Math.floor((expires - now) / 1000)) });
     c.header('Cache-Control', 'no-store');
     return c.json({ data: { url: started.session.url, expiresAt: started.expiresAt } }, 200);

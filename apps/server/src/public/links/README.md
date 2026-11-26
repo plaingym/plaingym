@@ -171,7 +171,10 @@ HTTP-only return receipt containing the session and link IDs. The provider sees
 only the configured origin's `/l/return` URL. The receipt uses AES-256-GCM with a
 dedicated HKDF-derived encryption key, authenticated gym/link binding and expiry.
 It is HttpOnly, Secure and SameSite=Lax; its path must be `/` to serve both
-`/l/return` and `/api/links/*/complete`. Neither its bearer token nor metadata is
+`/l/return` and `/api/links/*/complete`. In production it is named
+`__Host-plaingym_link_checkout`, otherwise `plaingym_link_checkout`
+(`core/cookies.ts`); a single-gym install also reads the old unprefixed name, and
+clearing the receipt expires both. Neither its bearer token nor metadata is
 readable in the cookie. Old plaintext receipts are rejected; restart Checkout
 to obtain an encrypted receipt. It does not grant
 any account access. A browser return merely triggers a completion check. A

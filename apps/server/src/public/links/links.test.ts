@@ -35,6 +35,7 @@ import { authConfig } from '../../infra/auth/config.js';
 import { createMemberHouseholdContext } from '../../areas/members/household-users.context.js';
 import { createAccountService } from '../../infra/auth/accounts.js';
 import { reportingEndpoints } from '../../core/csp.js';
+import { appCookieName, configureCookies } from '../../core/cookies.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 async function fixture(purpose: SignedLinkPurposeName = 'pay_invoice', customer = true, demo = false) {
@@ -496,6 +497,28 @@ describe('signed-link pages through production registrations', () => {
     const session = await f.checkout.start(f.gymId, f.link.link.id); await f.completeAtStripe(session.session.id);
     expect(await (await f.request(f.path + '/complete', 'POST', {}, cookie)).json()).toEqual({ data: { completed: true } });
     expect(await (await f.app().request('/l/' + f.link.token)).text()).toContain('Already done');
+  });
+  it.each(['single', 'multi'] as const)('names the receipt cookie __Host- over HTTPS and reads its old name only in %s mode', async tenancy => {
+    const f = await fixture('update_card');
+    configureCookies({ hostPrefix: true, legacyNames: tenancy === 'single' });
+    try {
+      const response = await f.request(f.path + '/checkout', 'POST'); expect(response.status).toBe(200);
+      const header = response.headers.get('set-cookie')!;
+      expect(header).toMatch(/^__Host-plaingym_link_checkout=/); expect(header).toMatch(/;\s*Secure(;|$)/); expect(header).toMatch(/;\s*Path=\/(;|$)/);
+      expect(header).toMatch(/;\s*HttpOnly(;|$)/); expect(header).toMatch(/;\s*SameSite=Lax(;|$)/); expect(header).not.toMatch(/domain=/i);
+      const value = header.split(';')[0]!.slice(appCookieName(receiptCookie).length + 1);
+      const current = appCookieName(receiptCookie) + '=' + value, old = receiptCookie + '=' + value;
+      expect((await f.app().request('https://gym.example.test/l/return', { headers: { cookie: current } })).headers.get('location')).toBe('/l/' + f.link.token + '?returned=1');
+      // A cookie under the old name: one this install set before the update, or (multi mode) one another host could plant.
+      const returned = await f.app().request('https://gym.example.test/l/return', { headers: { cookie: old } });
+      if (tenancy === 'single') expect(returned.headers.get('location')).toBe('/l/' + f.link.token + '?returned=1');
+      else expect(returned.status).toBe(404);
+      const session = await f.checkout.start(f.gymId, f.link.link.id); await f.completeAtStripe(session.session.id);
+      const completed = await f.request(f.path + '/complete', 'POST', {}, tenancy === 'single' ? old : current);
+      expect(await completed.json()).toEqual({ data: { completed: true } });
+      const expired = completed.headers.getSetCookie().filter(cookie => /Max-Age=0/i.test(cookie)).map(cookie => cookie.slice(0, cookie.indexOf('=')));
+      expect(expired.sort()).toEqual(['__Host-plaingym_link_checkout', 'plaingym_link_checkout']);
+    } finally { configureCookies({ hostPrefix: false, legacyNames: false }); }
   });
   it('sends a completed portal Checkout back to the portal billing page, and keeps the page for an open link', async () => {
     const f = await fixture('update_card');

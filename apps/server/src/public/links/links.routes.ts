@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { Context, MiddlewareHandler } from 'hono';
 import { z } from 'zod';
 import { AppError, createTranslator, type Translator } from '@plaingym/shared';
@@ -8,6 +7,7 @@ import type { PortalInvitationService } from '../../areas/members/household-user
 import { failureBudget, rateLimit } from '../../core/rate-limit.js';
 import { documentReadLimit } from '../../areas/waivers/document-read.js';
 import { setPolicy } from '../../core/csp.js';
+import { deleteAppCookie, readAppCookie, setAppCookie } from '../../core/cookies.js';
 import { route, type RouteRegistration } from '../../core/registry.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { createSignedLinksService } from '../../areas/links/service.js';
@@ -112,11 +112,11 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
       return c.body(await (options().stylesheet ?? readSharedStylesheet)());
     })),
     publicRoute(route({ method: 'get', path: '/l/cleared', permission: { kind: 'public' }, responses: textResponses }, async c => {
-      deleteCookie(c, receiptCookie, { path: '/' });
+      deleteAppCookie(c, receiptCookie);
       return html(c, { ...await presentation(c), state: 'cleared' });
     })),
     publicRoute(route({ method: 'get', path: '/l/return', permission: { kind: 'public' }, responses: { 302: { description: 'Return to the signed-link page' }, 404: { description: 'Unavailable return' } } }, async c => {
-      const ctx = c.get('context'), receipt = options().receipts.open(getCookie(c, receiptCookie), ctx.clock.now(), { gymId: ctx.gym.gymId });
+      const ctx = c.get('context'), receipt = options().receipts.open(readAppCookie(c, receiptCookie), ctx.clock.now(), { gymId: ctx.gym.gymId });
       if (!receipt) return html(c, { ...await presentation(c), state: 'unavailable' }, 404);
       return c.redirect('/l/' + receipt.token + '?returned=1' + (receipt.tablet ? '&tablet=1' : ''), 302);
     })),
@@ -124,14 +124,14 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
       request: { params: z.object({ token: z.string().max(128) }), query: z.strictObject({ tablet: z.literal('1').optional(), returned: z.literal('1').optional() }) }, responses: textResponses }, async c => {
       const ctx = c.get('context'), config = options();
       const token = c.req.valid('param').token;
-      const receipt = config.receipts.open(getCookie(c, receiptCookie), ctx.clock.now(), { gymId: ctx.gym.gymId });
+      const receipt = config.receipts.open(readAppCookie(c, receiptCookie), ctx.clock.now(), { gymId: ctx.gym.gymId });
       const resolution = await config.links.resolve(ctx.gym.gymId, token, receipt?.token === token ? receipt : undefined);
       // A Checkout a portal login started returns to the portal's billing page once the link is complete. An open link
       // keeps its page, whose script confirms the result and returns here; so does a payment still processing, which only
       // the page can explain.
       if (receipt?.token === token && receipt.portal && c.req.valid('query').returned === '1'
         && resolution.status === 'used' && !resolution.processing) {
-        deleteCookie(c, receiptCookie, { path: '/' });
+        deleteAppCookie(c, receiptCookie);
         return c.redirect('/portal/billing', 302);
       }
       const common = { ...await presentation(c), tablet: c.req.valid('query').tablet === '1' };
@@ -208,7 +208,7 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
           expires: Date.parse(expiresAt), tablet: c.req.header('x-link-tablet') === 'true' });
         // /l/return and /api/links/*/complete share only the root path. The encrypted
         // receipt is HttpOnly and is accepted only with its gym/link binding.
-        setCookie(c, receiptCookie, cookie, { httpOnly: true, secure: true, sameSite: 'Lax', path: '/',
+        setAppCookie(c, receiptCookie, cookie, { httpOnly: true, secure: true, sameSite: 'Lax', path: '/',
           maxAge: Math.max(1, Math.floor((Date.parse(expiresAt) - ctx.clock.now().getTime()) / 1000)) });
         return c.json(contract.response.parse({ data: { url: session.url, expiresAt } }), 200);
       } catch (error) {
@@ -233,7 +233,7 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
     const contract = actions[name];
     result.push(protect(route({ ...contract, request: { query: empty, body: { content: { 'application/json': { schema: empty } }, required: true } }, responses: json(contract.response) }, async c => {
       const ctx = c.get('context'), p = linkPrincipal(ctx), config = options();
-      const receipt = config.receipts.open(getCookie(c, receiptCookie), ctx.clock.now(), { gymId: p.gymId, linkId: p.linkId });
+      const receipt = config.receipts.open(readAppCookie(c, receiptCookie), ctx.clock.now(), { gymId: p.gymId, linkId: p.linkId });
       const sessionId = receipt?.gymId === p.gymId && receipt.linkId === p.linkId ? receipt.sessionId : null;
       const completed = await config.service.complete(ctx, sessionId);
       if (completed && receipt && p.link.purpose === 'pay_invoice') {
@@ -244,7 +244,7 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
           return c.json({ data: { completed } }, 200);
         }
       }
-      if (completed) deleteCookie(c, receiptCookie, { path: '/' });
+      if (completed) deleteAppCookie(c, receiptCookie);
       return c.json({ data: { completed } }, 200);
     })));
   }

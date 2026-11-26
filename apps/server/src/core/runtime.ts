@@ -18,6 +18,7 @@ import { parseEncryptionKey } from './secrets.js';
 import { createTenantResolver, defaultHostname, listGyms, normalizeHostname, reportHostnameSnapshot, singleGymId, tenancyMode } from './tenancy.js';
 import { authConfig, passwordLogin } from '../infra/auth/config.js';
 import { createAuthService } from '../infra/auth/service.js';
+import { configureCookies } from './cookies.js';
 import { createGoogleAuthExtension, googleFromEnvironment } from '../infra/auth/google.js';
 import { createAuthEmailSender } from '../infra/auth/delivery.js';
 import { sessionMiddleware } from '../infra/auth/middleware.js';
@@ -240,6 +241,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   const demo = await createDemoRuntime({ env, installOrigin: install ?? '', removeUploads: uploads.removeGym,
     clientIp: proxyTrust });
   const config = demo?.authConfig ?? initialConfig;
+  // Production serves only HTTPS, so the app's own cookies take the `__Host-` prefix there, as Better Auth's do.
+  configureCookies({ hostPrefix: config.production, legacyNames: mode === 'single' });
   const smtpConfigured = (gymId: string) => demo ? Promise.resolve(true) : smtp!.configured(gymId);
   // The install's GOOGLE_* variables win; otherwise a single-gym owner's stored client. Each Google request and the login methods look it up.
   const googleClients = createGoogleClientResolver({ key, env, tenancy: mode });

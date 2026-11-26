@@ -2,7 +2,6 @@
 import { z } from 'zod';
 import type { Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import { getCookie, setCookie } from 'hono/cookie';
 import { AppError, createTranslator, type Translator } from '@plaingym/shared';
 import { idSchema, maxJoinMembers, paginationSchema, publicContracts as contracts, publicSubmissionResponseSchema } from '@plaingym/shared/contracts';
 import { route, type RouteRegistration } from '../../core/registry.js';
@@ -11,6 +10,7 @@ import { rateLimit } from '../../core/rate-limit.js';
 import { logError } from '../../core/log.js';
 import { publicIntakeRefusal } from '../../core/rate-limit-intake.js';
 import { setPolicy } from '../../core/csp.js';
+import { readAppCookie, setAppCookie } from '../../core/cookies.js';
 import { publicPageDirectives } from './page.js';
 import { createJoinService, joinBodyBytes, type JoinOptions,
   type JoinService } from './join.service.js';
@@ -76,13 +76,16 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
     const invoice = linkId && ['continue', 'card', 'manual'].includes(state) ? await config.service.firstInvoice(gymOf(ctx), linkId) : null;
     return ctx.html(joinStatusPage({ gym: await config.service.branding(gymOf(ctx)), t: config.t ?? translator, state, testCardHint, invoice, processing }), status);
   }
-  /** HttpOnly, Secure, SameSite=Lax (it survives the return from Checkout), signed, short-lived and scoped to /join. */
+  /**
+   * HttpOnly, Secure, SameSite=Lax (it survives the return from Checkout), signed for this gym and short-lived. At `Path=/`,
+   * which the `__Host-` name production gives it requires; a cookie from before that, scoped to /join, is still read.
+   */
   function remember(ctx: Context<RequestEnvironment>, linkId: string) {
     const expiresAt = new Date(ctx.get('context').clock.now().getTime() + joinCookieLifetimeMs);
-    setCookie(ctx, joinCookie, options().continuations.seal({ gymId: gymOf(ctx), linkId, expiresAt }),
-      { httpOnly: true, secure: true, sameSite: 'Lax', path: '/join', maxAge: joinCookieLifetimeMs / 1000 });
+    setAppCookie(ctx, joinCookie, options().continuations.seal({ gymId: gymOf(ctx), linkId, expiresAt }),
+      { httpOnly: true, secure: true, sameSite: 'Lax', path: '/', maxAge: joinCookieLifetimeMs / 1000 });
   }
-  const pending = (ctx: Context<RequestEnvironment>) => options().continuations.open(getCookie(ctx, joinCookie), ctx.get('context').clock.now(), gymOf(ctx));
+  const pending = (ctx: Context<RequestEnvironment>) => options().continuations.open(readAppCookie(ctx, joinCookie), ctx.get('context').clock.now(), gymOf(ctx));
   function refusal(error: unknown, ctx: Context<RequestEnvironment>) {
     const t = options().t ?? translator;
     return publicIntakeRefusal(error, ctx, t('public/join:intakeLimited'), t('public/join:retry'));

@@ -12,6 +12,19 @@ and [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
   GitHub links. Old entry-host `/demo` links redirect to the product page.
   It shows what card payments and text messages cost and how member data is protected.
 
+### Changed
+
+- Over HTTPS (production), every cookie the app sets carries the `__Host-` prefix, so a
+  page on another hostname under the same parent domain can't set a cookie this gym's
+  site then receives: sign-in cookies are `__Host-better-auth.*` (were
+  `__Secure-better-auth.*`), the signed-link Checkout receipt is
+  `__Host-plaingym_link_checkout` and the pending join `__Host-plaingym_join`, which
+  moves from `Path=/join` to `Path=/`. Single-gym installs still read the old names
+  during the 0.11 releases, so the update signs no one out and keeps pending
+  checkouts and joins; 0.12.0 stops reading them, so updating straight from 0.10 or
+  earlier to 0.12 or later signs everyone out once. Multi-gym installs read only the
+  new names, so their update signs everyone out once. Development over plain HTTP keeps the unprefixed names.
+
 ### Fixed
 
 - A Compose install's Source code link now follows the running release's tag instead of

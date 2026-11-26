@@ -416,6 +416,20 @@ by setup, the gym CLI, staff and portal invitations, and the join flow.
 * **Restore safety.** Restore turns billing, member emails and member texts off and holds backup
   pruning until an owner explicitly confirms the old server is gone. The backup
   request action is for owners/admins; releasing pruning is owner-only and audited.
+* **Cookies.** Every cookie the app sets is HttpOnly, SameSite=Lax and host-only (no
+  `Domain`). In production, which serves only HTTPS, each name also carries the
+  `__Host-` prefix: the session and other sign-in cookies are `__Host-better-auth.<name>`,
+  the signed-link Checkout receipt `__Host-plaingym_link_checkout` and the pending join
+  `__Host-plaingym_join`, all `Secure` at `Path=/`. Browsers accept a `__Host-` cookie
+  only from the host itself, so in `multi` mode a page on another hostname under the
+  same parent domain can't set one that this gym's site then receives (cookie
+  tossing). In `multi` mode no cookie is read under any other name. For now a
+  single-gym install also accepts the names it used before
+  (`__Secure-better-auth.session_token`, `plaingym_link_checkout`, `plaingym_join`),
+  so the update signs no one out and loses no pending checkout or join; until that
+  fallback is dropped (`CHANGELOG.md` names the release), those old names are as open
+  to tossing as before. Sign-out expires both session names, and clearing the Checkout
+  receipt expires both of its names. Development over plain HTTP keeps the unprefixed names.
 
 Details: `apps/server/src/infra/auth/README.md`.
 

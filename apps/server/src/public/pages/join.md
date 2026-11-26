@@ -240,8 +240,10 @@ invoice's lines (inclusive taxes left out) and total before payment or card setu
 
 ## Checkout and activation
 
-The submission sets an HttpOnly, Secure, SameSite=Lax cookie scoped to `/join` for
-two hours. It holds an HMAC-signed reference to the pending join (gym, link and
+The submission sets an HttpOnly, Secure, SameSite=Lax cookie at `Path=/` for two
+hours, named `__Host-plaingym_join` in production and `plaingym_join` otherwise
+(`core/cookies.ts`); a single-gym install also reads a `plaingym_join` cookie an
+earlier release set at `/join`. It holds an HMAC-signed reference to the pending join (gym, link and
 expiry) and nothing else: no token, claim code or email address. `GET /join/checkout`
 starts or reuses Checkout through the signed-link Checkout service: payment mode
 for a positive invoice, setup mode for a trial requiring a future payment, and a

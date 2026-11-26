@@ -38,15 +38,15 @@ beforeAll(async () => {
 });
 afterAll(async () => { await closeDatabase(); vi.unstubAllEnvs(); });
 
-async function fixture() {
+async function fixture(serviceConfig = config, scheme = 'https') {
   const gymId = uuidv7(), otherGymId = uuidv7();
   await factory('gyms', gymId); await factory('gyms', otherGymId);
   const user = await factory('authUser', gymId, { emailVerified: true });
   await factory('authAccount', gymId, { userId: user.id, accountId: user.id, password: initialHash });
-  const origin = `https://${gymId}.example.test`, otherOrigin = `https://${otherGymId}.example.test`;
+  const origin = `${scheme}://${gymId}.example.test`, otherOrigin = `${scheme}://${otherGymId}.example.test`;
   const clientIp = `192.0.2.${ip++}`;
   const delivered: { email: string; url: string; gymId: string }[] = [];
-  const service = createAuthService({ config, database: () => database.system.db, sendMagicLink: async (data) => { delivered.push(data); } });
+  const service = createAuthService({ config: serviceConfig, database: () => database.system.db, sendMagicLink: async (data) => { delivered.push(data); } });
   const a = service.bind({ gymId, origin, clientIp }), b = service.bind({ gymId: otherGymId, origin: otherOrigin, clientIp });
   const request = (path: string, body?: unknown, cookie?: string, targetOrigin = origin) => new Request(new URL('/api/auth' + path, targetOrigin), {
     method: body === undefined ? 'GET' : 'POST', headers: { origin: targetOrigin, ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...(cookie ? { cookie } : {}) },
@@ -209,6 +209,76 @@ describe('Better Auth HTTP containment', () => {
     const f = await fixture();
     await expect(runInTransaction(() => f.a.getSession(f.request('/get-session')))).rejects.toThrow();
     await expect(runInTransaction(() => f.a.handler(f.request('/get-session')))).rejects.toThrow();
+  });
+});
+
+describe('cookie names', () => {
+  const multi = authConfig({ AUTH_SECRET: secret, NODE_ENV: 'production', TENANCY: 'multi', AUTH_PASSWORD_LOGIN: 'off' }, true);
+  /** Every cookie is `__Host-better-auth.*`, `Secure`, `Path=/` and without a `Domain`; `legacy` names may only be expired. */
+  function expectHostCookies(response: Response, legacy: readonly string[] = []) {
+    const issued = response.headers.getSetCookie();
+    expect(issued.length).toBeGreaterThan(0);
+    for (const cookie of issued) {
+      const name = cookie.slice(0, cookie.indexOf('='));
+      expect(cookie).not.toMatch(/domain=/i);
+      expect(cookie).toMatch(/;\s*Secure(?:;|$)/i); expect(cookie).toMatch(/;\s*Path=\/(?:;|$)/i);
+      if (legacy.includes(name)) expect(cookie).toMatch(/^[^=]+=;.*Max-Age=0/i);
+      else expect(name).toMatch(/^__Host-better-auth\.[a-z_]+$/);
+    }
+  }
+  const sessionValue = (response: Response) => /__Host-better-auth\.session_token=([^;]+)/.exec(cookies(response))?.[1];
+  async function magicLinkSession(f: Awaited<ReturnType<typeof fixture>>) {
+    expect((await f.a.handler(f.request('/sign-in/magic-link', { email: f.user.email }))).status).toBe(200);
+    const verified = await f.a.handler(new Request(f.delivered.at(-1)!.url));
+    expect(verified.status).toBe(302);
+    return verified;
+  }
+
+  it('names every cookie of a password sign-in, a magic-link sign-in and a sign-out __Host- over HTTPS', async () => {
+    const single = await fixture(), signedIn = await single.signIn();
+    expect(signedIn.status).toBe(200); expectHostCookies(signedIn);
+    const signedOut = await single.a.handler(single.request('/sign-out', {}, cookies(signedIn)));
+    expect(signedOut.status).toBe(200);
+    expectHostCookies(signedOut, ['__Secure-better-auth.session_token', '__Secure-better-auth.dont_remember']);
+    const f = await fixture(multi), verified = await magicLinkSession(f);
+    expectHostCookies(verified);
+    expect(await f.a.getSession(f.request('/get-session', undefined, cookies(verified)))).toEqual({ userId: f.user.id });
+    const out = await f.a.handler(f.request('/sign-out', {}, cookies(verified)));
+    expect(out.status).toBe(200); expectHostCookies(out);
+    expect(out.headers.getSetCookie().some((cookie) => cookie.startsWith('__Host-better-auth.session_token=;'))).toBe(true);
+  });
+  it('keeps a single-gym session from before the prefix signed in, and expires both names on sign-out', async () => {
+    const f = await fixture(), value = sessionValue(await f.signIn())!;
+    const old = `__Secure-better-auth.session_token=${value}`;
+    expect(await f.a.getSession(f.request('/get-session', undefined, old))).toEqual({ userId: f.user.id });
+    expect(await f.a.checkedSession(f.request('/get-session', undefined, old))).toMatchObject({ userId: f.user.id });
+    // Still bound to its gym: the same cookie on another gym's site is refused.
+    expect((await f.b.handler(f.request('/get-session', undefined, old, f.otherOrigin))).status).toBe(403);
+    const out = await f.a.handler(f.request('/sign-out', {}, old));
+    expect(out.status).toBe(200);
+    const expired = out.headers.getSetCookie().filter((cookie) => /Max-Age=0/i.test(cookie)).map((cookie) => cookie.slice(0, cookie.indexOf('=')));
+    expect(expired).toEqual(expect.arrayContaining(['__Host-better-auth.session_token', '__Secure-better-auth.session_token']));
+    expect(await f.a.getSession(f.request('/get-session', undefined, old))).toBeNull();
+  });
+  it('reads no old or unprefixed session cookie in multi mode', async () => {
+    const f = await fixture(multi), value = sessionValue(await magicLinkSession(f))!;
+    expect(await f.a.getSession(f.request('/get-session', undefined, `__Host-better-auth.session_token=${value}`))).toEqual({ userId: f.user.id });
+    for (const name of ['__Secure-better-auth.session_token', 'better-auth.session_token']) {
+      const planted = f.request('/get-session', undefined, `${name}=${value}`);
+      expect(await f.a.getSession(planted), name).toBeNull();
+      expect(await f.a.checkedSession(f.request('/get-session', undefined, `${name}=${value}`)), name).toBeNull();
+    }
+  });
+  it('keeps plain better-auth names without Secure in development over HTTP', async () => {
+    const development = authConfig({ AUTH_SECRET: secret, AUTH_PASSWORD_LOGIN: 'on' }, false);
+    const f = await fixture(development, 'http'), signedIn = await f.signIn();
+    expect(signedIn.status).toBe(200);
+    const issued = signedIn.headers.getSetCookie();
+    expect(issued.length).toBeGreaterThan(0);
+    for (const cookie of issued) { expect(cookie).toMatch(/^better-auth\.[a-z_]+=/); expect(cookie).not.toMatch(/;\s*Secure/i); }
+    expect(await f.a.getSession(f.request('/get-session', undefined, cookies(signedIn)))).toEqual({ userId: f.user.id });
+    const out = await f.a.handler(f.request('/sign-out', {}, cookies(signedIn)));
+    expect(out.headers.getSetCookie().every((cookie) => cookie.startsWith('better-auth.'))).toBe(true);
   });
 });
 
