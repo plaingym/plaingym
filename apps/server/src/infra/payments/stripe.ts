@@ -9,7 +9,7 @@ import { CustomerCreationInProgress, CustomerDeleted, ERASED_CUSTOMER_NAME, norm
   type PaymentEvent, type Refund, type RefundRequest, type CustomerMatch, CardImportRefused, CardCursorRefused,
   type CustomerCardPage, type CustomerCardQuery, type PaymentMethod, type PaymentMethodType, type BankPaymentMethod,
   type BankAccountImportRead, type BankPaymentMethodForImport, BankDebitUnavailable, hasBankLast4,
-  PaymentObjectNotForGym, PaymentObjectUntagged } from './index.js';
+  PaymentObjectNotForGym, PaymentObjectUntagged, PaymentMethodCustomerDeleted, isProviderOutage } from './index.js';
 import type { Json, ObjectData, PaymentTransport, ProviderRequest } from './transport.js';
 import { PaymentWebhookError } from './webhook-error.js';
 import { matchesBillingEmail, type ClearCustomerEmail } from './email-erasure.js';
@@ -204,7 +204,7 @@ export class StripePayments implements Payments {
   }
   async #ownedCustomer(customerId: string): Promise<void> {
     const customer = await this.#get(this.#path('customers', customerId));
-    if (customer.deleted === true) throw new PaymentObjectNotForGym('Customer was deleted');
+    if (customer.deleted === true) throw new PaymentMethodCustomerDeleted();
     this.#metadata(customer);
   }
   async createCustomer(request: CreateCustomer): Promise<{ id: string; email: string }> {
@@ -711,6 +711,13 @@ export class StripePayments implements Payments {
       throw error;
     }
   }
+  /** Reads the object again, retrying once on an outage; null when both reads fail with one. Any other failure throws. */
+  async #recheck(path: string): Promise<ObjectData | null> {
+    for (let attempt = 0; ; attempt++) {
+      try { return await this.#get(path); }
+      catch (error) { if (!isProviderOutage(error)) throw error; if (attempt === 1) return null; }
+    }
+  }
   async adoptCustomer(customerId: string): Promise<{ id: string; email: string | null; adopted: boolean }> {
     assertNoTransaction('payments.adoptCustomer');
     const path = this.#path('customers', customerId), customer = await this.#get(path);
@@ -723,9 +730,14 @@ export class StripePayments implements Payments {
     const adopted = owner === undefined;
     if (adopted) {
       await this.#post(path, { metadata: { gym_id: this.gymId } });
-      const after = await this.#get(path);
-      if (after.deleted === true) throw new CustomerDeleted();
-      if (data(after.metadata ?? {}).gym_id !== this.gymId) throw new PaymentObjectNotForGym('Payment object belongs to another gym');
+      // The tag is written once the POST returns. A recheck the provider can't serve is retried once; when that fails
+      // too the adoption stands, so callers still record it, and a foreign tag written meanwhile is refused by the next
+      // ownership read.
+      const after = await this.#recheck(path);
+      if (after) {
+        if (after.deleted === true) throw new CustomerDeleted();
+        if (data(after.metadata ?? {}).gym_id !== this.gymId) throw new PaymentObjectNotForGym('Payment object belongs to another gym');
+      }
     }
     return { id: id(customer.id), email: typeof customer.email === 'string' ? customer.email : null, adopted };
   }

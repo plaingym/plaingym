@@ -212,7 +212,11 @@ erasure read from that household, which its payload carries as `customerId`. A s
 link always wins. A job queued without the field (by an older release, a staff removal
 or a debit-account retirement) adopts the stored link as before. The second detach still refuses a
 method attached to any other customer. A customer
-tagged for another gym or deleted is still refused. A detach queued before the erasure (no `customerId` in its payload) adopts the customer the household's latest `household.anonymized` audit recorded, only when no `billing.customer.unlinked` audit is newer than the erasure. A rate limit, Stripe server error,
+tagged for another gym or deleted is still refused. When the card's own customer was
+deleted at Stripe (`PaymentMethodCustomerDeleted` from the first detach), the card counts
+as detached: the job records `billing.card.detached` (system actor, once per card) and
+finishes without adoption, leaving the card's billing details at Stripe as they are. A
+customer Stripe reports missing still fails the job. A detach queued before the erasure (no `customerId` in its payload) adopts the customer the household's latest `household.anonymized` audit recorded, only when no `billing.customer.unlinked` audit is newer than the erasure. A rate limit, Stripe server error,
 lost connection, rejected key or missing key permission is retried without adoption.
 Without that operation removal returns unavailable.
 The Jobs interface rejects enqueue inside a transaction and provides no

@@ -247,7 +247,9 @@ instead logged at info as `members.erasure.detach_deferred` (identifiers only) a
 its job, which adopts the customer or fails with the job's error. A card on a deleted
 customer is refused as not this gym's rather than untagged and, like any other immediate
 detach failure, is logged as `members.erasure.detach_failed` at error with its safe
-classification, and is also left to its job.
+classification, and is also left to its job. That job counts the card as detached, since
+Stripe can no longer charge it for the deleted customer: it records `billing.card.detached`
+and finishes, leaving the card's billing details at Stripe as they are.
 A card whose immediate detach succeeds gets its one
 `billing.card.detached` audit (system actor) at once, so the card list shows it removed
 from Stripe before the job runs; a failure to write that audit is logged as

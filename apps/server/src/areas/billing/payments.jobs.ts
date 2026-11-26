@@ -7,7 +7,7 @@ import { notFound } from '../../core/interfaces/common.js';
 import type { JobRegistration } from '../../core/registry.js';
 import type { TransitionNotifications } from './transitions/notifications.js';
 import { snapshot } from './transitions/store.js';
-import type { DetachOptions, Payments } from '../../infra/payments/index.js';
+import { PaymentMethodCustomerDeleted, type DetachOptions, type Payments } from '../../infra/payments/index.js';
 import type { InvoiceTransitions } from '../../core/interfaces/invoice-transitions.js';
 import { cardDetachedAction, detachJob, receiptJob, recordCardDetached, transientFailure } from './payments.mutations.js';
 import { customerUnlinkedAction } from './customers.js';
@@ -103,6 +103,12 @@ export function createPaymentJobs(options?: DeliveryOptions): readonly JobRegist
       const adoptId = stripeCustomerId ?? erasedCustomerId ?? validCustomerId(anonymizedCustomerId);
       try { await detach(); }
       catch (first) {
+        // The card's own customer was deleted at Stripe, so nothing can charge the card for it: the card counts as
+        // detached. Its billing details at Stripe stay as they are; the deleted customer no longer reaches them.
+        if (first instanceof PaymentMethodCustomerDeleted) {
+          await recordCardDetached(scope, { gymId: ctx.gymId, actor: { kind: 'system' } }, ctx.clock, row);
+          return;
+        }
         // A people CSV can save the household's method and mandate on its customer without tagging it. Adopt only the
         // customer the method's own household links (or linked until its erasure), then detach once more. Another gym's
         // or a deleted customer is refused by adoption, and the first refusal stands; a method on any other customer is

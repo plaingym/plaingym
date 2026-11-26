@@ -4,7 +4,7 @@ import { randomUUID, createHmac } from 'node:crypto';
 import { afterAll, expect, it, vi } from 'vitest';
 import Stripe from 'stripe';
 import { runInTransaction } from '@plaingym/shared/transaction';
-import { BankDebitUnavailable, CustomerCreationInProgress, CustomerDeleted, FakePayments, isProviderOutage, PaymentObjectNotForGym, PaymentObjectUntagged } from './index.js';
+import { BankDebitUnavailable, CustomerCreationInProgress, CustomerDeleted, FakePayments, isProviderOutage, PaymentMethodCustomerDeleted, PaymentObjectNotForGym, PaymentObjectUntagged } from './index.js';
 import { FixtureRecorder, replayPayments } from './recording.js';
 import { recordingTransport, replayTransport, type PaymentTransport } from './transport.js';
 import { StripePayments, STRIPE_API_VERSION, stripeTransport } from './stripe.js';
@@ -632,8 +632,10 @@ it('distinguishes untagged, deleted and foreign customers on detach while keepin
   expect(untagged).toMatchObject({ name: 'Error', message: 'Payment object has no gym metadata' });
 
   const deleted = await capture('pm_deleted_card');
+  expect(deleted).toBeInstanceOf(PaymentMethodCustomerDeleted);
   expect(deleted).toBeInstanceOf(PaymentObjectNotForGym);
   expect(deleted).not.toBeInstanceOf(PaymentObjectUntagged);
+  expect(untagged).not.toBeInstanceOf(PaymentMethodCustomerDeleted);
   expect(deleted).toMatchObject({ name: 'Error', message: 'Customer was deleted' });
 
   const foreign = await capture(detach.foreign);
@@ -696,6 +698,55 @@ it('rechecks the customer only when adoptCustomer writes a tag and raises Custom
   };
   const deletingPayments = new StripePayments(gymId, { transport: deletingTransport, webhookSecret: 'fixture-signing-secret' });
   await expect(deletingPayments.adoptCustomer('cus_vanished')).rejects.toBeInstanceOf(CustomerDeleted);
+});
+it('retries an adoption recheck the provider cannot serve once and keeps the adoption when both reads fail', async () => {
+  const outage = () => Object.assign(new Error('Stripe outage'), { statusCode: 503 });
+  // Fails the given number of customer reads that follow the tag write, then answers as the fixtures do.
+  const failRechecks = (transport: StripeFixtures, customerId: string, failures: number, error: () => Error = outage) => {
+    const request = transport.request.bind(transport);
+    let tagged = false, failed = 0;
+    return vi.spyOn(transport, 'request').mockImplementation(async input => {
+      if (input.path === '/v1/customers/' + customerId) {
+        if (input.method === 'POST') tagged = true;
+        else if (tagged && failed < failures) { failed++; transport.requests.push({ method: input.method, path: input.path }); throw error(); }
+      }
+      return request(input);
+    });
+  };
+  const calls = (transport: StripeFixtures, customerId: string) =>
+    transport.requests.filter(request => request.path === '/v1/customers/' + customerId).map(request => request.method);
+
+  const once = fixture();
+  once.transport.objects.set('cus_recheck', { id: 'cus_recheck', object: 'customer', email: 'recheck@example.invalid', metadata: {} });
+  failRechecks(once.transport, 'cus_recheck', 1);
+  expect(await once.payments.adoptCustomer('cus_recheck')).toEqual({ id: 'cus_recheck', email: 'recheck@example.invalid', adopted: true });
+  expect(calls(once.transport, 'cus_recheck')).toEqual(['GET', 'POST', 'GET', 'GET']);
+  expect(once.transport.objects.get('cus_recheck')!.metadata).toEqual({ gym_id: gymId });
+
+  const twice = fixture();
+  twice.transport.objects.set('cus_recheck', { id: 'cus_recheck', object: 'customer', email: 'recheck@example.invalid', metadata: {} });
+  failRechecks(twice.transport, 'cus_recheck', 2);
+  expect(await twice.payments.adoptCustomer('cus_recheck')).toEqual({ id: 'cus_recheck', email: 'recheck@example.invalid', adopted: true });
+  expect(calls(twice.transport, 'cus_recheck')).toEqual(['GET', 'POST', 'GET', 'GET']);
+
+  const missing = fixture();
+  missing.transport.objects.set('cus_recheck', { id: 'cus_recheck', object: 'customer', email: 'recheck@example.invalid', metadata: {} });
+  failRechecks(missing.transport, 'cus_recheck', 1, () => Object.assign(new Error('No such customer'), { statusCode: 404, code: 'resource_missing' }));
+  await expect(missing.payments.adoptCustomer('cus_recheck')).rejects.toThrow('No such customer');
+  expect(calls(missing.transport, 'cus_recheck')).toEqual(['GET', 'POST', 'GET']);
+
+  // Another gym sharing the Stripe account tags the customer between the write and the recheck: still refused.
+  const foreign = fixture();
+  foreign.transport.objects.set('cus_recheck', { id: 'cus_recheck', object: 'customer', email: 'recheck@example.invalid', metadata: {} });
+  const request = foreign.transport.request.bind(foreign.transport);
+  vi.spyOn(foreign.transport, 'request').mockImplementation(async input => {
+    const response = await request(input);
+    if (input.method === 'POST' && input.path === '/v1/customers/cus_recheck')
+      foreign.transport.objects.set('cus_recheck', { id: 'cus_recheck', object: 'customer', email: 'recheck@example.invalid',
+        metadata: { gym_id: '00000000-0000-7000-8000-000000000002' } });
+    return response;
+  });
+  await expect(foreign.payments.adoptCustomer('cus_recheck')).rejects.toThrow('another gym');
 });
 it.each(['concurrent', 'lost_response', 'missing', 'permission', 'failure'] as const)('handles detach %s without hiding a failed removal', async outcome => {
   const { payments, transport } = fixture();

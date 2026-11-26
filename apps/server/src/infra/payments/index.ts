@@ -77,6 +77,15 @@ export class PaymentObjectUntagged extends PaymentObjectNotForGym {
     super('Payment object has no gym metadata', options);
   }
 }
+/**
+ * A customer whose ownership was checked (a payment method's own, or a Checkout's) was deleted at the provider. For a
+ * payment method's own customer, nothing can charge the method for it any more.
+ */
+export class PaymentMethodCustomerDeleted extends PaymentObjectNotForGym {
+  constructor(options?: ErrorOptions) {
+    super('Customer was deleted', options);
+  }
+}
 interface CheckoutOptions {
   readonly mode: 'payment' | 'setup';
   readonly bankDebit?: { type: 'us_bank_account' } | { type: 'acss_debit'; intervalDescription: string };

@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { allocateInvoiceNumber, invoices, paymentMethods } from '@plaingym/db';
 import { FakeJobs } from '../../../infra/jobs/index.js';
+import { StripeFixtures } from '../../../infra/payments/stripe-fixtures.js';
+import { StripePayments } from '../../../infra/payments/stripe.js';
 import { createMembershipService } from '../memberships.js';
 import { createPaymentService } from '../payments.js';
 import { createTransitionEffects } from '../transitions/effects.js';
@@ -176,6 +178,32 @@ describe('assignment collection and review holds', () => {
     expect(rows.invoices.find(row => row.id === mixed.id)!.status).toBe('open');
     expect(rows.payments).toHaveLength(2);
     expect(await f.runner.charge(f.gymId, staff.id)).toEqual({ status: 'skipped', reason: 'not_auto_collectable' });
+  });
+  it('records the adoption and charges when the adoption recheck of an untagged Stripe customer fails once', async () => {
+    const f = await fixture(), bill = await invoice(f);
+    const transport = new StripeFixtures(f.gymId, Math.floor(f.clock.now().getTime() / 1000));
+    transport.objects.set('cus_test', { ...transport.objects.get('cus_fixture')!, id: 'cus_test', metadata: {} });
+    transport.objects.set('pm_4242', { ...transport.objects.get('pm_4242')!, customer: 'cus_test' });
+    await db.forGym(f.gymId, tx => tx.update(paymentMethods).set({ processorId: 'pm_4242' }).where(eq(paymentMethods.householdId, f.home.id)));
+    const request = transport.request.bind(transport);
+    let tagged = false, failed = 0;
+    vi.spyOn(transport, 'request').mockImplementation(async input => {
+      if (input.path === '/v1/customers/cus_test') {
+        if (input.method === 'POST') tagged = true;
+        else if (tagged && failed === 0) { failed++; throw Object.assign(new Error('Stripe outage'), { statusCode: 503 }); }
+      }
+      return request(input);
+    });
+    const provider = new StripePayments(f.gymId, { clock: f.clock, webhookSecret: 'fixture-secret', transport });
+    const runner = createChargeRunner({ ...f.serviceOptions, transitions: f.transitions, async payments() { return provider; } });
+    await runner.charge(f.gymId, bill.id);
+    expect(failed).toBe(1);
+    expect(transport.objects.get('cus_test')!.metadata).toEqual({ gym_id: f.gymId });
+    const rows = await f.read();
+    expect(rows.audits.filter(row => row.action === 'billing.customer.adopted')).toHaveLength(1);
+    expect(rows.audits.find(row => row.action === 'billing.customer.adopted')).toMatchObject({ targetType: 'household', targetId: f.home.id });
+    expect(rows.payments).toHaveLength(1);
+    expect(rows.invoices.find(row => row.id === bill.id)).toMatchObject({ status: 'paid' });
   });
   it('keeps identifiers and safe error details while continuing other invoices', async () => {
     const f = await fixture(); await assign(f);

@@ -6,7 +6,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { TestClock } from '../../core/clock.js';
-import type { DetachOptions } from '../../infra/payments/index.js';
+import { PaymentMethodCustomerDeleted, PaymentObjectNotForGym, type DetachOptions } from '../../infra/payments/index.js';
 import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
 import { StripePayments } from '../../infra/payments/stripe.js';
 import { createPaymentJobs } from './payments.jobs.js';
@@ -310,5 +310,45 @@ describe('detaching a card after a last-member erasure cleared the household’s
     await expect(f.run(erased(f.card.id, 'cus_csv'))).rejects.toBe(unavailable);
     expect(f.adoptCustomer).not.toHaveBeenCalled();
     expect(f.stripe.objects.get('cus_csv')!.metadata).toEqual({});
+  });
+});
+
+describe('detaching a card whose own Stripe customer was deleted', () => {
+  it('finishes with one card detached audit, no detach request and no adoption, also when the job runs again', async () => {
+    const f = await fixture({ householdCustomerId: 'cus_gone' });
+    const gone = await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_gone', type: 'card',
+      isDefault: false, revokedAt: f.clock.now() });
+    f.stripe.objects.set('cus_gone', { id: 'cus_gone', object: 'customer', deleted: true });
+    f.stripe.objects.set('pm_gone', { id: 'pm_gone', object: 'payment_method', created: f.stripe.now, type: 'card',
+      customer: 'cus_gone', metadata: {}, billing_details: { name: 'Payer' }, card: { brand: 'visa', last4: '4242', exp_month: 12, exp_year: 2030 } });
+    const payload = { paymentMethodId: gone.id, redactBillingDetails: true };
+    await expect(f.run(payload)).resolves.toBeUndefined();
+    expect(f.detachErrors[0]).toBeInstanceOf(PaymentMethodCustomerDeleted);
+    expect(f.adoptCustomer).not.toHaveBeenCalled();
+    const detached = await f.audits('billing.card.detached');
+    expect(detached).toHaveLength(1);
+    expect(detached[0]).toMatchObject({ actorKind: 'system', targetType: 'payment_method', targetId: gone.id });
+    expect(await f.audits('billing.customer.adopted')).toHaveLength(0);
+    await expect(f.run(payload)).resolves.toBeUndefined();
+    expect(await f.audits('billing.card.detached')).toHaveLength(1);
+    expect(f.stripe.requests.filter(request => request.method === 'POST' && request.path.startsWith('/v1/payment_methods/pm_gone'))).toHaveLength(0);
+    expect(f.stripe.objects.get('pm_gone')).toMatchObject({ customer: 'cus_gone', billing_details: { name: 'Payer' } });
+  });
+
+  it('still fails a card on another gym’s customer with the refusal and records no detach', async () => {
+    const f = await fixture({ customerMetadata: { gym_id: uuidv7() } });
+    const rejection = await f.run({ paymentMethodId: f.card.id, redactBillingDetails: true }).catch(error => error);
+    expect(rejection).toBeInstanceOf(PaymentObjectNotForGym);
+    expect(rejection).not.toBeInstanceOf(PaymentMethodCustomerDeleted);
+    expect(await f.audits('billing.card.detached')).toHaveLength(0);
+    expect(f.stripe.objects.get('pm_csv_pad')!.customer).toBe('cus_csv');
+  });
+
+  it('still fails a card whose customer is missing at Stripe', async () => {
+    const f = await fixture();
+    f.stripe.objects.delete('cus_csv');
+    await expect(f.run()).rejects.toBeDefined();
+    expect(f.detachErrors[0]).not.toBeInstanceOf(PaymentMethodCustomerDeleted);
+    expect(await f.audits('billing.card.detached')).toHaveLength(0);
   });
 });
