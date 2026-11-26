@@ -27,7 +27,7 @@ The app never holds the Docker socket. This area reports update status and sends
   `auto_update`), refused during a restore; an attempt that updated, rolled back or failed gets a second row
   under `health.auto_update.changed`, so the last change is found however many checks follow it. A replayed
   report (an instant already among the latest attempts) stores nothing new. Concurrent reports for one gym
-  serialize on a per-gym transaction advisory lock (`auto-update.lock.ts`), taken before the replay read; it locks
+  serialize on a per-gym transaction advisory lock (`gymAdvisoryLocks.autoUpdateRecords`), taken before the replay read; it locks
   no row, so the gym's other writes don't wait on it. Exit 2 means the input is invalid,
   which the host drops rather than retries.
   `autoUpdateAttemptSchema` accepts each result only with the facts it can know: `up_to_date` the running

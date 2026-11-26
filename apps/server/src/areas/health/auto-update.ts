@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, desc, eq, gt } from 'drizzle-orm';
 import { z } from 'zod';
-import { auditEvents, forGym, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
+import { auditEvents, forGym, lockGym, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { createTranslator, type Clock } from '@plaingym/shared';
 import { automaticUpdatesHealthDetailsSchema, instantSchema, type AutomaticUpdatesHealthDetails, type HealthTile } from '@plaingym/shared/contracts';
 import messages from '../../../../../locales/en/health/auto-update.json' with { type: 'json' };
 import { tenancyMode, type TenancyMode } from '../../core/tenancy.js';
 import { createAutoUpdateSettings, type AutoUpdateSettings } from '../settings/auto-update.js';
-import { lockAutoUpdateRecording } from './auto-update.lock.js';
 import { healthProvider } from './status.js';
 import type { StaffProviderContext } from '../../core/interfaces/extensions.js';
 
@@ -117,7 +116,7 @@ export function createAutoUpdateAttempts(options: Pick<AutoUpdateOptions, 'scope
       const attempt = autoUpdateAttemptSchema.parse(input), now = options.clock.now();
       await scope(gymId, async (tx) => {
         // Lock before reading: otherwise both replays can see no audit and each insert one.
-        await lockAutoUpdateRecording(tx, gymId);
+        await lockGym(tx, 'autoUpdateRecords', gymId);
         const replay = (await latestRows(tx)).some(row => autoUpdateAttemptSchema.safeParse(row.after).data?.attemptedAt === attempt.attemptedAt);
         if (replay) return;
         const row = { gymId, actorKind: 'system', targetType: 'auto_update', after: attempt, occurredAt: now } as const;

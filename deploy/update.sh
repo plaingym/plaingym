@@ -764,12 +764,20 @@ send_pending || true
 # and hour it last gave are the fallback while the app can't answer (or a restore holds it); with those, a run outside
 # the window stops without a result, and with no zone known yet a failed check is reported. An app that names no
 # start hour (one older than the setting) means 02:00.
-due() { in_window "$1" "$2" && ! tonight_done "$1"; }
+due() { in_window "$1" "$2" && ! tonight_done "$1" "$2"; }
 valid_window_start() { case "$1" in [0-9]|1[0-9]|2[01]) return 0 ;; *) return 1 ;; esac; }
-# Once a night: tonight's date is done in this zone, or, after a change of zone, a run less than six hours ago counts.
+# Once a night: with the same zone and start hour, tonight's date is done. After a change of start hour, tonight's
+# date or a run less than six hours ago counts; after a change of zone, only a run less than six hours ago does. So
+# moving the window just after a night's run doesn't start a second run the same evening. A state from before the
+# start hour was stored means 02:00.
 tonight_done() {
   night_zone=$(value_of "$STATE" night_zone)
-  if [ -z "$night_zone" ] || [ "$night_zone" = "$1" ]; then [ "$(value_of "$STATE" night)" = "$(TZ="$1" date +%F)" ]; return; fi
+  night_start=$(value_of "$STATE" night_start)
+  valid_window_start "$night_start" || night_start=2
+  if [ -z "$night_zone" ] || [ "$night_zone" = "$1" ]; then
+    [ "$(value_of "$STATE" night)" != "$(TZ="$1" date +%F)" ] || return 0
+    [ "$night_start" != "$2" ] || return 1
+  fi
   night_at=$(value_of "$STATE" night_at)
   case "$night_at" in ''|*[!0-9]*) return 1 ;; esac
   [ $(($(date -u +%s) - night_at)) -lt 21600 ]
@@ -805,6 +813,7 @@ fi
 state_set night "$(TZ="$timezone" date +%F)"
 state_set night_zone "$timezone"
 state_set night_at "$(date -u +%s)"
+state_set night_start "$window_start"
 
 version=$(image_version "$current")
 if valid_version "$version"; then from_version=$version; fi

@@ -13,6 +13,11 @@ describe('advisory lock registry', () => {
     expect(gymAdvisoryLockKey('chargeFailures', '0198a000-0000-7000-8000-000000000001'))
       .toBe('billing.runner.charge_failures:0198a000-0000-7000-8000-000000000001');
   });
+  it('registers the automatic update record lock under the key a running release already takes', () => {
+    const gymId = '0198a000-0000-7000-8000-000000000001';
+    expect(gymAdvisoryLockKey('autoUpdateRecords', gymId)).toBe('health.auto_update.record:' + gymId);
+    expect(gymAdvisoryLockKey('autoUpdateRecords', gymId)).not.toBe(gymAdvisoryLockKey('chargeFailures', gymId));
+  });
   it('takes a per-gym key: two gyms never share a lock, and no two locks share a name', () => {
     expect(gymAdvisoryLockKey('chargeFailures', 'gym-a')).not.toBe(gymAdvisoryLockKey('chargeFailures', 'gym-b'));
     const names = Object.values(gymAdvisoryLocks);

@@ -555,8 +555,8 @@ run asks the app for the timezone and start hour first (`window_start=`; an app
 too old to report one means 02:00), so a changed timezone counts from the new
 zone's next night; while the app can't answer, the zone and hour it last gave
 decide. The
-other runs stop there. A change of zone just after a night's run doesn't start a
-second run within six hours. `update.sh --patch --now` runs the check at any time.
+other runs stop there. A change of zone or of the start hour just after a
+night's run doesn't start a second run within six hours. `update.sh --patch --now` runs the check at any time.
 
 The app never holds the Docker socket. The updater asks the app, through
 `docker compose exec -T app gym-app auto-update check`, whether a restore is in
@@ -568,8 +568,8 @@ the **Automatic updates** tile on the Health page shows. Results the app can't
 take yet (it is down or restoring) wait in `auto-update.result`, one line each in
 order, and are sent first on the next run; a later result never replaces an
 unsent one, and a result the app refuses as invalid is dropped with a line in the
-journal. `auto-update.state` holds the timezone, the night of the last check (its
-date, zone and time), and the failed attempts per release.
+journal. `auto-update.state` holds the timezone and start hour, the night of the
+last check (its date, zone, start hour and time), and the failed attempts per release.
 Concurrent reports are serialized per gym before checking for a recent replay,
 so a replay of one of the gym's five latest attempts records nothing new.
 

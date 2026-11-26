@@ -753,6 +753,46 @@ expect_status 0 FAIL_AT=app_down FAKE_HOUR=02 --patch
 never 'auto-update check'
 expect_status 1 FAIL_AT=app_down FAKE_HOUR=21 --patch
 grep -Eq '^[0-9T:Z-]+ skipped check_failed - - - -$' "$case_dir/auto-update.result"
+# Moving the start hour just after a night's run waits six hours, so a window moved from 21:00 to 00:00 doesn't
+# update again three hours later on the next date.
+# night_state NIGHT START SECONDS_AGO: the state after a run on NIGHT in UTC with START, SECONDS_AGO seconds ago.
+night_state() {
+  sed -i 's|^timezone=.*|timezone=UTC|' "$FIXTURES/check"
+  printf 'timezone=UTC\nwindow_start=%s\nnight=%s\nnight_zone=UTC\nnight_start=%s\nnight_at=%s\n' \
+    "$2" "$1" "$2" "$(($(/bin/date -u +%s) - $3))" > "$case_dir/auto-update.state"
+}
+make_install window-start-earlier
+checks false true true 0
+night_state 2026-11-03 21 10800
+expect_status 0 FAKE_HOUR=00 FAKE_DAY=2026-11-04 --patch
+called 'auto-update check'
+[ ! -s "$RECORDS" ]; never 'curl '
+grep -qx night=2026-11-03 "$case_dir/auto-update.state"
+# The night after, the new start hour updates and is stored with the night.
+make_install window-start-earlier-next-night
+checks false true true 0
+night_state 2026-11-03 21 97200
+expect_status 0 FAKE_HOUR=00 FAKE_DAY=2026-11-05 --patch
+recorded "--result updated --from v1.2.3 --to v1.2.5"
+grep -qx night=2026-11-05 "$case_dir/auto-update.state"
+grep -qx night_start=0 "$case_dir/auto-update.state"
+# Moving the start hour later the same date still counts tonight's date as done.
+make_install window-start-later
+checks false true true 21
+night_state 2026-11-04 0 75600
+expect_status 0 FAKE_HOUR=21 FAKE_DAY=2026-11-04 --patch
+[ ! -s "$RECORDS" ]; never 'curl '
+grep -qx night_start=0 "$case_dir/auto-update.state"
+# A state from before the start hour was stored means 02:00: with the window unchanged, tonight's date decides.
+make_install window-start-unstored
+checks false true true 2
+printf 'timezone=America/Denver\nnight=2026-11-03\nnight_zone=America/Denver\nnight_at=%s\n' "$(/bin/date -u +%s)" > "$case_dir/auto-update.state"
+expect_status 0 FAKE_HOUR=02 --patch
+[ ! -s "$RECORDS" ]; never 'curl '
+printf 'timezone=America/Denver\nnight=2026-11-02\nnight_zone=America/Denver\nnight_at=%s\n' "$(/bin/date -u +%s)" > "$case_dir/auto-update.state"
+expect_status 0 FAKE_HOUR=02 --patch
+recorded "--result updated --from v1.2.3 --to v1.2.5"
+grep -qx night_start=2 "$case_dir/auto-update.state"
 
 # Another update holds the lock: this run does nothing.
 make_install locked

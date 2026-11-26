@@ -26,6 +26,8 @@ export const advisoryLocks = {
 export const gymAdvisoryLocks = {
   /** Staff dismissals of the gym's charge failure reports: two of one report run one after the other. */
   chargeFailures: 'billing.runner.charge_failures',
+  /** The gym's automatic update reports: concurrent ones run one after the other, before the replay read. */
+  autoUpdateRecords: 'health.auto_update.record',
 } as const;
 export type GymAdvisoryLock = keyof typeof gymAdvisoryLocks;
 
