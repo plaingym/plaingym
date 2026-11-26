@@ -46,6 +46,8 @@ export function GoLiveSettings() {
     | 'smsProviderReadFailed' | 'paymentsReadFailed' | null>(null);
   // The tick is kept as the past-due list it was given for, so it never counts for a list that has since changed.
   const [confirmBilling, setConfirmBilling] = useState(false), [confirmedKey, setConfirmedKey] = useState<string | null>(null);
+  // Set when a failed read closed the dialog: the read alert then takes the focus the dialog would return to a disabled switch.
+  const [readAlertFocus, setReadAlertFocus] = useState(false);
   const [checking, setChecking] = useState(false), [checkError, setCheckError] = useState<'reconcileError' | 'reconcileTimeout' | 'reconcileBusy' | null>(null);
   // The switches save the gym revision that every section of the page shares, so another section's save doesn't stale them.
   const gym = useGymSettings(), settings = gym.settings;
@@ -84,14 +86,21 @@ export function GoLiveSettings() {
   // A checklist read that failed leaves the one on screen (if any) older than the settings, or older than a refused switch.
   const behind = !!settings && !!checklist && settings.revision > checklist.revision, locked = busy || behind || gym.failed || readError;
   const checklistFailed = readError, readFailed = gym.failed || checklistFailed;
-  // A refusal whose follow-up read failed says why the switch didn't change, in the read failure's own alert.
-  const refusedUnread = readFailed && (message === 'changed' || message === 'justSaved') ? message : null;
+  // A refusal, a timed-out save or an unchecked Stripe whose follow-up read failed says what became of the save, in the read
+  // failure's own alert.
+  const refusedUnread = readFailed && (message === 'changed' || message === 'justSaved' || message === 'timeout'
+    || message === 'paymentsReadFailed') ? message : null;
   useEffect(() => { if (behind) void query.refetch(); }, [behind, settings?.revision, query.refetch]);
-  // The past-due dialog is modal, so it closes once no save is running if a read failed (the page's retry is behind it)
-  // or the list it asks about is empty.
+  // The past-due dialog is modal, so it closes once no save is running if a read failed (the page's retry is behind it),
+  // billing is already on (a save that timed out may have turned it on, leaving nothing to confirm), or the list it asks
+  // about is empty.
   useEffect(() => {
-    if (confirmBilling && !busy && (readFailed || !checklist?.pastDueMemberships.length)) { setConfirmBilling(false); setConfirmedKey(null); }
+    if (confirmBilling && !busy && (readFailed || checklist?.billingEnabled || !checklist?.pastDueMemberships.length)) {
+      setConfirmBilling(false); setConfirmedKey(null);
+      if (readFailed) setReadAlertFocus(true);
+    }
   }, [confirmBilling, busy, readFailed, checklist]);
+  useEffect(() => { if (!readFailed) setReadAlertFocus(false); }, [readFailed]);
   /**
    * A refused or conflicting save. A shared revision past the checklist's refetches it through `behind`, once; when the
    * settings did not move past it (their reload failed, or the server's revision went back), nothing else will.
@@ -104,7 +113,7 @@ export function GoLiveSettings() {
   }
   /** Retries every read that failed: the shared settings, and the checklist. */
   function retry() {
-    setMessage(null);
+    setMessage(null); setReadAlertFocus(false);
     if (gym.failed) gym.reload();
     if (checklistFailed || query.isError) reloadChecklist();
   }
@@ -115,7 +124,9 @@ export function GoLiveSettings() {
     }
     setBusy(true); setMessage(null);
     try {
-      const result = await gym.save((revision, signal) => api.PATCH('/api/settings/go-live', { signal, body: { revision, [name]: !checklist[name],
+      const result = await gym.save((revision, signal) => api.PATCH('/api/settings/go-live', { signal, body: { revision,
+        // The dialog's confirm only ever turns billing on, whatever a reload since it opened shows.
+        [name]: name === 'billingEnabled' && confirmDates ? true : !checklist[name],
         ...(confirmDates ? { confirmedPastDueDates: checklist.pastDueMemberships.map(({ id, revision, nextDueOn }) => ({ id, revision, nextDueOn })) } : {}),
       } }), { adopt, readAt: checklist.revision });
       const details = (result.error as { error?: { details?: { memberSmsEnabled?: unknown; billingEnabled?: unknown } } } | undefined)?.error?.details;
@@ -157,7 +168,7 @@ export function GoLiveSettings() {
   return <section className="space-y-4" aria-label={label('title')}>
     <h2 className="text-lg font-semibold">{label('title')}</h2>
     <p className="text-sm text-muted-foreground">{label('help')}</p>
-    {readFailed ? <Alert variant="error">{refusedUnread && label(refusedUnread + 'Unread') + ' '}{label('error')}
+    {readFailed ? <Alert variant="error" focusOnReveal={readAlertFocus}>{refusedUnread && label(refusedUnread + 'Unread') + ' '}{label('error')}
       <Button variant="outline" className="mt-3 sm:ml-3 sm:mt-0" onClick={retry}>{label('retry')}</Button></Alert>
       : message && <Alert variant="error" focusOnReveal={!confirmBilling}>{label(message)}</Alert>}
     {!checklist || !settings ? (busy || gym.loading) && <LoadingState label={label('loading')}/> : <>

@@ -90,6 +90,8 @@
   "justSaved": "Settings were just saved on this page. Check what is shown and try again.",
   "changedUnread": "These settings changed elsewhere, so the switch was not changed, and the latest values could not be loaded.",
   "justSavedUnread": "Settings were just saved on this page, so the switch was not changed, and the latest values could not be loaded.",
+  "timeoutUnread": "The save took too long to answer and may still have gone through, and the latest values could not be loaded.",
+  "paymentsReadFailedUnread": "Stripe could not be checked, so billing was not turned on, and the latest values could not be loaded.",
   "timeout": "The save took too long to answer and may still have gone through. Check the switches shown before trying again.",
   "retry": "Try again",
   "reconcileTitle": "Restored payments",

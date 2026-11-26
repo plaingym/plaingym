@@ -571,6 +571,91 @@ describe('go-live settings', () => {
     expect(screen.getByRole('dialog')).toBe(dialog);
     expect(within(dialog).getByRole<HTMLInputElement>('checkbox').checked).toBe(true);
   });
+  it('closes the past-due dialog when a timed-out save turned billing on, and never sends billing off', async () => {
+    // The server applied the save it never answered: the reloads show billing on at the next revision, same past-due list.
+    settingsReads.mockResolvedValueOnce(reply(200, { data: gymSettings(3) }))
+      .mockResolvedValue(reply(200, { data: { ...gymSettings(4), billingEnabled: true } }));
+    live.mockResolvedValueOnce(reply(200, overdue())).mockResolvedValue(reply(200, { data: { ...overdue().data, revision: 4, billingEnabled: true } }));
+    const user = userEvent.setup(); start();
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
+    const dialog = screen.getByRole('dialog', { name: 'Review past billing dates' });
+    await user.click(within(dialog).getByRole('checkbox'));
+    const stalled = stalledRequests(), timers = holdTimeouts(saveTimeoutMs);
+    try {
+      client.PATCH.mockImplementation(stalled.answer);
+      await user.click(within(dialog).getByRole('button', { name: 'Confirm dates and turn billing on' }));
+      await vi.waitFor(() => expect(stalled.signals).toHaveLength(1));
+      timers.expire(saveTimeoutMs);
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(await screen.findByRole('button', { name: 'Turn off: Billing' })).toBeDefined();
+      expect(screen.getByRole('alert').textContent).toContain('The save took too long to answer and may still have gone through');
+      expect(client.PATCH.mock.calls.length).toBeGreaterThan(0);
+      for (const [, init] of client.PATCH.mock.calls as [string, { body: UpdateGoLiveRequest }][]) expect(init.body.billingEnabled).not.toBe(false);
+    } finally { timers.restore(); }
+  });
+  it('sends billing on with the confirmed dates from the past-due dialog', async () => {
+    live.mockResolvedValue(reply(200, overdue())); client.PATCH.mockResolvedValue(reply(200, checklist(4, true)));
+    const user = userEvent.setup(); start();
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
+    const dialog = screen.getByRole('dialog', { name: 'Review past billing dates' });
+    await user.click(within(dialog).getByRole('checkbox'));
+    await user.click(within(dialog).getByRole('button', { name: 'Confirm dates and turn billing on' }));
+    const { id, revision, nextDueOn } = overdue().data.pastDueMemberships[0]!;
+    expect(client.PATCH).toHaveBeenCalledTimes(1);
+    expect(client.PATCH.mock.calls[0]![1].body).toEqual({ revision: 3, billingEnabled: true, confirmedPastDueDates: [{ id, revision, nextDueOn }] });
+  });
+  it('says a timed-out save may have gone through when the settings reload after it fails, and focuses that alert', async () => {
+    live.mockResolvedValue(reply(200, overdue()));
+    settingsReads.mockResolvedValueOnce(reply(200, { data: gymSettings(3) })).mockResolvedValue(reply(500));
+    const user = userEvent.setup(); start();
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
+    const dialog = screen.getByRole('dialog', { name: 'Review past billing dates' });
+    await user.click(within(dialog).getByRole('checkbox'));
+    const stalled = stalledRequests(), timers = holdTimeouts(saveTimeoutMs);
+    try {
+      client.PATCH.mockImplementation(stalled.answer);
+      await user.click(within(dialog).getByRole('button', { name: 'Confirm dates and turn billing on' }));
+      await vi.waitFor(() => expect(stalled.signals).toHaveLength(1));
+      timers.expire(saveTimeoutMs);
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      const alert = screen.getByRole('alert'), text = alert.textContent!;
+      const reason = 'The save took too long to answer and may still have gone through, and the latest values could not be loaded.';
+      expect(text.indexOf(reason)).toBe(0);
+      expect(text.indexOf('The request failed. Please try again.')).toBeGreaterThan(reason.length - 1);
+      expect(within(alert).getByRole('button', { name: 'Try again' })).toBeDefined();
+      await waitFor(() => expect(document.activeElement).toBe(alert));
+    } finally { timers.restore(); }
+  });
+  it('says Stripe was not checked when the checklist read after it fails, focuses that alert, and clears it on a good retry', async () => {
+    live.mockResolvedValueOnce(reply(200, overdue())).mockResolvedValueOnce(reply(500)).mockResolvedValue(reply(200, overdue()));
+    client.PATCH.mockResolvedValue({ response: { ok: false, status: 503 },
+      error: { error: { code: 'unavailable', details: { billingEnabled: ['read_failed'] } } } });
+    const user = userEvent.setup(); start();
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
+    const dialog = screen.getByRole('dialog', { name: 'Review past billing dates' });
+    await user.click(within(dialog).getByRole('checkbox'));
+    await user.click(within(dialog).getByRole('button', { name: 'Confirm dates and turn billing on' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    const alert = screen.getByRole('alert'), text = alert.textContent!;
+    const reason = 'Stripe could not be checked, so billing was not turned on, and the latest values could not be loaded.';
+    expect(text.indexOf(reason)).toBe(0);
+    expect(text.indexOf('The request failed. Please try again.')).toBeGreaterThan(reason.length - 1);
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    await user.click(within(alert).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Turn on: Billing' }).disabled).toBe(false);
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Turn on: Member emails' }).disabled).toBe(false);
+  });
+  it('shows a failed read with no dialog open without moving the focus to its alert', async () => {
+    live.mockResolvedValueOnce(reply(200, checklist())).mockResolvedValueOnce(reply(500));
+    client.PATCH.mockResolvedValueOnce(reply(409));
+    const user = userEvent.setup(); start();
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Billing' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('These settings changed elsewhere, so the switch was not changed');
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(document.activeElement).not.toBe(alert);
+  });
   it('keeps switches locked through overlapping explicit reloads until the latest read answers', async () => {
     let resolveFirst!: (value: unknown) => void, resolveSecond!: (value: unknown) => void;
     live.mockResolvedValueOnce(reply(200, checklist()))
