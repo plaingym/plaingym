@@ -20,11 +20,12 @@ Register handlers, then call `startJobsWorker(queue, options)`. Await
 handlers and lease heartbeats. `runNext()` drains one due job without starting a
 polling loop. The default process concurrency is four, the shared per-gym cap is
 one, and leases last 30 seconds with a heartbeat every third of the lease.
-Workers must use the same caps and register the same batch jobs. All workers coordinate their short cap-check and
+Workers must use the same caps and register the same batch and notice jobs. All workers coordinate their short cap-check and
 claim transactions with an advisory lock and `FOR UPDATE SKIP LOCKED`. Each claim
 counts live leases per gym and lane once (a CTE), leaves out each gym's lanes at
 their cap, then takes the earliest due job, so a gym's backlog never runs a cap
-check per row. Long batch work runs in its own lane (Batch lane, below).
+check per row. Long batch work and member notices each run in a lane of their own
+(Batch lane and Notices lane, below).
 
 Handlers execute outside transactions. They receive the persisted timezone,
 gym, attempt number, job ID, and injected clock, and open their own short database
@@ -175,7 +176,8 @@ read-only server (`isConnectionError` in `@plaingym/db`).
 
 A job registered with `{ lane: 'batch' }` (`handle` and `schedule` take it as their
 last argument; `JobRegistration.lane` carries it through `registerJobs`) runs in a
-per-gym batch lane with its own cap (default one), and every other job runs in the
+per-gym batch lane with its own cap (default one), a job registered with
+`{ lane: 'notices' }` in the notices lane (below), and every other job runs in the
 default lane under `perGymConcurrency`. Long batch work (the daily charge run, imports, exports,
 campaign scans and sends) then holds only its own lane: the gym's webhook
 dispatch, transition effects and notices are claimed alongside it instead of
@@ -186,11 +188,33 @@ enqueue as before and every worker must register the same jobs. Across gyms, a
 worker runs at most `batchConcurrency` batch jobs at once (at most its concurrency;
 default one less, at least one), so with two or more slots other gyms' batch work
 can't take every one. A single-slot worker shares its slot.
-`runNext()` claims from either lane. A job registered without a lane runs in the
+`runNext()` claims from any lane. A job registered without a lane runs in the
 default lane. `batch: { perGymConcurrency? }` tunes the batch cap;
 the runtime uses the default, and each batch job names
 its own lane in its registration (the daily charge run, imports, exports and
 campaign jobs). Queues that only enqueue (the CLI's, restore's) need no lane.
+
+## Notices lane
+
+A job registered with `{ lane: 'notices' }` runs in a per-gym notices lane with
+its own cap (`notices: { perGymConcurrency? }`, default one). It holds member
+notices that must reach members before a class: the staff booking cancellation
+notice (`bookings.cancel_notice`) and the class cancellation and restore notices
+(`announcements.cancellation`, `announcements.restore_notice`). A notice held by a
+slow mail server then holds only its own lane: the gym's waitlist promotions and
+other default-lane jobs, and its batch work, are claimed alongside it, and the
+gym's long batch job never holds its notices' lane. A gym runs one notice at a
+time, so a second notice of the same gym waits for the first. Across gyms, a
+worker runs at most `noticeConcurrency` notice jobs at once (at most its
+concurrency; default one less, at least one). With two or more slots, batch and
+notice jobs together also take at most one less than the worker's concurrency, so
+the default lane always keeps a slot; a single-slot worker shares its slot between
+every lane. Those shared slots are the one way batch work can delay a notice: when
+running batch and notice jobs (from any gyms) already fill them, a due notice waits
+for one to finish, and a due batch job likewise waits behind running notices. With
+the default four slots and caps that takes three at once, so a single-gym install,
+whose batch and notices lanes run one job each, never fills them. The
+runtime uses the defaults, and each notice job names its lane in its registration.
 
 ## Retention
 

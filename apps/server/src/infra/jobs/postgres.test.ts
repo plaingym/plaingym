@@ -961,6 +961,116 @@ describe('batch lane', () => {
   });
 });
 
+describe('notices lane', () => {
+  const name = (gymId: string) => gymId === gymA ? 'A' : 'B';
+  /** A queue with a held notice, a held batch job and a default-lane job, each recording `<job> <gym>` when it starts. */
+  function lanes(extra: Parameters<typeof queue>[0] = {}) {
+    const q = queue(extra), held = latch(), seen: string[] = [];
+    q.handle('notice', async (_, c) => { seen.push('notice ' + name(c.gymId)); await held.promise; }, { lane: 'notices' });
+    q.handle('batch', async (_, c) => { seen.push('batch ' + name(c.gymId)); await held.promise; }, { lane: 'batch' });
+    q.handle('work', async (_, c) => { seen.push('work ' + name(c.gymId)); });
+    q.handle('charge', async (_, c) => { seen.push('charge ' + name(c.gymId)); }, { lane: 'batch' });
+    q.handle('notice2', async (_, c) => { seen.push('notice2 ' + name(c.gymId)); }, { lane: 'notices' });
+    return { q, held, seen };
+  }
+  const status = async (jobName: string) => (await rows()).filter((r) => r.name === jobName).map((r) => r.status);
+  it("runs the gym's default-lane and batch jobs while a notice is held", async () => {
+    const { q, held, seen } = lanes();
+    await q.enqueue('notice', {}, options);
+    const worker = startJobsWorker(q, { concurrency: 4, pollMs: 2 });
+    try {
+      await until(async () => seen.length === 1);
+      await q.enqueue('work', {}, options); await q.enqueue('charge', {}, options);
+      await until(async () => (await status('work'))[0] === 'succeeded' && (await status('charge'))[0] === 'succeeded');
+      expect(await status('notice')).toEqual(['running']);
+    } finally { held.resolve(); await worker.stop(); }
+  });
+  it("runs a notice while the gym's batch job is held", async () => {
+    const { q, held, seen } = lanes();
+    await q.enqueue('batch', {}, options);
+    const worker = startJobsWorker(q, { concurrency: 4, pollMs: 2 });
+    try {
+      await until(async () => seen.length === 1);
+      await q.enqueue('notice2', {}, options);
+      await until(async () => (await status('notice2'))[0] === 'succeeded');
+      expect(await status('batch')).toEqual(['running']);
+    } finally { held.resolve(); await worker.stop(); }
+  });
+  it('runs one notice per gym at a time by default, and as many as its notices cap allows', async () => {
+    const one = lanes();
+    await one.q.enqueue('notice', {}, options); await one.q.enqueue('notice2', {}, options);
+    const first = one.q.runNext(); await until(async () => one.seen.length === 1);
+    try {
+      // The held notice fills the gym's notices lane, so the second one isn't claimed.
+      expect(await one.q.runNext()).toBe(false);
+      expect(await status('notice2')).toEqual(['pending']);
+    } finally { one.held.resolve(); await first; }
+    expect(await one.q.runNext()).toBe(true);
+    expect(one.seen).toEqual(['notice A', 'notice2 A']);
+
+    await database.forSystem((tx) => tx.delete(jobs));
+    const two = lanes({ notices: { perGymConcurrency: 2 } });
+    await two.q.enqueue('notice', {}, options); await two.q.enqueue('notice', {}, options);
+    // Claimed one after the other (a claim that finds the claim lock taken skips its turn); both then run at once.
+    const both = [two.q.runNext()]; await until(async () => two.seen.length === 1);
+    try { both.push(two.q.runNext()); await until(async () => two.seen.length === 2); }
+    finally { two.held.resolve(); await Promise.all(both); }
+    expect(two.seen).toEqual(['notice A', 'notice A']);
+    expect(() => queue({ notices: { perGymConcurrency: 0 } })).toThrow('notices.perGymConcurrency must be a positive integer');
+  });
+  it("keeps a slot for the default lane while one gym's batch job and another's notice are held", async () => {
+    const { q, held, seen } = lanes();
+    await q.enqueue('batch', {}, options); await q.enqueue('notice', {}, { ...options, gymId: gymB });
+    // Three slots: batch and notice jobs together take two, and one stays for the default lane.
+    const worker = startJobsWorker(q, { concurrency: 3, pollMs: 2 });
+    try {
+      await until(async () => seen.length === 2);
+      await q.enqueue('notice2', {}, options); await q.enqueue('work', {}, options);
+      await until(async () => (await status('work'))[0] === 'succeeded');
+      // Gym A's notices lane is free, but the worker has no slot left for a notice.
+      await delay(50);
+      expect(await status('notice2')).toEqual(['pending']);
+      expect(seen.sort()).toEqual(['batch A', 'notice B', 'work A']);
+    } finally { held.resolve(); await worker.stop(); }
+  });
+  it("keeps the second of two slots for the default lane while a gym's batch job is held", async () => {
+    const { q, held, seen } = lanes();
+    await q.enqueue('batch', {}, options);
+    const worker = startJobsWorker(q, { concurrency: 2, pollMs: 2 });
+    try {
+      await until(async () => seen.length === 1);
+      // Gym B's notices lane and gym A's are free, yet both notices wait: the batch job holds the one shared slot.
+      await q.enqueue('notice', {}, { ...options, gymId: gymB }); await q.enqueue('notice2', {}, options);
+      await q.enqueue('work', {}, options);
+      await until(async () => (await status('work'))[0] === 'succeeded');
+      await delay(50);
+      expect(await status('notice')).toEqual(['pending']);
+      expect(await status('notice2')).toEqual(['pending']);
+    } finally { held.resolve(); await worker.stop(); }
+  });
+  it('shares a single slot between every lane, one job after another', async () => {
+    const q = queue(); let active = 0, most = 0; const seen: string[] = [];
+    const job = (label: string) => async () => {
+      active++; most = Math.max(most, active); seen.push(label);
+      await delay(20); active--;
+    };
+    q.handle('notice', job('notice'), { lane: 'notices' }); q.handle('batch', job('batch'), { lane: 'batch' });
+    q.handle('work', job('work'));
+    for (const jobName of ['notice', 'batch', 'work']) await q.enqueue(jobName, {}, options);
+    // Gym B's jobs would otherwise run alongside gym A's in their own lanes.
+    for (const jobName of ['notice', 'batch', 'work']) await q.enqueue(jobName, {}, { ...options, gymId: gymB });
+    const worker = startJobsWorker(q, { concurrency: 1, pollMs: 2 });
+    try { await until(async () => (await rows()).every((r) => r.status === 'succeeded')); } finally { await worker.stop(); }
+    expect(seen.sort()).toEqual(['batch', 'batch', 'notice', 'notice', 'work', 'work']);
+    expect(most).toBe(1);
+  });
+  it('refuses more notice slots than the worker has', () => {
+    const q = queue();
+    expect(() => startJobsWorker(q, { concurrency: 2, noticeConcurrency: 3 })).toThrow('noticeConcurrency must not exceed concurrency');
+    expect(() => startJobsWorker(q, { noticeConcurrency: 0 })).toThrow('noticeConcurrency must be a positive integer');
+  });
+});
+
 describe('retention', () => {
   const finished = (status: 'succeeded' | 'failed' | 'pending' | 'running', days: number, extra: Partial<typeof jobs.$inferInsert> = {}) => ({
     gymId: gymA, name: 'work', payload: { version: 1, timezone: 'UTC', value: {} }, status, attempts: 1, maxAttempts: 1,

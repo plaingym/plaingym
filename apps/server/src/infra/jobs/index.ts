@@ -22,8 +22,11 @@ export interface JobContext {
   readonly clock: Clock;
 }
 export type JobHandler = (payload: unknown, context: JobContext) => Promise<void>;
-/** `batch` runs long batch work in the gym's batch lane, apart from its other jobs. */
-export type JobLane = 'batch';
+/**
+ * `batch` runs long batch work in the gym's batch lane, and `notices` member notices in the gym's notices lane, each
+ * apart from the gym's other jobs.
+ */
+export type JobLane = 'batch' | 'notices';
 export interface HandleOptions {
   readonly lane?: JobLane;
 }
@@ -251,4 +254,4 @@ export class FakeJobs implements Jobs, JobRecovery {
 }
 
 export { PostgresJobs, PostgresJobStatsQuery, retentionJob, defaultSucceededRetentionDays, startJobsWorker } from './postgres.js';
-export type { BatchLaneOptions, JobRetentionOptions, PostgresJobsOptions, WorkerOptions, JobWorker, SystemJobContext, SystemJobHandler, SystemJobOptions } from './postgres.js';
+export type { BatchLaneOptions, NoticeLaneOptions, JobRetentionOptions, PostgresJobsOptions, WorkerOptions, JobWorker, SystemJobContext, SystemJobHandler, SystemJobOptions } from './postgres.js';

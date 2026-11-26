@@ -201,12 +201,16 @@ same mailer and SMS options as the promotion notice (`enqueueCancelNotice`,
 The same transaction first queues the promotion request for the freed place
 (`bookings.promote`, keyed `booking-cancelled:<bookingId>`, which the route's
 after-commit request then finds). A rollback drops both jobs. Cancellation
-notices run on their own lane, the job queue's batch lane, which no other booking
+notices run on their own lane, the job queue's notices lane, which no other booking
 job uses, so a slow mail server or SMS provider can't delay a waitlist promotion:
 while a notice is sending or waiting to retry, the gym's promotions, including a
 failed promotion's retry, are still claimed in the default lane before the
-cancellation cutoff. In return a notice can wait while the gym's other batch work
-(a charge run, an import or an announcement) holds that lane.
+cancellation cutoff. The gym's batch work (a charge run, an import or an
+announcement) runs in the batch lane, so it doesn't hold the notice's lane either;
+a notice waits behind batch work only when the worker's slots shared by batch and
+notice jobs are full (`infra/jobs/README.md`, Notices lane). Another member notice
+of the gym (a class cancellation or restore notice) can, as the lane runs one job
+per gym at a time.
 
 After commit the handler attempts only the chosen channels, each under its own
 durable key (`booking-cancel-email:<bookingId>`, `booking-cancel-sms:<bookingId>`),

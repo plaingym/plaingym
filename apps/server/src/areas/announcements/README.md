@@ -173,7 +173,10 @@ opt-out or suppress transactional mail.
 The schedule service enqueues `announcements.cancellation` in the cancellation's
 transaction with a snapshot of booked and waitlisted member IDs, the session ID,
 an optional plain text note and the chosen `channels` (`email`, `sms`, or both).
-Its job key is `schedule-cancel-notice:<scope>`. The scope is the session ID, or
+Its job key is `schedule-cancel-notice:<scope>`. The job runs in the queue's notices lane
+(`infra/jobs/README.md`, Notices lane), so a slow mail server holding it never holds the gym's
+waitlist promotions, and the gym's batch work (an announcement send, a charge run) holds it
+only when the worker's slots shared by batch and notice jobs are full. The scope is the session ID, or
 `<sessionId>.<round>` for a cancellation after the session's `round`th restore: such a
 payload carries `round` (a positive integer, in both stored shapes), and one without it is
 round 0. A never-restored session's job key, delivery keys, digests and payloads are
@@ -300,6 +303,7 @@ came back, the schedule service enqueues `announcements.restore_notice` (`restor
 in the restore's transaction, with the restored member IDs (booked and waitlisted,
 sorted), the chosen `channels` (both when none were chosen) and `round`, the session's
 restore count. There is no note. Its job key is `schedule-restore-notice:<sessionId>.<round>`.
+Like the cancellation notice, it runs in the notices lane.
 It follows the cancellation notice's rules: for email, the member-email switch, address
 groups with their opt-out and deliverability checks, a member's own email or else their
 household's billing email, the canonical HTTPS origin, the demo outbox, one delivery per

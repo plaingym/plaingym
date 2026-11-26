@@ -10,8 +10,10 @@ export function createAnnouncementJobs(read: () => AnnouncementsService = announ
   return [
     { id: announcementSendJob, lane: 'batch', async handler(payload, context) { await read().run(payload, context.gymId); } },
     { id: announcementSmsJob, lane: 'batch', async handler(payload, context) { await read().runSms(payload, context.gymId); } },
-    { id: cancellationNoticeJob, async handler(payload, context) { await cancellation().run(payload, context.gymId); } },
-    { id: restoreNoticeJob, async handler(payload, context) { await restore().run(payload, context.gymId); } },
+    // Member notices about one session run in the notices lane: a slow mailer never holds the gym's waitlist
+    // promotions, and the gym's announcement send in the batch lane doesn't hold the notices' lane.
+    { id: cancellationNoticeJob, lane: 'notices', async handler(payload, context) { await cancellation().run(payload, context.gymId); } },
+    { id: restoreNoticeJob, lane: 'notices', async handler(payload, context) { await restore().run(payload, context.gymId); } },
   ];
 }
 export const jobs = createAnnouncementJobs();

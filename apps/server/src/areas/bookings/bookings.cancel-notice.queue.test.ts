@@ -67,9 +67,9 @@ async function fixture() {
   return { gymId, clock, queue, delivery, blocking, release, cancel, status, sent, drain, a, b, wa, wb };
 }
 
-it('registers the cancellation notice, and no other booking job, in the batch lane', () => {
+it('registers the cancellation notice, and no other booking job, in the notices lane', () => {
   expect(Object.fromEntries(bookingJobs.map(job => [job.id, job.lane ?? 'default']))).toEqual({
-    [promotionJob]: 'default', [noticeJob]: 'default', [cancelNoticeJob]: 'batch', 'bookings.recover': 'default' });
+    [promotionJob]: 'default', [noticeJob]: 'default', [cancelNoticeJob]: 'notices', 'bookings.recover': 'default' });
 });
 
 it('promotes both freed places before the cutoff while one cancellation email is held', async () => {
@@ -83,7 +83,7 @@ it('promotes both freed places before the cutoff while one cancellation email is
 
   expect((await f.cancel(f.b.id, { notify: true, channels: ['email'] })).status).toBe(200);
   // The default lane is still free: Cy's promotion notice, Bea's promotion and Dee's promotion notice all run.
-  // Bea's own notice waits for the gym's batch lane, which Ana's held notice keeps.
+  // Bea's own notice waits for the gym's notices lane, which Ana's held notice keeps.
   await f.drain();
   expect(f.clock.now() < cutoff).toBe(true);
   expect(await f.status(f.b.id)).toBe('cancelled');

@@ -213,7 +213,8 @@ Jobs live in the `jobs` table and run in the server process (`infra/jobs/README.
 Workers claim with `FOR UPDATE SKIP LOCKED`, hold a 30-second lease with a
 heartbeat, and run at most one job per gym and lane at a time (four per
 process), so one gym's backlog never starves another. Long batch work (the daily
-charge run, imports, exports, campaigns) runs in its own lane beside the gym's
+charge run, imports, exports, campaigns) and member notices about a class (a
+cancellation or restore notice) each run in a lane of their own beside the gym's
 other jobs. Jobs are at-least-once, so every
 external effect uses an idempotency key. Cron schedules are evaluated per gym in
 the gym's timezone. Finished jobs are pruned on a retention schedule.

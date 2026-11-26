@@ -186,7 +186,7 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
     ...(options.sms ? { sms: options.sms } : {}) });
   /**
    * Queues the promotion request for the freed place, then the notice, both in the cancelling transaction, so a
-   * rollback drops both. The notice runs in the batch lane (`bookings.jobs.ts`), apart from the promotions, so a slow
+   * rollback drops both. The notice runs in the notices lane (`bookings.jobs.ts`), apart from the promotions, so a slow
    * or retrying notice never holds them up. The route's after-commit request then finds this job by its key.
    */
   async function enqueueCancelNotice(transaction: JobTransaction, notice: CancelNotice & { sessionId: string }, timezone: string) {

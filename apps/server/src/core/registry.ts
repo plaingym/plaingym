@@ -50,7 +50,10 @@ export function route<const C extends RouteConfig>(
 export interface JobRegistration extends RegistryEntry {
   readonly handler: JobHandler;
   readonly cron?: string;
-  /** `batch` for long work that must not hold up the gym's other jobs (`infra/jobs/README.md`, Batch lane). */
+  /**
+   * `batch` for long work that must not hold up the gym's other jobs, `notices` for member notices that must neither
+   * hold up the gym's other jobs nor wait behind its batch work (`infra/jobs/README.md`, Batch lane and Notices lane).
+   */
   readonly lane?: JobLane;
 }
 export interface RenderedEmail {

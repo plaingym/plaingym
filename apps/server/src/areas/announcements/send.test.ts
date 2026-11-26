@@ -27,6 +27,9 @@ import { announcementSendJob, configureAnnouncements, createAnnouncementsService
 import { issueUnsubscribeLink } from './unsubscribe.js';
 import { announcementRecoveryJob, createAnnouncementRecoveryJobs } from './recovery.js';
 import * as template from '../../emails/announcements/send.js';
+import { cancellationNoticeJob } from './cancellation.js';
+import { restoreNoticeJob } from './restored.js';
+import { announcementSmsJob } from './send.sms.js';
 
 const db = useTestDatabase(), factory = createFactories(db), origin = 'https://gym.example.test';
 const draft = announcementDraftSchema.parse({ subject: 'Closed Monday', body: 'See you Tuesday.\n\nhttps://example.test/classes' });
@@ -395,6 +398,10 @@ it('returns cross-gym 404 for an announcement and isolates the history and job',
   expect(await a.service.list(a.gymId)).toMatchObject({ data: [] });
   await expect(a.service.run({ announcementId: row.id }, a.gymId)).rejects.toMatchObject({ code: 'not_found' });
   expect(a.email.messages).toHaveLength(0);
+});
+it('registers the sends in the batch lane and the class cancellation and restore notices in the notices lane', () => {
+  expect(Object.fromEntries(createAnnouncementJobs().map(job => [job.id, job.lane ?? 'default']))).toEqual({
+    [announcementSendJob]: 'batch', [announcementSmsJob]: 'batch', [cancellationNoticeJob]: 'notices', [restoreNoticeJob]: 'notices' });
 });
 it('uses the production registrations for request, batch lane, delivery and history', async () => {
   const f = await fixture(); await f.member(); configureAnnouncements(f.service);
