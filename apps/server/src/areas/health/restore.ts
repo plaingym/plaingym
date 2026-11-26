@@ -4,8 +4,8 @@ import { markDownload, RestoreFailure, restoreTexts, s3Reason } from './restore.
 import { mkdtemp, readdir, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { z } from 'zod';
-import { and, desc, eq, ne } from 'drizzle-orm';
-import { auditEvents, backupRuns, gyms, writeAudit } from '@plaingym/db';
+import { and, desc, eq, ne, sql } from 'drizzle-orm';
+import { auditEvents, backupRuns, gyms, uuidv7 } from '@plaingym/db';
 // Restore infrastructure uses its dedicated maintenance connection, including in the standalone CLI.
 // eslint-disable-next-line no-restricted-imports
 import { openConnection, scopedDatabase } from '@plaingym/db/client';
@@ -27,15 +27,25 @@ import { SnapshotContentError } from './backups.content.js';
 import { decryptSnapshot, readSnapshotJson } from './restore.content.js';
 
 /**
- * Whether the restored `jobs` table has its failure counter. A newer release can resume a restore that an older one
- * stopped after rekeying, on a database its normal migration hasn't reached yet, so the steps below leave it out then.
+ * The columns of the restored tables the resume steps write or read. A newer release can resume a restore that an
+ * older one stopped after rekeying, on a database its normal migration hasn't reached yet, so the steps below name
+ * only columns that database has.
  */
-async function hasJobFailureCount(connection: Pick<ReturnType<typeof openConnection>, 'sql'>): Promise<boolean> {
-  const [column] = await connection.sql<{ present: boolean }[]>`select exists (
-    select 1 from information_schema.columns
-    where table_schema = 'public' and table_name = 'jobs' and column_name = 'failure_count'
-  ) as present`;
-  return column?.present === true;
+async function readResumeColumns(connection: Pick<ReturnType<typeof openConnection>, 'sql'>) {
+  const rows = await connection.sql<{ table_name: string; column_name: string }[]>`select table_name, column_name
+    from information_schema.columns
+    where table_schema = 'public' and table_name in ('jobs', 'audit_events', 'backup_runs', 'gyms')`;
+  const present = new Set(rows.map(row => `${row.table_name}.${row.column_name}`));
+  return { has: (table: string, column: string): boolean => present.has(`${table}.${column}`) };
+}
+
+const beforeAcknowledgement = 'This restore was started by a release before v0.8.0; resume it with that release, then update';
+/** The resume steps set `jobs.acknowledged_at`, so a database without it is refused before they change anything. */
+async function assertResumableSchema(database: PostgresMaintenance) {
+  const connection = openConnection(database.url, 1);
+  try {
+    if (!(await readResumeColumns(connection)).has('jobs', 'acknowledged_at')) throw new RestoreFailure(beforeAcknowledgement);
+  } finally { await connection.close(); }
 }
 
 /** Durable, idempotent publication before the restore journal can become complete. */
@@ -43,7 +53,8 @@ export async function enqueueRestoreReconciliation(database: PostgresMaintenance
   const connection = openConnection(database.url, 1);
   try {
     const scope = scopedDatabase(connection.db);
-    const queue = new PostgresJobs({ database: scope, clock, failureCountColumn: await hasJobFailureCount(connection) });
+    // Enqueueing then names only the columns it sets, whatever later columns the restored `jobs` table lacks.
+    const queue = new PostgresJobs({ database: scope, clock, failureCountColumn: false });
     for (const gymId of await database.gymIds()) {
       const request = await scope.forGym(gymId, async tx => {
         const [gym] = await tx.select({ timezone: gyms.timezone }).from(gyms).where(eq(gyms.id, gymId));
@@ -54,8 +65,11 @@ export async function enqueueRestoreReconciliation(database: PostgresMaintenance
         if (!gym || !restore) throw new RestoreFailure('Restored gym receipt is missing');
         const [published] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
           eq(auditEvents.gymId, gymId), eq(auditEvents.action, 'billing.runner.restore_requested'), eq(auditEvents.targetId, restore.id))).limit(1);
-        if (!published) await writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.runner.restore_requested',
-          targetType: 'restore', targetId: restore.id, after: { snapshotAt }, occurredAt: clock.now() });
+        // Names only the columns it sets, and reads nothing back, so a later audit column doesn't break a resume.
+        if (!published) await tx.execute(sql`insert into ${auditEvents}
+            (id, gym_id, actor_kind, action, target_type, target_id, after, occurred_at)
+          values (${uuidv7()}::uuid, ${gymId}::uuid, 'system', 'billing.runner.restore_requested', 'restore',
+            ${restore.id}::uuid, ${JSON.stringify({ snapshotAt })}::jsonb, ${clock.now().toISOString()}::timestamptz)`);
         return { restoreId: restore.id, snapshotAt, timezone: gym.timezone };
       });
       await queue.enqueue('billing.runner.restore', { restoreId: request.restoreId, snapshotAt }, {
@@ -83,7 +97,8 @@ export async function settleInterruptedBackups(database: PostgresMaintenance, sn
       return settled.length + failed.length;
     });
     const jobs = await new PostgresJobs({ database: scope, clock }).failInterrupted([manualBackupJob, 'health.backup'],
-      { at: clock.now(), reason: 'Interrupted by the restored snapshot', countFailure: await hasJobFailureCount(connection) });
+      { at: clock.now(), reason: 'Interrupted by the restored snapshot',
+        countFailure: (await readResumeColumns(connection)).has('jobs', 'failure_count') });
     logInfo('restore.backups_settled', { runs, jobs });
   } finally { await connection.close(); }
 }
@@ -287,6 +302,8 @@ export class RestoreService {
         () => o.checkpoint?.('secret_field'));
       await save('rekeyed');
     }
+    // A journal past the rekey resumes on the schema the release that wrote it migrated to.
+    await assertResumableSchema(o.database);
     const current = resolve(o.uploadsDirectory), previous = current + '.previous-' + state.id;
     // Staging and uploads must be on the same data volume so both renames are atomic.
     await privateDirectory(dirname(current));

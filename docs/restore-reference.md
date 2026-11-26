@@ -105,6 +105,7 @@ and logged again if they recur after a successful check.
 | `Restore journal does not match staged snapshot` | The staged manifest doesn't match the restore journal. Preserve both and investigate. |
 | `Current install key changed during restore` | Restore the destination APP_ENCRYPTION_KEY used when this restore began before resuming. |
 | `Upload storage changed during restore` | Restore the uploads storage configuration used when this restore began before resuming. |
+| `This restore was started by a release before v0.8.0; resume it with that release, then update` | A restore an older release stopped after rekeying can't be resumed by this release: start the release that began the restore (the `APP_IMAGE` it ran), let it resume, then update. Nothing was changed; the journal and staging are kept. |
 | `Unexpected uploads directory during restore` | An uploads directory appeared during the switch. Preserve the current and staged trees and investigate. |
 | `Restored uploads tree missing` | The staged and destination upload trees are missing. Preserve the journal and recover the staged files before resuming. |
 | `MAINTENANCE_DATABASE_URL must name the maintenance database role` | The user in MAINTENANCE_DATABASE_URL: the maintenance commands (migrate, snapshot, restore, resume, rotate-key, restore-connect) connect only as `maintenance`. |

@@ -64,9 +64,9 @@ export interface PostgresJobsOptions {
   /** Tunes the batch lane; jobs registered with `{ lane: 'batch' }` run in it with or without this option. */
   readonly batch?: BatchLaneOptions;
   /**
-   * Whether `jobs.failure_count` exists. Default true. False only for a restore that a newer release resumes before
-   * its normal migration adds the column: enqueueing then names only the columns it sets, and `failInterrupted`
-   * leaves the counter out unless told otherwise.
+   * Whether `jobs.failure_count` exists. Default true. False makes enqueueing name only the columns it sets, which a
+   * restore resume uses whatever the restored schema (a newer release can resume before its normal migration), and
+   * `failInterrupted` then leaves the counter out unless told otherwise.
    */
   readonly failureCountColumn?: boolean;
 }

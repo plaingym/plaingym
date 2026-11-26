@@ -195,6 +195,19 @@ A restart resumes without needing to retain the age private identity.
 Before the rekey receipt it repeats reset/restore/migrate/rekey from verified
 staging; after that receipt it resumes the recorded uploads switch. Completed
 journals also finish any interrupted staging/previous-uploads cleanup.
+
+A journal past the rekey receipt can be resumed by a newer release than the one
+that started the restore, on the schema that release migrated to, before the newer
+release's own migration runs. So the statements after the rekey name only the
+columns they set or read: settling interrupted backups leaves the job failure
+counter out when the restored `jobs` table lacks it, the reconciliation job insert
+names only the columns it sets, and the `billing.runner.restore_requested` audit
+is inserted by named columns without reading the row back. Settlement sets
+`jobs.acknowledged_at`, so a restored schema without that column (one before
+v0.8.0) is refused right after the rekey receipt, before any uploads step this
+resume would repeat: the database, the journal, staging, the uploads (wherever the
+journal's phase left them) and the closed gate stay as they were. Resume it with
+the release that started the restore.
 Container startup runs recovery and migrations before starting the HTTP server.
 
 The application entry point must connect the gate and system-job scheduler.
