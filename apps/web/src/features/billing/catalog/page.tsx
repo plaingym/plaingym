@@ -161,5 +161,5 @@ export function CatalogPage() {
   const bootstrap = useBootstrap();
   if (bootstrap.isPending) return <p role="status" data-loading>{text('loading')}</p>;
   if (!bootstrap.data?.session || !canStaff(bootstrap.data.session.roles, 'plans.manage')) return <Alert variant="error">{text('noAccess')}</Alert>;
-  return <div className="space-y-5" key={bootstrap.data.gym.id}><CatalogWorkspace gymId={bootstrap.data.gym.id}/><PackCatalog gymId={bootstrap.data.gym.id}/><DiscountCatalog gymId={bootstrap.data.gym.id}/></div>;
+  return <div className={cn('space-y-5', userNames)} key={bootstrap.data.gym.id}><CatalogWorkspace gymId={bootstrap.data.gym.id}/><PackCatalog gymId={bootstrap.data.gym.id}/><DiscountCatalog gymId={bootstrap.data.gym.id}/></div>;
 }

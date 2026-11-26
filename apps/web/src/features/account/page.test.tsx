@@ -6,6 +6,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { AccountSummary } from '@plaingym/shared/contracts';
 import type { ShellBootstrap } from '../../app/services.js';
+import { breaksAnywhere } from '../../components/ui/wrap.test-helper.js';
 import { onApiError } from '../../lib/api.js';
 import { AccountRequestError, createAccountClient, type AccountClient } from './client.js';
 import { instantLabel } from '../../lib/instant.js';
@@ -124,6 +125,28 @@ describe('your account page', () => {
     expect(await screen.findByText(/can't send email yet/)).toBeTruthy();
     expect(screen.getByText('Not set')).toBeTruthy();
     expect(screen.getByText('Off: this gym can\'t send email')).toBeTruthy();
+  });
+
+  it('wraps unbroken names in the details, the pending notice and the messages through the page rule', async () => {
+    const wraps = (element: Element) => {
+      expect(breaksAnywhere(element)).toBe(true);
+      // Inherited from the page, not repeated on the element.
+      expect(element.className).not.toContain('wrap-anywhere');
+    };
+    const household = 'H'.repeat(60), pending = 'p'.repeat(47) + '@example.test', typed = 'x'.repeat(60);
+    start({ households: [{ name: household, scope: 'payer' }], pendingEmail: { email: pending, expiresAt: '2026-11-12T11:00:00.000Z' } });
+    wraps((await screen.findByText(content => content.includes(household))).closest('dd')!);
+    wraps(screen.getByText(content => content.includes(pending)));
+    await userEvent.type(screen.getByLabelText('New email'), typed);
+    await userEvent.click(screen.getByRole('button', { name: 'Send link' }));
+    wraps(await screen.findByRole('alert'));
+    await userEvent.clear(screen.getByLabelText('New email'));
+    const moved = 'm'.repeat(47) + '@example.test';
+    await userEvent.type(screen.getByLabelText('New email'), moved);
+    await userEvent.click(screen.getByRole('button', { name: 'Send link' }));
+    const sent = await screen.findByText(content => content.includes(moved));
+    expect(sent.getAttribute('role')).toBe('status');
+    wraps(sent);
   });
 
   describe('password change', () => {

@@ -7,6 +7,8 @@ import type { ClassPack, ShellBootstrap } from '@plaingym/shared/contracts';
 import { canStaff, type StaffRole } from '@plaingym/shared';
 import { ShellServicesContext } from '../../../app/context.js';
 import { createShellServices } from '../../../app/services.js';
+import { userNames } from '../../../components/ui/page.js';
+import { breaksAnywhere } from '../../../components/ui/wrap.test-helper.js';
 import { ApiError } from '../../../lib/api.js';
 import { createRegistries } from '../../../lib/registries.js';
 import { packClient, type PackClient } from './api.js';
@@ -116,6 +118,13 @@ it('lists archived packs only when requested', async () => {
   start(<PackCatalog gymId={id(1)} client={api}/>);
   await screen.findByText(pack.name); expect(screen.queryByText('Old pack')).toBeNull();
   fireEvent.click(screen.getByLabelText('Show archived packs')); expect(screen.getByText('Old pack')).toBeDefined();
+});
+it('wraps an unbroken pack name through the plans page rule', async () => {
+  const api = client(), name = 'P'.repeat(60); vi.mocked(api.packs).mockResolvedValue([{ ...pack, name }]);
+  start(<div className={userNames}><PackCatalog gymId={id(1)} client={api}/></div>);
+  expect(breaksAnywhere(await screen.findByRole('heading', { name }))).toBe(true);
+  expect(breaksAnywhere(screen.getByRole('button', { name: 'Edit ' + name }))).toBe(true);
+  expect(screen.getByRole('region', { name: 'Class packs' }).className).not.toContain('wrap-anywhere');
 });
 it('reloads packs and tax rates when the catalog section refreshes after a tax change', async () => {
   const api = client(), cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });

@@ -22,7 +22,7 @@ export function PackCatalog({ gymId, client = packClient }: { gymId: string; cli
   const refresh = () => { setEditor(null); void cache.invalidateQueries({ queryKey: ['billing', gymId] }); };
   const packs = useQuery({ queryKey: packCatalogKey(gymId), queryFn: () => client.packs() });
   const rows = packs.data?.filter(pack => archived || pack.active);
-  return <section aria-label={text('catalogTitle')} className="min-w-0 space-y-4 wrap-anywhere border-t pt-5">
+  return <section aria-label={text('catalogTitle')} className="min-w-0 space-y-4 border-t pt-5">
     <h2 className="text-lg font-semibold">{text('catalogTitle')}</h2>
     {(data.isPending || packs.isPending) && <LoadingState/>}{(data.isError || packs.isError) && <ErrorState onRetry={() => { void data.refetch(); void packs.refetch(); }}/> }
     {data.data && packs.data && <>

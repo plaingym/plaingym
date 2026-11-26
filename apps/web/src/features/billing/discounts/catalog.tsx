@@ -18,7 +18,7 @@ export function DiscountCatalog({ gymId, client = discountClient, billing = bill
   const choices = options.data && { plans: options.data.plans, currency: options.data.settings.currency };
   const close = (reload = false) => { setEditor(null); if (reload) void cache.invalidateQueries({ queryKey: ['billing', gymId, 'discounts'] }); };
   const rows = data.data?.filter(row => inactive || row.active);
-  return <section aria-label={text('title')} className="min-w-0 space-y-4 border-t pt-5 wrap-anywhere">
+  return <section aria-label={text('title')} className="min-w-0 space-y-4 border-t pt-5">
     <h2 className="text-lg font-semibold">{text('title')}</h2>
     {(data.isPending || options.isPending) && <LoadingState/>}
     {(data.isError || options.isError) && <ErrorState onRetry={() => { void data.refetch(); void options.refetch(); }}/>}

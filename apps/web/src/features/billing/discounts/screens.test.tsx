@@ -7,6 +7,8 @@ import { canStaff, type StaffRole } from '@plaingym/shared';
 import type { Discount, Membership, Plan, ShellBootstrap } from '@plaingym/shared/contracts';
 import { ShellServicesContext } from '../../../app/context.js';
 import { createShellServices } from '../../../app/services.js';
+import { userNames } from '../../../components/ui/page.js';
+import { breaksAnywhere } from '../../../components/ui/wrap.test-helper.js';
 import { ApiError } from '../../../lib/api.js';
 import { billingClient, type BillingClient } from '../catalog/api.js';
 import { MembershipPanel } from '../memberships/member-tab.js';
@@ -258,6 +260,17 @@ it('groups discount cycles and use counts, preserving the unlimited label', asyn
   expect(await screen.findByText('Uses: 2,400 / 3,600')).toBeDefined();
   expect(screen.getByText(/1,200/)).toBeDefined();
   expect(screen.getByText(/Uses: 4,800/).textContent).toContain('unlimited');
+});
+it('wraps an unbroken discount name through the plans page rule', async () => {
+  const api = clients(), name = 'D'.repeat(60); vi.mocked(api.discounts.list).mockResolvedValue([{ ...discount, name }]);
+  start(<div className={userNames}><DiscountCatalog gymId={id(1)} client={api.discounts} billing={api.billing}/></div>);
+  expect(breaksAnywhere(await screen.findByRole('heading', { name }))).toBe(true);
+  expect(breaksAnywhere(screen.getByRole('button', { name: 'Edit ' + name }))).toBe(true);
+  expect(screen.getByRole('region', { name: 'Discounts' }).className).not.toContain('wrap-anywhere');
+});
+it('sets the wrap rule on the plans page root, above the pack and discount catalogs', async () => {
+  start(<CatalogPage/>);
+  for (const name of ['Class packs', 'Discounts']) expect(breaksAnywhere(await screen.findByRole('heading', { name }))).toBe(true);
 });
 it.each(['discount_used_up', 'discount_ended', 'discount_plan'])('shows a clear %s refusal in the assignment flow', async reason => {
   const api = panel(); vi.mocked(api.billing.call).mockRejectedValue(new ApiError(409, 'conflict', [reason]));
