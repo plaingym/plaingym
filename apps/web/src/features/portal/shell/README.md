@@ -46,7 +46,9 @@ wider window closes it. On a wider screen the navigation stays beside the page, 
 While the browser says it is offline, the portal's reads wait instead of failing, and a banner says so (before the
 portal has opened, above the loading state). A
 section whose code is already loaded shows its loading state when opened then, and its reads run once the browser is
-online again; opening a section for the first time can still need a connection to load its code.
+online again; the portal loads every section's code in the background once it opens online, so a section opened offline
+later shows its loading state under the banner; a section whose code hadn't loaded before the connection dropped reloads
+the page, which needs a connection.
 Writes don't wait: one made while offline is sent at once and isn't sent later, and fails if the server can't be reached. The open portal also
 checks the browser's answer on each navigation, in case it changed without an event. The claim page (`/portal/claim`)
 has no banner, so its reads don't wait.
