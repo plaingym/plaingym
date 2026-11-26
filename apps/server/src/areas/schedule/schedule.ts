@@ -110,6 +110,8 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
    * through the session capacity path: one row lock each (after the template's), booking reconciliation for scheduled
    * sessions, and one capacity audit each. A session with its own capacity keeps it. Reconciliation refuses a capacity
    * below a scheduled session's booked count, naming that session's start and rolling back the whole template save.
+   * A cut leaves a cancelled session alone when more members were booked at its cancellation than the new capacity, so
+   * restoring it books them all; such a session then keeps its own capacity.
    */
   async function applyTemplateCapacity(tx: Transaction, context: MutationContext, templateId: string, previous: number | null, capacity: number | null) {
     const now = clock.now();
@@ -119,6 +121,10 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
     if (!sessions.length) return;
     const rules = sessions.some(session => session.status === 'scheduled') ? await readBookingRules(tx, context.gymId) : undefined;
     for (const session of sessions) {
+      if (session.status === 'cancelled' && capacity !== null && (previous === null || capacity < previous)) {
+        const held = await tx.$count(classBookings, and(eq(classBookings.sessionId, session.id), eq(classBookings.sessionCancelStatus, 'booked')));
+        if (held > capacity) continue;
+      }
       const guard = revisionGuard(classSessions.revision, session.revision);
       const afterRow = assertRevised(await tx.update(classSessions).set({ capacity, revision: guard.next })
         .where(and(eq(classSessions.id, session.id), guard.matches)).returning());

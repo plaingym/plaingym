@@ -686,6 +686,79 @@ describe('template capacity edits on upcoming sessions', () => {
       audits: await tx.$count(auditEvents) }));
     return { ...f, session, memberIds, bookings, snapshot };
   }
+  /** A weekly class whose second upcoming session is cancelled while `count` members hold places. */
+  async function cancelledWith(capacity: number | null, count: number) {
+    const f = await weekly(capacity);
+    const target = (await f.sessions())[1]!;
+    for (let index = 0; index < count; index++) {
+      const member = await factory('members', f.gymId, { firstName: 'Member ' + index });
+      await factory('classBookings', f.gymId, { sessionId: target.id, memberId: member.id, bookedBy: f.user.id, status: 'booked',
+        createdAt: new Date(Date.UTC(2026, 1, 20, 12, index)) });
+    }
+    await f.own.changeSession(context(f.gymId), target.id, 'cancel', { revision: target.revision });
+    const current = async () => (await f.sessions()).find(row => row.id === target.id)!;
+    const capacityAudits = async () => (await f.audits('schedule.session.capacity')).filter(audit => audit.targetId === target.id);
+    const restore = async () => {
+      await f.own.restoreSession(context(f.gymId), target.id, { revision: (await current()).revision });
+      const rows = await database.forGym(f.gymId, tx => tx.select().from(classBookings).where(eq(classBookings.sessionId, target.id)));
+      return { booked: rows.filter(row => row.status === 'booked').length, waitlisted: rows.filter(row => row.status === 'waitlisted').length };
+    };
+    return { ...f, target, current, capacityAudits, restore };
+  }
+  it('leaves a cancelled session alone when a cut is below its booked count, so restoring books everyone', async () => {
+    const f = await cancelledWith(10, 10);
+    const before = await f.current();
+    await f.edit({ capacity: 6 });
+    expect(await f.current()).toEqual(before);
+    expect(await f.capacityAudits()).toEqual([]);
+    for (const row of await f.sessions()) if (row.id !== f.target.id) expect(row.capacity).toBe(6);
+    expect(await f.restore()).toEqual({ booked: 10, waitlisted: 0 });
+    expect((await f.current()).capacity).toBe(10);
+  });
+  it.each([5, 6])('lowers a cancelled session with %i booked members to a capacity of 6', async count => {
+    const f = await cancelledWith(10, count);
+    await f.edit({ capacity: 6 });
+    expect(await f.current()).toMatchObject({ status: 'cancelled', capacity: 6 });
+    expect(await f.capacityAudits()).toHaveLength(1);
+    expect(await f.restore()).toEqual({ booked: count, waitlisted: 0 });
+  });
+  it('keeps no limit on a cancelled session with more booked members than a new limit', async () => {
+    const f = await cancelledWith(null, 8);
+    await f.edit({ capacity: 6 });
+    expect((await f.current()).capacity).toBeNull();
+    expect(await f.capacityAudits()).toEqual([]);
+  });
+  it('gives every cancelled session at the old capacity no limit when the limit is removed', async () => {
+    const f = await cancelledWith(10, 10);
+    const other = (await f.sessions())[2]!;
+    await f.own.changeSession(context(f.gymId), other.id, 'cancel', { revision: other.revision });
+    await f.edit({ capacity: null });
+    const after = new Map((await f.sessions()).map(row => [row.id, row]));
+    for (const id of [f.target.id, other.id]) expect(after.get(id)).toMatchObject({ status: 'cancelled', capacity: null });
+    expect(await f.capacityAudits()).toHaveLength(1);
+  });
+  it('raises a cancelled session whose booked count is still over the new capacity', async () => {
+    const f = await cancelledWith(10, 10);
+    await f.own.changeSession(context(f.gymId), f.target.id, 'capacity', { revision: (await f.current()).revision, capacity: 5 });
+    // The class is cut to the session's own capacity, then raised: both now hold the previous value.
+    await f.edit({ capacity: 5 });
+    await f.edit({ capacity: 8 });
+    expect(await f.current()).toMatchObject({ status: 'cancelled', capacity: 8 });
+    expect(await f.restore()).toEqual({ booked: 8, waitlisted: 2 });
+  });
+  it('still refuses a cut below a scheduled session\'s booked count and leaves the cancelled session unchanged', async () => {
+    const f = await cancelledWith(10, 5);
+    const scheduled = (await f.sessions())[2]!;
+    for (let index = 0; index < 8; index++) {
+      const member = await factory('members', f.gymId, { firstName: 'Scheduled ' + index });
+      await factory('classBookings', f.gymId, { sessionId: scheduled.id, memberId: member.id, bookedBy: f.user.id, status: 'booked' });
+    }
+    const before = await f.current();
+    await expect(f.edit({ capacity: 6 })).rejects.toMatchObject({ code: 'conflict',
+      details: { reason: ['capacityBelowBooked'], startsAt: [scheduled.startsAt.toISOString()] } });
+    expect(await f.current()).toEqual(before);
+    expect(await f.audits('schedule.session.capacity')).toEqual([]);
+  });
   it('promotes the first waitlisted member when a raised template capacity opens a place', async () => {
     const f = await booked();
     await f.edit({ capacity: 6 });
