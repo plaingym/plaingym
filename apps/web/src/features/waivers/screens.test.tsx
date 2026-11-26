@@ -130,6 +130,41 @@ it('does not count an old signed version as signing the current template', async
   expect(await screen.findByText('Needs a signature')).toBeTruthy();
   expect(screen.queryByText('Signed — current version')).toBeNull();
 });
+type Snapshot = Record<string, unknown> & { member: Record<string, unknown> };
+const newerKeys = (snapshot: Snapshot) => { snapshot.futureField = 'x'; snapshot.member.preferredName = 'Al'; };
+const noSigningTime = (snapshot: Snapshot) => { delete snapshot.signedAt; };
+/** Mounts the member's waivers with a changed snapshot in the signed list, the current template's status check, or both. */
+function mountSnapshots(list: (snapshot: Snapshot) => void, status: (snapshot: Snapshot) => void) {
+  const changed = (change: (snapshot: Snapshot) => void) => {
+    const row = signedCopy(true), snapshot = JSON.parse(row.snapshot) as Snapshot;
+    change(snapshot);
+    return { ...row, snapshot: JSON.stringify(snapshot) };
+  };
+  const fetcher = vi.fn<typeof fetch>().mockImplementation(async url => {
+    const path = new URL(String(url), 'https://gym.example.test');
+    const data = path.pathname.includes('/templates') ? [template] : [changed(path.searchParams.has('templateId') ? status : list)];
+    return Response.json({ data, pagination: { limit: 20, offset: 0, total: data.length } });
+  });
+  mount(<MemberWaivers gymId="gym" memberId={template.id} manage client={createWaiversClient(fetcher)} />);
+}
+it('shows and counts a signed copy whose snapshot has keys this version does not know', async () => {
+  mountSnapshots(newerKeys, newerKeys);
+  expect(await screen.findByRole('heading', { name: 'Participation · Version 2' })).toBeTruthy();
+  expect(screen.getByText('Guardian signature: Daniel Chen (Parent)')).toBeTruthy();
+  expect(document.querySelector('time')!.dateTime).toBe('2026-10-24T01:30:00Z');
+  expect(await screen.findByText('Signed — current version')).toBeTruthy();
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+it('shows the error for a signed list snapshot without its signing time', async () => {
+  mountSnapshots(noSigningTime, newerKeys);
+  expect(await screen.findByRole('alert')).toBeTruthy();
+  expect(screen.queryByRole('heading', { name: 'Participation · Version 2' })).toBeNull();
+});
+it('shows the error for a status check snapshot without its signing time', async () => {
+  mountSnapshots(newerKeys, noSigningTime);
+  expect(await screen.findByRole('alert')).toBeTruthy();
+  expect(screen.queryByText('Signed — current version')).toBeNull();
+});
 it('shows the renderer busy response next to signed copies', async () => {
   const fetcher = vi.fn<typeof fetch>().mockImplementation(async url => String(url).endsWith('/pdf')
     ? Response.json({ error: { code: 'conflict', message: 'PDF renderer busy; retry shortly' } }, { status: 409 })

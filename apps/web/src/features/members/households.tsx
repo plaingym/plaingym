@@ -96,7 +96,7 @@ function PinForm({ household }: { household: c.Household }) {
     <Label className="grid gap-2">{text(household.pinSet ? 'pinNew' : 'pin')}<Input type="password" inputMode="numeric" autoComplete="new-password" pattern="[0-9]{4,8}" minLength={4} maxLength={8} value={pin} onChange={(event) => setPin(event.target.value)} required/></Label>
     <div className="grid grid-cols-2 gap-2 sm:flex"><Button type="submit" disabled={state.busy}>{text('setPin')}</Button><Button type="button" variant="outline" disabled={state.busy || !household.pinSet} onClick={() => submit(true)}>{text('clearPin')}</Button></div>
     {saved && <p role="status" className="text-sm">{text(saved.cleared ? 'pinCleared' : 'pinSaved')}</p>}
-    {saved?.shared && <Alert className="border-warning/40 bg-warning/10">{text('pinShared')}</Alert>}
+    {saved?.shared && <Alert variant="warning">{text('pinShared')}</Alert>}
   </form>;
 }
 function BillingForm({ billing }: { billing: c.HouseholdBillingSettings }) {

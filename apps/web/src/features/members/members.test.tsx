@@ -180,7 +180,7 @@ describe('member admin UI', () => {
     fireEvent.change(screen.getByLabelText('New PIN (4–8 digits)'), { target: { value: '1234' } });
     fireEvent.click(screen.getByRole('button', { name: 'Set PIN' }));
     expect(await screen.findByText('PIN saved.')).toBeDefined();
-    expect(screen.getByText('Another household uses this PIN. Members with similar names may not be able to check in.')).toBeDefined();
+    expect(screen.getByText('Another household uses this PIN. Members with similar names may not be able to check in.').dataset.variant).toBe('warning');
     expect(memberRequest).toHaveBeenCalledWith(expect.anything(), `/api/households/${homeId}/pin`, 'PUT', { revision: 1, pin: '1234' });
   });
   it('confirms a cleared PIN without a shared-PIN warning', async () => {

@@ -6,6 +6,7 @@ import { waiverSigningSnapshotSchema, type WaiverTemplate, type WaiverDocument a
 import { useBootstrap } from '../../app/context.js';
 import { t } from '../../lib/i18n.js';
 import { api } from '../../lib/api.js';
+import { parseResponse } from '../../lib/response.js';
 import { formatCount } from '../../lib/count.js';
 import type { ExtensionViewProps } from '../../lib/registries.js';
 import { Page, PageHeader } from '../../components/ui/page.js';
@@ -22,7 +23,7 @@ import { WaiverDocument, useWaiverDocument } from './document.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('waivers/waivers:' + key, values);
 const errorText = (error: unknown, fallback: string) => error instanceof WaiverRequestError ? error.message : text(fallback);
-const snapshotDetails = (snapshot: string) => waiverSigningSnapshotSchema.parse(JSON.parse(snapshot));
+const snapshotDetails = (snapshot: string) => parseResponse(waiverSigningSnapshotSchema, JSON.parse(snapshot));
 export function Templates({ gymId, manage, client = waiversClient }: { gymId: string; manage: boolean; client?: WaiversClient }) {
   const [offset, setOffset] = useState(0), [editor, setEditor] = useState<WaiverTemplate | 'new' | null>(null);
   const cache = useQueryClient(), key = ['waivers', gymId];

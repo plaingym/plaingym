@@ -7,6 +7,7 @@ import { portalContracts as contracts, waiverSigningSnapshotSchema, type PortalC
 import { useBootstrap } from '../../../app/context.js';
 import { t } from '../../../lib/i18n.js';
 import { ApiError } from '../../../lib/api.js';
+import { parseResponse } from '../../../lib/response.js';
 import { Button } from '../../../components/ui/button.js';
 import { Alert } from '../../../components/ui/alert.js';
 import { Dialog, DialogCancel } from '../../../components/ui/dialog.js';
@@ -70,7 +71,7 @@ function PortalWaiversPage({ context, scope }: { context: PortalContext; scope: 
       </PageSection>
       <PageSection title={text('signed')}>
         {signed.data.data.length === 0 ? <EmptyState title={text('noneSigned')} /> : <StackedList>{signed.data.data.map(row => {
-          const details = waiverSigningSnapshotSchema.parse(JSON.parse(row.snapshot));
+          const details = parseResponse(waiverSigningSnapshotSchema, JSON.parse(row.snapshot));
           return <StackedItem key={row.id} className="gap-2">
             <p className="font-semibold">{details.template.name} · {text('version', { version: details.template.version })}</p>
             <p className="text-sm">{name(row.memberId)} · {text(details.signer.kind === 'guardian' ? 'signedByGuardian' : 'signedBy', { name: details.signer.name })}</p>

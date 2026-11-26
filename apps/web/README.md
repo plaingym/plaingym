@@ -81,8 +81,8 @@ readiness read and disappears when the roster has members, including inactive on
 Failure `Alert`s use `variant="error"`. Set `focusOnReveal` on submit errors to
 scroll into view and receive focus when the rendered message changes; without it, an
 error leaves focus alone, including background read failures inside forms. Neutral status messages leave focus alone.
-`Alert` derives its announcement role from the variant (`status` for info, `alert`
-for error); callers can override it for a note. A conditional variant can keep
+`Alert` derives its announcement role from the variant (`status` for info and warning,
+`alert` for error); callers can override it for a note. A conditional variant can keep
 `focusOnReveal` enabled: it focuses only errors.
 
 `lib/use-draft.ts` keeps field edits across refetches, lets untouched fields follow
@@ -137,7 +137,7 @@ API:
 | `Button` | Variants `default`, `secondary`, `outline`, `ghost`, `destructive`, `link`; sizes `default`, `sm`, `icon` (all 44 px tall; give `icon` buttons an `aria-label`) |
 | `Page`, `PageHeader`, `PageSection` | Page container, title and actions, titled sections |
 | `LoadingState`, `EmptyState`, `ErrorState` | Loading, empty and failed states |
-| `Card`, `Alert`, `Badge` | Grouped content, inline messages (`Alert` `variant`: `info`, the default, or `error` for a failure, with the destructive colours and an icon; `FormMessage` shows a form's result and scrolls to and focuses an error, as `useRevealed` does for any element), status labels (`tone`: `default`, `success`, `warning`, `destructive`, `muted`) |
+| `Card`, `Alert`, `Badge` | Grouped content, inline messages (`Alert` `variant`: `info`, the default, `warning` for a caution, with the warning colours, or `error` for a failure, with the destructive colours and an icon; `FormMessage` shows a form's result and scrolls to and focuses an error, as `useRevealed` does for any element), status labels (`tone`: `default`, `success`, `warning`, `destructive`, `muted`) |
 | `Input`, `Select`, `Textarea`, `CheckboxField`, `Label` | Form controls |
 | `PhoneInput` | A country code choice and a phone number; sends `+<code> <number>` unless the number starts with + (typing the + forgets an earlier country choice, and shows "Choose a country") or with one of the chosen country's international prefixes (replaced with +, or kept as typed when its prefix carries a carrier code), and calls `onChange` only on user input. Autofills as `tel`; `error` shows a field error; a new `resetKey` drops the person's choice on a form reset |
 | `Autocomplete` | One searchable selection input; keyboard arrows, Enter and Escape, selected label, loading/empty feedback; suggestions flow within scrollable dialogs |

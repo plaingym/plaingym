@@ -4,11 +4,12 @@ import { cn } from '../../lib/utils.js';
 import { AlertIcon } from './icons.js';
 
 /**
- * A message announced to screen readers (`status` for info, `alert` for error). `info` (the default) is a neutral note; `error` says
- * something failed, with the destructive colours `ErrorState` uses and an icon, so it never reads as a hint.
+ * A message announced to screen readers (`status` for info and warning, `alert` for error). `info` (the default) is a neutral
+ * note; `warning` is a caution, in the warning colours; `error` says something failed, with the destructive colours
+ * `ErrorState` uses and an icon, so it never reads as a hint.
  * `focusOnReveal` opts submit errors into scrolling and focus on reveal and whenever the rendered message changes.
  */
-export function Alert({ className, variant = 'info', focusOnReveal = false, children, ref: forwardedRef, ...props }: ComponentProps<'div'> & { variant?: 'info' | 'error'; focusOnReveal?: boolean }) {
+export function Alert({ className, variant = 'info', focusOnReveal = false, children, ref: forwardedRef, ...props }: ComponentProps<'div'> & { variant?: 'info' | 'warning' | 'error'; focusOnReveal?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const revealed = useRef<{ enabled: boolean; text: string | null } | null>(null);
   useImperativeHandle(forwardedRef, () => ref.current!);
@@ -27,6 +28,7 @@ export function Alert({ className, variant = 'info', focusOnReveal = false, chil
     <AlertIcon className="mt-0.5 size-4 shrink-0 text-destructive" />
     <div className="min-w-0 flex-1 space-y-2 [overflow-wrap:anywhere]">{children}</div>
   </div>;
+  if (variant === 'warning') return <div ref={ref} role="status" data-variant="warning" className={cn('rounded-md border border-warning/40 bg-warning/10 p-4 text-sm', className)} {...props}>{children}</div>;
   return <div ref={ref} role="status" data-variant="info" className={cn('rounded-md border border-border bg-muted p-4 text-sm', className)} {...props}>{children}</div>;
 }
 

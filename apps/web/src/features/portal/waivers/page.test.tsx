@@ -4,6 +4,9 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { CatchBoundary } from '@tanstack/react-router';
+import { RootError } from '../../../routes/__root.js';
+import { dateLabel } from '../../../lib/instant.js';
 import type { PortalContext, WaiverTemplate } from '@plaingym/shared/contracts';
 import { SignWaiver, PortalWaivers } from './page.js';
 import { ShellServicesContext } from '../../../app/context.js';
@@ -65,7 +68,8 @@ const portalPerson = (memberId: string, firstName: string, lastName: string, dat
   status: 'active', emergencyContacts: [], revision: 1 });
 const pageOf = <T,>(data: T[]) => ({ data, pagination: { limit: 100, offset: 0, total: data.length } });
 /** Renders the portal waivers page on its own with the household's lists already loaded, as the shell leaves them. */
-function mountWaivers(context: PortalContext, people: ReturnType<typeof portalPerson>[], pending: { memberId: string; template: WaiverTemplate }[]) {
+function mountWaivers(context: PortalContext, people: ReturnType<typeof portalPerson>[], pending: { memberId: string; template: WaiverTemplate }[],
+  signed: unknown[] = []) {
   vi.stubGlobal('scrollTo', vi.fn());
   const answer = <T,>(data: T) => Response.json({ data, householdId: portalIds.household });
   const pageAnswer = <T,>(data: T[]) => Response.json({ ...pageOf(data), householdId: portalIds.household });
@@ -76,7 +80,7 @@ function mountWaivers(context: PortalContext, people: ReturnType<typeof portalPe
     if (path === '/api/portal/context') return answer(context);
     if (path.startsWith('/api/portal/members?')) return pageAnswer(people);
     if (path.startsWith('/api/portal/household/waivers/pending')) return pageAnswer(pending);
-    if (path.startsWith('/api/portal/household/waivers')) return pageAnswer([]);
+    if (path.startsWith('/api/portal/household/waivers')) return pageAnswer(signed);
     if (path === `/api/portal/members/${context.memberId}`) return answer(people.find(person => person.id === context.memberId)!);
     if (path.startsWith('/api/portal/waivers/pending')) return pageAnswer(pending);
     if (path.startsWith('/api/portal/waivers')) return pageAnswer([]);
@@ -86,8 +90,37 @@ function mountWaivers(context: PortalContext, people: ReturnType<typeof portalPe
     session: { userId: portalIds.user, displayName: 'Test User', roles: [], member: true }, login: { password: true, magicLink: false } }),
     signOut: vi.fn(), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
   const cache = portalTestCache(portalIds.gym, portalIds.user, portalIds.household, { defaultOptions: { queries: { retry: false } } });
-  render(<ShellServicesContext.Provider value={services}><QueryClientProvider client={cache}><PortalWaivers /></QueryClientProvider></ShellServicesContext.Provider>);
+  // The app's root route shows `RootError` for a page that throws while rendering.
+  render(<ShellServicesContext.Provider value={services}><QueryClientProvider client={cache}>
+    <CatchBoundary getResetKey={() => 'waivers'} errorComponent={RootError}><PortalWaivers /></CatchBoundary>
+  </QueryClientProvider></ShellServicesContext.Provider>);
 }
+/** A signed copy as the API answers it, with the stored snapshot text changed by `change`. */
+function signedRow(change: (snapshot: Record<string, unknown> & { member: Record<string, unknown> }) => void) {
+  const snapshot = { template: { id: portalTemplate.id, name: portalTemplate.name, kind: 'waiver', version: 1, body: 'Terms' },
+    member: { id: portalIds.payer, firstName: 'Pat', lastName: 'Payer', dateOfBirth: '1980-01-01' },
+    signer: { kind: 'self', name: 'Pat Payer' }, signedAt: '2026-11-18T12:00:00Z',
+    signatureImage: { key: 'gym/signature.png', hash: 'a'.repeat(64) } };
+  change(snapshot);
+  return { id: '00000000-0000-7000-8000-000000000008', templateId: portalTemplate.id, memberId: portalIds.payer, snapshot: JSON.stringify(snapshot),
+    snapshotHash: 'b'.repeat(64), signatureImageKey: 'gym/signature.png', signatureImageHash: 'a'.repeat(64), signedAt: '2026-11-18T12:00:00Z' };
+}
+it('shows a signed copy whose snapshot has keys this version does not know', async () => {
+  mountWaivers(payerContext, [portalPerson(portalIds.payer, 'Pat', 'Payer', '1980-01-01')], [],
+    [signedRow(snapshot => { snapshot.futureField = 'x'; snapshot.member.preferredName = 'Al'; })]);
+  expect(await screen.findByText('Participation · Version 1')).toBeDefined();
+  expect(screen.getByText('Pat Payer · Signed by Pat Payer')).toBeDefined();
+  expect(document.querySelector('time')!.dateTime).toBe('2026-11-18T12:00:00Z');
+  expect(document.querySelector('time')!.textContent).toBe(dateLabel('2026-11-18T12:00:00Z', 'UTC'));
+});
+it('shows the page error for a signed copy whose snapshot lacks its signing time', async () => {
+  vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  mountWaivers(payerContext, [portalPerson(portalIds.payer, 'Pat', 'Payer', '1980-01-01')], [],
+    [signedRow(snapshot => { delete snapshot.signedAt; })]);
+  expect(await screen.findByRole('heading', { name: 'Something went wrong. Please try again.' })).toBeDefined();
+  expect(screen.queryByText('Participation · Version 1')).toBeNull();
+});
 const ownLogin = 'Adults sign their own documents, from their own login or at the gym.';
 
 it('asks a payer to have the gym add a child\'s missing birth date and offers no signature', async () => {

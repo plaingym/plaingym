@@ -28,6 +28,15 @@ describe('failure alerts', () => {
     expect(document.activeElement).toBe(document.body);
     expect(screen.getByRole('status').dataset.variant).toBe('info');
   });
+  it('announces a warning as a status in the warning colours without taking focus', () => {
+    render(<Alert variant="warning" focusOnReveal>Careful</Alert>);
+    const alert = screen.getByRole('status');
+    expect(alert.dataset.variant).toBe('warning');
+    expect(alert.classList.contains('border-warning/40')).toBe(true);
+    expect(alert.classList.contains('bg-warning/10')).toBe(true);
+    expect(alert.hasAttribute('tabindex')).toBe(false);
+    expect(document.activeElement).toBe(document.body);
+  });
   it('switches a status into a focused failure without remounting', () => {
     const view = render(<Alert focusOnReveal>Saved</Alert>);
     view.rerender(<Alert variant="error" focusOnReveal>Unable to save</Alert>);
