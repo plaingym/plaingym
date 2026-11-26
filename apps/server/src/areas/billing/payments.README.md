@@ -249,7 +249,8 @@ That queues the same deduplicated detach job again before the immediate provider
 Erasing a household's last member revokes its active cards, clears its local
 Stripe customer ID, and holds open and past-due invoices for staff review in the
 erasure transaction. Other household members keep their cards and invoices, except
-a pre-authorized debit account the payer email clear leaves holding the placeholder
+a bank account (pre-authorized debit, or a US bank account if Stripe refuses a blank
+email there) the payer email clear leaves holding the placeholder
 notice email: that one is revoked and detached (`areas/members/README.md`), so no new
 charge attempt selects it. A charge the runner already created and released from its
 final eligibility check before the revocation committed can still confirm once. If it was

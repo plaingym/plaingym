@@ -285,10 +285,10 @@ export interface Payments {
   redactCustomer(customerId: string): Promise<void>;
   /**
    * Clears only matching erased emails on this household's customer and specified cards. `matched` says whether any was cleared;
-   * `placeholderMethods` lists the specified pre-authorized debit methods that hold the fixed placeholder email when the call ends
+   * `placeholderMethods` lists the specified bank accounts (`acss_debit` or `us_bank_account`) that hold the fixed placeholder email when the call ends
    * (a method that must keep an email), whether this call or an earlier one wrote it. `failedMethods` lists the specified
    * methods whose email write failed, plus all remaining methods after a 401 or 403 stops writes.
-   * A debit account already observed holding the placeholder can appear in both lists. A failed customer write throws.
+   * A bank account already observed holding the placeholder can appear in both lists. A failed customer write throws.
    */
   clearCustomerEmail(customerId: string, options: ClearCustomerEmail): Promise<ClearedCustomerEmail>;
   parseWebhook(body: Uint8Array, signature: string): Promise<PaymentEvent>;

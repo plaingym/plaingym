@@ -151,10 +151,11 @@ the call cannot be made atomic with erasure. `configureMembers` accepts the
 gym-scoped `clearBillingEmail(gymId, customerId, options)` callback backed by
 `Payments.clearCustomerEmail`; an absent callback or HMAC secret fails the job so it retries.
 Already queued jobs with an unkeyed digest and one card ID still drain. The callback
-returns whether any address matched, which of the job's pre-authorized debit
-accounts hold the placeholder email `erased-member@example.com` (Stripe won't leave
-one without an email), and which methods it couldn't write (the provider still writes
-the others). A debit account holding the placeholder has no notice address left for
+returns whether any address matched, which of the job's bank accounts hold the
+placeholder email `erased-member@example.com` (a bank account Stripe won't leave
+without an email: a pre-authorized debit account, or a US bank account if Stripe
+refuses a blank email there), and which methods it couldn't write (the provider still
+writes the others). A card holding the placeholder is never reported. A bank account holding the placeholder has no notice address left for
 the household's debits, so the job retires each one in one transaction: it locks the
 household, revokes the household's unrevoked row (no longer the default), writes
 `billing.card.revoked` with `reason: 'notice_email_erased'` (and the erasure ID, when
@@ -174,10 +175,10 @@ still commits the retirements, writes no outcome audit and fails with `Billing e
 erasure incomplete`, so it retries. The job needs the erasure job queue
 (`jobs`) and fails without it. A matching provider clear writes
 `members.erasure.billing_email_cleared` with customer and erasure IDs only, as does a
-run that finds one of the job's debit accounts already holding the placeholder (the
+run that finds one of the job's bank accounts already holding the placeholder (the
 recovery of a run that rolled back after its provider writes), and so does a run that
 finds nothing left to clear after this erasure already retired one of the household's
-debit accounts (its revocation names the erasure, so a clear that succeeded before an
+bank accounts (its revocation names the erasure, so a clear that succeeded before an
 incomplete run is still recorded once after the account's detach has run); a no-match
 run writes `members.erasure.billing_email_no_match` and leaves its marker unresolved.
 Each outcome audit is written once per erasure ID: a run whose erasure already has its
@@ -205,9 +206,11 @@ and resets at most 200 jobs per gym per run; it uses the queue's `failedJobs`,
 The queued payload also carries `keyId`, a 16-hex-character ID of the key its digest was
 made with (`billingEmailKeyId`, derived from the same key as the digest; it reveals
 neither the secret nor an address). After the HMAC secret changes, the digest matches
-nothing, so a debit account already holding the placeholder could otherwise certify an
-erasure while another method still holds the address. A run whose `keyId` differs from
-the current secret's makes no provider call and writes nothing (no outcome audit, no
+nothing, so a bank account already holding the placeholder could otherwise certify an
+erasure while another method still holds the address. A run whose customer is no longer
+linked to the household is skipped first, whatever the key: it writes
+`members.erasure.billing_email_skipped_linked` as above. Otherwise, a run whose `keyId`
+differs from the current secret's makes no provider call and writes nothing (no outcome audit, no
 retirement): it logs `members.erasure.billing_email_key_changed` at error with the gym,
 household and erasure IDs only and fails with `Billing email erasure key changed`, so
 the job retries and the sweep resets it as above until it is abandoned. Restoring the

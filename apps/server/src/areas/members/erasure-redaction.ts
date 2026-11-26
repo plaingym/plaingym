@@ -36,7 +36,7 @@ async function erasureOutcomes(tx: Transaction, gymId: string, householdId: stri
 }
 
 const retiredReason = 'notice_email_erased';
-/** Whether this erasure already retired one of the household's debit accounts: its revocation audit names the erasure. */
+/** Whether this erasure already retired one of the household's bank accounts: its revocation audit names the erasure. */
 async function erasureRetired(tx: Transaction, gymId: string, householdId: string, erasureId: string): Promise<boolean> {
   const rows = await tx.select({ after: auditEvents.after }).from(auditEvents)
     .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.action, 'billing.card.revoked'), eq(auditEvents.targetType, 'payment_method'),
@@ -71,13 +71,6 @@ export async function clearErasedBillingEmail(payload: unknown, gymId: string, c
     logInfo('members.erasure.billing_email_replayed', { gymId, householdId: options.householdId });
     return;
   }
-  // A digest made under an earlier install secret matches nothing now, so a placeholder method alone would certify an
-  // erasure while another method still holds the address. Such a run calls nothing and records nothing; the job retries
-  // until the earlier secret is back or the sweep abandons it.
-  if (keyId !== undefined && keyId !== billingEmailKeyId(config.secret)) {
-    logError('members.erasure.billing_email_key_changed', { gymId, householdId: options.householdId, ...(erasureId ? { erasureId } : {}) });
-    throw new Error('Billing email erasure key changed');
-  }
   const linked = await scope(gymId, tx => tx.select({ id: households.id }).from(households)
     .where(eq(households.stripeCustomerId, customerId)));
   if (linked.length !== 1 || linked[0]!.id !== options.householdId) {
@@ -95,6 +88,13 @@ export async function clearErasedBillingEmail(payload: unknown, gymId: string, c
     });
     return;
   }
+  // A digest made under an earlier install secret matches nothing now, so a placeholder method alone would certify an
+  // erasure while another method still holds the address. Such a run calls nothing and records nothing; the job retries
+  // until the earlier secret is back or the sweep abandons it.
+  if (keyId !== undefined && keyId !== billingEmailKeyId(config.secret)) {
+    logError('members.erasure.billing_email_key_changed', { gymId, householdId: options.householdId, ...(erasureId ? { erasureId } : {}) });
+    throw new Error('Billing email erasure key changed');
+  }
   const { matched, placeholderMethods, failedMethods } = await clear(gymId, customerId, { ...options, secret: config.secret });
   const complete = failedMethods.length === 0;
   // One transaction for the outcome: the retirements and the household's outcome audit commit or roll back together, so
@@ -108,7 +108,7 @@ export async function clearErasedBillingEmail(payload: unknown, gymId: string, c
     await tx.select({ id: households.id }).from(households).where(eq(households.id, options.householdId)).for('update');
     const recorded = erasureId ? await erasureOutcomes(tx, gymId, options.householdId, erasureId) : new Set<string>();
     if (settled(recorded)) return;
-    // A debit account holding the placeholder email holds no erased address: when a run that wrote it rolled back (a
+    // A bank account holding the placeholder email holds no erased address: when a run that wrote it rolled back (a
     // failed detach enqueue, say), its recovery finds nothing left to match, and the erasure is still cleared. So is
     // one whose retirement for this erasure committed earlier: once its detach has run, the provider no longer lists it.
     const cleared = matched || placeholderMethods.length > 0

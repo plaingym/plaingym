@@ -651,6 +651,8 @@ Old versions and documents referenced by signatures remain retained after retire
   plaintext email or secret; the digest is personal data
   retained only under the job queue's retention policy. The payload also carries a
   short ID of that derived key, which reveals neither the secret nor an address. A
+  run whose customer is no longer linked to this household alone is skipped first, whatever
+  the key (the recheck below). Otherwise, a
   run whose key ID differs from the current secret's (`AUTH_SECRET` changed since the
   erasure) calls nothing and records nothing: it logs
   `members.erasure.billing_email_key_changed` with identifiers only and fails, so the
@@ -663,9 +665,10 @@ Old versions and documents referenced by signatures remain retained after retire
   email does not prevent clearing the erased address at Stripe. The adapter checks customer gym and household metadata and
   card ownership, then clears only matching customer and specified card emails,
   preserving replacement addresses, the card's name, other billing details and the
-  attached card. A method Stripe won't leave without an email (a pre-authorized
-  debit account) gets the fixed placeholder `erased-member@example.com` instead,
-  and a debit account already holding it counts as cleared. Such an account has no
+  attached card. A bank account Stripe won't leave without an email (a pre-authorized
+  debit account, or a US bank account if Stripe refuses a blank email there) gets the
+  fixed placeholder `erased-member@example.com` instead, and a bank account already
+  holding it counts as cleared; a card holding it doesn't. Such an account has no
   notice address for the household's debits, so the job then revokes its local row in
   one transaction that locks the household first (no longer the default), audits
   `billing.card.revoked` with reason `notice_email_erased` and queues its detach.
@@ -676,7 +679,7 @@ Old versions and documents referenced by signatures remain retained after retire
   once afterwards. If it was the default, charges skip
   while the household lacks an active default. A member can set up a new method,
   staff can select an active method on file, or a finishing card import can promote
-  one even if it adds no new methods. Only pre-authorized debit accounts are retired: a card holding the same
+  one even if it adds no new methods. Only bank accounts holding the placeholder are retired: a card holding the same
   address is not. It never revokes a method whose own email didn't match, one of
   another household, or one already revoked. A method write that fails doesn't stop
   the others: accounts already cleared are still retired, and the job fails and
@@ -686,10 +689,10 @@ Old versions and documents referenced by signatures remain retained after retire
   for selection.
   Stripe reads and writes cannot be atomic with concurrent external edits.
   A matched provider clear is audited with identifiers only, and so is a run that
-  finds a debit account already holding the placeholder (a recovery after an earlier
+  finds a bank account already holding the placeholder (a recovery after an earlier
   run rolled back), or that finds nothing left to clear after this erasure already
-  retired a debit account (the revocation audit names the erasure, so a successful
-  debit-account clear followed by its detach is still recorded once); a no-match run
+  retired a bank account (the revocation audit names the erasure, so a successful
+  bank-account clear followed by its detach is still recorded once); a no-match run
   has a distinct audit and doesn't resolve its marker, though its completed job is
   not run again. Each outcome is recorded once per erasure: a run of an erasure whose
   clear or skip is already recorded writes nothing and calls nothing, and overlapping
@@ -714,7 +717,9 @@ Old versions and documents referenced by signatures remain retained after retire
   revokes its cards, clears each card's billing name, email, phone and address at
   Stripe before detaching it, and clears the Stripe Customer's name, email, phone,
   address, shipping details, description, individual and business names and invoice
-  custom fields, and deletes its tax IDs. It also lists every attached payment method
+  custom fields, and deletes its tax IDs. A card whose Stripe Customer was deleted
+  outside the app counts as detached, and its billing details stay at Stripe, where
+  the app can no longer reach them; the gym can ask Stripe to delete them. It also lists every attached payment method
   of every type and clears its billing name, email, phone and address, including methods
   with no active local row, while leaving them attached. Where Stripe refuses a blank
   billing name or email (a pre-authorized debit account), both the detach and this

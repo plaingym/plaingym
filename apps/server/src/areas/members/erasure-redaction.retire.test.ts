@@ -131,6 +131,21 @@ it('retires a method left with the placeholder email: revoked, audited and queue
   expect((await f.read()).attempts).toEqual([]);
 });
 
+it('retires a US bank account left with the placeholder email as it retires a debit account', async () => {
+  const { f, pad, card, jobs, clear, run, state } = await household({ matched: true, placeholderMethods: ['pm_pad'], failedMethods: [] });
+  await db.forGym(f.gymId, tx => tx.update(paymentMethods).set({ type: 'us_bank_account' }).where(eq(paymentMethods.id, pad.id)));
+  await run();
+  expect(clear).toHaveBeenCalledOnce();
+  const after = await state();
+  expect(after.methods.find(row => row.id === pad.id)).toMatchObject({ type: 'us_bank_account', revokedAt: f.clock.now(), isDefault: false });
+  expect(after.methods.find(row => row.id === card.id)).toEqual(card);
+  expect(after.revoked).toHaveLength(1);
+  expect(after.revoked[0]).toMatchObject({ actorKind: 'system', targetType: 'payment_method', targetId: pad.id, after: { reason: 'notice_email_erased' } });
+  expect(after.cleared).toHaveLength(1);
+  expect(jobs.jobs.map(job => ({ name: job.name, payload: job.payload, key: job.options.idempotencyKey })))
+    .toEqual([{ name: detachJob, payload: { paymentMethodId: pad.id }, key: `detach:${pad.id}` }]);
+});
+
 it('retires the debit account even when another method failed, then completes once on retry', async () => {
   const { f, pad, bill, jobs, clear, run, state } = await household({ matched: true, placeholderMethods: ['pm_pad'], failedMethods: ['pm_other'] });
   await expect(run()).rejects.toThrow('Billing email erasure incomplete');
@@ -232,6 +247,34 @@ it('certifies nothing under a changed install secret, then clears every method o
   expect(done.methods.find(row => row.id === card.id)).toMatchObject({ revokedAt: null });
   expect(jobs.jobs.map(job => job.options.idempotencyKey)).toEqual([`detach:${pad.id}`]);
   expect(await retry()).toEqual([]);
+});
+
+it('skips a customer relinked to another household under a changed install secret, without calling out', async () => {
+  const erasureId = uuidv7();
+  const { f, jobs, clear, run, state } = await household({ matched: true, placeholderMethods: ['pm_pad'], failedMethods: [] }, erasureId);
+  await marker(f, erasureId);
+  // The customer now belongs to another household of the gym; the payload's key ID was made under `secret`.
+  const other = await factory('households', f.gymId);
+  await db.forGym(f.gymId, async tx => {
+    await tx.update(households).set({ stripeCustomerId: null }).where(eq(households.id, f.home.id));
+    await tx.update(households).set({ stripeCustomerId: 'cus_test' }).where(eq(households.id, other.id));
+  });
+  const before = await state();
+  const lines: string[] = [];
+  const previous = setLogSink(line => lines.push(line));
+  try {
+    await expect(run({ secret: 'fixture-retire-rotated-secret' })).resolves.toBeUndefined();
+  } finally { setLogSink(previous); }
+  expect(clear).not.toHaveBeenCalled();
+  const after = await state();
+  expect(after.methods).toEqual(before.methods);
+  expect(after.audits.slice(0, before.audits.length)).toEqual(before.audits);
+  expect(after.audits.slice(before.audits.length).map(row => [row.action, row.targetId, row.after]))
+    .toEqual([[billingEmailSkippedAction, f.home.id, { stripeCustomerId: 'cus_test', erasure: erasureId }]]);
+  expect(jobs.jobs).toEqual([]);
+  expect(lines.some(line => line.includes('billing_email_key_changed'))).toBe(false);
+  expect(lines.some(line => line.includes('billing_email_skipped_linked'))).toBe(true);
+  expect(await db.forGym(f.gymId, tx => billingEmailErasuresToRetry(tx, f.gymId, 10))).toEqual([]);
 });
 
 it('runs a payload queued without a key ID as before, under whatever secret the install has', async () => {

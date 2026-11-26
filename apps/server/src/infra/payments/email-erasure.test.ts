@@ -72,10 +72,10 @@ it('retries a partially cleared customer after an outage without clearing a repl
     .toEqual([{ email: '' }, { billing_details: { email: '' } }]);
 });
 
-/** `stripe()` with `pm_email` as a debit account and an extra `card` method `pm_card`, both holding `email`. */
-function debitStripe(email = 'payer@example.invalid') {
+/** `stripe()` with `pm_email` as a bank account of `type` (a debit account by default) and an extra `card` method `pm_card`, both holding `email`. */
+function debitStripe(email = 'payer@example.invalid', type: 'acss_debit' | 'us_bank_account' = 'acss_debit') {
   const provider = stripe({ customerEmail: email, cardEmail: email });
-  Object.assign(provider.transport.objects.get(paymentMethodId)!, { type: 'acss_debit', acss_debit: { last4: '6789' } });
+  Object.assign(provider.transport.objects.get(paymentMethodId)!, { type, [type]: { last4: '6789' } });
   provider.transport.objects.set('pm_card', { id: 'pm_card', object: 'payment_method', type: 'card', customer: customerId, metadata: { gym_id: gymId },
     card: { brand: 'visa', last4: '4242', exp_month: 12, exp_year: 2030 }, billing_details: { email, name: 'Card holder' } });
   const posts = () => provider.transport.requests.filter(request => request.method === 'POST');
@@ -165,6 +165,33 @@ it('lists only a debit account holding the placeholder, never a card that holds 
   (transport.objects.get(paymentMethodId)!.billing_details as { email: string }).email = 'erased-member@example.com';
   (transport.objects.get('pm_card')!.billing_details as { email: string }).email = 'erased-member@example.com';
   expect(await payments.clearCustomerEmail(customerId, debitOptions)).toEqual({ matched: true, placeholderMethods: [paymentMethodId], failedMethods: [] });
+  expect(posts().map(request => request.path)).toEqual([`/v1/customers/${customerId}`]);
+  expect(card()).toEqual({ email: 'erased-member@example.com', name: 'Card holder' });
+});
+
+it('writes the placeholder email to a US bank account Stripe won\'t leave without one, and reports it', async () => {
+  const { payments, transport, state, posts, card, options: bankOptions } = debitStripe('payer@example.invalid', 'us_bank_account');
+  transport.requiredBillingDetails.us_bank_account = ['email'];
+  expect(await payments.clearCustomerEmail(customerId, bankOptions)).toEqual({ matched: true, placeholderMethods: [paymentMethodId], failedMethods: [] });
+  expect(state()).toMatchObject({ email: null, cardEmail: 'erased-member@example.com', cardName: 'Card holder', attached: true });
+  expect(card()).toEqual({ email: null, name: 'Card holder' });
+  const before = posts().length;
+  expect(await payments.clearCustomerEmail(customerId, bankOptions)).toEqual({ matched: false, placeholderMethods: [paymentMethodId], failedMethods: [] });
+  expect(posts()).toHaveLength(before);
+});
+
+it('blanks a US bank account\'s email when Stripe accepts a blank, without reporting it', async () => {
+  const { payments, state, posts, options: bankOptions } = debitStripe('payer@example.invalid', 'us_bank_account');
+  expect(await payments.clearCustomerEmail(customerId, bankOptions)).toEqual({ matched: true, placeholderMethods: [], failedMethods: [] });
+  expect(state()).toMatchObject({ email: null, cardEmail: null, cardName: 'Card holder', attached: true });
+  expect(posts().map(request => request.params)).toEqual([{ email: '' }, { billing_details: { email: '' } }, { billing_details: { email: '' } }]);
+});
+
+it('lists a US bank account holding the placeholder, never a card that holds it', async () => {
+  const { payments, transport, posts, card, options: bankOptions } = debitStripe('payer@example.invalid', 'us_bank_account');
+  (transport.objects.get(paymentMethodId)!.billing_details as { email: string }).email = 'erased-member@example.com';
+  (transport.objects.get('pm_card')!.billing_details as { email: string }).email = 'erased-member@example.com';
+  expect(await payments.clearCustomerEmail(customerId, bankOptions)).toEqual({ matched: true, placeholderMethods: [paymentMethodId], failedMethods: [] });
   expect(posts().map(request => request.path)).toEqual([`/v1/customers/${customerId}`]);
   expect(card()).toEqual({ email: 'erased-member@example.com', name: 'Card holder' });
 });

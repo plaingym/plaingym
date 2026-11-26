@@ -341,18 +341,19 @@ erasing a payer while other household members remain. It returns `{ matched, pla
 `matched` says whether an address matched and was cleared (false for a no-match, missing or deleted customer). It clears only the customer
 email and every specified card's billing email that match the digest of the
 trimmed, lowercased erased address. It preserves names and other billing fields,
-and keeps the cards attached. A card Stripe won't leave without an email (a
-pre-authorized debit account) gets the placeholder `erased-member@example.com`
-instead, its name unchanged. A debit account already holding that placeholder counts
+and keeps the cards attached. A method Stripe won't leave without an email (a
+pre-authorized debit account, or a US bank account if Stripe refuses a blank email
+there) gets the placeholder `erased-member@example.com` instead, its name unchanged.
+A bank account (`acss_debit` or `us_bank_account`) already holding that placeholder counts
 as cleared (even when the erased address itself normalizes to it), so a retry writes
 nothing and doesn't count as a match. `placeholderMethods` lists the specified
-`acss_debit` methods holding the placeholder when the call ends, whether this call or
+bank accounts holding the placeholder when the call ends, whether this call or
 an earlier one wrote it; the caller retires them. A card or other method holding the
 same address follows the matching rule and is never listed. Each method is written on
 its own: a failed write adds the method to `failedMethods` and the call goes on to the
-next, so a debit account cleared earlier in the call is still listed. After a 401 or
+next, so a bank account cleared earlier in the call is still listed. After a 401 or
 403 no further method is written, and every method left is listed as failed too.
-If the ownership check already found the placeholder on one of those debit accounts,
+If the ownership check already found the placeholder on one of those bank accounts,
 it appears in both lists so the caller can retire it immediately. A
 failed customer write still throws. The fake always returns empty lists. The digest is a versioned HMAC under a key derived
 from `AUTH_SECRET`; `secret` is supplied only during execution, never in a job or

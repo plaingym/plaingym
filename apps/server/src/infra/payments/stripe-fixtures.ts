@@ -7,6 +7,12 @@ export class StripeFixtures implements PaymentTransport {
   readonly objects = new Map<string, ObjectData>();
   /** The status the next created refund gets instead of succeeded, such as requires_action. */
   nextRefundStatus: string | undefined;
+  /**
+   * The billing details a payment method type can't be left without, in the order Stripe asks for them: an update that
+   * leaves one blank is refused with `parameter_missing` and changes nothing. Stripe asks a pre-authorized debit account
+   * for a name, then an email; a test adds a type to see the same refusal there.
+   */
+  requiredBillingDetails: Partial<Record<string, readonly ('name' | 'email')[]>> = { acss_debit: ['name', 'email'] };
   readonly requests: ProviderRequest[] = [];
   readonly #keys = new Map<string, { request: ProviderRequest; result: ObjectData }>();
   readonly #changes: ObjectData[] = [];
@@ -164,12 +170,10 @@ export class StripeFixtures implements PaymentTransport {
         const details = { ...(object.billing_details as ObjectData | undefined), ...(params.billing_details as ObjectData | undefined) };
         // Stripe clears a field sent as an empty string.
         for (const [field, value] of Object.entries(details)) if (value === '') details[field] = null;
-        // Stripe won't leave a pre-authorized debit account without a billing name, then an email; a refusal changes nothing.
-        if (object.type === 'acss_debit') {
-          const missing = !details.name ? 'name' : !details.email ? 'email' : undefined;
-          if (missing) throw Object.assign(new Error('Missing required param: billing_details[' + missing + '].'),
-            { type: 'StripeInvalidRequestError', code: 'parameter_missing', param: 'billing_details[' + missing + ']', statusCode: 400 });
-        }
+        // A type in requiredBillingDetails can't be left without the fields it lists; a refusal changes nothing.
+        const missing = this.requiredBillingDetails[String(object.type)]?.find(field => !details[field]);
+        if (missing) throw Object.assign(new Error('Missing required param: billing_details[' + missing + '].'),
+          { type: 'StripeInvalidRequestError', code: 'parameter_missing', param: 'billing_details[' + missing + ']', statusCode: 400 });
         object.billing_details = details; return object;
       }
       if (resource === 'webhook_endpoints' && !action) {

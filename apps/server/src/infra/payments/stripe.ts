@@ -585,13 +585,14 @@ export class StripePayments implements Payments {
     if (matchesBillingEmail(customer.email, options.emailDigest, options.secret)) {
       await this.#post(path, { email: '' }); matched = true;
     }
-    // Each method is written on its own: a failure is reported in failedMethods and the loop goes on, so a debit
+    // Each method is written on its own: a failure is reported in failedMethods and the loop goes on, so a bank
     // account cleared earlier in this call is still reported. A 401 or 403 stops every later write.
     let refused = false;
     for (const { methodId, path: methodPath, method } of methods) {
-      const debit = method.type === 'acss_debit';
+      // A bank account Stripe won't leave without an email keeps the placeholder; a card holding it is cleared as usual.
+      const bank = method.type === 'us_bank_account' || method.type === 'acss_debit';
       const email = data(method.billing_details ?? {}).email;
-      const alreadyCleared = debit && email === ERASED_METHOD_EMAIL;
+      const alreadyCleared = bank && email === ERASED_METHOD_EMAIL;
       // Already cleared: an earlier call left the placeholder, even if the erased address normalizes to it.
       if (alreadyCleared) placeholderMethods.push(methodId);
       if (refused) { failedMethods.push(methodId); continue; }
@@ -603,7 +604,7 @@ export class StripePayments implements Payments {
           // A method that must keep an email gets the placeholder; its name is left as it is.
           if (!detailRequired(error, ['email'])) throw error;
           await this.#post(methodPath, { billing_details: { email: ERASED_METHOD_EMAIL } });
-          if (debit) placeholderMethods.push(methodId);
+          if (bank) placeholderMethods.push(methodId);
         }
         matched = true;
       } catch (error) {
