@@ -223,13 +223,15 @@ test('current deployment keeps health, migration, CLI and source assertions whil
   assert.throws(() => runInNewContext(sourceCheck, { assert, expectedSourceLocation, source: { headers: { location: 'wrong' } }, imageSourceUrl: 'https://example.org/tree/v1', process: { env: {} } }), { code: 'ERR_ASSERTION' });
 });
 
+// The descendant takes the two file paths; the parent takes the descendant script, then the same paths.
+const descendant = "const fs = require('node:fs'); fs.writeFileSync(process.argv[1], 'ready'); setTimeout(() => fs.writeFileSync(process.argv[2], 'orphan'), 2000);";
+const parent = "require('node:child_process').spawn(process.execPath, ['-e', process.argv[1], process.argv[2], process.argv[3]], { stdio: 'inherit' }); setInterval(() => {}, 1000);";
+
 test('smoke timeout stops an in-flight descendant before project cleanup', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'smoke-group-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const started = join(directory, 'started'), escaped = join(directory, 'escaped');
-  const descendant = `require('node:fs').writeFileSync(${JSON.stringify(started)}, 'ready'); setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(escaped)}, 'orphan'), 2000);`;
-  const parent = `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: 'inherit' }); setInterval(() => {}, 1000);`;
-  await assert.rejects(runSmoke(['-e', parent], 1500), /timed out/);
+  await assert.rejects(runSmoke(['-e', parent, descendant, started, escaped], 1500), /timed out/);
   assert.equal(readFileSync(started, 'utf8'), 'ready');
   await new Promise(resolve => setTimeout(resolve, 2200));
   assert.throws(() => readFileSync(escaped), { code: 'ENOENT' });
@@ -249,10 +251,8 @@ for (const [signal, pattern] of [['SIGINT', /interrupted by SIGINT; its process 
     const directory = mkdtempSync(join(tmpdir(), 'smoke-interrupt-'));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
     const started = join(directory, 'started'), escaped = join(directory, 'escaped');
-    const descendant = `require('node:fs').writeFileSync(${JSON.stringify(started)}, 'ready'); setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(escaped)}, 'orphan'), 2000);`;
-    const parent = `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: 'inherit' }); setInterval(() => {}, 1000);`;
     const signals = new EventEmitter();
-    const running = runSmoke(['-e', parent], 30_000, { signals });
+    const running = runSmoke(['-e', parent, descendant, started, escaped], 30_000, { signals });
     await waitForFile(started);
     signals.emit(signal);
     await assert.rejects(running, pattern);
@@ -267,14 +267,14 @@ test('a failed group kill waits for the smoke to exit before reporting the timeo
   const directory = mkdtempSync(join(tmpdir(), 'smoke-kill-wait-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const finished = join(directory, 'finished');
-  const childScript = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(finished)}, 'done'), 800);`;
+  const childScript = "setTimeout(() => require('node:fs').writeFileSync(process.argv[1], 'done'), 800);";
   let calls = 0;
   const stopGroup = () => {
     calls += 1;
     throw Object.assign(new Error('denied'), { code: 'EPERM' });
   };
   const started = Date.now();
-  await assert.rejects(runSmoke(['-e', childScript], 300, { stopGroup, killWaitMs: 5000 }), (error) => {
+  await assert.rejects(runSmoke(['-e', childScript, finished], 300, { stopGroup, killWaitMs: 5000 }), (error) => {
     assert.match(error.message, /timed out; its process group could not be stopped/);
     assert.equal(error.cause.code, 'EPERM');
     return true;
