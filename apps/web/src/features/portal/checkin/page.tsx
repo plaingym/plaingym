@@ -24,6 +24,7 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
   const cache = useQueryClient(), { scope, members, memberId, member, choose } = usePortalMembers(client);
   const code = useQuery({ queryKey: [...scope.key, 'checkin-code', memberId], queryFn: async () => scope.own(await scope.run(() => client.checkinCode(memberId, scope.key[4]!))).data, enabled: !!memberId, staleTime: 0, gcTime: 0, retry: false });
   const [confirming, setConfirming] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState('');
+  const [rereading, setRereading] = useState(false);
   const locked = useRef(false);
   async function regenerate() {
     if (!code.data || locked.current) return;
@@ -31,12 +32,14 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
     try {
       // A code regenerated in another household than this page's is never shown.
       cache.setQueryData([...scope.key, 'checkin-code', memberId], scope.own(await scope.run(() => client.regenerateCheckin(memberId, code.data!.revision, scope.key[4]!))).data);
-      setConfirming(false);
+      setConfirming(false); locked.current = false;
     } catch (cause) {
       setError(cause instanceof ApiError && cause.status === 409 ? 'conflict' : 'error');
-      // A stale revision must be read again before another attempt.
-      await code.refetch();
-    } finally { locked.current = false; setBusy(false); }
+      // A stale revision must be read again before another attempt. The read waits while offline, so only another attempt waits
+      // for it: the dialog can be closed meanwhile.
+      setRereading(true);
+      void code.refetch().finally(() => { locked.current = false; setRereading(false); });
+    } finally { setBusy(false); }
   }
   if (!members.data) return members.isPending || scope.settling ? <LoadingState /> : <ErrorState message={text('error')} onRetry={() => void members.refetch()} />;
   const active = code.data?.code;
@@ -50,12 +53,12 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
           {active ? <><CodeImage code={active} name={member?.name ?? ''} /><p className="text-center text-sm text-muted-foreground">{text('help')}</p></>
             : <Alert>{text('inactive')}</Alert>}
           {error && !confirming && <Alert variant="error" focusOnReveal role="alert">{text(error)}</Alert>}
-          <Button variant={active ? 'outline' : 'default'} className="w-full sm:w-auto" disabled={busy} onClick={() => { setError(''); if (active) setConfirming(true); else void regenerate(); }}>
+          <Button variant={active ? 'outline' : 'default'} className="w-full sm:w-auto" disabled={busy || rereading} onClick={() => { setError(''); if (active) setConfirming(true); else void regenerate(); }}>
             {text(active ? 'regenerate' : 'create')}</Button>
         </section>}
     {confirming && <Dialog title={text('confirmTitle')} closeLabel={text('keep')} onClose={() => setConfirming(false)} dismissible={!busy}>
       <div className="space-y-4"><p>{text('confirmBody')}</p>{error && <Alert variant="error" focusOnReveal role="alert">{text(error)}</Alert>}
-        <div className="flex flex-col gap-3 sm:flex-row"><Button disabled={busy} onClick={() => void regenerate()}>{text(busy ? 'saving' : 'confirm')}</Button>
+        <div className="flex flex-col gap-3 sm:flex-row"><Button disabled={busy || rereading} onClick={() => void regenerate()}>{text(busy ? 'saving' : 'confirm')}</Button>
           <Button variant="outline" disabled={busy} onClick={() => setConfirming(false)}>{text('keep')}</Button></div></div>
     </Dialog>}
   </PortalRecovery></Page>;

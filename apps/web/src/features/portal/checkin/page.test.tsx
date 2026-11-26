@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClientProvider } from '@tanstack/react-query';
 import { answer, portalTestCache, storedFor, stubHouseholdLists } from '../household/test-cache.test-helper.js';
 import { ApiError } from '../../../lib/api.js';
 import type { PortalClient } from '../schedule/client.js';
@@ -24,7 +24,7 @@ beforeEach(async () => {
   client.checkinCode.mockImplementation(async (memberId: string) => answer({ memberId, code: memberId === child ? null : code, version: 1, revision: 4 }));
   client.regenerateCheckin.mockImplementation(async (memberId: string) => answer({ memberId, code: 'pgci1_' + 'b'.repeat(43), version: 2, revision: 5 }));
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); onlineManager.setOnline(true); });
 const page = () => render(<QueryClientProvider client={portalTestCache('gym', 'user', 'household', { defaultOptions: { queries: { retry: false } } })}>
   <PortalCheckinPage client={client as unknown as PortalClient} /></QueryClientProvider>);
 
@@ -61,6 +61,28 @@ describe('portal check-in code', () => {
     await user.click(screen.getByRole('button', { name: 'Replace code' }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(client.regenerateCheckin).toHaveBeenLastCalledWith(parent, 4, 'household');
+  });
+  it('frees the dialog at once after a replacement fails offline, and waits for the code to be read before another', async () => {
+    client.regenerateCheckin.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const user = userEvent.setup(); page();
+    await user.click(await screen.findByRole('button', { name: 'Replace this code' }));
+    onlineManager.setOnline(false);
+    await user.click(screen.getByRole('button', { name: 'Replace code' }));
+    expect((await screen.findByRole('alert')).textContent).toBe("We couldn't load the check-in code. Please try again.");
+    const replace = () => screen.getByRole('button', { name: 'Replace code' }) as HTMLButtonElement;
+    // The dialog's Close and its Keep button share a label.
+    const keep = screen.getAllByRole('button', { name: 'Keep the current code' }) as HTMLButtonElement[];
+    expect(replace().disabled).toBe(true);
+    expect(keep.map(button => button.disabled)).toEqual([false, false]);
+    await user.click(keep.at(-1)!);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    const again = screen.getByRole('button', { name: 'Replace this code' }) as HTMLButtonElement;
+    expect(again.disabled).toBe(true);
+    expect(client.checkinCode).toHaveBeenCalledTimes(1);
+    act(() => onlineManager.setOnline(true));
+    await waitFor(() => expect(again.disabled).toBe(false));
+    expect(client.checkinCode).toHaveBeenCalledTimes(2);
+    expect(client.regenerateCheckin).toHaveBeenCalledTimes(1);
   });
   it('explains an unavailable gym key without server details', async () => {
     client.checkinCode.mockRejectedValue(new ApiError(503, 'request_failed'));

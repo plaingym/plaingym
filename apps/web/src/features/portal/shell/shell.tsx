@@ -290,14 +290,16 @@ function AuthenticatedPortal() {
   const settledFor = userId === undefined ? undefined : readOpenHousehold(cache, userId);
   const changed = loaded && settledFor !== undefined && settledFor !== current;
   const person = sessionName(bootstrap.isRefetchError || nameStale || changed ? { displayName: null } : session);
-  const failed = (retry: () => void) => <Page><ErrorState message={text('failed')} onRetry={retry} /><Button onClick={() => signOut.mutate()} disabled={signOut.isPending}>{text('signOut')}</Button></Page>;
+  // A sign-out that fails says so on whichever view asked for it.
+  const signOutError = signOut.isError && <Alert variant="error" focusOnReveal className="mb-4">{text('signOutFailed')}</Alert>;
+  const failed = (retry: () => void) => <Page><ErrorState message={text('failed')} onRetry={retry} /><Button onClick={() => signOut.mutate()} disabled={signOut.isPending}>{text('signOut')}</Button>{signOutError}</Page>;
   if (households.isPending || choose.isPending) return <PortalLoading />;
   // A list load that fails while the portal has lists to show keeps it up, like the bootstrap: every key follows the lists.
   if (households.isError && !households.data) return failed(() => void households.refetch());
   if (!current) {
     if (!households.data.households.length) return failed(() => void households.refetch());
     return <PortalLayout name={bootstrap.data.gym.name} person={person} entries={[]} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending}>
-      <PortalRecoveryNotice /><HouseholdPicker households={households.data.households} onChoose={id => choose.mutate(id)} pending={choose.isPending} failed={choose.isError} />
+      <PortalRecoveryNotice />{signOutError}<HouseholdPicker households={households.data.households} onChoose={id => choose.mutate(id)} pending={choose.isPending} failed={choose.isError} />
     </PortalLayout>;
   }
   // A context read that failed waits only for the lists being read again; if they still name this household, it is an error.
@@ -309,7 +311,7 @@ function AuthenticatedPortal() {
     ? <HouseholdSwitcher households={households.data.households} current={current} onChoose={id => { if (id !== current) choose.mutate(id); }} disabled={choose.isPending} /> : undefined;
   return <PortalLayout name={bootstrap.data.gym.name} person={person} scope={context.data.role} entries={portalNavigation(createRegistries().portalNav.all(), context.data.role, bootstrap.data.gym.enabledModules)} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending} switcher={switcher} account>
     {context.isError && !households.isFetching && <ErrorState message={text('failed')} onRetry={() => { void households.refetch(); void context.refetch(); }} />}
-    <PortalRecoveryNotice />{(signOut.isError || choose.isError) && <Alert variant="error">{text(choose.isError ? 'chooseFailed' : 'failed')}</Alert>}<Outlet key={current} />
+    <PortalRecoveryNotice />{signOutError}{choose.isError && <Alert variant="error">{text('chooseFailed')}</Alert>}<Outlet key={current} />
   </PortalLayout>;
 }
 export function PortalShell() {

@@ -126,7 +126,7 @@ function portal(initial: string | null, { path = '/portal', hold = false, holdHo
   const serverOpens = (householdId: string | null) => { current = householdId; };
   const lagLists = (householdId: string | null) => { lagging = householdId; };
   const release = () => { released = true; for (const held of [...bootstrapGates, ...householdGates, ...creditGates, ...invoiceGates]) held.settle(); };
-  return { fetcher, selections, router, release, serverOpens, lagLists, bootstrapGates, householdGates, creditGates, invoiceGates, cache, server: () => current };
+  return { fetcher, signOut: vi.mocked(services.signOut), selections, router, release, serverOpens, lagLists, bootstrapGates, householdGates, creditGates, invoiceGates, cache, server: () => current };
 }
 const identity = () => screen.getByTestId('signed-in-identity').textContent;
 it.each(['dismiss', 'navigate', 'switch', 'lists'] as const)('explains a move discovered by a read and clears the notice on %s', async action => {
@@ -621,6 +621,46 @@ it('fails a household switch made while offline at once, under the header and ba
   await act(() => f.cache.resumePausedMutations());
   expect(f.selections()).toHaveLength(1);
   expect(f.server()).toBe(ids.first);
+});
+const signOutFailed = "We couldn't sign you out. Check your connection and try again.";
+it.each(['picker', 'failed load', 'open portal'] as const)('says a sign-out made while offline failed, on the %s view, and never sends it later', async view => {
+  const connect = browserConnection(), f = portal(view === 'picker' ? null : ids.first);
+  const answer = f.fetcher.getMockImplementation()!;
+  if (view === 'failed load') f.fetcher.mockImplementation(async (path, init) => path === '/api/portal/households' ? new Response(null, { status: 500 }) : answer(path, init));
+  const assign = vi.fn();
+  vi.stubGlobal('location', { ...window.location, assign });
+  f.signOut.mockRejectedValue(new TypeError('Failed to fetch'));
+  const user = userEvent.setup();
+  if (view === 'picker') await screen.findByRole('heading', { name: 'Choose a household' });
+  else if (view === 'failed load') await screen.findByText(/couldn.t load your portal/);
+  else await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  expect(screen.queryByText(signOutFailed)).toBeNull();
+  connect(false);
+  if (view !== 'failed load') await user.click(screen.getByRole('button', { name: 'Account' }));
+  await user.click(screen.getByRole('button', { name: 'Sign out' }));
+  expect(await screen.findByText(signOutFailed)).toBeDefined();
+  expect(assign).not.toHaveBeenCalled();
+  connect(true);
+  await act(() => f.cache.resumePausedMutations());
+  expect(f.signOut).toHaveBeenCalledOnce();
+});
+it('says a sign-out failed after a household switch failed too, and brings it into view', async () => {
+  const connect = browserConnection(), f = portal(ids.first), user = userEvent.setup();
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  const answer = f.fetcher.getMockImplementation()!;
+  f.fetcher.mockImplementation(async (path, init) => {
+    if (!navigator.onLine) throw new TypeError('Failed to fetch');
+    return answer(path, init);
+  });
+  f.signOut.mockRejectedValue(new TypeError('Failed to fetch'));
+  connect(false);
+  await user.selectOptions(screen.getByRole('combobox'), ids.second);
+  expect(await screen.findByText(/couldn’t open that household/)).toBeDefined();
+  await user.click(screen.getByRole('button', { name: 'Account' }));
+  await user.click(screen.getByRole('button', { name: 'Sign out' }));
+  const failure = (await screen.findByText(signOutFailed)).closest('[role="alert"]');
+  expect(document.activeElement).toBe(failure);
+  expect(screen.getByText(/couldn’t open that household/)).toBeDefined();
 });
 it('runs a write at once while offline and never sends it again once online', async () => {
   const connect = browserConnection();

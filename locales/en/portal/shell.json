@@ -29,6 +29,7 @@
   "source": "Source code",
   "offline": "You are offline. Connect to the internet to use the member portal.",
   "failed": "We couldn't load your portal. Please try again.",
+  "signOutFailed": "We couldn't sign you out. Check your connection and try again.",
   "claimTitle": "Set up your portal login",
   "claimDescription": "Use the invitation given to you by your gym. If you already have a password, enter your current password.",
   "password": "Password (12–128 characters)",
