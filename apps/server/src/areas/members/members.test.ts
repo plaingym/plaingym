@@ -446,7 +446,13 @@ describe('members and households', () => {
     // Another gym's staff can't set or probe this gym's household PINs.
     expect((await send(staff('owner'), `/api/households/${first.id}/pin`, 'PUT', { revision: 1, pin: '1234' })).status).toBe(404);
     const audits = await database.forGym(gymId, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'household.pin.updated')));
-    expect(audits).toHaveLength(4); expect(JSON.stringify(audits)).not.toMatch(/1234|5678|pinHash|pin_hash|sharedPin/);
+    expect(audits).toHaveLength(4);
+    expect(JSON.stringify(audits)).not.toMatch(/pinHash|pin_hash|sharedPin/);
+    // Generated IDs can contain a PIN's digits, so UUID values are left out of that check.
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const values = JSON.stringify(audits.map(({ before, after }) => [before, after]),
+      (_key, value: unknown) => typeof value === 'string' && uuid.test(value) ? undefined : value);
+    expect(values).not.toMatch(/1234|5678/);
   });
   it('deletes unused households and tags with revision guards while retaining households with member or invoice references', async () => {
     const home = await service.createHousehold(context(), { name: 'Empty' });

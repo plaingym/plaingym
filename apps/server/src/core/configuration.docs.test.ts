@@ -186,8 +186,6 @@ function documentedVariables(): Set<string> {
 }
 
 describe('docs/configuration.md', () => {
-  // The whole-source scan can pass 30 s on a slow Windows runner; later calls read the cache.
-  beforeAll(() => { serverVariables(); }, 120_000);
   it('scans TSX and JavaScript, both bracket quotes, and dynamic reads through helpers and arrays', () => {
     const sources = new Map([
       [resolve(root, 'scan-fixture.tsx'), `
@@ -287,28 +285,32 @@ describe('docs/configuration.md', () => {
       [resolve(root, 'scan-caller.ts'), "import { required } from './scan-helper'; required('IMPORTED');"],
     ]))).toThrow('Unresolved environment variable');
   });
-  it('lists every variable the server reads', () => {
-    const documented = documentedVariables();
-    expect([...serverVariables()].filter((name) => !documented.has(name)).sort()).toEqual([]);
-  });
-  it('lists every variable the deployment Compose file uses', () => {
-    const documented = documentedVariables();
-    expect([...composeVariables()].filter((name) => !documented.has(name)).sort()).toEqual([]);
-  });
-  it('lists every variable the host scripts read', () => {
-    const documented = documentedVariables();
-    expect([...hostVariables()].filter((name) => !documented.has(name)).sort()).toEqual([]);
-  });
-  it('lists only variables something still reads', () => {
-    const used = new Set([...serverVariables(), ...composeVariables(), ...hostVariables()]);
-    expect([...documentedVariables()].filter((name) => !used.has(name)).sort()).toEqual([]);
-  });
-  it('finds the variables it checks', () => {
-    // A broken scan would pass the checks above vacuously.
-    expect(serverVariables()).toContain('APP_ENCRYPTION_KEY');
-    expect(serverVariables()).toContain('BACKUP_STAGING_DIR');
-    expect(composeVariables()).toContain('APP_IMAGE');
-    expect(hostVariables()).toContain('RELEASE_REPOSITORY');
-    expect(documentedVariables().size).toBeGreaterThan(40);
+  describe('the real sources', () => {
+    // The whole-source scan can pass 30 s on a slow Windows runner; later calls read the cache.
+    beforeAll(() => { serverVariables(); }, 120_000);
+    it('lists every variable the server reads', () => {
+      const documented = documentedVariables();
+      expect([...serverVariables()].filter((name) => !documented.has(name)).sort()).toEqual([]);
+    });
+    it('lists every variable the deployment Compose file uses', () => {
+      const documented = documentedVariables();
+      expect([...composeVariables()].filter((name) => !documented.has(name)).sort()).toEqual([]);
+    });
+    it('lists every variable the host scripts read', () => {
+      const documented = documentedVariables();
+      expect([...hostVariables()].filter((name) => !documented.has(name)).sort()).toEqual([]);
+    });
+    it('lists only variables something still reads', () => {
+      const used = new Set([...serverVariables(), ...composeVariables(), ...hostVariables()]);
+      expect([...documentedVariables()].filter((name) => !used.has(name)).sort()).toEqual([]);
+    });
+    it('finds the variables it checks', () => {
+      // A broken scan would pass the checks above vacuously.
+      expect(serverVariables()).toContain('APP_ENCRYPTION_KEY');
+      expect(serverVariables()).toContain('BACKUP_STAGING_DIR');
+      expect(composeVariables()).toContain('APP_IMAGE');
+      expect(hostVariables()).toContain('RELEASE_REPOSITORY');
+      expect(documentedVariables().size).toBeGreaterThan(40);
+    });
   });
 });
