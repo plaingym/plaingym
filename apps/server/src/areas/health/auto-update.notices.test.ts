@@ -193,11 +193,16 @@ it.each([
   expect(result.errors).toHaveLength(1);
   expect(result.errors[0]).toContain(message);
 });
-it.each(['timezone', 'branding'] as const)('drops a notice when the stored %s cannot be read or rendered', async field => {
-  const f = await fixture(true, field === 'timezone' ? { timezone: 'Invalid/Zone' } : { branding: { logoKey: 42 } });
+it('drops a notice when the stored timezone cannot be read or rendered', async () => {
+  const f = await fixture(true, { timezone: 'Invalid/Zone' });
   const result = await notice(f.gymId, { owners: async () => [], transport: () => f.email });
   expect(result.status).toBe(0);
   expect(result.errors).toHaveLength(1);
+});
+it('sends a notice when a stored branding value does not parse', async () => {
+  const f = await fixture(true, { branding: { logoKey: 42 } });
+  await f.build()(f.gymId, attempt);
+  expect(f.email.messages).toHaveLength(2);
 });
 it('drops a notice when a custom transport cannot be constructed, even with a network error code', async () => {
   const f = await fixture();

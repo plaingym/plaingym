@@ -32,11 +32,11 @@ const db = useTestDatabase(), factory = createFactories(db), png = demoSignature
 const origin = 'https://gym.example.test';
 const body = (email = 'visitor@example.invalid') => ({ contact: { name: 'Alex Contact', email },
   member: { firstName: 'New', lastName: 'Visitor', dateOfBirth: '1990-01-02' }, honeypot: '' });
-async function fixture(demo = false, country?: string) {
+async function fixture(demo = false, country?: string, primaryColor = '#ffff00') {
   const gymId = uuidv7(), otherGym = uuidv7(), clock = new TestClock('2026-10-29T12:00:00Z');
   await factory('gyms', gymId, { name: 'North <Gym>', websiteEnabled: false, address: { line1: '12 Mat Street', city: 'Vancouver', ...(country ? { country } : {}) },
     settings: { modules: { website: { phone: '+1 (604) 555-0100', email: 'hello@north.example.test', secret: 'Not public' } } },
-    branding: { primaryColor: '#ffff00', logoKey: gymId + '/logo.png' } });
+    branding: { primaryColor, logoKey: gymId + '/logo.png' } });
   await factory('gyms', otherGym, { name: 'Other private gym', branding: { primaryColor: '#000080' } });
   const existingHome = await factory('households', gymId, { name: 'Existing household', email: 'existing@example.invalid' });
   const existing = await factory('members', gymId, { householdId: existingHome.id, status: 'active', email: 'existing@example.invalid', firstName: 'Private Member' });
@@ -319,6 +319,15 @@ describe('core public pages through the production registrations', () => {
     expect((await settings.get(f.gymId)).branding.primaryColor).toBe(primaryColor);
     expect((await f.server.request(origin + '/public/pages/client.js')).headers.get('content-type')).toContain('text/javascript');
     expect(await (await f.server.request(origin + '/public/pages/styles.css')).text()).toContain('shared css');
+  });
+  it('serves the logo and public config beside a stored color that doesn\'t parse', async () => {
+    const f = await fixture(false, undefined, 'red'), logoKey = f.gymId + '/logo.png';
+    const image = await f.server.request(origin + '/public/pages/logo/' + logoVersion(logoKey));
+    expect(image.status).toBe(200); expect(image.headers.get('content-type')).toBe('image/png');
+    expect(Buffer.from(await image.arrayBuffer())).toEqual(png);
+    const config = await f.server.request(origin + '/api/public/config');
+    expect(config.status).toBe(200);
+    expect(publicContracts.config.response.parse(await config.json()).data.gym).toMatchObject({ logoKey, primaryColor: null });
   });
   it('projects only the resolved gym config, templates, color and logo, across every read route', async () => {
     const f = await fixture(), other = f.app(f.otherGym);

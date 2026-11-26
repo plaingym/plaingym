@@ -23,8 +23,20 @@ const projection = {
 };
 type Row = { createdAt: Date; updatedAt: Date } & Record<string, unknown>;
 // A newer release may store more keys in these. A read ignores them, because the response is strict; a save keeps them.
+// A stored branding value that doesn't parse reads as unset, so one bad value never fails a read.
 const storedAddressSchema = z.object(gymAddressSchema.shape), storedBrandingSchema = z.object(gymBrandingSchema.shape);
-const present = (row: Row) => gymSettingsSchema.parse({ ...row, address: storedAddressSchema.parse(row.address), branding: storedBrandingSchema.parse(row.branding),
+/** Stored branding without the known keys whose value doesn't parse; unknown keys stay as stored. */
+export function storedBranding(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const shape = gymBrandingSchema.shape;
+  const entries = Object.entries(value).flatMap(([key, item]: [string, unknown]): [string, unknown][] => {
+    if (!Object.hasOwn(shape, key)) return [[key, item]];
+    const parsed = shape[key as keyof typeof shape].safeParse(item);
+    return parsed.success ? [[key, parsed.data]] : [];
+  });
+  return Object.fromEntries(entries);
+}
+const present = (row: Row) => gymSettingsSchema.parse({ ...row, address: storedAddressSchema.parse(row.address), branding: storedBrandingSchema.parse(storedBranding(row.branding)),
   createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString() });
 /** The stored value's keys this release doesn't know, under the saved value: the form never saw them. */
 function keepNewerKeys(stored: unknown, saved: object, known: object) {

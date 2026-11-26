@@ -8,7 +8,8 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError, canStaff, staffRoles, errorResponse, type StaffRole } from '@plaingym/shared';
 import { gymSettingsResponseSchema } from '@plaingym/shared/contracts';
-import { createSettingsService, createGymSettingsAccessor } from './settings.js';
+import { createSettingsService, createGymSettingsAccessor, readGymSettings } from './settings.js';
+import { readGymAndModuleSettings } from './module-settings.js';
 import { createSettingsRoutes } from './settings.routes.js';
 import { createServerRegistry } from '../../core/registry.js';
 import type { RequestEnvironment } from '../../core/context.js';
@@ -91,6 +92,40 @@ describe('settings service and routes', () => {
     await service.update(newer, 'general', { revision: after.revision, name: 'Renamed' });
     const [same] = await database.forGym(gymId, (tx) => tx.select({ address: gyms.address }).from(gyms).where(eq(gyms.id, gymId)));
     expect(same).toEqual({ address: { city: 'South', newerKey: 'kept' } });
+  });
+  it('leaves a stored branding value that doesn\'t parse out of the whole read and the module read', async () => {
+    const gymId = uuidv7(), logoKey = `${gymId}/logo.png`;
+    await factory('gyms', gymId, { branding: { logoKey, primaryColor: 'red', newerKey: 'kept' } });
+    expect((await database.forGym(gymId, (tx) => readGymSettings(tx, gymId))).branding).toStrictEqual({ logoKey });
+    const both = await database.forGym(gymId, (tx) => readGymAndModuleSettings(tx, gymId, 'website'));
+    expect(both.gym.branding).toStrictEqual({ logoKey });
+    expect(both.module.branding).toStrictEqual({ logoKey, newerKey: 'kept' });
+  });
+  it.each<{ name: string; stored: unknown }>([
+    { name: 'null', stored: sql`'null'::jsonb` },
+    { name: 'an array', stored: [] },
+    { name: 'a string', stored: 'text' },
+  ])('reads stored branding that is $name as empty through both reads', async ({ stored }) => {
+    const gymId = uuidv7();
+    await factory('gyms', gymId);
+    await database.forGym(gymId, (tx) => tx.update(gyms).set({ branding: stored }).where(eq(gyms.id, gymId)));
+    expect((await database.forGym(gymId, (tx) => readGymSettings(tx, gymId))).branding).toStrictEqual({});
+    const both = await database.forGym(gymId, (tx) => readGymAndModuleSettings(tx, gymId, 'website'));
+    expect(both.gym.branding).toStrictEqual({});
+    expect(both.module.branding).toStrictEqual({});
+  });
+  it('saves the gym name beside a stored branding value that doesn\'t parse and leaves the stored branding alone', async () => {
+    const gymId = uuidv7(), logoKey = `${gymId}/logo.png`, branding = { logoKey, primaryColor: 'red', newerKey: 'kept' };
+    await factory('gyms', gymId, { branding });
+    const { revision } = await service.get(gymId);
+    const after = await service.update({ gymId, actor: { kind: 'system' } }, 'general', { revision, name: 'Renamed' });
+    expect(after).toMatchObject({ name: 'Renamed' });
+    expect(after.branding).toStrictEqual({ logoKey });
+    const [row] = await database.forGym(gymId, (tx) => tx.select({ branding: gyms.branding }).from(gyms).where(eq(gyms.id, gymId)));
+    expect(row!.branding).toStrictEqual(branding);
+    const [audit] = await database.forGym(gymId, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'settings.general.updated')));
+    expect((audit!.before as { branding: unknown }).branding).toStrictEqual({ logoKey });
+    expect((audit!.after as { branding: unknown }).branding).toStrictEqual({ logoKey });
   });
   it('compares revisions, audits safe fields in the same transaction and reads the injected clock', async () => {
     const before = await service.get(gymA);

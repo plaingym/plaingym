@@ -6,7 +6,7 @@ import { AppError, type Clock } from '@plaingym/shared';
 import { gymBrandingSchema, type GymBranding } from '@plaingym/shared/contracts';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { clock as defaultClock } from '../../core/clock.js';
-import { gymProjection, presentGym } from './settings.js';
+import { gymProjection, presentGym, storedBranding } from './settings.js';
 
 /** A feature module's stored settings, the gym's branding and the gym revision both are saved under. */
 export interface ModuleSettings { readonly value: unknown; readonly branding: GymBranding; readonly revision: number }
@@ -15,16 +15,6 @@ export interface ModuleSettingsChange { readonly value: unknown; readonly brandi
 
 // A newer release may store more branding keys. A save writes back what it read, so this keeps them.
 const storedBrandingSchema = z.looseObject(gymBrandingSchema.shape);
-function storedBranding(value: unknown): GymBranding {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  const shape = gymBrandingSchema.shape;
-  const entries = Object.entries(value).flatMap(([key, item]: [string, unknown]): [string, unknown][] => {
-    if (!Object.hasOwn(shape, key)) return [[key, item]];
-    const parsed = shape[key as keyof typeof shape].safeParse(item);
-    return parsed.success ? [[key, parsed.data]] : [];
-  });
-  return storedBrandingSchema.parse(Object.fromEntries(entries));
-}
 const modulesOf = (settings: unknown): Record<string, unknown> => {
   const modules = settings && typeof settings === 'object' ? (settings as { modules?: unknown }).modules : undefined;
   return modules && typeof modules === 'object' && !Array.isArray(modules) ? modules as Record<string, unknown> : {};
@@ -33,7 +23,7 @@ const read = (row: { settings: unknown; branding: unknown; revision: number }, m
   value: modulesOf(row.settings)[moduleId] ?? null,
   // Stored branding was validated on save; a value that doesn't parse reads as unset and the other keys stay, so this
   // read never fails on it.
-  branding: storedBranding(row.branding), revision: row.revision,
+  branding: storedBrandingSchema.parse(storedBranding(row.branding)), revision: row.revision,
 });
 
 /** A module's settings, read inside a caller's gym scope so other reads share its transaction. */
