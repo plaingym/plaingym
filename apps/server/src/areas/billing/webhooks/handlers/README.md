@@ -98,9 +98,11 @@ uses its pay link and starts a join's memberships. Replaying a Checkout does not
 pay twice.
 
 The method's immutable processor creation time is stored in nullable
-`payment_methods.processor_created_at`. The save holds the gym settings (a key
-share lock on the gym row) before it takes the household row lock, the order
-staff default changes and the Stripe key switch use. A collected or updated
+`payment_methods.processor_created_at`. Every card handler transaction that
+locks a household (the save, the incomplete bank skip and the record of a
+finished deferred collection) holds the gym settings (a key share lock on the
+gym row) before it takes the household row lock, the order staff default
+changes and the Stripe key switch use. A collected or updated
 method becomes default only when the gym's current currency can charge it
 automatically, the rule staff default changes and promotion apply: a card
 always, a US bank account only in USD, a Canadian pre-authorized debit only in
@@ -110,7 +112,8 @@ without one); an existing row keeps its default flag, and the staff list warns
 on a default the currency can no longer charge. Under the household row lock, a
 collected method the currency can charge becomes default only when its
 processor time is newer than the current default's; null counts as older, and
-processor ID breaks equal-time ties. There
+processor ID breaks equal-time ties. A current default the currency can't charge
+is replaced by any such collection, whatever its processor time. There
 is no collection audit watermark or payment-history lookup. Any collection of a
 skipped bank method (the update bringing its digits and any later setup or
 Checkout collection for it) first keeps any default chosen since the skip: when

@@ -16,6 +16,7 @@ import { StripeFixtures } from '../../../../infra/payments/stripe-fixtures.js';
 import { createGymSettingsAccessor } from '../../../settings/settings.js';
 import { createWebhookInbox, type WebhookHandler } from '../inbox.js';
 import { createWebhookInboxJobs } from '../inbox.jobs.js';
+import { audit } from '../../transitions/store.js';
 import { createTransitionJobs } from '../../transitions/transitions.jobs.js';
 import { composeBillingWebhooks } from './composition.js';
 import { registerBillingWebhookHandlers } from './index.js';
@@ -58,8 +59,13 @@ async function fixture(currency: 'USD' | 'CAD', withCardDefault: boolean) {
   const defaults = async () => (await read()).methods.filter(row => row.isDefault).map(row => row.processorId);
   const updates = async (rowId: string) => (await read()).audits
     .filter(row => row.action === 'billing.payment_method.updated' && row.targetId === rowId);
-  return { gymId, household, card, collect, byProcessor, defaults, updates };
+  /** Inserts the household's default directly, as one saved before the currency rule or a currency change left it. */
+  const insertDefault = (processorId: string, type: 'card' | 'us_bank_account', processorCreatedAt: Date) =>
+    factory('paymentMethods', gymId, { householdId: household.id, processorId, isDefault: true, processorCreatedAt,
+      ...(type === 'card' ? {} : { type, brand: null, last4: '1111', bankName: 'Example Bank', mandateId: 'mandate_default' }) });
+  return { gymId, household, card, clock, transport, run, collect, byProcessor, defaults, updates, insertDefault };
 }
+const later = new Date('2026-11-01T00:00:00Z');
 
 describe('webhook saves and the default rule', () => {
   it('saves a US bank account collected in a CAD gym as non-default and keeps the card default', async () => {
@@ -93,6 +99,54 @@ describe('webhook saves and the default rule', () => {
     await f.collect('pm_usbank_6789', 'mandate_us');
     expect(await f.byProcessor('pm_usbank_6789')).toMatchObject({ type: 'us_bank_account', isDefault: true });
     expect(await f.defaults()).toEqual(['pm_usbank_6789']);
+  });
+
+  it('replaces a default the currency cannot charge with an older collected card', async () => {
+    const f = await fixture('CAD', false);
+    const bank = await f.insertDefault('pm_usbank_default', 'us_bank_account', later);
+    await f.collect('pm_4242');
+    const card = await f.byProcessor('pm_4242');
+    expect(card!.processorCreatedAt!.getTime()).toBeLessThan(later.getTime());
+    expect(card).toMatchObject({ type: 'card', isDefault: true });
+    expect(await f.byProcessor('pm_usbank_default')).toMatchObject({ id: bank.id, isDefault: false });
+    expect(await f.defaults()).toEqual(['pm_4242']);
+    const audits = await f.updates(card!.id);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.after).toMatchObject({ isDefault: true });
+  });
+
+  it('keeps a default the currency cannot charge when the collected method is refused too', async () => {
+    const f = await fixture('CAD', false);
+    await f.insertDefault('pm_usbank_default', 'us_bank_account', later);
+    await f.collect('pm_acss_6789');
+    expect(await f.byProcessor('pm_acss_6789')).toMatchObject({ type: 'acss_debit', isDefault: false, mandateId: null });
+    expect(await f.defaults()).toEqual(['pm_usbank_default']);
+  });
+
+  it('keeps a chargeable default whose processor time is newer than the collected card', async () => {
+    const f = await fixture('USD', false);
+    await f.insertDefault('pm_card_default', 'card', later);
+    await f.collect('pm_4242');
+    expect(await f.byProcessor('pm_4242')).toMatchObject({ type: 'card', isDefault: false });
+    expect(await f.defaults()).toEqual(['pm_card_default']);
+  });
+
+  it('keeps a refused default chosen since a bank collection was skipped', async () => {
+    const f = await fixture('CAD', false);
+    // Older than the collected debit, so only the choice since the skip keeps it.
+    const bank = await f.insertDefault('pm_usbank_default', 'us_bank_account', new Date('2026-01-01T00:00:00Z'));
+    const method = f.transport.objects.get('pm_acss_6789')!, details = method.acss_debit;
+    method.acss_debit = { last4: null, bank_name: 'Example Bank' };
+    await f.collect('pm_acss_6789', 'mandate_setup');
+    expect(await f.byProcessor('pm_acss_6789')).toBeUndefined();
+    // Stands in for staff choosing the bank account as default after the skip, while the gym still charged in USD:
+    // staff can't choose it in CAD.
+    await db.forGym(f.gymId, tx => audit(tx, { gymId: f.gymId, actor: { kind: 'system' } }, f.clock,
+      'billing.card.default_changed', 'payment_method', bank.id, { householdId: f.household.id }));
+    method.acss_debit = details;
+    await f.run('payment_method.updated', { kind: 'payment_method', id: 'pm_acss_6789' });
+    expect(await f.byProcessor('pm_acss_6789')).toMatchObject({ type: 'acss_debit', isDefault: false, mandateId: 'mandate_setup' });
+    expect(await f.defaults()).toEqual(['pm_usbank_default']);
   });
 
   it('waits for a transaction holding the gym row before it locks the household', async () => {

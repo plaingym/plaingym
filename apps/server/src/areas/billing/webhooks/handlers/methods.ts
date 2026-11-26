@@ -90,7 +90,9 @@ export function createCardHandlers(options: { scope: typeof forGym; clock: Clock
         && await defaultChangedSince(tx, household.id, skipped.skippedAt);
       // A method the gym's currency can't charge automatically is saved but never made default here.
       const chargeable = defaultRefusal({ type: method.type, mandateId: mandateId ?? existing?.mandateId ?? null }, currency) === null;
-      const newer = collect && !chosenSinceSkip && chargeable && (!current || current.processorCreatedAt === null
+      // A chargeable collection replaces a default the currency can't charge, whatever their processor times.
+      const currentRefused = !!current && defaultRefusal({ type: current.type, mandateId: current.mandateId }, currency) !== null;
+      const newer = collect && !chosenSinceSkip && chargeable && (!current || currentRefused || current.processorCreatedAt === null
         || current.processorCreatedAt < method.createdAt
         || (current.processorCreatedAt.getTime() === method.createdAt.getTime() && current.processorId < method.id));
       const rowId = existing?.id ?? uuidv7();
@@ -118,6 +120,8 @@ export function createCardHandlers(options: { scope: typeof forGym; clock: Clock
     if (found.status === 'unknown' && found.incompleteBankMethod?.customerId === customerId) {
       logWarn('billing.payment_method.incomplete_bank', { gymId, paymentMethodId: methodId });
       const hasHousehold = await scope(gymId, async tx => {
+        // Gym settings before the household, as in save.
+        await holdGymSettings(tx, gymId);
         const household = (await tx.select({ id: households.id }).from(households)
           .where(eq(households.stripeCustomerId, customerId)).for('update'))[0];
         if (!household) return false;
@@ -150,6 +154,8 @@ export function createCardHandlers(options: { scope: typeof forGym; clock: Clock
   async function markCollectionCompleted(gymId: string, customerId: string, methodId: string, setupId: string,
     outcome?: 'abandoned' | 'unlinked'): Promise<boolean> {
     return scope(gymId, async tx => {
+      // Gym settings before the household, as in save.
+      await holdGymSettings(tx, gymId);
       const household = (await tx.select({ id: households.id }).from(households)
         .where(eq(households.stripeCustomerId, customerId)).for('update'))[0];
       if (!household || await collectionWasCompleted(tx, household.id, methodId)) return false;
