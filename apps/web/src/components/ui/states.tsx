@@ -24,14 +24,14 @@ export function EmptyState({ title, description, action, className, icon }:
   </div>;
 }
 /** Shown when loading fails. Never put server error details in `message`. */
-export function ErrorState({ title = t('shell/shell:error'), message, onRetry, retryLabel = t('shell/shell:retry'), className }:
-  { title?: ReactNode; message?: ReactNode; onRetry?: () => void; retryLabel?: ReactNode; className?: string }) {
+export function ErrorState({ title = t('shell/shell:error'), message, onRetry, retryLabel = t('shell/shell:retry'), retryDisabled = false, className }:
+  { title?: ReactNode; message?: ReactNode; onRetry?: () => void; retryLabel?: ReactNode; retryDisabled?: boolean; className?: string }) {
   return <div role="alert" className={cn('flex flex-col gap-3 rounded-xl border border-destructive/40 bg-destructive/5 p-4 sm:flex-row sm:items-center', className)}>
     <AlertIcon className="text-destructive" />
     <div className="min-w-0 flex-1 space-y-1">
       <p className="font-semibold">{title}</p>
       {message && <p className="text-sm text-muted-foreground">{message}</p>}
     </div>
-    {onRetry && <Button variant="outline" onClick={onRetry}>{retryLabel}</Button>}
+    {onRetry && <Button variant="outline" onClick={onRetry} disabled={retryDisabled}>{retryLabel}</Button>}
   </div>;
 }

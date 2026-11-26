@@ -304,7 +304,8 @@ function AuthenticatedPortal() {
   const signOutError = signOut.isError && <Alert variant="error" focusOnReveal className="mb-4">{text('signOutFailed')}</Alert>;
   // A retry or a household choice puts that message away. A sign-out still being sent is left alone, so its failure is told.
   const clearSignOutError = () => { if (signOut.isError) signOut.reset(); };
-  const failed = (retry: () => void) => <Page><ErrorState message={text('failed')} onRetry={() => { clearSignOutError(); retry(); }} /><Button onClick={() => signOut.mutate()} disabled={signOut.isPending}>{text('signOut')}</Button>{signOutError}</Page>;
+  // The status is mounted with the view, so a sign-out sent from here is announced, and a retry waits for it. Empty, it takes no room.
+  const failed = (retry: () => void) => <Page><ErrorState message={text('failed')} onRetry={() => { clearSignOutError(); retry(); }} retryDisabled={signOut.isPending} /><Button onClick={() => signOut.mutate()} disabled={signOut.isPending}>{text('signOut')}</Button><p role="status" className={signOut.isPending ? 'text-sm text-muted-foreground' : 'sr-only'}>{signOut.isPending && t('shell/shell:signingOut')}</p>{signOutError}</Page>;
   if (households.isPending || choose.isPending) return <PortalLoading />;
   // A list load that fails while the portal has lists to show keeps it up, like the bootstrap: every key follows the lists.
   if (households.isError && !households.data) return failed(() => void households.refetch());
@@ -316,7 +317,8 @@ function AuthenticatedPortal() {
   }
   // A context read that failed waits only for the lists being read again; if they still name this household, it is an error.
   if (!context.data) {
-    if (context.isPending || households.isFetching) return <PortalLoading />;
+    // While a sign-out is being sent, a household the server opened loads inside the layout, so the account menu and its status stay mounted.
+    if (context.isPending || households.isFetching) return signOut.isPending ? <PortalLayout name={bootstrap.data.gym.name} person={person} entries={[]} onSignOut={() => signOut.mutate()} signingOut account><LoadingState /></PortalLayout> : <PortalLoading />;
     return failed(() => { void households.refetch(); void context.refetch(); });
   }
   const switcher = households.data.households.length > 1

@@ -475,7 +475,9 @@ it('offers a retry, not a spinner, when the server opened another household but 
   f.lagLists(ids.first);
   await user.selectOptions(screen.getByRole('combobox'), ids.second);
   const message = await screen.findByText(/couldn.t load your portal/);
-  expect(screen.queryByRole('status')).toBeNull();
+  // The view's only status is the one for signing out, empty here.
+  expect(document.querySelector('[data-loading]')).toBeNull();
+  expect(screen.getByRole('status').textContent).toBe('');
   f.lagLists(null);
   await user.click(within(message.parentElement!.parentElement!).getByRole('button', { name: 'Try again' }));
   await waitFor(() => expect(identity()).toBe('Noa Second · Member'));
@@ -758,6 +760,51 @@ it('clears a failed sign-out on a retry of the failed-load view', async () => {
   await screen.findByText(signOutFailed);
   failing = false;
   await user.click(screen.getByRole('button', { name: 'Try again' }));
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  expect(screen.queryByText(signOutFailed)).toBeNull();
+});
+it('keeps the signing-out status mounted while a household the server opened loads', async () => {
+  const f = portal(ids.first), user = userEvent.setup();
+  f.signOut.mockImplementation(() => new Promise(() => undefined));
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  const account = screen.getByRole('button', { name: 'Account' });
+  await user.click(account);
+  await user.click(screen.getByRole('button', { name: 'Sign out' }));
+  const status = await screen.findByText('Signing out…');
+  const answer = f.fetcher.getMockImplementation()!;
+  f.fetcher.mockImplementation(async (path, init) => path === '/api/portal/context' ? new Promise<Response>(() => undefined) : answer(path, init));
+  f.serverOpens(ids.second);
+  act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+  await waitFor(() => {
+    expect(document.querySelector('main [data-loading]')).not.toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Welcome to your member portal' })).toBeNull();
+  });
+  expect(status.isConnected).toBe(true);
+  expect(screen.getByText('Signing out…')).toBe(status);
+  expect(screen.getByRole('button', { name: 'Account' })).toBe(account);
+});
+it('says it is signing out on the failed-load view, and holds the retry until the sign-out fails', async () => {
+  const f = portal(ids.first), user = userEvent.setup();
+  const answer = f.fetcher.getMockImplementation()!;
+  let failing = true;
+  f.fetcher.mockImplementation(async (path, init) => failing && path === '/api/portal/households' ? new Response(null, { status: 500 }) : answer(path, init));
+  let fail!: (cause: unknown) => void;
+  f.signOut.mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
+  await screen.findByText(/couldn.t load your portal/);
+  const status = screen.getByRole('status');
+  expect(status.textContent).toBe('');
+  const retry = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Try again' });
+  await user.click(screen.getByRole('button', { name: 'Sign out' }));
+  await waitFor(() => expect(status.textContent).toBe('Signing out…'));
+  expect(retry().disabled).toBe(true);
+  await act(async () => fail(new TypeError('Failed to fetch')));
+  expect(await screen.findByText(signOutFailed)).toBeDefined();
+  expect(status.textContent).toBe('');
+  // Empty again, it leaves no gap between the button and the failure.
+  expect(status.className).toBe('sr-only');
+  expect(retry().disabled).toBe(false);
+  failing = false;
+  await user.click(retry());
   await screen.findByRole('heading', { name: 'Welcome to your member portal' });
   expect(screen.queryByText(signOutFailed)).toBeNull();
 });

@@ -66,6 +66,9 @@ onboarding claim, returns to `/portal/claim?claim=<code>`, which completes the
 claim for the signed-in user, removes the code from the address bar and opens the
 portal. Signing out clears the query cache before returning to login. While the
 sign-out is being sent, the household picker and the header switcher can't be used.
+A household the server opens meanwhile loads inside the portal, so the **Account**
+menu keeps its **Signing out…** status; the failed-load view says it is signing
+out, and its **Try again** waits until the sign-out fails.
 The root layout supplies the source-code footer.
 
 The home page summarizes the next booked, scheduled class within 30 days (not a
