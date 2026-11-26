@@ -20,16 +20,19 @@ export const healthReadAgeMs = 30_000;
  * late result is discarded. Slow tiles log their ID and duration only.
  */
 export function createHealthService(providers: readonly HealthTileProvider<HealthTile>[],
-  options: { tileTimeoutMs?: number; slowTileMs?: number; maxReadAgeMs?: number; maxReplacedAgeMs?: number; maxUnsettledReads?: number; maxUnsettledAgeMs?: number; now?: () => number } = {}) {
-  const { tileTimeoutMs = 5000, slowTileMs = 2000, maxReadAgeMs = healthReadAgeMs, maxReplacedAgeMs = 4 * maxReadAgeMs, maxUnsettledReads = 3, maxUnsettledAgeMs = 30 * 60_000, now = () => performance.now() } = options;
+  options: { tileTimeoutMs?: number; slowTileMs?: number; maxReadAgeMs?: number; maxReplacedAgeMs?: number; maxUnsettledReads?: number; maxUnsettledAgeMs?: number; maxHungReads?: number; now?: () => number } = {}) {
+  const { tileTimeoutMs = 5000, slowTileMs = 2000, maxReadAgeMs = healthReadAgeMs, maxReplacedAgeMs = 4 * maxReadAgeMs, maxUnsettledReads = 3, maxUnsettledAgeMs = 30 * 60_000, maxHungReads = 12, now = () => performance.now() } = options;
   const registry = new Map(providers.map((provider) => [provider.id, provider]));
   if (registry.size !== providers.length) throw new Error('Duplicate health provider');
+  if (maxHungReads < maxUnsettledReads) throw new Error('maxHungReads must be at least maxUnsettledReads');
   type Entry = { read: Promise<HealthTile>; startedAt: number; loggedSlow: boolean };
   const inFlight = new Map<string, Entry>();
   const replaced = new Map<string, Entry>();
   const unsettled = new Map<string, Set<Entry>>();
-  // A read stops counting toward maxUnsettledReads once it is maxUnsettledAgeMs old (it keeps running untracked),
-  // so a tile whose reads hang for good is checked again.
+  // Keys whose wait at the maxHungReads cap is already logged.
+  const hungLogged = new Set<string>();
+  // A read stops counting toward maxUnsettledReads once it is maxUnsettledAgeMs old (it keeps running), so a tile
+  // whose reads hang for good is checked again, until maxHungReads reads of any age are unsettled.
   const youngUnsettled = (key: string) => {
     let count = 0;
     for (const entry of unsettled.get(key) ?? []) if (now() - entry.startedAt < maxUnsettledAgeMs) count++;
@@ -44,8 +47,8 @@ export function createHealthService(providers: readonly HealthTileProvider<Healt
       // Never rejects: every error becomes the failed-check tile. A request that finds a read in flight for the
       // same gym and tile waits for it instead of starting another unless it is older than maxReadAgeMs, either
       // no replaced read is still pending or the running read has reached maxReplacedAgeMs (replacing the tracked
-      // replaced read with the running one), and fewer than maxUnsettledReads reads younger than maxUnsettledAgeMs are still unsettled for it;
-      // the permission is still checked per request.
+      // replaced read with the running one), fewer than maxUnsettledReads reads younger than maxUnsettledAgeMs are still unsettled for it,
+      // and fewer than maxHungReads reads of any age are; the permission is still checked per request.
       let entry: Entry;
       if (!canStaff(context.roles, provider.permission)) {
         entry = { read: Promise.resolve(failed()), startedAt: now(), loggedSlow: false };
@@ -53,8 +56,16 @@ export function createHealthService(providers: readonly HealthTileProvider<Healt
         const key = context.gymId + ':' + id;
         const running = inFlight.get(key);
         const age = running ? now() - running.startedAt : 0;
-        if (running && (age <= maxReadAgeMs || (replaced.has(key) && age < maxReplacedAgeMs) || youngUnsettled(key) >= maxUnsettledReads)) entry = running;
-        else {
+        const shared = age <= maxReadAgeMs || (replaced.has(key) && age < maxReplacedAgeMs);
+        const unsettledCount = unsettled.get(key)?.size ?? 0;
+        const capped = unsettledCount >= maxHungReads;
+        if (running && (shared || capped || youngUnsettled(key) >= maxUnsettledReads)) {
+          if (!shared && capped && !hungLogged.has(key)) {
+            hungLogged.add(key);
+            logWarn('health.tile_hung', { tile: id, unsettled: unsettledCount });
+          }
+          entry = running;
+        } else {
           if (running) {
             replaced.set(key, running);
             void running.read.finally(() => { if (replaced.get(key) === running) replaced.delete(key); });
@@ -81,6 +92,7 @@ export function createHealthService(providers: readonly HealthTileProvider<Healt
             const remaining = unsettled.get(key);
             remaining?.delete(fresh);
             if (remaining?.size === 0) unsettled.delete(key);
+            if ((remaining?.size ?? 0) < maxHungReads) hungLogged.delete(key);
             if (inFlight.get(key) === fresh) inFlight.delete(key);
           });
           entry = fresh;

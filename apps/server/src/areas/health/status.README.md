@@ -14,8 +14,13 @@ refresh starts another even while the replaced one is pending (the older read ke
 running, no longer tracked), up to at most three unsettled reads per gym and tile at once:
 while three are unsettled a refresh waits on the newest, and one settling lets the next
 refresh start another; a read still unsettled 30 minutes after it started no longer counts
-toward the three, so a tile whose reads hang for good is checked again). A read slower than 2 seconds logs `health.tile_slow` once, with its
-tile ID and duration from the read's start; each request that reaches the 5-second limit logs
+toward the three, so a tile whose reads hang for good is checked again, but never beyond 12
+unsettled reads of any age per gym and tile: at that cap a refresh waits on the newest, and
+the first refresh held back by it logs `health.tile_hung` once, with the tile ID and the
+count, until the count falls below the cap; if none of those reads ever settles, the tile reads
+"Still checking" until the app restarts, even after its dependency answers again). A read slower
+than 2 seconds logs `health.tile_slow` once, with its tile ID and duration from the read's
+start; each request that reaches the 5-second limit logs
 its own line with `timedOut: true`. The Last backup tile reuses its bucket inventory
 for up to one minute from the start of the read that listed it (it is released from memory
 after that; a running listing whose read started over 30 seconds ago is replaced by a new

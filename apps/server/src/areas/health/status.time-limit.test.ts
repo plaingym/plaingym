@@ -321,6 +321,65 @@ describe('health tile time limit', () => {
     await vi.advanceTimersByTimeAsync(5000);
     await r600;
   });
+  /** One request a minute from the current fake time up to `until`; every one answers "still checking" within the limit. */
+  async function refreshEveryMinute(service: ReturnType<typeof createHealthService>, until: number) {
+    while (Date.now() < until) {
+      let done = false;
+      const response = service.get(context).then((value) => { done = true; return value; });
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(done).toBe(true);
+      expect((await response).data.tiles.find((tile) => tile.id === b)).toMatchObject({ message: 'Still checking. Refresh in a moment.' });
+      await vi.advanceTimersByTimeAsync(55_000);
+    }
+  }
+  const hungLines = () => (lines as Array<{ event: string }>).filter((line) => line.event === 'health.tile_hung');
+  const eightHours = 8 * 60 * 60_000;
+  it('keeps at most 12 unsettled reads over 8 hours and logs the cap once', async () => {
+    let calls = 0;
+    const never = healthProvider(b, () => { calls++; return new Promise<HealthTile>(() => undefined); });
+    await refreshEveryMinute(createHealthService([never], options), eightHours);
+    expect(calls).toBe(12);
+    expect(hungLines()).toEqual([{ time: expect.any(String), level: 'warn', event: 'health.tile_hung', tile: b, unsettled: 12 }]);
+  });
+  it('starts one new read once a read settles at the cap, and logs the next cap again', async () => {
+    let calls = 0;
+    const resolvers: Array<(tile: HealthTile) => void> = [];
+    const provider = healthProvider(b, () => { calls++; return new Promise<HealthTile>((resolve) => { resolvers.push(resolve); }); });
+    const service = createHealthService([provider], options);
+    await refreshEveryMinute(service, eightHours);
+    expect(calls).toBe(12);
+    expect(hungLines()).toHaveLength(1);
+    // An old read settles: the newest is hours old, so the next refresh starts exactly one more.
+    resolvers[0]!(tileOf(b));
+    await vi.advanceTimersByTimeAsync(0);
+    await refreshEveryMinute(service, eightHours + 60_000);
+    expect(calls).toBe(13);
+    await refreshEveryMinute(service, eightHours + 60 * 60_000);
+    expect(calls).toBe(13);
+    expect(hungLines()).toHaveLength(2);
+  });
+  it('honors a lower maxHungReads cap', async () => {
+    let calls = 0;
+    const never = healthProvider(b, () => { calls++; return new Promise<HealthTile>(() => undefined); });
+    await refreshEveryMinute(createHealthService([never], { ...options, maxUnsettledReads: 3, maxHungReads: 4 }), eightHours);
+    expect(calls).toBe(4);
+    expect(hungLines()).toHaveLength(1);
+  });
+  it("starts another gym's own read while one gym is at the cap", async () => {
+    let calls = 0;
+    const never = healthProvider(b, () => { calls++; return new Promise<HealthTile>(() => undefined); });
+    const service = createHealthService([never], { ...options, maxUnsettledReads: 1, maxHungReads: 1 });
+    await refreshEveryMinute(service, 5 * 60_000);
+    expect(calls).toBe(1);
+    expect(hungLines()).toHaveLength(1);
+    const other = service.get({ ...context, gymId: uuidv7() });
+    expect(calls).toBe(2);
+    await vi.advanceTimersByTimeAsync(5000);
+    await other;
+  });
+  it('refuses a maxHungReads below maxUnsettledReads', () => {
+    expect(() => createHealthService([], { maxHungReads: 2 })).toThrow('maxHungReads');
+  });
   it('starts a new read once the replaced read settles while keeping at most two pending', async () => {
     let calls = 0;
     let resolveFirst!: (tile: HealthTile) => void;
