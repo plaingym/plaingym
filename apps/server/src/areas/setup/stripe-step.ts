@@ -9,7 +9,9 @@ import { encryptSecret, decryptSecret } from '../../core/secrets.js';
 import { logError, logInfo } from '../../core/log.js';
 import { StripePayments, stripeTransport } from '../../infra/payments/stripe.js';
 import { stripeProvisioner } from '../../infra/payments/setup.js';
+import type { PaymentTransport } from '../../infra/payments/transport.js';
 import { pauseRestoredBillingForStripe } from '../settings/go-live.restore.js';
+import { importedOnly, readsStripeReference, stripeReference } from '../settings/integrations.query.js';
 
 export interface StripeConfig { apiKey: string; endpointId: string; webhookSecret: string; mode: 'test' | 'live' }
 export type StripeProvisioner = ReturnType<typeof stripeProvisioner>;
@@ -74,10 +76,13 @@ export function createStripeConnection(options: { provisioner?: ((key: string) =
 }
 export function createStripeStep(options: { key: Buffer; origin: string; clock?: Clock; scope?: typeof forGym;
   /** A sandbox accepts test-mode keys only. */
-  demoMode?: boolean; provisioner?: (key: string) => StripeProvisioner }) {
+  demoMode?: boolean; provisioner?: (key: string) => StripeProvisioner;
+  /** The transport that reads the gym's Stripe references with a new key: tests supply fakes, production talks to Stripe. */
+  transport?: (key: string) => PaymentTransport }) {
   const scope = options.scope ?? forGym, clock = options.clock ?? systemClock;
+  const transportFor = options.transport ?? ((apiKey: string) => stripeTransport(apiKey));
   const connection = createStripeConnection({ provisioner: options.provisioner, demoMode: options.demoMode });
-  async function current(context: MutationContext, revision: number) {
+  async function current(context: MutationContext, revision: number, references: boolean) {
     return scope(context.gymId, async (tx) => {
       const [gym] = await tx.select().from(gyms).where(eq(gyms.id, context.gymId));
       const state = gym?.settings as { setup?: { completed?: boolean; ownerId?: string; completedSteps?: number[] } } | undefined;
@@ -85,16 +90,31 @@ export function createStripeStep(options: { key: Buffer; origin: string; clock?:
         throw new AppError('not_found', 'Setup not found');
       assertRevised(gym.revision === revision ? [gym] : []);
       if (!state.setup.completedSteps?.includes(5)) throw new AppError('conflict', 'Complete the preceding setup step');
-      return gym;
+      return { gym, reference: references ? await stripeReference(tx, context.gymId) : null };
     });
   }
   return {
+    /**
+     * Saves or skips the gym's Stripe key. While the gym holds Stripe customers, cards or card payments (a restore can
+     * bring them into an unfinished wizard), a key is held to the same rules as Settings → Payments: one in the other mode
+     * is refused, and a same-mode key must read one of them. Setup offers no switch from test to live; the owner makes
+     * it later in Settings → Payments.
+     */
     async configure(context: MutationContext, input: SetupStripeRequest) {
-      const before = await current(context, input.revision);
+      const { gym: before, reference } = await current(context, input.revision, input.choice === 'configure');
       const previous = readStripeConfig(options.key, before.stripeConfig, context.gymId);
-      let config: StripeConfig | null = null, reused = false;
-      if (input.choice === 'configure')
-        ({ config, reused } = await connection.connect(context.gymId, options.origin, input.revision, input.restrictedKey, previous));
+      let config: StripeConfig | null = null, reused = false, checked: { paths: string[] } | null = null;
+      if (input.choice === 'configure') {
+        const mode = restrictedKeyMode(input.restrictedKey, options.demoMode);
+        if (reference && previous && previous.mode !== mode)
+          throw new AppError('invalid_request', 'Stripe customers and payments exist in ' + previous.mode + ' mode', { restrictedKey: ['mode_locked'] });
+        checked = reference && !importedOnly(previous, reference) ? reference : null;
+        // After the permission probe, so a key missing a permission is told which one; before any endpoint is registered.
+        ({ config, reused } = await connection.connect(context.gymId, options.origin, input.revision, input.restrictedKey, previous, async () => {
+          if (checked && !await readsStripeReference(transportFor(input.restrictedKey), checked))
+            throw new AppError('invalid_request', 'The key belongs to another Stripe account', { restrictedKey: ['account_locked'] });
+        }));
+      }
       // Registration is idempotent. A failed CAS leaves an unreferenced endpoint, never active credentials; the next
       // successful save deletes it with the gym's other stale endpoints.
       const saved = await scope(context.gymId, async (tx) => {
@@ -106,6 +126,11 @@ export function createStripeStep(options: { key: Buffer; origin: string; clock?:
         assertRevised(gym.revision === input.revision ? [gym] : []);
         // The mode stored when this save locked the gym row: the billing write guard counts a change or removal of it.
         const was = readStripeConfig(options.key, gym.stripeConfig, context.gymId);
+        if (config && !checked) {
+          // A card or payment recorded while Stripe was called would need the account check, which ran without one.
+          const now = await stripeReference(tx, context.gymId);
+          if (now !== null && !importedOnly(was, now)) throw new AppError('conflict', 'Stripe customers were recorded while the key was checked; try again');
+        }
         const paused = config && await pauseRestoredBillingForStripe(tx, context, gym.billingEnabled, clock.now(), config.mode);
         const updated = assertRevised(await tx.update(gyms).set({
           ...(paused ? { billingEnabled: false } : {}),

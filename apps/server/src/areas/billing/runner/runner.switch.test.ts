@@ -155,8 +155,16 @@ describe('a charge run across a switch from Stripe test mode to live', () => {
 
 describe("a switch through the setup wizard's Stripe step", () => {
   type Save = { choice: 'skip' } | { choice: 'configure'; restrictedKey: string };
-  /** Puts the fixture's gym in an unfinished setup with step 5 done; each call of the result saves the Stripe step. */
-  async function setupStep(f: Fixture) {
+  /**
+   * Puts the fixture's gym in an unfinished setup with step 5 done; each call of the result saves the Stripe step. Every
+   * key reads the gym's Stripe references (one account). With `references: false` the fixture's customer and card are
+   * removed first, so the step may change the mode (it refuses a key in the other mode while the gym holds them).
+   */
+  async function setupStep(f: Fixture, { references = true } = {}) {
+    if (!references) await db.forGym(f.gymId, async tx => {
+      await tx.update(households).set({ stripeCustomerId: null });
+      await tx.delete(paymentMethods);
+    });
     const owner = await factory('authUser', f.gymId);
     const [gym] = await db.forGym(f.gymId, tx => tx.select().from(gyms).where(eq(gyms.id, f.gymId)));
     await db.forGym(f.gymId, tx => tx.update(gyms).set({ settings: { ...gym!.settings as object,
@@ -164,6 +172,7 @@ describe("a switch through the setup wizard's Stripe step", () => {
     let revision = gym!.revision;
     const accounts = new Map<string, StripeFixtures>();
     const step = createStripeStep({ key: Buffer.alloc(32, 7), origin: 'https://gym.example.invalid', clock: f.clock, scope: db.forGym,
+      transport: () => ({ async request() { return {}; } }),
       provisioner: apiKey => {
         if (!accounts.has(apiKey)) accounts.set(apiKey, new StripeFixtures(f.gymId, undefined, accounts.size * 1000));
         return stripeProvisioner(accounts.get(apiKey)!);
@@ -182,7 +191,7 @@ describe("a switch through the setup wizard's Stripe step", () => {
     ['a same-mode rotation', { choice: 'configure', restrictedKey: 'rk_test_SETUPA' }, { choice: 'configure', restrictedKey: 'rk_test_SETUPC' }, true],
     ['a first save from no Stripe', null, { choice: 'configure', restrictedKey: 'rk_test_SETUPA' }, true],
   ])('%s: a snapshot read before it is checked against the saved mode', async (_name, first, then, current) => {
-    const f = await fixture(), save = await setupStep(f);
+    const f = await fixture(), save = await setupStep(f, { references: false });
     if (first) await save(first);
     const snapshot = await snapshotOf(f);
     await save(then);
@@ -198,10 +207,16 @@ describe("a switch through the setup wizard's Stripe step", () => {
     expect(await snapshotOf(f)).toBe(snapshot);
     expect(await currentFor(f, snapshot)).toBe(true);
   });
-  it('reserves nothing with a test provider resolved before a setup switch to live, and charges with the provider resolved again', async () => {
+  // While the gym holds a card the step refuses a key in the other mode, so the setup change a charge run can meet is a removal.
+  it('refuses a setup switch to live while the gym holds a card', async () => {
+    const f = await fixture(), save = await setupStep(f);
+    await save({ choice: 'configure', restrictedKey: 'rk_test_SETUPA' });
+    await expect(save({ choice: 'configure', restrictedKey: 'rk_live_SETUPB' })).rejects.toMatchObject({ details: { restrictedKey: ['mode_locked'] } });
+  });
+  it('reserves nothing with a test provider resolved before a setup removal, and charges with the provider resolved again', async () => {
     const f = await fixture(), bill = await invoice(f), create = vi.spyOn(f.provider, 'createCharge'), save = await setupStep(f);
     await save({ choice: 'configure', restrictedKey: 'rk_test_SETUPA' });
-    const { runner, oldCalls, resolutions } = switchingRunner(f, () => save({ choice: 'configure', restrictedKey: 'rk_live_SETUPB' }));
+    const { runner, oldCalls, resolutions } = switchingRunner(f, () => save({ choice: 'skip' }));
     expect(await runner.charge(f.gymId, bill.id)).toEqual({ status: 'succeeded' });
     expect(resolutions()).toBe(2);
     for (const call of oldCalls) expect(call).not.toHaveBeenCalled();

@@ -181,4 +181,7 @@ Each request and page records the gym's switch snapshot (`stripeSwitchSnapshot`)
 and is finished as stale when it changes, or the household's customer does. A
 request queued by an earlier release carries no version marker: it and its pages
 are checked against the marker it was written with, the latest test-data clear. A switch after that request still makes it stale, because
-the Payments save changes the mode of a gym with a linked customer only by clearing.
+the mode of a gym with a linked customer changes only through the Payments save's clear
+(the setup wizard's Stripe step refuses a key in the other mode while a key is stored and
+the gym holds one). One path escapes it: after the setup step's `skip`, a key in either
+mode is saved without a read while households hold the only Stripe references.

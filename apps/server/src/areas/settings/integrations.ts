@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, count, desc, eq, exists, gt, inArray, isNotNull, isNull, ne, notExists, notInArray, or } from 'drizzle-orm';
+import { and, count, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { auditEvents, forGym, gyms, households, invoices, paymentAttempts, paymentMethods, payments, refunds, revisionGuard, assertRevised,
   signedLinks, writeAudit, type Transaction } from '@plaingym/db';
@@ -27,9 +27,9 @@ import { pauseRestoredBillingForStripe } from './go-live.restore.js';
 import { backupColumns, backupKeyPair, newBlobKey, recipientOf } from '../setup/backup-key.js';
 import { customerUnlinkedAction } from '../billing/customers.js';
 import { promoteDefaultCard } from '../billing/payments.mutations.js';
-import { latestTestSwitchId, stripeTestClearedAction as testClearedAction } from '../billing/stripe-writes.js';
+import { stripeTestClearedAction as testClearedAction } from '../billing/stripe-writes.js';
 import { testCleared } from '../billing/transitions/store.js';
-import { cardImportAudits, linkedCustomer, testCards } from './integrations.query.js';
+import { importedOnly, linkedCustomer, readsStripeReference, stripeReference, testCards } from './integrations.query.js';
 import { encryptSmtpConfig, installSmtpFingerprint, readSmtpSchema, sendSmtpTest, smtpFromEnvironment, storedSmtpFromRequest, type SendSmtpTest } from './smtp.js';
 import { readEmailSendFailure, type EmailSendFailure } from './email-status.js';
 import { createGoogleClientResolver, encryptGoogleConfig, readGoogleConfig, requireGoogleClient, type CheckGoogle } from './google-login.js';
@@ -147,45 +147,6 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     return { source, host, port, security, from, signIn: now, signInAfterSave: signIn(true),
       signInAfterRemove: afterRemove, removeBlocked, unreadable: !!gym.smtpConfig && !smtp, googleConfigured, lastSendFailure };
   }
-  /** Card payments recorded through Stripe that no switch marked as test mode. */
-  const liveCardPayments = and(or(isNotNull(payments.paymentIntentId), isNotNull(payments.chargeId)),
-    or(isNull(payments.reference), ne(payments.reference, stripeTestPaymentReference)));
-  /**
-   * Customers, cards and card payments belong to the Stripe account that created them. Returns null when the gym has none,
-   * otherwise the Stripe paths of a few of them (newest first), which a restricted key with the setup permissions can read
-   * (customers, PaymentIntents, charges and payment methods are all readable). Several, so that one stale ID the account
-   * doesn't have can't block a key change on its own. The app's own references come first and, when there are any, alone:
-   * customers it linked, attempts, card payments and cards saved through Stripe. Imported customer IDs and cards (written
-   * without asking Stripe, so possibly from another account, or mistyped) are used only when nothing else exists.
-   * `customersOnly` is true when only households hold them (no attempts, card payments or cards): with no Stripe settings,
-   * those are imported IDs. What a switch to live cleared is marked, not compared by time: its card payments carry the
-   * test-mode reference, the cards it saved through Stripe are revoked (the imported cards it kept aren't), and its
-   * attempts aren't sampled after a switch (a live attempt's customer is a household's, and its payment is sampled).
-   */
-  async function stripeReference(tx: Transaction, gymId: string): Promise<{ paths: string[]; customersOnly: boolean } | null> {
-    const switched = await latestTestSwitchId(tx, gymId) !== null;
-    const customers = (linked: boolean) => tx.select({ id: households.stripeCustomerId }).from(households)
-      .where(linkedCustomer(tx, gymId, linked))
-      .orderBy(desc(households.id)).limit(3);
-    const cards = (imported: boolean) => tx.select({ id: paymentMethods.processorId }).from(paymentMethods)
-      .where(and(switched ? isNull(paymentMethods.revokedAt) : undefined, (imported ? exists : notExists)(cardImportAudits(tx, gymId))))
-      .orderBy(desc(paymentMethods.id)).limit(1);
-    const linked = await customers(true);
-    const attempts = switched ? [] : await tx.select({ id: paymentAttempts.stripeCustomerId }).from(paymentAttempts)
-      .orderBy(desc(paymentAttempts.id)).limit(1);
-    const paid = await tx.select({ intent: payments.paymentIntentId, charge: payments.chargeId }).from(payments)
-      .where(liveCardPayments).orderBy(desc(payments.id)).limit(2);
-    const saved = await cards(false), importedCards = await cards(true);
-    const own = [...linked.map((row) => '/v1/customers/' + row.id), ...attempts.map((row) => '/v1/customers/' + row.id),
-      ...paid.map((row) => row.intent ? '/v1/payment_intents/' + row.intent : '/v1/charges/' + row.charge),
-      ...saved.map((row) => '/v1/payment_methods/' + row.id)];
-    const paths = own.length ? own : [...(await customers(false)).map((row) => '/v1/customers/' + row.id),
-      ...importedCards.map((row) => '/v1/payment_methods/' + row.id)];
-    return paths.length ? { paths: [...new Set(paths)],
-      customersOnly: !attempts.length && !paid.length && !saved.length && !importedCards.length } : null;
-  }
-  /** Imported customer IDs alone, with no Stripe settings yet, tie the gym to no account (any key is accepted). */
-  const importedOnly = (config: StripeConfig | null, reference: { customersOnly: boolean } | null) => config === null && reference?.customersOnly === true;
   /**
    * Open card-setup Checkout sessions: the latest one started from each card or onboarding link that can still be used,
    * within the last 24 hours (Stripe expires a Checkout session by then). A session from before an earlier switch was
@@ -442,22 +403,6 @@ export function createIntegrationsService(options: IntegrationsOptions) {
   };
   const sms = createSmsIntegration({ key: options.key, scope, clock, tenancy: options.config.tenancy, sandbox,
     assertChangeable, userOf, assertCurrent, save, ...(options.smsFactory ? { smsFactory: options.smsFactory } : {}) });
-  /**
-   * Whether `apiKey` can read an object the gym's current Stripe account created: a key for another account (or the other
-   * mode) gets a 404 `resource_missing`. Stripe keeps deleted customers readable, so a deleted one still matches.
-   */
-  async function sameAccount(apiKey: string, reference: { paths: string[] }): Promise<boolean> {
-    const transport = transportFor(apiKey);
-    for (const path of reference.paths) {
-      if (!/^\/v1\/(customers\/cus|payment_intents\/pi|charges\/(ch|py)|payment_methods\/(pm|card|src))_[A-Za-z0-9_]+$/.test(path)) continue;
-      try { await transport.request({ method: 'GET', path }); return true; }
-      catch (error) {
-        const value = error as { code?: unknown; statusCode?: unknown };
-        if (!(value.code === 'resource_missing' && value.statusCode === 404)) throw error;
-      }
-    }
-    return false;
-  }
   /** Stripe's answer as a safe error: a missing permission names its resource; anything else is unavailable and logged without its message. */
   function stripeFailure(gymId: string, error: unknown): AppError {
     if (error instanceof AppError) return error;
@@ -608,7 +553,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
       try {
         // After the permission probe, so a key missing a permission is told which one; before any endpoint is registered.
         connected = await stripe.connect(gymId, origin, input.revision, input.restrictedKey, previous, async () => {
-          if (checked && !await sameAccount(input.restrictedKey, checked))
+          if (checked && !await readsStripeReference(transportFor(input.restrictedKey), checked))
             throw new AppError('conflict', 'The key belongs to another Stripe account', { restrictedKey: ['account_locked'] });
         });
       } catch (error) { throw stripeFailure(gymId, error); }

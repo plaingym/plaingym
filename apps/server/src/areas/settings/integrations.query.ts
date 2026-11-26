@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, eq, exists, inArray, isNotNull, isNull, notExists, or } from 'drizzle-orm';
+import { and, desc, eq, exists, inArray, isNotNull, isNull, ne, notExists, or } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- The scoped Drizzle subquery needs one isolated JSON text extraction to match the audited customer ID.
 import { sql } from 'drizzle-orm';
-import { auditEvents, households, paymentMethods, type Transaction } from '@plaingym/db';
+import { auditEvents, households, paymentAttempts, paymentMethods, payments, type Transaction } from '@plaingym/db';
+import { stripeTestPaymentReference } from '@plaingym/shared/contracts';
+import type { PaymentTransport } from '../../infra/payments/transport.js';
+import { latestTestSwitchId } from '../billing/stripe-writes.js';
+import type { StripeConfig } from '../setup/stripe-step.js';
 
 /** The audits that record the app linking a household to a Stripe customer: created by the customers service, or matched by email for a link campaign. */
 export const customerLinkActions = ['billing.customer.linked', 'link_campaign.customer_matched'];
@@ -39,4 +43,60 @@ export function testCards(tx: Transaction, gymId: string) {
   const clearedHousehold = tx.select({ id: households.id }).from(households).where(and(eq(households.id, paymentMethods.householdId),
     linkedCustomer(tx, gymId, true)));
   return and(isNull(paymentMethods.revokedAt), or(notExists(cardImportAudits(tx, gymId)), exists(clearedHousehold)));
+}
+
+/** Card payments recorded through Stripe that no switch marked as test mode. */
+const liveCardPayments = and(or(isNotNull(payments.paymentIntentId), isNotNull(payments.chargeId)),
+  or(isNull(payments.reference), ne(payments.reference, stripeTestPaymentReference)));
+/**
+ * Customers, cards and card payments belong to the Stripe account that created them. Returns null when the gym has none,
+ * otherwise the Stripe paths of a few of them (newest first), which a restricted key with the setup permissions can read
+ * (customers, PaymentIntents, charges and payment methods are all readable). Several, so that one stale ID the account
+ * doesn't have can't block a key change on its own. The app's own references come first and, when there are any, alone:
+ * customers it linked, attempts, card payments and cards saved through Stripe. Imported customer IDs and cards (written
+ * without asking Stripe, so possibly from another account, or mistyped) are used only when nothing else exists.
+ * `customersOnly` is true when only households hold them (no attempts, card payments or cards): with no Stripe settings,
+ * those are imported IDs. What a switch to live cleared is marked, not compared by time: its card payments carry the
+ * test-mode reference, the cards it saved through Stripe are revoked (the imported cards it kept aren't), and its
+ * attempts aren't sampled after a switch (a live attempt's customer is a household's, and its payment is sampled).
+ */
+export async function stripeReference(tx: Transaction, gymId: string): Promise<{ paths: string[]; customersOnly: boolean } | null> {
+  const switched = await latestTestSwitchId(tx, gymId) !== null;
+  const customers = (linked: boolean) => tx.select({ id: households.stripeCustomerId }).from(households)
+    .where(linkedCustomer(tx, gymId, linked))
+    .orderBy(desc(households.id)).limit(3);
+  const cards = (imported: boolean) => tx.select({ id: paymentMethods.processorId }).from(paymentMethods)
+    .where(and(switched ? isNull(paymentMethods.revokedAt) : undefined, (imported ? exists : notExists)(cardImportAudits(tx, gymId))))
+    .orderBy(desc(paymentMethods.id)).limit(1);
+  const linked = await customers(true);
+  const attempts = switched ? [] : await tx.select({ id: paymentAttempts.stripeCustomerId }).from(paymentAttempts)
+    .orderBy(desc(paymentAttempts.id)).limit(1);
+  const paid = await tx.select({ intent: payments.paymentIntentId, charge: payments.chargeId }).from(payments)
+    .where(liveCardPayments).orderBy(desc(payments.id)).limit(2);
+  const saved = await cards(false), importedCards = await cards(true);
+  const own = [...linked.map((row) => '/v1/customers/' + row.id), ...attempts.map((row) => '/v1/customers/' + row.id),
+    ...paid.map((row) => row.intent ? '/v1/payment_intents/' + row.intent : '/v1/charges/' + row.charge),
+    ...saved.map((row) => '/v1/payment_methods/' + row.id)];
+  const paths = own.length ? own : [...(await customers(false)).map((row) => '/v1/customers/' + row.id),
+    ...importedCards.map((row) => '/v1/payment_methods/' + row.id)];
+  return paths.length ? { paths: [...new Set(paths)],
+    customersOnly: !attempts.length && !paid.length && !saved.length && !importedCards.length } : null;
+}
+/** Imported customer IDs alone, with no Stripe settings yet, tie the gym to no account (any key is accepted). */
+export const importedOnly = (config: StripeConfig | null, reference: { customersOnly: boolean } | null) => config === null && reference?.customersOnly === true;
+/**
+ * Whether a key's transport can read an object the gym's current Stripe account created: a key for another account (or
+ * the other mode) gets a 404 `resource_missing`. Stripe keeps deleted customers readable, so a deleted one still matches.
+ * Call it outside any transaction.
+ */
+export async function readsStripeReference(transport: PaymentTransport, reference: { paths: string[] }): Promise<boolean> {
+  for (const path of reference.paths) {
+    if (!/^\/v1\/(customers\/cus|payment_intents\/pi|charges\/(ch|py)|payment_methods\/(pm|card|src))_[A-Za-z0-9_]+$/.test(path)) continue;
+    try { await transport.request({ method: 'GET', path }); return true; }
+    catch (error) {
+      const value = error as { code?: unknown; statusCode?: unknown };
+      if (!(value.code === 'resource_missing' && value.statusCode === 404)) throw error;
+    }
+  }
+  return false;
 }

@@ -50,11 +50,25 @@ key (or `skip`, which removes stored credentials) under the revision and audits
 `setup.stripe_configured` with `before: { mode }`, the mode stored when the save locked
 the gym row (`null` without one), and `after` with the saved mode (`null` on skip),
 the endpoint ID and whether it was reused. Until setup finishes the owner can come
-back to change mode or remove the key, so the billing write guard
+back to rotate or remove the key, or change its mode while the gym holds no Stripe
+references (below), so the billing write guard
 (`stripeSwitchSnapshot`, `areas/billing/stripe-writes.ts`) counts a setup save that
 changed or removed a stored mode as a switch, as it does a mode-changing Payments
 save: billing work that read the snapshot before it writes nothing with the old key.
 A first save, a same-mode key rotation and a setup audit without `before` don't count.
+
+A restore can bring Stripe customers, cards and card payments into an unfinished
+wizard, so while the gym holds them the step checks a new key as the Payments save
+does (`stripeReference`, `importedOnly` and `readsStripeReference` in
+`settings/integrations.query.ts`): with a key stored, one in the other mode is refused with a 400 and
+`restrictedKey: ['mode_locked']`, and a same-mode key must read one of them, checked
+after the permission probe and before the endpoint is registered (otherwise a 400 with
+`account_locked`). A save that finds references recorded while the key was checked
+fails with a conflict. Setup offers no switch from test to live: the owner finishes
+setup and switches in Settings → Payments. With no stored key (a first save, or one
+after `skip`), customer IDs on households alone (no attempts, card payments or cards,
+whether imported or linked by the app) tie the gym to no account, so a key in either
+mode is accepted without a read; `skip` is never checked.
 
 Backup setup first probes the destination through `settings/backup-destination.ts`
 (list, write, read and delete under the gym's prefix), refusing with `unreachable`

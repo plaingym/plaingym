@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { beforeAll, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
 import { auditEvents, gyms, uuidv7 } from '@plaingym/db';
@@ -14,6 +14,7 @@ import { decryptSecret } from '../../core/secrets.js';
 import { STRIPE_API_VERSION, STRIPE_EVENTS } from '../../infra/payments/stripe.js';
 import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
 import { stripeProvisioner } from '../../infra/payments/setup.js';
+import type { PaymentTransport } from '../../infra/payments/transport.js';
 import { setLogSink } from '../../core/log.js';
 import { createStripeStep, type StripeConfig, type StripeProvisioner } from './stripe-step.js';
 import { createStripeStepRoutes } from './stripe-step.routes.js';
@@ -48,11 +49,11 @@ beforeAll(async () => {
   ownerId = (await factory('authUser', gymId)).id;
   for (const id of [gymId, otherGym]) await factory('gyms', id, { settings: { setup: { ownerId, completed: false, completedSteps: [0, 1, 2, 3, 4, 5] } } });
 });
-function app(principal: Principal, resolvedGym = gymId) {
+function app(principal: Principal, resolvedGym = gymId, step = service) {
   const server = new OpenAPIHono<RequestEnvironment>({ defaultHook: (result, c) => { if (!result.success) return respondError(c, result.error); } });
   server.onError(errorHandler);
   server.use('*', async (c, next) => { c.set('context', { requestId: 'test', principal, gym: { gymId: resolvedGym, timezone: 'UTC', enabledModules: new Set() }, clock }); await next(); });
-  for (const entry of createStripeStepRoutes(service)) entry.mount(server, (permission) => async (c, next) => {
+  for (const entry of createStripeStepRoutes(step)) entry.mount(server, (permission) => async (c, next) => {
     if (principal.kind === 'anonymous') return c.json({}, 401);
     if (permission.kind !== 'staff' || principal.kind !== 'staff' || !canStaff(principal.roles, permission.capability)) return c.json({}, 403);
     await next();
@@ -206,4 +207,94 @@ it('deletes nothing when the revision changes while the new endpoint is register
   expect(await stored(id)).toEqual(first);
   expect(ids('rk_test_RACEOLD')).toEqual([first.endpointId]);
   expect(await revisionOf(id)).toBe(9);
+});
+
+describe("the gym's Stripe references", () => {
+  /** Answers a read of `cus_ref` when the key can read it, otherwise 404 `resource_missing`; records every path. */
+  function references(reads: boolean) {
+    const paths: string[] = [];
+    const transport = (_apiKey: string): PaymentTransport => ({ async request(input) {
+      assertNoTransaction('payments.transport');
+      paths.push(input.method + ' ' + input.path);
+      if (reads && input.method === 'GET' && input.path === '/v1/customers/cus_ref') return { id: 'cus_ref', object: 'customer' };
+      throw Object.assign(new Error('No such customer'), { code: 'resource_missing', statusCode: 404 });
+    } });
+    const registered: string[] = [];
+    const step = createStripeStep({ key, origin: 'https://gym.invalid', clock, scope: database.forGym, transport,
+      provisioner: (apiKey) => ({ ...provisioner(apiKey), async register(gym, origin, revision, previous) {
+        registered.push(apiKey); return provisioner(apiKey).register(gym, origin, revision, previous);
+      } }) });
+    return { step, paths, registered };
+  }
+  /** An unfinished setup with a stored test-mode key and a household linked to `cus_ref`. */
+  async function referencedGym() {
+    const { id, context } = await newGym();
+    await service.configure(context, { choice: 'configure', revision: 1, restrictedKey: 'rk_test_REFSTORED' });
+    await factory('households', id, { stripeCustomerId: 'cus_ref' });
+    return { id, context };
+  }
+  const state = async (id: string) => {
+    const [gym] = await database.forGym(id, (tx) => tx.select().from(gyms));
+    return { stripeConfig: gym!.stripeConfig, revision: gym!.revision, settings: gym!.settings };
+  };
+
+  it('refuses a key in the other mode before any provider request, and saves nothing', async () => {
+    const { id, context } = await referencedGym(), before = await state(id), { step, paths, registered } = references(true), count = checks.length;
+    await expect(step.configure(context, { choice: 'configure', revision: 2, restrictedKey: 'rk_live_REFOTHERMODE' })).rejects.toMatchObject({
+      code: 'invalid_request', message: 'Stripe customers and payments exist in test mode', details: { restrictedKey: ['mode_locked'] } });
+    expect(await state(id)).toEqual(before);
+    expect(registered).toEqual([]);
+    expect(paths).toEqual([]);
+    expect(checks.length).toBe(count);
+  });
+  it('refuses a same-mode key that cannot read the references, after the permission probe and before registering', async () => {
+    const { id, context } = await referencedGym(), before = await state(id), { step, paths, registered } = references(false), count = checks.length;
+    await expect(step.configure(context, { choice: 'configure', revision: 2, restrictedKey: 'rk_test_REFOTHERACCOUNT' })).rejects.toMatchObject({
+      code: 'invalid_request', message: 'The key belongs to another Stripe account', details: { restrictedKey: ['account_locked'] } });
+    expect(await state(id)).toEqual(before);
+    expect(registered).toEqual([]);
+    expect(checks.slice(count)).toEqual(['validate']);
+    expect(paths).toEqual(['GET /v1/customers/cus_ref']);
+  });
+  it('returns the conflict as a 400 through the route, so the setup screen shows its key message', async () => {
+    const { id } = await referencedGym(), { step } = references(false);
+    const response = await request(app({ kind: 'staff', userId: ownerId, gymId: id, roles: ['owner'] }, id, step),
+      { choice: 'configure', revision: 2, restrictedKey: 'rk_test_REFROUTE' });
+    expect(response.status).toBe(400);
+    expect(JSON.stringify(await response.json())).toContain('account_locked');
+  });
+  it('saves a same-mode key that reads the references, with the same audit', async () => {
+    const { id, context } = await referencedGym(), { step, paths } = references(true);
+    expect(await step.configure(context, { choice: 'configure', revision: 2, restrictedKey: 'rk_test_REFSAMEACCOUNT' }))
+      .toMatchObject({ configured: true, mode: 'test', webhookRegistered: true, revision: 3 });
+    expect(await stored(id)).toMatchObject({ apiKey: 'rk_test_REFSAMEACCOUNT', mode: 'test' });
+    expect(paths).toEqual(['GET /v1/customers/cus_ref']);
+    const audits = await database.forGym(id, (tx) => tx.select().from(auditEvents)
+      .where(eq(auditEvents.action, 'setup.stripe_configured')).orderBy(auditEvents.createdAt, auditEvents.id));
+    expect(audits.map(({ before, after }) => ({ before, after }))).toEqual([
+      { before: { mode: null }, after: expect.objectContaining({ configured: true, mode: 'test' }) },
+      { before: { mode: 'test' }, after: { configured: true, mode: 'test', endpointId: expect.any(String), endpointReused: false } }]);
+  });
+  it('accepts any key without reading Stripe when only imported customer IDs exist and nothing is stored', async () => {
+    const { id, context } = await newGym(), { step, paths } = references(false);
+    await factory('households', id, { stripeCustomerId: 'cus_imported' });
+    await step.configure(context, { choice: 'configure', revision: 1, restrictedKey: 'rk_test_REFIMPORTED' });
+    expect(await stored(id)).toMatchObject({ apiKey: 'rk_test_REFIMPORTED' });
+    expect(paths).toEqual([]);
+  });
+  it('fails the save when a reference is recorded while the key is checked', async () => {
+    const { id, context } = await newGym();
+    await service.configure(context, { choice: 'configure', revision: 1, restrictedKey: 'rk_test_REFRACEOLD' });
+    const before = await state(id), paths: string[] = [];
+    const racing = createStripeStep({ key, origin: 'https://gym.invalid', clock, scope: database.forGym,
+      transport: () => ({ async request(input) { paths.push(input.path); return {}; } }),
+      provisioner: (apiKey) => ({ ...provisioner(apiKey), async register(gym, origin, revision, previous) {
+        await factory('households', id, { stripeCustomerId: 'cus_ref' });
+        return stripeProvisioner(account(apiKey)).register(gym, origin, revision, previous);
+      } }) });
+    await expect(racing.configure(context, { choice: 'configure', revision: 2, restrictedKey: 'rk_test_REFRACENEW' })).rejects.toMatchObject({
+      code: 'conflict', message: 'Stripe customers were recorded while the key was checked; try again' });
+    expect(await state(id)).toEqual(before);
+    expect(paths).toEqual([]);
+  });
 });
