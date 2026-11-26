@@ -20,7 +20,7 @@ import { paymentConflict, paymentUnavailable } from './payments.errors.js';
 import { markRefundSending, markRefundSent, pastRefundWindow, sameRefund, settleLapsed } from './transitions/lapsed-refunds.js';
 import { duplicateReservation } from './transitions/store.js';
 import { withJobTransaction } from '../../infra/jobs/index.js';
-import { CardImportRefused, isProviderOutage } from '../../infra/payments/index.js';
+import { CardImportRefused, isProviderOutage, PaymentMethodCustomerDeleted } from '../../infra/payments/index.js';
 import { holdGymSettings, readGymSettings } from '../settings/settings.js';
 import { bankAccountType, cardImportSnapshotVersion, customerCardImportJob } from './customer-card-import.js';
 import { customerAdoptedAction, recordCustomerAdoption } from './customer-adoption.js';
@@ -62,7 +62,8 @@ const masked = (r: typeof paymentMethods.$inferSelect, state?: RemovalState, can
   ...(r.revokedAt && state ? { removal: state } : {}),
 });
 
-/** Writes the one `billing.card.detached` audit for a card whose detach call returned; a repeat writes nothing. Its own
+/** Writes the one `billing.card.detached` audit for a card whose detach call returned, or was refused because the card's
+ * own customer was deleted at Stripe; a repeat writes nothing. Its own
  * short transaction, after the call: no network I/O inside a transaction. The card's row lock makes a removal request
  * and its detach job, finishing at once, check and write one after the other. */
 export async function recordCardDetached(scope: typeof forGym, context: MutationContext, clock: Clock,
@@ -233,10 +234,13 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
       }
       try { await detachCard(context.gymId, row.processorId); }
       catch (error) {
+        // A card whose own customer was deleted at Stripe can't be charged any more: it counts as detached, as in its job.
         // An outage or an app refusal (Stripe not configured) still fails the request; only a provider refusal waits for the job.
-        if (transientFailure(error) || error instanceof AppError || !jobs || (retry && !reset)) throw error;
-        logError('billing.card.detach_deferred', { gymId: context.gymId, paymentMethodId: id }, error);
-        return masked(row, 'pending');
+        if (!(error instanceof PaymentMethodCustomerDeleted)) {
+          if (transientFailure(error) || error instanceof AppError || !jobs || (retry && !reset)) throw error;
+          logError('billing.card.detach_deferred', { gymId: context.gymId, paymentMethodId: id }, error);
+          return masked(row, 'pending');
+        }
       }
       try { await recordCardDetached(scope, context, clock, row); }
       catch (error) {

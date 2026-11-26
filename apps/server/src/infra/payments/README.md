@@ -401,7 +401,9 @@ no further write, and other customers' methods are left alone.
 
 `adoptCustomer(id)` raises `CustomerDeleted` (exported from `index.ts`; the fake raises it
 for a customer seeded as `deleted`) when Stripe reports the customer deleted, so callers
-can tell it from a transient failure.
+can tell it from a transient failure. The fake's `detachPaymentMethod` raises
+`PaymentMethodCustomerDeleted`, as the adapter does, for a card whose customer is seeded as
+`deleted`, before its ownership check on that customer.
 
 Run from the repository root with the pinned Node version:
 

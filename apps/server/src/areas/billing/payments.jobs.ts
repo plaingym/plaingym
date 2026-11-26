@@ -4,6 +4,7 @@ import { auditEvents, forGym, households, invoices, paymentMethods, payments, re
 import type { Clock } from '@plaingym/shared';
 import { idSchema } from '@plaingym/shared/contracts';
 import { notFound } from '../../core/interfaces/common.js';
+import { logInfo } from '../../core/log.js';
 import type { JobRegistration } from '../../core/registry.js';
 import type { TransitionNotifications } from './transitions/notifications.js';
 import { snapshot } from './transitions/store.js';
@@ -106,6 +107,7 @@ export function createPaymentJobs(options?: DeliveryOptions): readonly JobRegist
         // The card's own customer was deleted at Stripe, so nothing can charge the card for it: the card counts as
         // detached. Its billing details at Stripe stay as they are; the deleted customer no longer reaches them.
         if (first instanceof PaymentMethodCustomerDeleted) {
+          logInfo('billing.card.detach_customer_deleted', { gymId: ctx.gymId, paymentMethodId: row.id, redactBillingDetails: redactBillingDetails === true });
           await recordCardDetached(scope, { gymId: ctx.gymId, actor: { kind: 'system' } }, ctx.clock, row);
           return;
         }

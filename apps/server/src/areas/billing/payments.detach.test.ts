@@ -6,6 +6,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { TestClock } from '../../core/clock.js';
+import { setLogSink } from '../../core/log.js';
 import { PaymentMethodCustomerDeleted, PaymentObjectNotForGym, type DetachOptions } from '../../infra/payments/index.js';
 import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
 import { StripePayments } from '../../infra/payments/stripe.js';
@@ -322,7 +323,16 @@ describe('detaching a card whose own Stripe customer was deleted', () => {
     f.stripe.objects.set('pm_gone', { id: 'pm_gone', object: 'payment_method', created: f.stripe.now, type: 'card',
       customer: 'cus_gone', metadata: {}, billing_details: { name: 'Payer' }, card: { brand: 'visa', last4: '4242', exp_month: 12, exp_year: 2030 } });
     const payload = { paymentMethodId: gone.id, redactBillingDetails: true };
-    await expect(f.run(payload)).resolves.toBeUndefined();
+    const logs: Record<string, unknown>[] = [];
+    const previous = setLogSink(entry => { logs.push(JSON.parse(entry)); });
+    try { await expect(f.run(payload)).resolves.toBeUndefined(); }
+    finally { setLogSink(previous); }
+    const deletedLogs = logs.filter(line => line.event === 'billing.card.detach_customer_deleted');
+    expect(deletedLogs).toHaveLength(1);
+    const { time, ...fields } = deletedLogs[0]!;
+    expect(typeof time).toBe('string');
+    expect(fields).toEqual({ level: 'info', event: 'billing.card.detach_customer_deleted', gymId: f.gymId, paymentMethodId: gone.id,
+      redactBillingDetails: true });
     expect(f.detachErrors[0]).toBeInstanceOf(PaymentMethodCustomerDeleted);
     expect(f.adoptCustomer).not.toHaveBeenCalled();
     const detached = await f.audits('billing.card.detached');

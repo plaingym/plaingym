@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it, vi } from 'vitest';
-import { FakePayments } from './index.js';
+import { CustomerDeleted, FakePayments, PaymentMethodCustomerDeleted } from './index.js';
 import { StripePayments } from './stripe.js';
 import { StripeFixtures } from './stripe-fixtures.js';
 import { customerCardRedactionContract } from './payments.contract.js';
@@ -256,4 +256,15 @@ it('rethrows any other refusal of the blank write without a placeholder write or
   await expect(payments.detachPaymentMethod('pm_pad', { redactBillingDetails: true })).rejects.toBe(refusal);
   expect(posts()).toEqual([{ path: padPath, params: { billing_details: blank } }]);
   expect(method('pm_pad').customer).toBe('cus_pad');
+});
+
+it('refuses in the fake, as the adapter does, to detach a card whose own customer was deleted', async () => {
+  const payments = new FakePayments(gymId);
+  payments.seedCustomer({ id: 'cus_gone', email: 'payer@example.invalid', deleted: true });
+  payments.recordPaymentMethod({ id: 'pm_gone', customerId: 'cus_gone', brand: 'visa', last4: '4242', expiresMonth: 12, expiresYear: 2030 });
+  payments.setBillingDetails('pm_gone', structuredClone(details));
+  const rejection = await payments.detachPaymentMethod('pm_gone', { redactBillingDetails: true }).catch((error: unknown) => error);
+  expect(rejection).toBeInstanceOf(PaymentMethodCustomerDeleted);
+  expect(rejection).not.toBeInstanceOf(CustomerDeleted);
+  expect(payments.billingDetails('pm_gone')).toEqual(details);
 });

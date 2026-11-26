@@ -199,9 +199,15 @@ detach job); without a job queue, without recovery on a retry, or with no failed
 job to reset, the refusal reaches staff. If recording the detach audit fails after
 Stripe removed the card, the request logs the error with identifiers only and
 returns `removal: 'pending'` so the queued job finishes it; transient outages and
-app errors (such as Stripe not being configured for the gym) still fail the request. Revoked rows
-remain visible so staff can retry removal after an outage. A detach call that returns
-writes one `billing.card.detached` audit (`recordCardDetached`, in its own transaction after
+app errors (such as Stripe not being configured for the gym) still fail the request. A card
+whose own customer was deleted at Stripe (`PaymentMethodCustomerDeleted`) can no longer be
+charged, so the removal counts it as detached: it records `billing.card.detached` at once
+and returns `removal: 'finished'`, with or without a job queue and with no error log. The
+detach job does the same for such a card, logging `billing.card.detach_customer_deleted` at
+info (gym, card and whether billing details were to be cleared); billing details at Stripe
+stay as they are, since the deleted customer no longer reaches them. Revoked rows
+remain visible so staff can retry removal after an outage. A detach call that returns, or
+one refused because the card's own customer was deleted, writes one `billing.card.detached` audit (`recordCardDetached`, in its own transaction after
 the call, from the removal request, the erasure route, or the detach job; a repeat writes none).
 The staff list reports a revoked method's `removal` as `finished` with a
 `billing.card.detached` audit, `pending` when it has a `billing.card.revoked`
@@ -228,8 +234,8 @@ or a debit-account retirement) adopts the stored link as before. The second deta
 method attached to any other customer. A customer
 tagged for another gym or deleted is still refused. When the card's own customer was
 deleted at Stripe (`PaymentMethodCustomerDeleted` from the first detach), the card counts
-as detached: the job records `billing.card.detached` (system actor, once per card) and
-finishes without adoption, leaving the card's billing details at Stripe as they are. A
+as detached: the job logs `billing.card.detach_customer_deleted` at info, records
+`billing.card.detached` (system actor, once per card) and finishes without adoption, leaving the card's billing details at Stripe as they are. A
 customer Stripe reports missing still fails the job. A detach queued before the erasure (no `customerId` in its payload) adopts the customer the household's latest `household.anonymized` audit recorded, only when no `billing.customer.unlinked` audit is newer than the erasure. A rate limit, Stripe server error,
 lost connection, rejected key or missing key permission is retried without adoption.
 Without that operation removal returns unavailable.

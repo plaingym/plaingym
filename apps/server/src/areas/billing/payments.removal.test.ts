@@ -338,3 +338,71 @@ describe('a finished card removal', () => {
     expect(await f.detached(gymB)).toHaveLength(0);
   });
 });
+
+describe('removing a card whose own Stripe customer was deleted', () => {
+  type LogLine = { event?: string; level?: string; gymId?: string; paymentMethodId?: string };
+  async function stripeFixture(customer: { id: string; [field: string]: unknown }, withJobs = true) {
+    const gymId = uuidv7(), clock = new TestClock('2026-10-25T12:00:00Z');
+    await factory('gyms', gymId, { currency: 'USD', billingEnabled: true });
+    const user = await factory('authUser', gymId);
+    const home = await factory('households', gymId, { stripeCustomerId: customer.id });
+    const card = await factory('paymentMethods', gymId, { householdId: home.id, processorId: 'pm_gone', isDefault: true });
+    const stripe = new StripeFixtures(gymId);
+    stripe.objects.clear();
+    stripe.objects.set(customer.id, { object: 'customer', ...customer });
+    stripe.objects.set('pm_gone', { id: 'pm_gone', object: 'payment_method', created: stripe.now, type: 'card', customer: customer.id,
+      metadata: {}, billing_details: { name: 'Payer' }, card: { brand: 'visa', last4: '4242', exp_month: 12, exp_year: 2035 } });
+    const provider = new StripePayments(gymId, { transport: stripe, webhookSecret: 'whsec_SYNTHETIC' });
+    const detachCard = vi.fn(async (_gym: string, id: string, options?: DetachOptions) => {
+      assertNoTransaction('detachCard');
+      await provider.detachPaymentMethod(id, options);
+    });
+    const jobs = new FakeJobs(clock), settings = createGymSettingsAccessor({ scope: db.forGym });
+    const service = createPaymentService({ scope: db.forGym, clock, settings, ...(withJobs ? { jobs } : {}), detachCard,
+      paymentsFor: async () => provider });
+    createServerRegistry({ jobs: createPaymentJobs({ scope: db.forGym, detachCard, notifications: {} as never }) }).registerJobs(jobs, new Set());
+    const context = { gymId, actor: { kind: 'user' as const, userId: user.id } };
+    const detached = () => db.forGym(gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, cardDetachedAction)));
+    const revoke = async () => {
+      const logs: LogLine[] = [];
+      const previous = setLogSink(entry => { logs.push(JSON.parse(entry)); });
+      try { return { result: await service.revokeCard(context, home.id, card.id), logs }; }
+      finally { setLogSink(previous); }
+    };
+    return { gymId, home, card, stripe, jobs, detachCard, user, detached, revoke };
+  }
+  const deleted = { id: 'cus_gone', object: 'customer', deleted: true };
+
+  it('finishes the removal at once with one detached audit and no deferral log, and the queued job writes none', async () => {
+    const f = await stripeFixture(deleted);
+    const { result, logs } = await f.revoke();
+    expect(result).toMatchObject({ id: f.card.id, removal: 'finished' });
+    expect(logs.filter(line => line.event === 'billing.card.detach_deferred')).toHaveLength(0);
+    expect(logs.filter(line => line.level === 'error')).toHaveLength(0);
+    const audits = await f.detached();
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ actorKind: 'user', actorUserId: f.user.id, targetType: 'payment_method', targetId: f.card.id,
+      after: { householdId: f.home.id } });
+    expect(f.jobs.jobs.filter(job => job.name === detachJob)).toHaveLength(1);
+    await f.jobs.runNext();
+    expect(await f.detached()).toHaveLength(1);
+    expect(f.stripe.requests.filter(request => request.method === 'POST' && request.path.startsWith('/v1/payment_methods/pm_gone'))).toHaveLength(0);
+  });
+
+  it('finishes the removal at once when no job queue is configured', async () => {
+    const f = await stripeFixture(deleted, false);
+    const { result, logs } = await f.revoke();
+    expect(result).toMatchObject({ id: f.card.id, removal: 'finished' });
+    expect(logs.filter(line => line.event === 'billing.card.detach_deferred')).toHaveLength(0);
+    expect(await f.detached()).toHaveLength(1);
+    expect(f.jobs.jobs).toHaveLength(0);
+  });
+
+  it('still defers a card on a customer tagged for another gym, and records no detach', async () => {
+    const f = await stripeFixture({ id: 'cus_other', email: 'payer@example.invalid', metadata: { gym_id: uuidv7() } });
+    const { result, logs } = await f.revoke();
+    expect(result).toMatchObject({ id: f.card.id, removal: 'pending' });
+    expect(logs).toEqual([expect.objectContaining({ event: 'billing.card.detach_deferred', gymId: f.gymId, paymentMethodId: f.card.id })]);
+    expect(await f.detached()).toHaveLength(0);
+  });
+});

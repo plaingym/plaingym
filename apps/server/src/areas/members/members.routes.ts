@@ -13,7 +13,7 @@ import { createMemberPhotoService, type MemberUploads } from './photos.js';
 import type { HouseholdPinSecret } from './pin.js';
 import type { JobRecovery, Jobs } from '../../infra/jobs/index.js';
 import { promoteWaitlist } from '../bookings/bookings.js';
-import { PaymentObjectUntagged, type DetachOptions } from '../../infra/payments/index.js';
+import { PaymentMethodCustomerDeleted, PaymentObjectUntagged, type DetachOptions } from '../../infra/payments/index.js';
 import { releaseFiles } from '../../infra/storage/release.js';
 import { clearBillingEmailJob, clearErasedBillingEmail, type ClearBillingEmail, queueEarlierRedactions, redactCustomerJob, redactEarlierJob, releaseErasedFiles, releaseErasedFilesJob } from './erasure-redaction.js';
 import { createPortalInvitationStore } from '../../infra/auth/portal-invitations.js';
@@ -134,9 +134,12 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
         ...(detachCard ? revokedCards : []).map(async card => {
           try { await detachCard!(gymId, card.processorId, { redactBillingDetails: true }); }
           catch (error) {
-            if (untaggedRefusal(error)) logInfo('members.erasure.detach_deferred', { gymId, memberId, paymentMethodId: card.id });
-            else logError('members.erasure.detach_failed', { gymId, memberId, paymentMethodId: card.id }, error);
-            return;
+            // A card whose own customer was deleted at Stripe can't be charged any more: it counts as detached, as in its job.
+            if (!(error instanceof PaymentMethodCustomerDeleted)) {
+              if (untaggedRefusal(error)) logInfo('members.erasure.detach_deferred', { gymId, memberId, paymentMethodId: card.id });
+              else logError('members.erasure.detach_failed', { gymId, memberId, paymentMethodId: card.id }, error);
+              return;
+            }
           }
           try { await recordErasureDetach(gymId, { id: card.id, householdId }, clock, scope); }
           catch (error) { logError('members.erasure.detach_record_failed', { gymId, memberId, paymentMethodId: card.id }, error); }

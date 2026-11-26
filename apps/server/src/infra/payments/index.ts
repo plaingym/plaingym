@@ -922,6 +922,8 @@ export class FakePayments implements Payments {
     if (!/^[A-Za-z0-9_]+$/.test(processorId)) throw new Error('Invalid processor ID');
     const method = this.#methods.get(processorId)?.method;
     if (!method || this.#detached.has(processorId)) return;
+    // As the Stripe adapter: a method whose own customer was deleted refuses before the customer's ownership check.
+    if (this.#customers.find((customer) => customer.id === method.customerId)?.deleted) throw new PaymentMethodCustomerDeleted();
     await this.adoptCustomer(method.customerId);
     // Only an attached card can be updated, so its details go before it is detached.
     if (options.redactBillingDetails) this.#billing.delete(processorId);

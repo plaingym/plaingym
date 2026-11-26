@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { eq, inArray } from 'drizzle-orm';
-import { classBookings, households, members, paymentMethods, uuidv7, type forGym } from '@plaingym/db';
+import { and, eq, inArray } from 'drizzle-orm';
+import { auditEvents, classBookings, households, members, paymentMethods, uuidv7, type forGym } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
@@ -16,7 +16,8 @@ import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
 import { StripePayments } from '../../infra/payments/stripe.js';
 import { FakeUploads } from '../../infra/storage/index.js';
 import { authorize } from '../staff/auth.permissions.js';
-import { detachJob } from '../billing/payments.mutations.js';
+import { cardDetachedAction, detachJob } from '../billing/payments.mutations.js';
+import { createPaymentJobs } from '../billing/payments.jobs.js';
 import { createMembersService } from './members.js';
 import { createErasureJobs, createMembersRoutes, releaseErasedFilesJob } from './members.routes.js';
 import { createBookingDelivery } from '../bookings/bookings.delivery.js';
@@ -62,6 +63,7 @@ function app(options: {
   uploads: FakeUploads;
   detachCard?: (gymId: string, processorId: string, detachOptions?: DetachOptions) => Promise<void>;
   redactCustomer?: () => Promise<void>;
+  scope?: typeof forGym;
 }) {
   const server = new OpenAPIHono<RequestEnvironment>();
   server.use('*', async (ctx, next) => {
@@ -73,7 +75,8 @@ function app(options: {
   const service = createMembersService({ scope: database.forGym, clock });
   createServerRegistry({ routes: createMembersRoutes(service, async () => options.uploads, {
     clock, ...(options.jobs ? { jobs: options.jobs } : {}), ...(options.detachCard ? { detachCard: options.detachCard } : {}),
-    ...(options.redactCustomer ? { redactCustomer: options.redactCustomer } : {}) }) }).mount(server, authorize, new Set());
+    ...(options.redactCustomer ? { redactCustomer: options.redactCustomer } : {}),
+    ...(options.scope ? { scope: options.scope } : {}) }) }).mount(server, authorize, new Set());
   return (id: string) => server.request(`/api/members/${id}/anonymize`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: 1 }) });
 }
@@ -285,40 +288,46 @@ describe('erasure cleanup after commit', () => {
       { paymentMethodId: card.id, redactBillingDetails: true, customerId: 'cus_csv_wrapped' },
     ]);
   });
-  it('logs a deleted-customer refusal and a plain Error with matching message text as error detach_failed, not detach_deferred', async () => {
+  it('records a card whose own customer was deleted as detached at once, without a failure log, and its job writes no second audit', async () => {
     const uploads = new FakeUploads(gymId, clock);
-    type LogEntry = { level?: string; event?: string; gymId?: string; memberId?: string; paymentMethodId?: string; error?: { name: string } };
-
-    const deletedHome = await factory('households', gymId, { stripeCustomerId: 'cus_deleted_erasure' });
-    const deletedPerson = await factory('members', gymId, { householdId: deletedHome.id });
-    const deletedCard = await factory('paymentMethods', gymId, { householdId: deletedHome.id, processorId: 'pm_deleted_erasure', isDefault: true });
+    type LogEntry = { level?: string; event?: string };
+    const home = await factory('households', gymId, { stripeCustomerId: 'cus_gone' });
+    const person = await factory('members', gymId, { householdId: home.id });
+    const card = await factory('paymentMethods', gymId, { householdId: home.id, processorId: 'pm_gone', isDefault: true });
     const stripe = new StripeFixtures(gymId);
     stripe.objects.clear();
-    stripe.objects.set('cus_deleted_erasure', { id: 'cus_deleted_erasure', object: 'customer', deleted: true });
-    stripe.objects.set('pm_deleted_erasure', {
-      id: 'pm_deleted_erasure', object: 'payment_method', created: stripe.now, type: 'card',
-      customer: 'cus_deleted_erasure', metadata: {}, card: { brand: 'visa', last4: '4242', exp_month: 12, exp_year: 2030 },
+    stripe.objects.set('cus_gone', { id: 'cus_gone', object: 'customer', deleted: true });
+    stripe.objects.set('pm_gone', {
+      id: 'pm_gone', object: 'payment_method', created: stripe.now, type: 'card', billing_details: { name: 'Payer' },
+      customer: 'cus_gone', metadata: {}, card: { brand: 'visa', last4: '4242', exp_month: 12, exp_year: 2030 },
     });
     const provider = new StripePayments(gymId, { transport: stripe, webhookSecret: 'whsec_SYNTHETIC' });
-    const deletedJobs = new FakeJobs(clock);
-    const deletedLogs: LogEntry[] = [], previousDeleted = setLogSink(entry => { deletedLogs.push(JSON.parse(entry)); });
-    let deletedStatus: number;
-    try {
-      deletedStatus = (await app({
-        jobs: deletedJobs, uploads,
-        detachCard: vi.fn((_gym: string, processorId: string, options?: DetachOptions) => provider.detachPaymentMethod(processorId, options)),
-      })(deletedPerson.id)).status;
-    } finally { setLogSink(previousDeleted); }
-    expect(deletedStatus).toBe(200);
-    expect(deletedLogs.filter(entry => entry.event === 'members.erasure.detach_deferred')).toEqual([]);
-    expect(deletedLogs.filter(entry => entry.event === 'members.erasure.detach_failed')).toEqual([expect.objectContaining({
-      level: 'error', event: 'members.erasure.detach_failed', gymId, memberId: deletedPerson.id, paymentMethodId: deletedCard.id,
-      error: expect.objectContaining({ name: 'Error' }),
-    })]);
-    expect(JSON.stringify(deletedLogs)).not.toContain('Customer was deleted');
-    expect(deletedJobs.jobs.filter(job => job.name === detachJob).map(job => job.payload)).toEqual([
-      { paymentMethodId: deletedCard.id, redactBillingDetails: true, customerId: 'cus_deleted_erasure' },
-    ]);
+    const detachCard = vi.fn((_gym: string, processorId: string, options?: DetachOptions) => provider.detachPaymentMethod(processorId, options));
+    const jobs = new FakeJobs(clock);
+    const detached = () => database.forGym(gymId, tx => tx.select().from(auditEvents).where(and(
+      eq(auditEvents.action, cardDetachedAction), eq(auditEvents.targetId, card.id))));
+    const logs: LogEntry[] = [], previous = setLogSink(entry => { logs.push(JSON.parse(entry)); });
+    let response: Response;
+    try { response = await app({ jobs, uploads, detachCard, scope: database.forGym })(person.id); } finally { setLogSink(previous); }
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ data: { id: person.id } });
+    expect(detachCard).toHaveBeenCalledExactlyOnceWith(gymId, 'pm_gone', { redactBillingDetails: true });
+    expect(logs.filter(entry => ['members.erasure.detach_failed', 'members.erasure.detach_deferred', 'members.erasure.detach_record_failed']
+      .includes(entry.event ?? ''))).toEqual([]);
+    const audits = await detached();
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ actorKind: 'system', targetType: 'payment_method', after: { householdId: home.id } });
+
+    const queued = jobs.jobs.filter(job => job.name === detachJob);
+    expect(queued.map(job => job.payload)).toEqual([{ paymentMethodId: card.id, redactBillingDetails: true, customerId: 'cus_gone' }]);
+    const handler = createPaymentJobs({ scope: database.forGym, notifications: {} as never, detachCard }).find(job => job.id === detachJob)!.handler;
+    await handler(queued[0]!.payload, { jobId: 'job_detach_gone', gymId, timezone: 'UTC', attempt: 1, clock });
+    expect(await detached()).toHaveLength(1);
+    expect(stripe.requests.filter(request => request.method === 'POST' && request.path.startsWith('/v1/payment_methods/pm_gone'))).toHaveLength(0);
+  });
+  it('logs a plain Error with matching message text as error detach_failed, not detach_deferred', async () => {
+    const uploads = new FakeUploads(gymId, clock);
+    type LogEntry = { level?: string; event?: string; gymId?: string; memberId?: string; paymentMethodId?: string; error?: { name: string } };
 
     const plainHome = await factory('households', gymId, { stripeCustomerId: 'cus_plain_error' });
     const plainPerson = await factory('members', gymId, { householdId: plainHome.id });

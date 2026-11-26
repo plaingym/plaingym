@@ -244,12 +244,14 @@ logged on failure (identifiers and safe error classifications, never message tex
 and left to its job. An immediate detach that Stripe refuses because the customer has no
 gym tag (recognised by its `PaymentObjectUntagged` class, when a people CSV linked it) is
 instead logged at info as `members.erasure.detach_deferred` (identifiers only) and left to
-its job, which adopts the customer or fails with the job's error. A card on a deleted
-customer is refused as not this gym's rather than untagged and, like any other immediate
-detach failure, is logged as `members.erasure.detach_failed` at error with its safe
-classification, and is also left to its job. That job counts the card as detached, since
-Stripe can no longer charge it for the deleted customer: it records `billing.card.detached`
-and finishes, leaving the card's billing details at Stripe as they are.
+its job, which adopts the customer or fails with the job's error. Any other immediate
+detach failure is logged as `members.erasure.detach_failed` at error with its safe
+classification, and is also left to its job. A card whose own customer was deleted at
+Stripe (`PaymentMethodCustomerDeleted`) counts as detached, since Stripe can no longer
+charge it for the deleted customer: the immediate attempt records it as for a detach that
+succeeded, with no failure log, and its job, when it runs, logs
+`billing.card.detach_customer_deleted` at info and writes no second audit. The card's
+billing details at Stripe stay as they are; the deleted customer no longer reaches them.
 A card whose immediate detach succeeds gets its one
 `billing.card.detached` audit (system actor) at once, so the card list shows it removed
 from Stripe before the job runs; a failure to write that audit is logged as
