@@ -74,6 +74,7 @@ being sent a failed load isn't read again by a window focus or reconnect. A port
 with no section to list (the household picker, or a household still loading) has
 no menu. A second move by the server while a household is loading keeps that layout until the household lists have
 been read again.
+The **Account** button takes the focus when a view change removes the header or sidebar control that held it.
 The root layout supplies the source-code footer.
 
 The home page summarizes the next booked, scheduled class within 30 days (not a

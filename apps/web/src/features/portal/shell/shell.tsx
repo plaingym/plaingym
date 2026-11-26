@@ -184,7 +184,7 @@ export function PortalLayout({ name, person, scope, entries, children, notices, 
   useEffect(() => { if (open) nav.current?.querySelector<HTMLElement>('a')?.focus(); }, [open]);
   return <div ref={root} className="flex min-h-dvh min-w-0 flex-col" style={{ '--portal-header-height': `${headerHeight}px` } as CSSProperties}>
     {/* A docked header would take too much of a screen 500 px tall or less (a phone in landscape). */}
-    <header ref={header} className="sticky top-0 z-30 flex flex-wrap items-center gap-2 border-b border-border bg-background px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))] [@media(max-height:500px)]:static">
+    <header ref={header} data-portal-chrome className="sticky top-0 z-30 flex flex-wrap items-center gap-2 border-b border-border bg-background px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))] [@media(max-height:500px)]:static">
       {entries.length > 0 && <Button ref={menuButton} variant="outline" className="md:hidden" aria-expanded={open} aria-controls="portal-navigation" onClick={() => setOpen(!open)}>{text('menu')}</Button>}
       {/* Reserve space for the gym and the person before the household switcher. */}
       <div className="min-w-0 flex-1 basis-40">
@@ -203,7 +203,7 @@ export function PortalLayout({ name, person, scope, entries, children, notices, 
       {open && menuTop !== undefined && <div ref={cover} aria-hidden="true" className="fixed inset-x-0 top-0 z-10 md:hidden" style={{ height: menuTop }} onClick={close} />}
       {/* The open panel is as tall as its links, but stops 3rem short of the screen's bottom so a strip of backdrop shows. It never gets shorter than one link,
           and when one wouldn't fit below its top, it starts higher, over the header's lower edge if need be. */}
-      {entries.length > 0 && <nav ref={nav} id="portal-navigation" aria-label={text('navigation')} style={open && menuTop !== undefined ? { top: capTop ?? menuTop, maxHeight: `max(calc(100dvh - ${menuTop}px - 3rem), calc(4.25rem + 1px))` } : undefined}
+      {entries.length > 0 && <nav ref={nav} id="portal-navigation" data-portal-chrome aria-label={text('navigation')} style={open && menuTop !== undefined ? { top: capTop ?? menuTop, maxHeight: `max(calc(100dvh - ${menuTop}px - 3rem), calc(4.25rem + 1px))` } : undefined}
         className={`${open ? `fixed inset-x-0 ${capTop === undefined ? 'z-20' : 'z-40'} block overflow-y-auto overscroll-contain bg-background shadow-lg` : 'hidden'} border-b border-border p-3
           md:sticky md:top-[var(--portal-header-height)] md:bottom-auto md:block md:max-h-[calc(100dvh-var(--portal-header-height))] md:w-56 md:shrink-0 md:self-start md:overflow-y-auto md:border-b-0 md:border-r md:shadow-none`}>
         <ul className="space-y-1">{entries.map(entry => <li key={entry.id}><Link to={entry.href} onClick={() => setOpen(false)} className="flex min-h-11 items-center rounded-md px-3 hover:bg-muted" activeOptions={{ exact: true }} activeProps={{ className: 'bg-muted font-semibold', 'aria-current': 'page' }}>{t(entry.labelKey)}</Link></li>)}</ul>
@@ -302,6 +302,26 @@ function AuthenticatedPortal() {
     if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/portal/sw.js', { scope: '/portal' }).catch(() => undefined);
     return () => manifest.remove();
   }, []);
+  // The header or sidebar control that had the focus last, or null once the focus went anywhere else.
+  const chromeFocus = useRef<Element | null>(null);
+  useEffect(() => {
+    const remember = (event: FocusEvent) => {
+      const target = event.target as Element;
+      chromeFocus.current = target.closest('[data-portal-chrome]') ? target : null;
+    };
+    // A press anywhere but on that control, in the header and sidebar too, may drop the focus to the body, which sends no
+    // `focusin`, so the press itself forgets the control; a press that focuses another one marks that one.
+    // It is heard first: it may also close the account menu, which removes a focused theme choice.
+    const forget = (event: Event) => { if (!chromeFocus.current?.contains(event.target as Node)) chromeFocus.current = null; };
+    document.addEventListener('focusin', remember); document.addEventListener('pointerdown', forget, true);
+    return () => { document.removeEventListener('focusin', remember); document.removeEventListener('pointerdown', forget, true); };
+  }, []);
+  // A view that replaces another may take the focused header or sidebar control with it, so the account menu takes the
+  // focus. A view with no header leaves the mark for the next one.
+  useLayoutEffect(() => {
+    if (!chromeFocus.current || chromeFocus.current.isConnected || document.activeElement !== document.body) return;
+    document.querySelector<HTMLElement>('[data-portal-chrome] [aria-controls="account-menu"]')?.focus();
+  });
   // The failed-load view's status, present only while that view is on screen.
   const failedStatus = useRef<HTMLParagraphElement>(null);
   // A refetch that fails keeps the portal up: only a first load with nothing to show is an error page.

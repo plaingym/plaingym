@@ -958,6 +958,111 @@ it.each(['names another household', 'is not found'] as const)('keeps the loading
   expect(await screen.findByRole('heading', { name: 'Welcome to your member portal' })).toBeDefined();
   expect(screen.getByText('Signing out…')).toBe(status);
 });
+/** Holds every context read until the returned gate settles, then has the server open the other household on its own. */
+async function moveWithContextHeld(f: ReturnType<typeof portal>) {
+  const answer = f.fetcher.getMockImplementation()!, held = gate();
+  f.fetcher.mockImplementation(async (path, init) => { if (path === '/api/portal/context') await held.wait; return answer(path, init); });
+  f.serverOpens(ids.second);
+  await focusAgain();
+  return held;
+}
+const accountButton = () => screen.getByRole('button', { name: 'Account' });
+const sidebarLink = () => within(screen.getByRole('navigation', { name: 'Member navigation' })).getByRole('link', { name: 'Home' });
+it.each(['a sidebar link', 'the closed Menu button'] as const)('moves the focus from %s to Account when a household the server opened loads during a sign-out', async from => {
+  const f = portal(ids.first), user = userEvent.setup();
+  f.signOut.mockImplementation(() => new Promise(() => undefined));
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  await user.click(accountButton());
+  await user.click(screen.getByRole('button', { name: 'Sign out' }));
+  await screen.findByText('Signing out…');
+  const control = from === 'a sidebar link' ? sidebarLink() : screen.getByRole('button', { name: 'Menu' });
+  act(() => control.focus());
+  expect(document.activeElement).toBe(control);
+  await moveWithContextHeld(f);
+  await waitFor(() => expect(loadingInside()).not.toBeNull());
+  expect(control.isConnected).toBe(false);
+  expect(document.activeElement).toBe(accountButton());
+});
+it('moves the focus from the switcher to Account when a household the server opened loads after a failed sign-out', async () => {
+  const f = portal(ids.first), user = userEvent.setup();
+  f.signOut.mockRejectedValue(new TypeError('Failed to fetch'));
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  await user.click(accountButton());
+  await user.click(screen.getByRole('button', { name: 'Sign out' }));
+  await screen.findByText(signOutFailed);
+  const switcher = screen.getByRole('combobox');
+  act(() => switcher.focus());
+  expect(document.activeElement).toBe(switcher);
+  await moveWithContextHeld(f);
+  await waitFor(() => expect(loadingInside()).not.toBeNull());
+  expect(switcher.isConnected).toBe(false);
+  expect(document.activeElement).toBe(accountButton());
+});
+it('moves the focus to Account once a view with the header shows again after a household the server opened', async () => {
+  const f = portal(ids.first);
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  const switcher = screen.getByRole('combobox');
+  act(() => switcher.focus());
+  const held = await moveWithContextHeld(f);
+  await waitFor(() => expect(screen.queryByRole('banner')).toBeNull());
+  expect(loading()).toContain('Loading');
+  expect(document.activeElement).toBe(document.body);
+  await act(async () => held.settle());
+  await waitFor(() => expect(identity()).toBe('Noa Second · Member'));
+  expect(document.activeElement).toBe(accountButton());
+});
+it('moves the focus to Account once a household chosen with the switcher shows', async () => {
+  const f = portal(ids.first), user = userEvent.setup();
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  const switcher = screen.getByRole('combobox');
+  await user.selectOptions(switcher, ids.second);
+  await waitFor(() => expect(identity()).toBe('Noa Second · Member'));
+  expect(f.selections()).toEqual([{ householdId: ids.second }]);
+  expect(switcher.isConnected).toBe(false);
+  expect(document.activeElement).toBe(accountButton());
+});
+it.each(['', ', although a header control had it before'] as const)('leaves Account alone when a move removes a focused page control%s', async before => {
+  const f = portal(ids.first);
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  if (before) act(() => screen.getByRole('combobox').focus());
+  // The stand-in home page has no control of its own.
+  const control = screen.getByRole('main').appendChild(document.createElement('button'));
+  act(() => control.focus());
+  expect(document.activeElement).toBe(control);
+  const held = await moveWithContextHeld(f);
+  await waitFor(() => expect(screen.queryByRole('banner')).toBeNull());
+  expect(control.isConnected).toBe(false);
+  await act(async () => held.settle());
+  await waitFor(() => expect(identity()).toBe('Noa Second · Member'));
+  expect(document.activeElement).toBe(document.body);
+});
+it.each([
+  ['page text', 'the switcher'], ['page text', 'a theme choice the closing menu removes'],
+  ['the gym name in the header', 'the switcher'], ['the gym name in the header', 'a theme choice the closing menu removes'],
+] as const)('leaves Account alone after a press on %s took the focus from %s', async (on, from) => {
+  const f = portal(ids.first), user = userEvent.setup();
+  const heading = await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  if (from === 'the switcher') act(() => screen.getByRole('combobox').focus());
+  else {
+    await user.click(accountButton());
+    await user.click(screen.getByRole('radio', { name: 'Light' }));
+    expect(document.activeElement).toBe(screen.getByRole('radio', { name: 'Light' }));
+  }
+  await user.click(on === 'page text' ? heading : within(screen.getByRole('banner')).getByText('Test Gym'));
+  expect(screen.queryByRole('radio')).toBeNull();
+  expect(document.activeElement).toBe(document.body);
+  const held = await moveWithContextHeld(f);
+  await waitFor(() => expect(screen.queryByRole('banner')).toBeNull());
+  await act(async () => held.settle());
+  await waitFor(() => expect(identity()).toBe('Noa Second · Member'));
+  expect(document.activeElement).toBe(document.body);
+});
+it('moves no focus on the first load', async () => {
+  portal(ids.first);
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  await waitFor(() => expect(identity()).toBe('Test User · Account holder'));
+  expect(document.activeElement).toBe(document.body);
+});
 it('keeps a failed-load view already shown while the lists are read again during a sign-out, when the context is not found', async () => {
   const f = portal(ids.first), user = userEvent.setup();
   const answer = f.fetcher.getMockImplementation()!, held = gate();
