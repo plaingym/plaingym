@@ -303,6 +303,33 @@ describe('kiosk check-in screen', () => {
     expect(screen.getByText('Dana R.')).toBeDefined();
     expect(screen.queryByText('Rivera')).toBeNull();
   });
+  it('asks for no on-screen keyboard on the PIN field, leaving the name field to the device', () => {
+    render(<KioskApp/>);
+    choosePin();
+    const pin = screen.getByLabelText('Household PIN');
+    expect(pin.getAttribute('inputmode')).toBe('none');
+    expect(pin.getAttribute('type')).toBe('password');
+    expect(pin.getAttribute('autocomplete')).toBe('off');
+    expect(pin.getAttribute('maxlength')).toBe('8');
+    expect(screen.getByLabelText('Your name').hasAttribute('inputmode')).toBe(false);
+  });
+  it('fills the PIN from the keypad or typed digits and enables Find me at four digits', () => {
+    render(<KioskApp/>);
+    choosePin();
+    const pin = screen.getByLabelText('Household PIN') as HTMLInputElement;
+    const find = screen.getByRole('button', { name: 'Find me' }) as HTMLButtonElement;
+    fireEvent.change(screen.getByLabelText('Your name'), { target: { value: credentials.name } });
+    for (const digit of ['1', '2', '3']) fireEvent.click(screen.getByRole('button', { name: digit }));
+    expect(find.disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: '4' }));
+    expect(pin.value).toBe('1234');
+    expect(find.disabled).toBe(false);
+    fireEvent.change(pin, { target: { value: '' } });
+    fireEvent.change(pin, { target: { value: '12a34' } });
+    expect(pin.value).toBe('1234');
+    fireEvent.change(screen.getByLabelText('Your name'), { target: { value: '' } });
+    expect(find.disabled).toBe(true);
+  });
   it('selects individual family members and offers concurrent classes and open mat', async () => {
     render(<KioskApp/>);
     await search();
