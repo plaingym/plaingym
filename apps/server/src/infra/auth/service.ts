@@ -95,9 +95,9 @@ export function cookiePrefix(config: Pick<AuthConfig, 'production'>): string {
 }
 /**
  * The session cookies a production install set before the `__Host-` prefix, and their names now. A single-gym install
- * still accepts them for one release (0.11.x; 0.12.0 drops this), so nobody is signed out by the update: their signed values don't
- * depend on the name. Another host under the parent domain could set one, as before the prefix: a single-gym install
- * accepts that for the one release, and `multi` mode never reads them.
+ * still accepts them in every release before 1.1.0, which drops this, so nobody is signed out by the update: their signed values
+ * don't depend on the name. Another host under the parent domain could set one, as before the prefix: a single-gym install
+ * accepts that until then, and `multi` mode never reads them.
  */
 const legacySessionCookies = ['session_token', 'dont_remember'].map((name) => ({ old: `__Secure-better-auth.${name}`, current: `__Host-better-auth.${name}` }));
 /** The `Cookie` header with each old session cookie also under its current name, or null when nothing changes. */

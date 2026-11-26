@@ -11,8 +11,8 @@ export interface CookieSettings {
   readonly hostPrefix: boolean;
   /**
    * With `hostPrefix`, also accept a cookie under its unprefixed name, as set before the prefix existed, so nobody's
-   * pending checkout or join is lost by the update. Single-gym installs only, and for one release: until it is dropped, a
-   * host under the same parent domain could still set the old name, as it could before the prefix.
+   * pending checkout or join is lost by the update. Single-gym installs only, and until 1.1.0, which drops it: until then,
+   * a host under the same parent domain could still set the old name, as it could before the prefix.
    */
   readonly legacyNames: boolean;
 }
