@@ -172,43 +172,67 @@ describe('kiosk name and PIN check-in', () => {
       return { id, member };
     }
     const ids = (result: Awaited<ReturnType<typeof service.lookup>>) => result.status === 'select_member' ? result.members.map((member) => member.id) : [];
-    it('checks the PIN only against households whose member or household name equals the search', async () => {
+    // One lookup, with what `pinChecked` heard: exactly one signal per lookup.
+    async function lookup(gymId: string, name: string, pin: string) {
+      const heard = vi.fn(), result = await service.lookup(gymId, { name, pin }, heard);
+      expect(heard, `${name} / ${pin}`).toHaveBeenCalledTimes(1);
+      // Every refusal is the same neutral answer, with nothing else in it.
+      if (result.status === 'see_front_desk') expect(result, `${name} / ${pin}`).toEqual({ status: 'see_front_desk' });
+      return { result, ids: ids(result), heard: heard.mock.calls[0]![0] as string };
+    }
+    const frontDesk = { status: 'see_front_desk' };
+    it('never removes the only PIN match: a surname finds its member when another household is named exactly that', async () => {
+      const gymId = await gym();
+      const ana = await home(gymId, 'Lopez', '1111', ['Ana', 'Lopez']);
+      const maria = await home(gymId, 'Garcia', '2222', ['Maria', 'Lopez']);
+      expect(await lookup(gymId, 'Lopez', '2222')).toMatchObject({ ids: [maria.member.id], heard: 'verified' });
+      expect(await lookup(gymId, 'Lopez', '1111')).toMatchObject({ ids: [ana.member.id], heard: 'verified' });
+      expect(await lookup(gymId, 'Lopez', '3333')).toMatchObject({ result: frontDesk, heard: 'compared' });
+    });
+    it('breaks a tie between PIN matches with the household whose member or household name equals the search', async () => {
       const gymId = await gym();
       const aa = await home(gymId, 'aa', '4321', ['a', 'a']);
       await home(gymId, 'asd', '4321', ['asd', 'asd']);
-      for (const name of ['a a', 'A  A', ' a a ']) {
-        const heard = vi.fn();
-        expect(ids(await service.lookup(gymId, { name, pin: '4321' }, heard)), name).toEqual([aa.member.id]);
-        expect(heard).toHaveBeenCalledWith('verified');
-      }
+      for (const name of ['a a', 'A  A', ' a a '])
+        expect(await lookup(gymId, name, '4321'), name).toMatchObject({ ids: [aa.member.id], heard: 'verified' });
+      // Each submission finds the household again with the same tie-break, so the member picked at lookup checks in.
+      const device = (await factory('kioskDevices', gymId)).id, heard = vi.fn();
+      expect(await service.checkin(gymId, device, { name: 'a a', pin: '4321', checkins: [{ memberId: aa.member.id, sessionId: null }] }, heard))
+        .toMatchObject([{ status: 'checked_in' }]);
+      expect(heard).toHaveBeenCalledTimes(1); expect(heard).toHaveBeenCalledWith('verified');
       // A household name equal to the search counts as exact too.
       const named = await home(gymId, 'Lopez Cruz', '4321', ['Ana', 'Lopez']);
       await home(gymId, 'Lopez Cruzado', '4321', ['Ben', 'Lopez']);
-      expect(ids(await service.lookup(gymId, { name: 'lopez  cruz', pin: '4321' }))).toEqual([named.member.id]);
+      expect(await lookup(gymId, 'lopez  cruz', '4321')).toMatchObject({ ids: [named.member.id], heard: 'verified' });
+    });
+    it('picks the one exact match among two PIN matches, and refuses two PIN matches with none exact', async () => {
+      const gymId = await gym();
+      const aa = await home(gymId, 'aa', '5555', ['a', 'a']);
+      await home(gymId, 'Abe', '5555', ['Abe', 'Alder']);
+      expect(await lookup(gymId, 'a a', '5555')).toMatchObject({ ids: [aa.member.id], heard: 'verified' });
+      // A third PIN match that is exact too leaves two exact ones tied: front desk.
+      await home(gymId, 'ab', '5555', ['A', 'A']);
+      expect(await lookup(gymId, 'a a', '5555')).toMatchObject({ result: frontDesk, heard: 'compared' });
+      await home(gymId, 'Ann', '6666', ['Ann', 'Lee']); await home(gymId, 'Andy', '6666', ['Andy', 'Lee']);
+      expect(await lookup(gymId, 'An', '6666')).toMatchObject({ result: frontDesk, heard: 'compared' });
     });
     it('still refuses two households whose names both equal the search and share a PIN', async () => {
       const gymId = await gym();
       await home(gymId, 'Smith one', '2468', ['Dan', 'Smith']); await home(gymId, 'Smith two', '2468', ['Dan', 'Smith']);
-      const heard = vi.fn();
-      expect(await service.lookup(gymId, { name: 'Dan Smith', pin: '2468' }, heard)).toEqual({ status: 'see_front_desk' });
-      expect(heard).toHaveBeenCalledWith('compared'); expect(heard).toHaveBeenCalledTimes(1);
+      expect(await lookup(gymId, 'Dan Smith', '2468')).toMatchObject({ result: frontDesk, heard: 'compared' });
     });
-    it('narrows only: a prefix search is unchanged, and four matching households still skip the PIN check', async () => {
+    it('checks the PIN against every candidate, and four matching households still skip the PIN check', async () => {
       const gymId = await gym();
-      await home(gymId, 'Smith', '1111', ['Dan', 'Smith']);
+      const dan = await home(gymId, 'Smith', '1111', ['Dan', 'Smith']);
       const daniel = await home(gymId, 'Smithers', '2222', ['Daniel', 'Smithers']);
-      const heard = vi.fn();
-      // The exact "Dan Smith" household is the only one checked, so Daniel's PIN finds nobody.
-      expect(await service.lookup(gymId, { name: 'Dan Smith', pin: '2222' }, heard)).toEqual({ status: 'see_front_desk' });
-      expect(heard).toHaveBeenLastCalledWith('compared');
-      expect(ids(await service.lookup(gymId, { name: 'Dan', pin: '2222' }, heard))).toEqual([daniel.member.id]);
-      expect(heard).toHaveBeenLastCalledWith('verified');
+      // The exact "Dan Smith" household doesn't hide Daniel, whose PIN is the only match.
+      expect(await lookup(gymId, 'Dan Smith', '2222')).toMatchObject({ ids: [daniel.member.id], heard: 'verified' });
+      expect(await lookup(gymId, 'Dan Smith', '1111')).toMatchObject({ ids: [dan.member.id], heard: 'verified' });
+      expect(await lookup(gymId, 'Dan', '2222')).toMatchObject({ ids: [daniel.member.id], heard: 'verified' });
       await home(gymId, 'Smithson', '3333', ['Danny', 'Smithson']); await home(gymId, 'Smithfield', '4444', ['Dana', 'Smithfield']);
       for (const name of ['Dan', 'Dan Smith']) {
-        for (const pin of ['1111', '2222']) {
-          expect(await service.lookup(gymId, { name, pin }, heard), name).toEqual({ status: 'see_front_desk' });
-          expect(heard).toHaveBeenLastCalledWith('skipped');
-        }
+        for (const pin of ['1111', '2222'])
+          expect(await lookup(gymId, name, pin), `${name} / ${pin}`).toMatchObject({ result: frontDesk, heard: 'skipped' });
       }
     });
   });

@@ -38,8 +38,8 @@ export function createKioskCheckin(options: KioskCheckinOptions = {}) {
   const { identities, currentSessions, bookedSessions, record } = createKioskCheckinHelpers({ ...options, scope, clock });
 
   /**
-   * The one household whose PIN matches among households with a member or household name matching the search, or
-   * among those whose name equals it when any does. `pinChecked` hears whether the guess was compared, and whether it matched.
+   * The one household whose PIN matches among households with a member or household name matching the search; when
+   * the PIN matches several, the one whose name equals the search. `pinChecked` hears whether the guess was compared, and whether it matched.
    */
   async function findHousehold(gymId: string, name: string, pin: string, pinChecked?: PinChecked): Promise<string | null> {
     if (!options.pinSecret) throw new AppError('unavailable', 'Kiosk PIN check-in is not configured');
@@ -59,12 +59,13 @@ export function createKioskCheckin(options: KioskCheckinOptions = {}) {
       ))).groupBy(households.id, households.pinHash).limit(maxCandidateHouseholds + 1));
     if (!candidates.length || candidates.length > maxCandidateHouseholds) { pinChecked?.('skipped'); return null; }
     const secret = await options.pinSecret(gymId);
-    // An exact name narrows the bounded set, so "a a" isn't lost to "asd asd" sharing its PIN; it never adds a household.
-    const checked = candidates.some((row) => row.exact) ? candidates.filter((row) => row.exact) : candidates;
-    const matches = checked.filter((row) => verifyHouseholdPin(secret, gymId, row.id, pin, row.pinHash));
-    // Two households sharing a name and PIN can't be told apart: never guess.
-    pinChecked?.(matches.length === 1 ? 'verified' : 'compared');
-    return matches.length === 1 ? matches[0]!.id : null;
+    const matches = candidates.filter((row) => verifyHouseholdPin(secret, gymId, row.id, pin, row.pinHash));
+    // An exact name breaks a tie between households whose PIN matches, so "a a" isn't lost to "asd asd" sharing
+    // its PIN; it never removes the only match. Two households still tied can't be told apart: never guess.
+    const exactMatches = matches.filter((row) => row.exact);
+    const found = matches.length === 1 ? matches[0] : exactMatches.length === 1 ? exactMatches[0] : undefined;
+    pinChecked?.(found ? 'verified' : 'compared');
+    return found?.id ?? null;
   }
   async function householdMembers(gymId: string, householdId: string): Promise<KioskMemberRow[]> {
     return scope(gymId, (tx) => tx.select({ id: members.id, firstName: members.firstName, lastName: members.lastName, photoKey: members.photoKey })
