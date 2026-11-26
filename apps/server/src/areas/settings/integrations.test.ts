@@ -450,7 +450,7 @@ describe('Settings → Payments: test to live', () => {
     try {
       const refusedHeld = await within(saveTo(app, 'rk_live_heldkept', { clearTestData: true }));
       expect(refusedHeld.status).toBe(409);
-      expect(refusedHeld.json?.error?.details).toEqual({ restrictedKey: ['payments_in_progress'] });
+      expect(refusedHeld.json?.error?.details).toEqual({ restrictedKey: ['busy'] });
     } finally { holder.release(); }
     await holder.done;
     expect(await snapshot(gymId)).toEqual(before);
@@ -567,7 +567,7 @@ describe('Settings → Payments: test to live', () => {
       try {
         const refusedHeld = await within(saveTo(appC(), 'rk_live_gymc', { clearTestData: true }));
         expect(refusedHeld.status, name).toBe(409);
-        expect(refusedHeld.json?.error?.details, name).toEqual({ restrictedKey: ['payments_in_progress'] });
+        expect(refusedHeld.json?.error?.details, name).toEqual({ restrictedKey: ['busy'] });
       } finally { holder.release(); }
       await holder.done;
       expect(await snapshot(gymC), name).toEqual(held);

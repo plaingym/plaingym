@@ -179,7 +179,7 @@ describe('Settings → Payments', () => {
     expect(client.PUT).not.toHaveBeenCalled();
   });
   it.each([['account_locked', 'rk_test_other', 'another account can’t charge or refund them'], ['missing_permission', 'rk_live_other', 'permissions'],
-    ['payments_in_progress', 'rk_test_other', 'still being processed']])(
+    ['payments_in_progress', 'rk_test_other', 'still being processed'], ['busy', 'rk_test_other', 'Another change for this gym was being saved']])(
     'explains a %s refusal', async (code, key, words) => {
       current = connected;
       client.PUT.mockResolvedValue(refusal(code === 'missing_permission' ? 400 : 409, 'restrictedKey', code));
@@ -214,6 +214,25 @@ describe('Settings → Payments', () => {
     expect(screen.getByText('Stripe is connected in live mode.')).toBeDefined();
     expect(screen.queryByRole('form', { name: 'Switch to live mode' })).toBeNull();
     expect(await screen.findByRole('form', { name: 'Payments' })).toBeDefined();
+  });
+  it('keeps the confirmed switch open to try again when another change was being saved', async () => {
+    current = connected;
+    client.PUT.mockResolvedValueOnce(refusal(409, 'restrictedKey', 'mode_locked'));
+    const user = userEvent.setup(); renderSection();
+    await submit(user, 'rk_live_abc123');
+    const confirm = await screen.findByRole('form', { name: 'Switch to live mode' });
+    client.PUT.mockResolvedValueOnce(refusal(409, 'restrictedKey', 'busy'));
+    await user.click(within(confirm).getByRole('checkbox', { name: /I understand the test data/ }));
+    await user.click(within(confirm).getByRole('button', { name: 'Clear test data and switch to live' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Another change for this gym was being saved');
+    expect(alert.textContent).not.toContain('still being processed');
+    expect(document.body.textContent).not.toContain('private server text');
+    expect(screen.getByRole('form', { name: 'Switch to live mode' })).toBe(confirm);
+    client.PUT.mockResolvedValueOnce(reply(200, { data: live }));
+    await user.click(within(confirm).getByRole('button', { name: 'Clear test data and switch to live' }));
+    expect(client.PUT).toHaveBeenLastCalledWith('/api/settings/integrations/stripe', { signal: expect.any(AbortSignal), body: { revision: 3, restrictedKey: 'rk_live_abc123', clearTestData: true } });
+    expect((await screen.findByRole('status')).textContent).toContain('Stripe is now in live mode');
   });
   it('drops the waiting live key when the owner keeps test mode', async () => {
     current = connected;

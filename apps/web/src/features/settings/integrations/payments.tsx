@@ -19,7 +19,7 @@ import { failedText, integrationsOf, refusedText, text, type ChangeResult, type 
 
 const label = (key: string) => text('payments.' + key);
 const refusals: Record<string, string> = { missing_permission: 'missingPermission', account_locked: 'accountLocked', mode_locked: 'modeLocked',
-  payments_in_progress: 'inProgress' };
+  payments_in_progress: 'inProgress', busy: 'busy' };
 type Message = { kind: 'status' | 'alert'; text: string };
 /** The refusal for a reply the server didn't accept; a live gym refusing a test key says so in its own words. */
 function refusal(reply: ChangeResult<unknown>, mode: PaymentsIntegration['mode']): Message {

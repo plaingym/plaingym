@@ -208,6 +208,10 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     throw new AppError('conflict', 'A payment or refund is still being processed. A refund reservation that never reached Stripe clears automatically after 23 hours, within the next hourly check. If still blocked after 24 hours, ask an owner or admin to check Stripe and payment reconciliation.',
       { restrictedKey: ['payments_in_progress'] });
   }
+  /** Refuses the switch while another write holds a row the clear locks; the save's transaction rolls back, so nothing changes. */
+  function rowBusy(): never {
+    throw new AppError('conflict', 'Another change for this gym is being saved; try again in a moment', { restrictedKey: ['busy'] });
+  }
   /**
    * The switch from test to live, inside the save's transaction once the live key has connected: clears the Stripe
    * customer IDs the test key made (`testData`; each audited as unlinked, so a customer creation or card setup
@@ -223,7 +227,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     try {
       return await clearTestRows(tx, gymId, userId, timezone);
     } catch (error) {
-      if (databaseCode(error) === '55P03') paymentsInProgress();
+      if (databaseCode(error) === '55P03') rowBusy();
       throw error;
     }
   }
