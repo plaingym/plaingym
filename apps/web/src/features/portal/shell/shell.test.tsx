@@ -927,6 +927,116 @@ it('closes an open phone menu when a household the server opened has nothing to 
   expect((await screen.findByRole('button', { name: 'Menu' })).getAttribute('aria-expanded')).toBe('false');
   expect(main.hasAttribute('inert')).toBe(false);
 });
+it.each(['names another household', 'is not found'] as const)('keeps the loading layout and its signing-out status when the server moves again and the context read %s', async second => {
+  const f = portal(ids.first), user = userEvent.setup();
+  f.signOut.mockImplementation(() => new Promise(() => undefined));
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  await user.click(screen.getByRole('button', { name: 'Account' }));
+  await user.click(screen.getByRole('button', { name: 'Sign out' }));
+  const status = await screen.findByText('Signing out…');
+  const answer = f.fetcher.getMockImplementation()!, context = gate(), lists = gate();
+  let holdContext = true, holdLists = false;
+  f.fetcher.mockImplementation(async (path, init) => {
+    if (path === '/api/portal/context' && holdContext) { await context.wait; return second === 'is not found' ? new Response(null, { status: 404 }) : answer(path, init); }
+    if (path === '/api/portal/households' && holdLists) await lists.wait;
+    return answer(path, init);
+  });
+  f.serverOpens(ids.second);
+  await focusAgain();
+  await waitFor(() => expect(loadingInside()).not.toBeNull());
+  // The server moves again before the new household's context is read, and the lists are slow to say so.
+  holdContext = false; holdLists = true;
+  f.serverOpens(ids.first);
+  const reads = fetchCount(f, '/api/portal/households');
+  await act(async () => context.settle());
+  await settled();
+  expect(fetchCount(f, '/api/portal/households')).toBeGreaterThan(reads);
+  expect(screen.queryByText(/couldn.t load your portal/)).toBeNull();
+  expect(loadingInside()).not.toBeNull();
+  expect(screen.getByText('Signing out…')).toBe(status);
+  await act(async () => lists.settle());
+  expect(await screen.findByRole('heading', { name: 'Welcome to your member portal' })).toBeDefined();
+  expect(screen.getByText('Signing out…')).toBe(status);
+});
+it('keeps a failed-load view already shown while the lists are read again during a sign-out, when the context is not found', async () => {
+  const f = portal(ids.first), user = userEvent.setup();
+  const answer = f.fetcher.getMockImplementation()!, held = gate();
+  let holding = false;
+  f.fetcher.mockImplementation(async (path, init) => {
+    if (path === '/api/portal/context') return new Response(null, { status: 404 });
+    if (path === '/api/portal/households' && holding) await held.wait;
+    return answer(path, init);
+  });
+  f.signOut.mockImplementation(() => new Promise(() => undefined));
+  await screen.findByText(/couldn.t load your portal/);
+  const status = screen.getByRole('status');
+  await user.click(screen.getByRole('button', { name: 'Sign out' }));
+  await waitFor(() => expect(status.textContent).toBe('Signing out…'));
+  const lists = fetchCount(f, '/api/portal/households');
+  holding = true;
+  await focusAgain();
+  expect(fetchCount(f, '/api/portal/households')).toBe(lists + 1);
+  expect(screen.getByText(/couldn.t load your portal/)).toBeDefined();
+  expect(screen.getByText('Signing out…')).toBe(status);
+  await act(async () => held.settle());
+  await settled();
+  expect(screen.getByText('Signing out…')).toBe(status);
+});
+it('keeps a sign-out failure the same alert, and the focus where it is, while a household the server opened loads', async () => {
+  const f = portal(ids.first), user = userEvent.setup();
+  f.signOut.mockRejectedValue(new TypeError('Failed to fetch'));
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  const account = screen.getByRole('button', { name: 'Account' });
+  await user.click(account);
+  await user.click(screen.getByRole('button', { name: 'Sign out' }));
+  const failure = (await screen.findByText(signOutFailed)).closest('[role="alert"]');
+  act(() => account.focus());
+  const answer = f.fetcher.getMockImplementation()!, held = gate();
+  f.fetcher.mockImplementation(async (path, init) => { if (path === '/api/portal/context') await held.wait; return answer(path, init); });
+  f.serverOpens(ids.second);
+  await focusAgain();
+  await waitFor(() => expect(loadingInside()).not.toBeNull());
+  expect(screen.getByText(signOutFailed).closest('[role="alert"]')).toBe(failure);
+  expect(document.activeElement).toBe(account);
+  await act(async () => held.settle());
+  expect(await screen.findByRole('heading', { name: 'Welcome to your member portal' })).toBeDefined();
+  expect(screen.getByText(signOutFailed).closest('[role="alert"]')).toBe(failure);
+  expect(document.activeElement).toBe(account);
+});
+it.each(['a link', 'the Menu button'] as const)('moves the focus from %s to Account when the phone menu closes with nothing to list', async from => {
+  const f = portal(ids.first), user = userEvent.setup();
+  f.signOut.mockImplementation(() => new Promise(() => undefined));
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  const account = screen.getByRole('button', { name: 'Account' });
+  await user.click(account);
+  await user.click(screen.getByRole('button', { name: 'Sign out' }));
+  await screen.findByText('Signing out…');
+  const menu = screen.getByRole('button', { name: 'Menu' });
+  await user.click(menu);
+  const nav = screen.getByRole('navigation', { name: 'Member navigation' });
+  if (from === 'the Menu button') act(() => menu.focus());
+  expect(from === 'a link' ? nav.contains(document.activeElement) : document.activeElement === menu).toBe(true);
+  const answer = f.fetcher.getMockImplementation()!, held = gate();
+  f.fetcher.mockImplementation(async (path, init) => { if (path === '/api/portal/context') await held.wait; return answer(path, init); });
+  f.serverOpens(ids.second);
+  await focusAgain();
+  await waitFor(() => expect(loadingInside()).not.toBeNull());
+  expect(screen.queryByRole('navigation', { name: 'Member navigation' })).toBeNull();
+  expect(document.activeElement).toBe(account);
+});
+it.each(['never answers', 'fails'] as const)('pads the first load, which has no portal layout around it, when the bootstrap %s', async load => {
+  vi.stubGlobal('scrollTo', vi.fn());
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: { mode: 'disabled' } })));
+  const loadBootstrap = () => load === 'fails' ? Promise.reject(new Error('refused')) : new Promise<never>(() => undefined);
+  const services: ShellServices = { loadBootstrap, signOut: vi.fn(async () => undefined), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
+  render(<App services={services} router={createAppRouter(createMemoryHistory({ initialEntries: ['/portal'] }))} />);
+  const state = await waitFor(() => {
+    const element = document.querySelector(load === 'fails' ? '[role="alert"]' : '[data-loading]');
+    expect(element).not.toBeNull();
+    return element!;
+  });
+  expect([...state.parentElement!.classList]).toEqual(expect.arrayContaining(['px-4', 'py-6', 'sm:px-6']));
+});
 it('pads the failed-load view, which has no portal layout around it', async () => {
   const f = portal(ids.first);
   const answer = f.fetcher.getMockImplementation()!;

@@ -72,7 +72,8 @@ out, and its **Try again** waits until the sign-out fails. A load still running
 when the sign-out fails says so above the loading state, and while the sign-out is
 being sent a failed load isn't read again by a window focus or reconnect. A portal
 with no section to list (the household picker, or a household still loading) has
-no menu.
+no menu. A second move by the server while a household is loading keeps that layout until the household lists have
+been read again.
 The root layout supplies the source-code footer.
 
 The home page summarizes the next booked, scheduled class within 30 days (not a

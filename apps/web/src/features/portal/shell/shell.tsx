@@ -103,14 +103,22 @@ export function HouseholdPicker({ households, onChoose, pending = false, failed 
       </Button></li>)}</ul>
   </Page>;
 }
-export function PortalLayout({ name, person, scope, entries, children, onSignOut, signingOut = false, switcher, account = false }:
+export function PortalLayout({ name, person, scope, entries, children, notices, failure, onSignOut, signingOut = false, switcher, account = false }:
   { name: string; person?: string; scope?: PortalContext['role']; entries: readonly NavigationEntry[]; children: ReactNode; onSignOut(): void; signingOut?: boolean; switcher?: ReactNode;
+    /** What the page area says above a sign-out failure. */
+    notices?: ReactNode;
+    /** A sign-out failure. It has its own place above the page, so it stays mounted while the page's content changes. */
+    failure?: ReactNode;
     /** Shows the link to the login's own account page; the household picker has no page to show it in. */
     account?: boolean }) {
   const [open, setOpen] = useState(false), [online, setOnline] = useState(navigator.onLine);
-  // A menu with nothing to list closes, so it never holds the page.
-  if (open && !entries.length) setOpen(false);
   const root = useRef<HTMLDivElement>(null), header = useRef<HTMLElement>(null);
+  // A menu with nothing to list closes, so it never holds the page, and the focus its link or button held goes to the account menu.
+  useLayoutEffect(() => {
+    if (!open || entries.length) return;
+    setOpen(false);
+    if (document.activeElement === document.body) header.current?.querySelector<HTMLElement>('[aria-controls="account-menu"]')?.focus();
+  }, [open, entries.length]);
   const menuButton = useRef<HTMLButtonElement>(null), nav = useRef<HTMLElement>(null), backdrop = useRef<HTMLDivElement>(null), cover = useRef<HTMLDivElement>(null);
   const [headerHeight, setHeaderHeight] = useState(0), [menuTop, setMenuTop] = useState<number>(), [capTop, setCapTop] = useState<number>();
   // The backdrop, and the cover over what is above the menu, close it on their click: gone on the press instead, a tap
@@ -201,7 +209,7 @@ export function PortalLayout({ name, person, scope, entries, children, onSignOut
         <ul className="space-y-1">{entries.map(entry => <li key={entry.id}><Link to={entry.href} onClick={() => setOpen(false)} className="flex min-h-11 items-center rounded-md px-3 hover:bg-muted" activeOptions={{ exact: true }} activeProps={{ className: 'bg-muted font-semibold', 'aria-current': 'page' }}>{t(entry.labelKey)}</Link></li>)}</ul>
       </nav>}
       {/* The page the open panel covers takes no focus or presses. */}
-      <main id="main-content" inert={open} className="min-w-0 flex-1 px-4 py-6 sm:px-6">{!online && <Alert>{text('offline')}</Alert>}{children}</main>
+      <main id="main-content" inert={open} className="min-w-0 flex-1 px-4 py-6 sm:px-6">{!online && <Alert>{text('offline')}</Alert>}{notices}{failure}{children}</main>
     </div>
   </div>;
 }
@@ -215,7 +223,7 @@ function PortalLoading() {
     window.addEventListener('online', update); window.addEventListener('offline', update);
     return () => { window.removeEventListener('online', update); window.removeEventListener('offline', update); };
   }, []);
-  return <>{!online && <div className="px-4 pt-6 sm:px-6"><Alert>{text('offline')}</Alert></div>}<LoadingState /></>;
+  return <>{!online && <div className="px-4 pt-6 sm:px-6"><Alert>{text('offline')}</Alert></div>}<div className="px-4 py-6 sm:px-6"><LoadingState /></div></>;
 }
 function AuthenticatedPortal() {
   const bootstrap = useBootstrap(), services = useShellServices(), cache = useQueryClient(), navigate = useNavigate();
@@ -294,8 +302,10 @@ function AuthenticatedPortal() {
     if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/portal/sw.js', { scope: '/portal' }).catch(() => undefined);
     return () => manifest.remove();
   }, []);
+  // The failed-load view's status, present only while that view is on screen.
+  const failedStatus = useRef<HTMLParagraphElement>(null);
   // A refetch that fails keeps the portal up: only a first load with nothing to show is an error page.
-  if (!bootstrap.data) return bootstrap.isError ? <ErrorState onRetry={() => void bootstrap.refetch()} /> : <PortalLoading />;
+  if (!bootstrap.data) return bootstrap.isError ? <div className="px-4 py-6 sm:px-6"><ErrorState onRetry={() => void bootstrap.refetch()} /></div> : <PortalLoading />;
   if (session?.roles.length) return <Navigate to="/admin" replace />;
   if (!session?.member) return <Navigate to="/login" replace />;
   // While the refetch after a change is pending, and after one that failed, the name is the previous household's (or an older
@@ -309,32 +319,35 @@ function AuthenticatedPortal() {
   // A retry or a household choice puts that message away. A sign-out still being sent is left alone, so its failure is told.
   const clearSignOutError = () => { if (signOut.isError) signOut.reset(); };
   // The status is mounted with the view, so a sign-out sent from here is announced, and a retry waits for it. Empty, it takes no room.
-  const failed = (retry: () => void) => <Page className="px-4 py-6 sm:px-6"><ErrorState message={text('failed')} onRetry={() => { clearSignOutError(); retry(); }} retryDisabled={signOut.isPending} /><Button onClick={() => signOut.mutate()} disabled={signOut.isPending}>{text('signOut')}</Button><p role="status" className={signOut.isPending ? 'text-sm text-muted-foreground' : 'sr-only'}>{signOut.isPending && t('shell/shell:signingOut')}</p>{signOutError}</Page>;
+  const failed = (retry: () => void) => <Page className="px-4 py-6 sm:px-6"><ErrorState message={text('failed')} onRetry={() => { clearSignOutError(); retry(); }} retryDisabled={signOut.isPending} /><Button onClick={() => signOut.mutate()} disabled={signOut.isPending}>{text('signOut')}</Button><p ref={failedStatus} role="status" className={signOut.isPending ? 'text-sm text-muted-foreground' : 'sr-only'}>{signOut.isPending && t('shell/shell:signingOut')}</p>{signOutError}</Page>;
   // A loading step keeps the portal layout while a sign-out is being sent or after it failed, so the account menu and its status
   // stay mounted and the failure is told above the loading state.
   const loading = () => signOut.isPending || signOut.isError
-    ? <PortalLayout name={bootstrap.data!.gym.name} person={person} entries={[]} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending} account={!!current}>{signOutError}<LoadingState /></PortalLayout>
+    ? <PortalLayout name={bootstrap.data!.gym.name} person={person} entries={[]} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending} account={!!current} failure={signOutError}><LoadingState /></PortalLayout>
     : <PortalLoading />;
   if (households.isPending || choose.isPending) return loading();
   // A list load that fails while the portal has lists to show keeps it up, like the bootstrap: every key follows the lists.
   if (households.isError && !households.data) return failed(() => void households.refetch());
   if (!current) {
     if (!households.data.households.length) return failed(() => void households.refetch());
-    return <PortalLayout name={bootstrap.data.gym.name} person={person} entries={[]} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending}>
-      <PortalRecoveryNotice />{signOutError}<HouseholdPicker households={households.data.households} onChoose={id => { clearSignOutError(); choose.mutate(id); }} pending={choose.isPending || signOut.isPending} failed={choose.isError} />
+    return <PortalLayout name={bootstrap.data.gym.name} person={person} entries={[]} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending} notices={<PortalRecoveryNotice />} failure={signOutError}>
+      <HouseholdPicker households={households.data.households} onChoose={id => { clearSignOutError(); choose.mutate(id); }} pending={choose.isPending || signOut.isPending} failed={choose.isError} />
     </PortalLayout>;
   }
   if (!context.data) {
-    // A context read that failed waits for the lists being read again, except while a sign-out is being sent: then the
-    // failed-load view stays, with its status. If the lists still name this household, it is an error.
-    if (context.isPending || (households.isFetching && !signOut.isPending)) return loading();
+    // A context read that failed waits for the lists being read again. During a sign-out only a failed view already on
+    // screen stays while the lists are read again, with its status. If the lists still name this household, it is an error.
+    if (context.isPending || (households.isFetching && !(signOut.isPending && failedStatus.current))) return loading();
     return failed(() => { void households.refetch(); void context.refetch(); });
   }
   const switcher = households.data.households.length > 1
     ? <HouseholdSwitcher households={households.data.households} current={current} onChoose={id => { if (id !== current) { clearSignOutError(); choose.mutate(id); } }} disabled={choose.isPending || signOut.isPending} /> : undefined;
-  return <PortalLayout name={bootstrap.data.gym.name} person={person} scope={context.data.role} entries={portalNavigation(createRegistries().portalNav.all(), context.data.role, bootstrap.data.gym.enabledModules)} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending} switcher={switcher} account>
+  const notices = <>
     {context.isError && !households.isFetching && <ErrorState message={text('failed')} onRetry={() => { clearSignOutError(); void households.refetch(); void context.refetch(); }} />}
-    <PortalRecoveryNotice />{signOutError}{choose.isError && <Alert variant="error">{text('chooseFailed')}</Alert>}<Outlet key={current} />
+    <PortalRecoveryNotice />
+  </>;
+  return <PortalLayout name={bootstrap.data.gym.name} person={person} scope={context.data.role} entries={portalNavigation(createRegistries().portalNav.all(), context.data.role, bootstrap.data.gym.enabledModules)} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending} switcher={switcher} notices={notices} failure={signOutError} account>
+    {choose.isError && <Alert variant="error">{text('chooseFailed')}</Alert>}<Outlet key={current} />
   </PortalLayout>;
 }
 export function PortalShell() {
