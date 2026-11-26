@@ -2436,4 +2436,59 @@ describe('setup wizard restore progress', () => {
     expect(document.activeElement).toBe(alertOf(rateLimitedText));
     expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
   });
+  const failedAnswer = (status: number) => () => Promise.resolve(Response.json({ error: { code: 'internal', message: 'Failed' } }, { status }));
+  const restoreRequests = (fetcher: ReturnType<typeof start>['fetcher']) => fetcher.mock.calls.filter(([path]) => String(path) === '/api/setup/restore');
+  it.each([500, 503])('keeps the unanswered state, showing the save error, when sending again answers %i', async (status) => {
+    const answers = [dropped, failedAnswer(status)];
+    const { fetcher, shown } = await sendRestoreEnding(() => answers.shift()!(), gone);
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+
+    await sendRestore();
+
+    expect(await screen.findByText(saveFailedText)).toBeDefined();
+    expect(screen.queryByText(unansweredText)).toBeNull();
+    expect(restoreRequests(fetcher)).toHaveLength(2);
+    await settle();
+    const reads = statusReads(fetcher);
+
+    statusAnswer = gone;
+    await refocus();
+    await settle();
+    expect(statusReads(fetcher)).toBe(reads + 1);
+    expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
+    expect(screen.getByText(saveFailedText)).toBeDefined();
+    expect(shown()).toBe(false);
+  });
+  it('keeps the unanswered state, showing the save error, when sending again is refused before it is sent', async () => {
+    const { fetcher, shown } = await sendRestoreEnding(dropped, gone);
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+    await settle();
+    const reads = statusReads(fetcher);
+
+    // The field accepts any text; the request's schema doesn't.
+    await userEvent.clear(screen.getByLabelText('Backup private key'));
+    await userEvent.click(screen.getByLabelText('Backup private key'));
+    await userEvent.paste('not-a-key');
+    await sendRestore();
+
+    expect(await screen.findByText(saveFailedText)).toBeDefined();
+    await settle();
+    expect(screen.queryByText(unansweredText)).toBeNull();
+    expect(restoreRequests(fetcher)).toHaveLength(1);
+    expect(statusReads(fetcher)).toBe(reads);
+
+    statusAnswer = gone;
+    await refocus();
+    await settle();
+    expect(statusReads(fetcher)).toBe(reads + 1);
+    expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', 'not-a-key');
+    expect(screen.getByText(saveFailedText)).toBeDefined();
+    expect(shown()).toBe(false);
+  });
+  it('shows the unavailable screen when a restore request with none unanswered before it answers 500', async () => {
+    await sendRestoreEnding(failedAnswer(500), gone);
+
+    expect(await screen.findByText(unavailableText)).toBeDefined();
+    expect(screen.queryByLabelText('Backup private key')).toBeNull();
+  });
 });

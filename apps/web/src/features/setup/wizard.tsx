@@ -120,8 +120,8 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   const services = useShellServices(), queries = useQueryClient();
   const [jobId, setJobId] = useState<string | null>(() => sessionStorage.getItem('setup.restore'));
   const [restoreSending, setRestoreSending] = useState(false);
-  // A restore request got no answer, then a status read met a restore's hold or a resend was refused with 404, 409 or
-  // 429: the form stays.
+  // A restore request got no answer, then a status read met a restore's hold, or a resend failed without ruling out
+  // that restore: the form stays.
   const [restoreUnanswered, setRestoreUnanswered] = useState(false);
   // When the last restore request went unanswered, until a status read works: a later 404 or 503 keeps the form too.
   const [unansweredAt, setUnansweredAt] = useState<number | null>(null);
@@ -347,13 +347,14 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
           const unanswered = failure instanceof TypeError || (failure instanceof ApiError && (failure.status === 502 || failure.status === 504));
           if (!unanswered) {
             // After an unanswered request, a 409 (a restore is already running) or a 404 (it holds the gym, or has
-            // closed setup) is most likely that restore's doing. A 429 says nothing about it either way, so that restore
-            // may still be running while the owner is told to wait.
+            // closed setup) is most likely that restore's doing. A 429, a server error, a request that never went out or
+            // an answer the page couldn't read doesn't rule that restore out, so it may still be running while the owner
+            // is told what failed.
             if (wasUnanswered && failure instanceof ApiError && (failure.status === 404 || failure.status === 409)) {
               setUnansweredAt(Date.now()); setRestoreUnanswered(true);
               throw new RestoreUnansweredError({ cause: failure });
             }
-            if (wasUnanswered && failure instanceof ApiError && failure.status === 429) {
+            if (wasUnanswered && (!(failure instanceof ApiError) || failure.status === 429 || failure.status >= 500)) {
               setUnansweredAt(Date.now()); setRestoreUnanswered(true);
               throw failure;
             }
