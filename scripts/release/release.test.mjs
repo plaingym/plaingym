@@ -380,20 +380,21 @@ test('the smoke test uses the same repository root as the app', () => {
 
 test('a version that still ships code due for removal is refused before anything is written', () => {
   const f = fixture();
+  const options = { ...f.options, removals: [{ from: '1.1.0', file: 'src/compat.ts', identifier: 'oldHelper' }] };
   try {
     // Below the listed version the code may stay.
-    f.write('apps/server/src/core/cookies.ts', 'legacyNames\n'); f.commit('feat: cookies'); f.publishFixture();
-    assert.equal(release({ ...f.options, version: '1.0.0' }).version, '1.0.0');
+    f.write('src/compat.ts', 'oldHelper\n'); f.commit('feat: compat'); f.publishFixture();
+    assert.equal(release({ ...options, version: '1.0.0' }).version, '1.0.0');
     f.publishFixture();
-    f.write('apps/server/src/core/cookies.ts', 'legacyNames // still here\n'); f.commit('feat: x'); f.publishFixture();
+    f.write('src/compat.ts', 'oldHelper // still here\n'); f.commit('feat: x'); f.publishFixture();
     const head = f.run('rev-parse', 'HEAD');
-    assert.throws(() => release({ ...f.options, version: '1.1.0' }),
-      /^Error: 1\.1\.0 .*legacyNames in apps\/server\/src\/core\/cookies\.ts/);
+    assert.throws(() => release({ ...options, version: '1.1.0' }),
+      /^Error: 1\.1\.0 .*oldHelper in src\/compat\.ts/);
     assert.equal(f.run('rev-parse', 'HEAD'), head);
     assert.equal(f.run('tag', '--list', 'v1.1.0'), '');
     assert.equal(f.run('status', '--porcelain'), '');
     // Once the listed file no longer holds it, the same version releases.
-    f.write('apps/server/src/core/cookies.ts', 'removed\n'); f.commit('fix: drop the old names'); f.publishFixture();
-    assert.equal(release({ ...f.options, version: '1.1.0' }).version, '1.1.0');
+    f.write('src/compat.ts', 'removed\n'); f.commit('fix: drop the old helper'); f.publishFixture();
+    assert.equal(release({ ...options, version: '1.1.0' }).version, '1.1.0');
   } finally { f.close(); }
 });

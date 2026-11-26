@@ -9,19 +9,13 @@ export interface CookieSettings {
    * no page on another host under the same parent domain can set one. The runtime turns it on for production (HTTPS).
    */
   readonly hostPrefix: boolean;
-  /**
-   * With `hostPrefix`, also accept a cookie under its unprefixed name, as set before the prefix existed, so nobody's
-   * pending checkout or join is lost by the update. Single-gym installs only, and until 1.1.0, which drops it: until then,
-   * a host under the same parent domain could still set the old name, as it could before the prefix.
-   */
-  readonly legacyNames: boolean;
 }
 
-let settings: CookieSettings = { hostPrefix: false, legacyNames: false };
+let settings: CookieSettings = { hostPrefix: false };
 
 /** Set once at startup; until then cookies keep their plain names (development over HTTP and isolated tests). */
 export function configureCookies(next: CookieSettings): void {
-  settings = { hostPrefix: next.hostPrefix, legacyNames: next.hostPrefix && next.legacyNames };
+  settings = { hostPrefix: next.hostPrefix };
 }
 
 /** The name the browser stores one of the app's own cookies under. */
@@ -44,10 +38,9 @@ export function setAppCookie(c: Context, name: string, value: string, options: A
   else setCookie(c, name, value, options);
 }
 
-/** The cookie's value under its current name, or (single-gym installs with the host prefix) its old unprefixed name. */
+/** The cookie's value under the name the browser stores it under; with the host prefix, only the `__Host-` name. */
 export function readAppCookie(c: Context, name: string): string | undefined {
-  if (!settings.hostPrefix) return getCookie(c, name);
-  return getCookie(c, name, 'host') ?? (settings.legacyNames ? getCookie(c, name) : undefined);
+  return getCookie(c, name, settings.hostPrefix ? 'host' : undefined);
 }
 
 /** Expires a cookie set at `Path=/`; with the host prefix, under both its current and its old unprefixed name. */

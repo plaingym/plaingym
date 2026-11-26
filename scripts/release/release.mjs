@@ -98,8 +98,11 @@ function signTag(tag, cwd) {
   if (result.error || result.status !== 0) throw new Error(`git tag -s ${tag} failed`);
 }
 
-/** Maintainer entry point. Tests supply only gh's answer; all repository operations and signatures are real. */
-export function release({ cwd = process.cwd(), version: explicit, notesFile, rollbackFloor, gh = defaultGh, edit = editNotes, log = console.log, tag = signTag } = {}) {
+/**
+ * Maintainer entry point. Tests supply only gh's answer and, for the removal check, their own `removals` list (otherwise
+ * `removal-deadlines.json`); all repository operations and signatures are real.
+ */
+export function release({ cwd = process.cwd(), version: explicit, notesFile, rollbackFloor, gh = defaultGh, edit = editNotes, log = console.log, tag = signTag, removals: listed } = {}) {
   cwd = resolve(cwd);
   const run = (...args) => git(args, cwd);
   if (run('status', '--porcelain')) throw new Error('A release requires a clean working tree');
@@ -129,7 +132,7 @@ export function release({ cwd = process.cwd(), version: explicit, notesFile, rol
   const requiredBranch = isPatch ? `release/${major}.${minor}` : 'main';
   if (branch !== requiredBranch) throw new Error(`${version} must be released on ${requiredBranch}`);
   if (run('tag', '--list', `v${version}`)) throw new Error(`v${version} already exists`);
-  const { removals } = JSON.parse(readFileSync(new URL('./removal-deadlines.json', import.meta.url), 'utf8'));
+  const removals = listed ?? JSON.parse(readFileSync(new URL('./removal-deadlines.json', import.meta.url), 'utf8')).removals;
   // A malformed version would compare as NaN and never refuse anything.
   for (const { from, file, identifier } of removals)
     if (!releasePattern.test(from) || !file || !identifier) throw new Error('removal-deadlines.json needs X.Y.Z, file and identifier in every entry');

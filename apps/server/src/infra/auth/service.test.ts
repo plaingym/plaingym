@@ -214,16 +214,15 @@ describe('Better Auth HTTP containment', () => {
 
 describe('cookie names', () => {
   const multi = authConfig({ AUTH_SECRET: secret, NODE_ENV: 'production', TENANCY: 'multi', AUTH_PASSWORD_LOGIN: 'off' }, true);
-  /** Every cookie is `__Host-better-auth.*`, `Secure`, `Path=/` and without a `Domain`; `legacy` names may only be expired. */
-  function expectHostCookies(response: Response, legacy: readonly string[] = []) {
+  /** Every cookie is `__Host-better-auth.*`, `Secure`, `Path=/` and without a `Domain`. */
+  function expectHostCookies(response: Response) {
     const issued = response.headers.getSetCookie();
     expect(issued.length).toBeGreaterThan(0);
     for (const cookie of issued) {
       const name = cookie.slice(0, cookie.indexOf('='));
       expect(cookie).not.toMatch(/domain=/i);
       expect(cookie).toMatch(/;\s*Secure(?:;|$)/i); expect(cookie).toMatch(/;\s*Path=\/(?:;|$)/i);
-      if (legacy.includes(name)) expect(cookie).toMatch(/^[^=]+=;.*Max-Age=0/i);
-      else expect(name).toMatch(/^__Host-better-auth\.[a-z_]+$/);
+      expect(name).toMatch(/^__Host-better-auth\.[a-z_]+$/);
     }
   }
   const sessionValue = (response: Response) => /__Host-better-auth\.session_token=([^;]+)/.exec(cookies(response))?.[1];
@@ -239,7 +238,8 @@ describe('cookie names', () => {
     expect(signedIn.status).toBe(200); expectHostCookies(signedIn);
     const signedOut = await single.a.handler(single.request('/sign-out', {}, cookies(signedIn)));
     expect(signedOut.status).toBe(200);
-    expectHostCookies(signedOut, ['__Secure-better-auth.session_token', '__Secure-better-auth.dont_remember']);
+    expectHostCookies(signedOut);
+    expect(signedOut.headers.getSetCookie().some((cookie) => cookie.startsWith('__Host-better-auth.session_token=;'))).toBe(true);
     const f = await fixture(multi), verified = await magicLinkSession(f);
     expectHostCookies(verified);
     expect(await f.a.getSession(f.request('/get-session', undefined, cookies(verified)))).toEqual({ userId: f.user.id });
@@ -247,18 +247,15 @@ describe('cookie names', () => {
     expect(out.status).toBe(200); expectHostCookies(out);
     expect(out.headers.getSetCookie().some((cookie) => cookie.startsWith('__Host-better-auth.session_token=;'))).toBe(true);
   });
-  it('keeps a single-gym session from before the prefix signed in, and expires both names on sign-out', async () => {
+  it('reads no session from a cookie under its name from before the prefix alone in single mode', async () => {
     const f = await fixture(), value = sessionValue(await f.signIn())!;
-    const old = `__Secure-better-auth.session_token=${value}`;
-    expect(await f.a.getSession(f.request('/get-session', undefined, old))).toEqual({ userId: f.user.id });
-    expect(await f.a.checkedSession(f.request('/get-session', undefined, old))).toMatchObject({ userId: f.user.id });
-    // Still bound to its gym: the same cookie on another gym's site is refused.
-    expect((await f.b.handler(f.request('/get-session', undefined, old, f.otherOrigin))).status).toBe(403);
-    const out = await f.a.handler(f.request('/sign-out', {}, old));
-    expect(out.status).toBe(200);
-    const expired = out.headers.getSetCookie().filter((cookie) => /Max-Age=0/i.test(cookie)).map((cookie) => cookie.slice(0, cookie.indexOf('=')));
-    expect(expired).toEqual(expect.arrayContaining(['__Host-better-auth.session_token', '__Secure-better-auth.session_token']));
-    expect(await f.a.getSession(f.request('/get-session', undefined, old))).toBeNull();
+    expect(await f.a.getSession(f.request('/get-session', undefined, `__Host-better-auth.session_token=${value}`))).toEqual({ userId: f.user.id });
+    // A valid session under the name used before the `__Host-` prefix, or unprefixed: another host under the parent domain could set either.
+    for (const name of ['__Secure-better-auth.session_token', 'better-auth.session_token']) {
+      const old = `${name}=${value}`;
+      expect(await f.a.getSession(f.request('/get-session', undefined, old)), name).toBeNull();
+      expect(await f.a.checkedSession(f.request('/get-session', undefined, old)), name).toBeNull();
+    }
   });
   it('reads no old or unprefixed session cookie in multi mode', async () => {
     const f = await fixture(multi), value = sessionValue(await magicLinkSession(f))!;

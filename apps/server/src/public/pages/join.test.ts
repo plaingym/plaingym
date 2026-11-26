@@ -1417,22 +1417,28 @@ describe('public join pages through the production registrations', () => {
     expect((await f.rows()).homes).toHaveLength(before); expect(create).not.toHaveBeenCalled();
   });
 
-  it.each(['single', 'multi'] as const)('sets the join cookie __Host- at Path=/ over HTTPS and continues an old one only in %s mode', async tenancy => {
-    configureCookies({ hostPrefix: true, legacyNames: tenancy === 'single' });
+  it('sets the join cookie __Host- at Path=/ over HTTPS and continues it under that name', async () => {
+    configureCookies({ hostPrefix: true });
     try {
       const f = await fixture(), { response, cookie } = await f.submit();
       expect(response.status).toBe(200);
       const header = response.headers.get('set-cookie')!;
       expect(header).toMatch(/^__Host-plaingym_join=/); expect(header).toMatch(/;\s*Path=\/(;|$)/); expect(header).toMatch(/;\s*Secure(;|$)/);
       expect(header).toMatch(/;\s*HttpOnly(;|$)/); expect(header).toMatch(/;\s*SameSite=Lax(;|$)/); expect(header).not.toMatch(/domain=/i);
-      const missing = 'This browser no longer has your sign-up';
       const current = await f.get('/join/checkout', cookie);
       expect(current.headers.get('location')).not.toBeNull();
-      // The cookie as an earlier version set it (unprefixed, at /join), or as another host could plant it in multi mode.
+    } finally { configureCookies({ hostPrefix: false }); }
+  });
+
+  it('over HTTPS finds no pending join in a cookie under the unprefixed name alone', async () => {
+    configureCookies({ hostPrefix: true });
+    try {
+      const f = await fixture(), { response, cookie } = await f.submit();
+      expect(response.status).toBe(200);
+      // A valid join cookie under the name used before the `__Host-` prefix, which another host under the parent domain could set.
       const old = await f.get('/join/checkout', joinCookie + '=' + cookie.slice(appCookieName(joinCookie).length + 1));
-      if (tenancy === 'single') expect(old.headers.get('location')).toBe(current.headers.get('location'));
-      else { expect(old.headers.get('location')).toBeNull(); expect(await old.text()).toContain(missing); }
-    } finally { configureCookies({ hostPrefix: false, legacyNames: false }); }
+      expect(old.headers.get('location')).toBeNull(); expect(await old.text()).toContain('This browser no longer has your sign-up');
+    } finally { configureCookies({ hostPrefix: false }); }
   });
 
   it('isolates the join to its own gym and newly admitted household', async () => {

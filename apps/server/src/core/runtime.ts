@@ -242,7 +242,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
     clientIp: proxyTrust });
   const config = demo?.authConfig ?? initialConfig;
   // Production serves only HTTPS, so the app's own cookies take the `__Host-` prefix there, as Better Auth's do.
-  configureCookies({ hostPrefix: config.production, legacyNames: mode === 'single' });
+  configureCookies({ hostPrefix: config.production });
   const smtpConfigured = (gymId: string) => demo ? Promise.resolve(true) : smtp!.configured(gymId);
   // The install's GOOGLE_* variables win; otherwise a single-gym owner's stored client. Each Google request and the login methods look it up.
   const googleClients = createGoogleClientResolver({ key, env, tenancy: mode });

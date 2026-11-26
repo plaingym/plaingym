@@ -93,27 +93,6 @@ interface AccountAttempt { readonly email: string; readonly path: string; reserv
 export function cookiePrefix(config: Pick<AuthConfig, 'production'>): string {
   return config.production ? '__Host-better-auth' : 'better-auth';
 }
-/**
- * The session cookies a production install set before the `__Host-` prefix, and their names now. A single-gym install
- * still accepts them in every release before 1.1.0, which drops this, so nobody is signed out by the update: their signed values
- * don't depend on the name. Another host under the parent domain could set one, as before the prefix: a single-gym install
- * accepts that until then, and `multi` mode never reads them.
- */
-const legacySessionCookies = ['session_token', 'dont_remember'].map((name) => ({ old: `__Secure-better-auth.${name}`, current: `__Host-better-auth.${name}` }));
-/** The `Cookie` header with each old session cookie also under its current name, or null when nothing changes. */
-function withLegacySessionCookies(header: string | null): string | null {
-  if (!header) return null;
-  const pairs = header.split(';').map((pair) => pair.trim()).filter(Boolean);
-  const value = (name: string) => pairs.find((pair) => pair.startsWith(name + '='))?.slice(name.length + 1);
-  // Only a request with no current session cookie at all falls back, so old and current cookies never mix.
-  if (value(legacySessionCookies[0]!.current) !== undefined || value(legacySessionCookies[0]!.old) === undefined) return null;
-  const copied = legacySessionCookies.flatMap(({ old, current }) => {
-    const found = value(old);
-    return found === undefined || value(current) !== undefined ? [] : [`${current}=${found}`];
-  });
-  return [header, ...copied].join('; ');
-}
-const expiredLegacyCookie = (name: string) => `${name}=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Lax`;
 export const authEndpoints = [
   'POST /sign-in/email', 'POST /sign-in/magic-link', 'GET /magic-link/verify', 'GET /get-session', 'POST /sign-out',
 ] as const;
@@ -123,7 +102,6 @@ export function createAuthService(options: AuthServiceOptions) {
   if (config.smtpConfigured && !options.sendMagicLink) throw new Error('Configured SMTP requires a magic-link sender');
   const database = options.database ?? systemDatabase, now = options.now ?? Date.now;
   const addressRule = options.rateLimit ?? signInLimits.address, accountRule = options.accountRateLimit ?? signInLimits.account;
-  const legacyNames = config.production && config.tenancy === 'single';
   /** A refusal with the standard `Retry-After` beside Better Auth's own `X-Retry-After`. */
   const tooManyRequests = (seconds: number) => Response.json({ message: 'Too many requests. Please try again later.' }, { status: 429,
     headers: { 'retry-after': String(seconds), 'x-retry-after': String(seconds), 'cache-control': 'no-store' } });
@@ -219,8 +197,6 @@ export function createAuthService(options: AuthServiceOptions) {
         // Callers never supply the client address or an attempt ID: both are set here or by `handler`.
         for (const key of [...result.keys()]) if (/^(?:forwarded$|x-forwarded-|x-real-ip$|cf-connecting-ip$|x-plaingym-client-ip$|x-plaingym-account-attempt$|host$)/i.test(key)) result.delete(key);
         result.set('x-plaingym-client-ip', gym.clientIp);
-        const cookie = legacyNames ? withLegacySessionCookies(result.get('cookie')) : null;
-        if (cookie !== null) result.set('cookie', cookie);
         return result;
       }
       async function readSession(request: Request) {
@@ -316,8 +292,6 @@ export function createAuthService(options: AuthServiceOptions) {
           // Best effort: the session already exists, so a failed release only leaves this success counted like a failure.
           if (path === '/sign-in/email' && response.status === 200 && attempt?.reservation) await releaseAccountAttempt(database(), attempt.reservation).catch(() => undefined);
           response.headers.set('cache-control', 'no-store');
-          // Signing out also ends a session still held under its name from before the `__Host-` prefix.
-          if (legacyNames && key === 'POST /sign-out') for (const { old } of legacySessionCookies) response.headers.append('set-cookie', expiredLegacyCookie(old));
           const retryAfter = response.status === 429 ? response.headers.get('x-retry-after') : null;
           if (retryAfter && /^\d+$/.test(retryAfter)) response.headers.set('retry-after', retryAfter);
           if (response.headers.get('content-type')?.includes('application/json') && response.ok) {

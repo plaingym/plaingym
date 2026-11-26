@@ -19,11 +19,11 @@ and [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
   site then receives: sign-in cookies are `__Host-better-auth.*` (were
   `__Secure-better-auth.*`), the signed-link Checkout receipt is
   `__Host-plaingym_link_checkout` and the pending join `__Host-plaingym_join`, which
-  moves from `Path=/join` to `Path=/`. Single-gym installs still read the old names
-  in every release before 1.1.0, so the update signs no one out and keeps pending
-  checkouts and joins; 1.1.0 stops reading them, so updating straight from 0.10 or
-  earlier to 1.1 or later signs everyone out once. Multi-gym installs read only the
-  new names, so their update signs everyone out once. Development over plain HTTP keeps the unprefixed names.
+  moves from `Path=/join` to `Path=/`. 0.11.0 is the first release with these names.
+  Single-gym installs read the old names only in the 0.11 prereleases; 1.0.0 stops
+  reading them, so sessions, pending checkouts and pending joins started on a release
+  before 0.11.0 end once (those members sign in again). Multi-gym installs read only
+  the new names, as before. Development over plain HTTP keeps the unprefixed names.
 
 ### Fixed
 
