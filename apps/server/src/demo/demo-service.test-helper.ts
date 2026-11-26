@@ -73,7 +73,7 @@ export function demoServiceFixture(db: TestDatabase, options: {
   const join = createJoinService({ scope, clock,
     waivers: createWaiversService({ scope, clock, uploadsFor: unused }),
     paymentsConfigured: async gymId => Boolean(await payments.paymentsFor(gymId)),
-    checkout: { start: unused }, invitations: { accept: unused, passwordRequired: unused }, accounts: { provisionUser: unused } });
+    checkout: { start: unused }, invitations: { accept: unused, passwordRequired: unused }, accounts: { provisionUser: unused }, jobs: { enqueue: unused } });
   service.setJoinReadiness(join);
   return { service, seed, clock, config, payments, provider, gateways, log, deletion, removeUploads, authentication, join };
 }

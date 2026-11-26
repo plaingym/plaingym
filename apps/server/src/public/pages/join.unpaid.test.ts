@@ -42,7 +42,7 @@ async function fixture(start = submittedAt, onAssigned?: (tx: Transaction) => Pr
   const waivers = createWaiversService({ scope: db.forGym, clock, uploadsFor });
   const checkout = createSignedLinkCheckout({ scope: db.forGym, clock, paymentsFor, originFor: async () => origin });
   const join = createJoinService({ scope: db.forGym, clock, waivers, checkout, paymentsConfigured: async id => id === gymId,
-    invitations: { accept: vi.fn(), passwordRequired: async () => true }, accounts: { provisionUser: vi.fn() }, uploadsFor, paymentsFor,
+    invitations: { accept: vi.fn(), passwordRequired: async () => true }, accounts: { provisionUser: vi.fn() }, jobs: new FakeJobs(clock), uploadsFor, paymentsFor,
     memberships: scope => createMembershipService({ scope, clock, settings: createGymSettingsAccessor({ scope, clock }), ...(onAssigned ? { onAssigned } : {}) }) });
   const transitions = createInvoiceTransitions({ scope: db.forGym, clock });
   const signer = (firstName: string) => ({ kind: 'self' as const, name: firstName + ' Joiner' });

@@ -273,10 +273,10 @@ membership takes priority under the
 [membership status rule](../../areas/billing/memberships.README.md#member-status).
 The member update is revision-guarded and audited in the same transaction. The join
 completes once, writing `public.join.completed`, and in
-passwordless mode the sign-in link goes out. The webhook's `afterCheckout(gymId, linkId)`
+passwordless mode queues the sign-in link in the same transaction (**Portal login**, below). The webhook's `afterCheckout(gymId, linkId)`
 does the same for any recorded Checkout of the joined household once the invoice is paid.
 Both lock the household and check `public.join.completed`, so together, retried or
-concurrent, they complete a join once and send one sign-in link. `/join/return` is
+concurrent, they complete a join once and queue one sign-in link. `/join/return` is
 read-only. It shows the welcome page once the join is complete, its invoice
 exists, and one of its recorded memberships that still exist is live (`trial`, `active` or
 `frozen`), or is pending while the invoice is settled. A pending join shows
@@ -307,14 +307,19 @@ or its rows are gone, the completed join shows the ended page and sends no sign-
 
 ## Portal login
 
-Passwordless, the portal login proves the address entered: the join's completion issues a
-payer invitation for the household's address and sends the portal's claim-code sign-in link
-to it (auth mail, not subject to the member-email switch); the household login is created on
-its callback only for the signed-in user the code names. For an active join, `/join/sign-in`
-can send a new link, replacing the previous one. If the address belongs to a staff login,
-completion and resend leave it without a portal invitation or login. Both public pages use
-the same text for every address. Staff see the refusal in the household's **Portal access**
-tab and can invite the member using another address.
+Passwordless, the portal login proves the address entered: the join's completion queues a
+`public.join.sign_in` job, which issues a payer invitation for the household's address and
+sends the portal's claim-code sign-in link to it (auth mail, not subject to the member-email
+switch); the household login is created on its callback only for the signed-in user the code
+names. For an active join, `/join/sign-in` queues a new job that sends a new link, replacing
+the previous one. The job runs after the request answers, for every address, so the response
+does the same work whether or not the address belongs to a staff login. The completion's job
+has a fixed key (`join-sign-in:<household>:completed`), so a join queues it once; each resend
+queues its own. A failed delivery retries in the job (five attempts) and never undoes the
+completed join. If the address belongs to a staff login, the job leaves it without a portal
+invitation or login and records the refusal. Both public pages use the same text for every
+address. Staff see the refusal in the household's **Portal access** tab and can invite the
+member using another address. Password mode queues no sign-in job, and `/join/sign-in` is refused.
 
 Password mode has no mail to prove an address, so a paid join provisions no account and sets
 no password. Its completion marks the household's address as awaiting portal confirmation
@@ -328,13 +333,14 @@ member-email rules.
 
 ## Composition
 
-`configureJoin({ waivers, checkout, paymentsConfigured, invitations, accounts, uploadsFor, paymentsFor, key })`
+`configureJoin({ waivers, checkout, paymentsConfigured, invitations, accounts, jobs, uploadsFor, paymentsFor, key })`
 supplies the configured waiver service, the same `createSignedLinkCheckout` instance the
 webhook completes, a payment readiness check, the runtime's portal invitation service,
-the account service, gym-scoped uploads for failed-admission compensation and
+the account service, the runtime's job queue for the `public.join.sign_in` job,
+gym-scoped uploads for failed-admission compensation and
 scheduled cleanup, the runtime's payments resolver for confirming an unpaid join's
 Checkout sessions closed, and a stable key of at least 32 bytes. It registers cleanup
-with the public jobs barrel and returns the service whose
+and the sign-in sender with the public jobs barrel and returns the service whose
 `afterCheckout(gymId, linkId)` must run in the webhook handlers' `afterCheckoutRecorded`
 after the signed-link completion, including when that completion reports the link gone,
 and whose `afterInvoicePaid(gymId, invoiceId)` is the transition effects' `afterInvoicePaid`

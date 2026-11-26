@@ -49,7 +49,7 @@ import { configureJoin } from './join.routes.js';
 import { joinBodyBytes } from './join.service.js';
 import { joinCookie } from './join.continuation.js';
 import { createJoinCleanup } from './join.cleanup.js';
-import { jobs as joinJobs } from './join.jobs.js';
+import { jobs as joinJobs, joinSignInJob } from './join.jobs.js';
 
 const db = useTestDatabase(), factory = createFactories(db), png = demoSignaturePng(), pngBase64 = png.toString('base64');
 const origin = 'https://gym.example.test', timezone = 'America/Vancouver', key = new Uint8Array(32).fill(9);
@@ -91,7 +91,8 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
   const settings = createGymSettingsAccessor({ scope: db.forGym, clock }), lifecycle = createMembershipService({ scope: db.forGym, clock, settings });
   const assigned = vi.fn(async (_scope: typeof db.forGym, _membership: Awaited<ReturnType<typeof lifecycle.assign>>) => {});
   const paymentsConfigured = vi.fn(async (id: string) => id === gymId);
-  const join = configureJoin({ scope: db.forGym, clock, key, waivers, checkout, paymentsConfigured, invitations, accounts, uploadsFor,
+  const jobs = new FakeJobs(clock);
+  const join = configureJoin({ scope: db.forGym, clock, key, waivers, checkout, paymentsConfigured, invitations, accounts, uploadsFor, jobs,
     memberships: scope => {
       const service = scope === db.forGym ? lifecycle : createMembershipService({ scope, clock, settings: createGymSettingsAccessor({ scope, clock }) });
       return { ...service, async assign(...args) {
@@ -101,7 +102,9 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
       } };
     },
     invitationStore: createPortalInvitationStore(() => db.system.db) });
-  const jobs = new FakeJobs(clock), transitions = createInvoiceTransitions({ scope: db.forGym, clock });
+  // As the runtime registers them: the passwordless sign-in runs as a job, after the request answers.
+  for (const job of joinJobs) if (job.cron) jobs.schedule(job.id, job.cron, job.handler); else jobs.handle(job.id, job.handler);
+  const transitions = createInvoiceTransitions({ scope: db.forGym, clock });
   const notifications = createTransitionNotifications({ scope: db.forGym, clock, settings, async prepare() { return { email: mail, origin }; }, async staffRecipients() { return []; } });
   // As the runtime composes it: the paid-invoice effect completes a join however its invoice was paid.
   const afterInvoicePaid = vi.fn((gym: string, invoiceId: string) => join.afterInvoicePaid(gym, invoiceId));
@@ -116,10 +119,10 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
     await join.afterCheckout(gym, link);
   });
   registerBillingWebhookHandlers({ register(type, handler) { handlers.set(type, handler); } }, { scope: db.forGym, clock, transitions, afterCheckoutRecorded: afterCheckout });
-  async function webhook(sessionId: string, type = 'checkout.session.completed') {
+  async function webhook(sessionId: string, type = 'checkout.session.completed', thenDrain = true) {
     const event = { id: 'evt_' + uuidv7(), type, gymId, objectKind: 'checkout' as const, objectId: sessionId };
     await handlers.get(type)!(event, { gymId, clock, timezone: gymTimezone, jobId: uuidv7(), attempt: 1, payments: provider });
-    await drain();
+    if (thenDrain) await drain();
   }
   async function drain() { await effects.publish(gymId); while (await jobs.runNext()) { /* every effect now due */ } }
   const app = (resolved = gymId) => createApp({ skipSetup: true, clock, authorize, contributions: areaContributions, origin, rateLimit: { limit: 10_000 },
@@ -408,7 +411,9 @@ describe('trial and zero-value joining', () => {
     expect(await (await f.get('/join/return', cookie)).text()).toContain('If this address can receive a portal login, a sign-in link is on its way.');
     expect((await f.get('/join/checkout', cookie)).headers.get('location')).toBe('/join/return');
     expect((await f.post('/api/public/join', f.body(people, images, email, f.free.id))).status).toBe(200);
-    expect(f.sent).toHaveLength(1); expect(create).not.toHaveBeenCalled(); expect(charge).not.toHaveBeenCalled();
+    // The completion queued its sign-in once; the job sends it.
+    expect(f.sent).toHaveLength(0); expect(create).not.toHaveBeenCalled(); expect(charge).not.toHaveBeenCalled();
+    await f.drain(); expect(f.sent).toHaveLength(1);
     await f.drain(); expect(f.sent).toHaveLength(1);
   });
   it('collects the sign-up fee on a trial now and preserves the first period until trial end', async () => {
@@ -1177,6 +1182,7 @@ describe('public join pages through the production registrations', () => {
     expect(confirmation).toContain('Use the newest email');
     expect(confirmation).not.toContain('data-join-confirming');
     expect(confirmation).not.toContain('Your bank payment is processing.');
+    await f.drain();
     expect(f.sent).toHaveLength(sentBeforeResend + 1);
     expect(f.mail.messages.filter(message => message.text.includes("didn't go through"))).toHaveLength(1);
   });
@@ -1279,6 +1285,7 @@ describe('public join pages through the production registrations', () => {
     // Once settled, the same URL no longer carries the marker, which is what ends the script's polling.
     expect(welcome).not.toContain('data-join-confirming');
     expect(await (await f.post('/join/sign-in', undefined, cookie)).text()).toContain('Use the newest email');
+    await f.drain();
     expect(f.sent).toHaveLength(2);
     expect((await f.get('/join/checkout', cookie)).headers.get('location')).toBe('/join/return');
 
@@ -1916,6 +1923,10 @@ it('keeps a paid staff-address join public response neutral and records refusals
     expect(resend.status).toBe(200);
     const staffResent = await resend.text();
     expect(staffResent).toContain('If your membership email can receive a portal login, a new sign-in link is on its way. Use the newest email.');
+    // The resend only queues the sign-in: the refusal is the job's, after the response.
+    expect(f.jobs.jobs.filter(job => job.name === 'public.join.sign_in')).toHaveLength(2);
+    await checkRefusals(1);
+    await f.drain();
     expect(f.sent).toEqual([]);
     await checkRefusals(2);
 
@@ -1933,10 +1944,115 @@ it('keeps a paid staff-address join public response neutral and records refusals
     const ordinaryResend = await f.post('/join/sign-in', undefined, ordinary.cookie);
     expect(ordinaryResend.status).toBe(resend.status);
     expect(await ordinaryResend.text()).toBe(staffResent);
+    expect(f.sent).toHaveLength(1);
+    await f.drain();
+    expect(f.sent).toEqual([expect.objectContaining({ email: ordinaryEmail }), expect.objectContaining({ email: ordinaryEmail })]);
     await checkRefusals(2);
   } finally {
     setLogSink(restore);
   }
+});
+
+describe('the passwordless sign-in leaves the request', () => {
+  const signInJobs = (f: Fixture) => f.jobs.jobs.filter(job => job.name === joinSignInJob);
+  /** Pays the join's Checkout and records it as the webhook handler does, without running any queued job. */
+  async function complete(f: Fixture, email: string) {
+    const { cookie } = await f.submit([adult()], email), checkout = await f.get('/join/checkout', cookie);
+    const sessionId = new URL(checkout.headers.get('location')!).pathname.slice(1);
+    f.provider.completeCheckout(sessionId);
+    await f.webhook(sessionId, undefined, false);
+    const home = (await f.joined()).find(h => h.email === email)!;
+    return { cookie, home };
+  }
+  const completions = async (f: Fixture, householdId: string) => (await f.rows()).audits
+    .filter(a => a.action === 'public.join.completed' && a.targetId === householdId);
+
+  it('queues one sign-in with the completion for an ordinary address, and the job sends its link', async () => {
+    const f = await fixture(), email = 'ordinary-join@example.invalid';
+    const { home } = await complete(f, email);
+    expect(await completions(f, home.id)).toHaveLength(1);
+    expect(f.sent).toEqual([]);
+    expect(signInJobs(f)).toMatchObject([{ payload: { householdId: home.id },
+      options: { gymId: f.gymId, idempotencyKey: `join-sign-in:${home.id}:completed`, maxAttempts: 5 } }]);
+    await f.drain();
+    expect(f.sent).toEqual([expect.objectContaining({ gymId: f.gymId, email })]);
+    // A replayed completion queues nothing more.
+    await f.join.afterInvoicePaid(f.gymId, (await f.rows()).invoices.find(i => i.householdId === home.id)!.id);
+    await f.drain();
+    expect(signInJobs(f)).toHaveLength(1); expect(f.sent).toHaveLength(1);
+  });
+
+  it('queues the same sign-in for a staff login\'s address, whose job sends nothing and records the refusal', async () => {
+    const f = await fixture(), email = 'staff-join@example.invalid';
+    const staff = await factory('authUser', f.gymId, { email });
+    await factory('staffRoles', f.gymId, { userId: staff.id, role: 'coach' });
+    const { home } = await complete(f, email);
+    expect(signInJobs(f)).toMatchObject([{ options: { idempotencyKey: `join-sign-in:${home.id}:completed` } }]);
+    const refusals = async () => (await f.rows()).audits.filter(a => a.action === 'household_user.invite_refused' && a.targetId === home.id);
+    expect(await refusals()).toEqual([]);
+    await f.drain();
+    expect(f.sent).toEqual([]);
+    expect(await refusals()).toHaveLength(1);
+    expect((await f.rows()).logins.filter(l => l.userId === staff.id)).toEqual([]);
+  });
+
+  it('answers a resend alike for a staff and an ordinary address, sending nothing before each answers', async () => {
+    const f = await fixture(), staffEmail = 'staff-resend@example.invalid', ordinaryEmail = 'ordinary-resend@example.invalid';
+    const staff = await factory('authUser', f.gymId, { email: staffEmail });
+    await factory('staffRoles', f.gymId, { userId: staff.id, role: 'front_desk' });
+    const staffJoin = await complete(f, staffEmail), ordinaryJoin = await complete(f, ordinaryEmail);
+    await f.drain();
+    expect(f.sent).toEqual([expect.objectContaining({ email: ordinaryEmail })]);
+    const queuedFor = (householdId: string) => signInJobs(f).filter(job => (job.payload as { householdId: string }).householdId === householdId);
+    const answers = [];
+    for (const join of [staffJoin, ordinaryJoin]) {
+      const before = queuedFor(join.home.id).length, response = await f.post('/join/sign-in', undefined, join.cookie);
+      answers.push({ status: response.status, body: await response.text() });
+      expect(f.sent).toHaveLength(1);
+      expect(queuedFor(join.home.id)).toHaveLength(before + 1);
+    }
+    expect(answers[1]).toEqual(answers[0]);
+    expect(answers[0]!.status).toBe(200);
+    await f.drain();
+    expect(f.sent).toHaveLength(2);
+    // Two resends queue two jobs, and each sends a link.
+    for (let i = 0; i < 2; i++) expect((await f.post('/join/sign-in', undefined, ordinaryJoin.cookie)).status).toBe(200);
+    expect(f.sent).toHaveLength(2);
+    expect(queuedFor(ordinaryJoin.home.id).map(job => job.options.idempotencyKey)).toEqual([
+      `join-sign-in:${ordinaryJoin.home.id}:completed`, expect.stringMatching(`^join-sign-in:${ordinaryJoin.home.id}:`),
+      expect.stringMatching(`^join-sign-in:${ordinaryJoin.home.id}:`), expect.stringMatching(`^join-sign-in:${ordinaryJoin.home.id}:`)]);
+    expect(new Set(queuedFor(ordinaryJoin.home.id).map(job => job.options.idempotencyKey)).size).toBe(4);
+    await f.drain();
+    expect(f.sent.slice(2)).toEqual([expect.objectContaining({ email: ordinaryEmail }), expect.objectContaining({ email: ordinaryEmail })]);
+    expect(f.sent.filter(link => link.email === staffEmail)).toEqual([]);
+  });
+
+  it('queues no sign-in in password mode, where a resend is refused', async () => {
+    const f = await fixture('password'), { home } = await complete(f, 'password-join@example.invalid');
+    expect(await completions(f, home.id)).toHaveLength(1);
+    await f.drain();
+    const [link] = (await f.rows()).links.filter(l => l.householdId === home.id);
+    await expect(f.join.resend(f.gymId, link!.id)).rejects.toMatchObject({ code: 'forbidden' });
+    expect(signInJobs(f)).toEqual([]);
+    expect(f.sent).toEqual([]);
+  });
+
+  it('retries a sign-in whose delivery fails, and the join stays completed', async () => {
+    const f = await fixture(), email = 'retry-join@example.invalid';
+    const accept = vi.spyOn(f.invitations, 'accept').mockRejectedValueOnce(new Error('SMTP unavailable'));
+    const { home } = await complete(f, email);
+    await f.drain();
+    expect(accept).toHaveBeenCalledTimes(1);
+    expect(f.sent).toEqual([]);
+    expect(signInJobs(f)).toMatchObject([{ status: 'queued', attempt: 1 }]);
+    expect(await completions(f, home.id)).toHaveLength(1);
+    expect((await f.rows()).memberships.filter(m => m.householdId === home.id).map(m => m.status)).toEqual(['active']);
+    f.clock.advance(1000);
+    await f.drain();
+    expect(signInJobs(f)).toMatchObject([{ status: 'completed', attempt: 2 }]);
+    expect(f.sent).toEqual([expect.objectContaining({ gymId: f.gymId, email })]);
+    expect(await completions(f, home.id)).toHaveLength(1);
+  });
 });
 
 describe('join return page after a membership ends', () => {

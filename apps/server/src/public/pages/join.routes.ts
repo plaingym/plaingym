@@ -18,7 +18,7 @@ import { joinContinuations, joinCookie, joinCookieLifetimeMs, type JoinContinuat
 import { joinFormPage, joinPlansPage, joinStatusPage, type JoinPageState } from './join.page.js';
 import { joinBrowserScript } from './join.browser.js';
 import { codeRefused, JoinFormError, joinRefusalProblems, readJoinForm } from './join.form.js';
-import { configureJoinCleanup } from './join.jobs.js';
+import { configureJoinCleanup, configureJoinSignIn } from './join.jobs.js';
 import pages from '../../../../../locales/en/public/pages.json' with { type: 'json' };
 import messages from '../../../../../locales/en/public/join.json' with { type: 'json' };
 import waiverMessages from '../../../../../locales/en/waivers/waivers.json' with { type: 'json' };
@@ -34,6 +34,7 @@ let configured: JoinRouteOptions | undefined;
 export function configureJoin(options: JoinOptions & { key: Uint8Array; t?: Translator; testCardHint?: TestCardHint }) {
   const service = createJoinService(options);
   configureJoinCleanup(service.cleanup);
+  configureJoinSignIn(service.sendSignIn);
   configured = { service, continuations: joinContinuations(options.key), ...(options.t ? { t: options.t } : {}),
     ...(options.testCardHint ? { testCardHint: options.testCardHint } : {}) };
   return service;

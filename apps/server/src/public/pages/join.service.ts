@@ -34,6 +34,8 @@ import { createPortalInvitationStore } from '../../infra/auth/portal-invitations
 import type { Uploads } from '../../infra/storage/index.js';
 import type { Payments } from '../../infra/payments/index.js';
 import { createJoinCleanup } from './join.cleanup.js';
+import { joinSignInJob } from './join.jobs.js';
+import { withJobTransaction, type Jobs } from '../../infra/jobs/index.js';
 import { reservePublicIntake } from '../../core/rate-limit-intake.js';
 import { createInvoiceTransitions } from '../../areas/billing/transitions/index.js';
 import { joinAdmissionExpired } from './join.expiry.js';
@@ -84,6 +86,8 @@ export interface JoinOptions {
   /** The runtime's portal invitation service: its login-link sender and password-mode rule. */
   invitations: Pick<PortalInvitationService, 'accept' | 'passwordRequired'>;
   accounts: Pick<AccountService, 'provisionUser'>;
+  /** The queue for the passwordless sign-in job, which sends the link after the request answers. */
+  jobs: Pick<Jobs, 'enqueue'>;
   invitationStore?: Pick<ReturnType<typeof createPortalInvitationStore>, 'issue'>;
   /** Builds the lifecycle with the supplied scope, including inside the discounted join's transaction. */
   memberships?: (scope: typeof forGym) => Pick<ReturnType<typeof createMembershipService>, 'assign' | 'get' | 'update' | 'activate'>;
@@ -360,8 +364,11 @@ export function createJoinService(options: JoinOptions) {
     if (invitation.status === 'invited') await options.invitations.accept(gymId, { token: invitation.token }, clock);
     if (invitation.status === 'refused') logWarn('public.join.sign_in_refused', { gymId, householdId });
   }
+  /** Every passwordless sign-in leaves the request through this job, so a staff and an ordinary address answer after the same work. */
+  const signInJob = (gymId: string, timezone: string, householdId: string, key: string) => ({ name: joinSignInJob, payload: { householdId },
+    options: { gymId, timezone, idempotencyKey: `join-sign-in:${householdId}:${key}`, maxAttempts: 5 } });
   /** Once the join's invoice is paid, the joined prospects become trial or active members and the join completes, once.
-   * Passwordless, the payer's sign-in link goes out with it; in password mode the address awaits staff confirmation. */
+   * Passwordless, the payer's sign-in link is queued with it; in password mode the address awaits staff confirmation. */
   async function complete(gymId: string, find: (tx: Transaction) => Promise<{ householdId: string; invoiceId?: string } | undefined>) {
     // Every paid invoice and link-tagged Checkout reaches this: one short read, and only an unfinished join goes on.
     const join = await scope(gymId, async tx => {
@@ -381,12 +388,13 @@ export function createJoinService(options: JoinOptions) {
       }
     }
     const passwordMode = await options.invitations.passwordRequired(gymId);
-    const completed = await scope(gymId, async tx => {
+    await withJobTransaction(scope, gymId, async transaction => {
+      const { tx } = transaction;
       await tx.select({ id: households.id }).from(households).where(eq(households.id, householdId)).for('update');
       const record = await recorded(tx, 'public.join.received', householdId, receivedRead);
-      if (!record) return false;
+      if (!record) return;
       const [bill] = await tx.select({ status: invoices.status }).from(invoices).where(eq(invoices.id, record.invoiceId));
-      if (!bill || !settled.includes(bill.status) || await marked(tx, 'public.join.completed', householdId)) return false;
+      if (!bill || !settled.includes(bill.status) || await marked(tx, 'public.join.completed', householdId)) return;
       const joinedMemberships = await tx.select().from(memberships).where(and(eq(memberships.householdId, householdId),
         inArray(memberships.id, record.membershipIds))).for('update');
       // Joining keeps trials pending until payment/card setup is recorded. Start the trial atomically with completion.
@@ -403,13 +411,11 @@ export function createJoinService(options: JoinOptions) {
       }
       await audit(tx, gymId, 'public.join.completed', 'household', householdId);
       // No mail proves the address in password mode: staff check the person, then issue a printed invitation.
-      if (passwordMode) await requestPortalConfirmation(tx, gymId, householdId, clock);
-      return true;
+      if (passwordMode) { await requestPortalConfirmation(tx, gymId, householdId, clock); return; }
+      // Queued with the completion, once; a failed delivery retries in the job and never fails the payment.
+      const job = signInJob(gymId, (await readGymSettings(tx, gymId)).timezone, householdId, 'completed');
+      await options.jobs.enqueue(job.name, job.payload, job.options, transaction);
     });
-    if (!completed || passwordMode) return;
-    // The payment is recorded; a delivery problem must not fail it. The return page can send the link again.
-    try { await signIn(gymId, householdId); }
-    catch (error) { logError('public.join.sign_in_failed', { gymId, householdId }, error); }
   }
   async function settleFree(gymId: string, householdId: string) {
     const saved = await scope(gymId, async tx => {
@@ -682,9 +688,12 @@ export function createJoinService(options: JoinOptions) {
       if (await options.invitations.passwordRequired(gymId)) throw new AppError('forbidden', 'Password login is enabled');
       const state = await service.state(gymId, linkId);
       if (state.status !== 'active') throw new AppError('conflict', 'The membership is not active yet');
-      await signIn(gymId, state.householdId);
+      const job = signInJob(gymId, (await settings(gymId)).timezone, state.householdId, uuidv7());
+      await options.jobs.enqueue(job.name, job.payload, job.options);
       return state;
     },
+    /** The sign-in job's work: a payer invitation and its login link for an ordinary address, a refusal audit for a staff one. */
+    sendSignIn: signIn,
   };
   return service;
 }
