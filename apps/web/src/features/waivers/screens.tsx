@@ -116,7 +116,7 @@ export function MemberWaivers({ gymId, memberId, manage, timezone = 'UTC', local
     <h3 className="font-semibold">{text('available')}</h3>
     <ul className="space-y-3">{templates.data?.data.map((row, index) => <li key={row.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border p-4">
       <div className="min-w-0"><p>{row.name} · {text('version')} {row.version}</p>
-        <p className="text-sm">{statuses[index]?.isSuccess ? text(statuses[index].data ? 'currentSigned' : 'needsSignature') : text('checkingSignature')}</p></div>
+        <p className="text-sm">{statuses[index]?.isSuccess ? text(statuses[index].data ? 'currentSigned' : 'needsSignature') : statuses[index]?.isError && !statuses[index].isFetching ? text('signatureUnknown') : text('checkingSignature')}</p></div>
       {manage && <Button variant="outline" onClick={() => setSigning(row)}>{text('reviewSign')}</Button>}
     </li>)}</ul>
     {templates.data && <Pager offset={templateOffset} total={templates.data.pagination.total} onChange={setTemplateOffset} />}

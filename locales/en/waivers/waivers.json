@@ -23,6 +23,7 @@
   "currentSigned": "Signed — current version",
   "needsSignature": "Needs a signature",
   "checkingSignature": "Checking signature status…",
+  "signatureUnknown": "Couldn't check the signature status",
   "reviewSign": "Review and sign",
   "signed": "Signed copies",
   "unsigned": "No signed copies for this member",

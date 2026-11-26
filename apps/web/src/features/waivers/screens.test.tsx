@@ -146,6 +146,7 @@ function mountSnapshots(list: (snapshot: Snapshot) => void, status: (snapshot: S
     return Response.json({ data, pagination: { limit: 20, offset: 0, total: data.length } });
   });
   mount(<MemberWaivers gymId="gym" memberId={template.id} manage client={createWaiversClient(fetcher)} />);
+  return { fetcher };
 }
 it('shows and counts a signed copy whose snapshot has keys this version does not know', async () => {
   mountSnapshots(newerKeys, newerKeys);
@@ -160,10 +161,24 @@ it('shows the error for a signed list snapshot without its signing time', async 
   expect(await screen.findByRole('alert')).toBeTruthy();
   expect(screen.queryByRole('heading', { name: 'Participation · Version 2' })).toBeNull();
 });
-it('shows the error for a status check snapshot without its signing time', async () => {
-  mountSnapshots(newerKeys, noSigningTime);
+it('shows the error for a status check snapshot without its signing time, and says the status is unknown until a retry runs', async () => {
+  const { fetcher } = mountSnapshots(newerKeys, noSigningTime);
   expect(await screen.findByRole('alert')).toBeTruthy();
+  expect(await screen.findByText("Couldn't check the signature status")).toBeTruthy();
+  expect(screen.queryByText('Checking signature status…')).toBeNull();
   expect(screen.queryByText('Signed — current version')).toBeNull();
+  const answer = fetcher.getMockImplementation()!;
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  fetcher.mockImplementation(async (url, init) => {
+    if (String(url).includes('templateId')) await held;
+    return answer(url, init);
+  });
+  await userEvent.click(within(screen.getByRole('alert')).getByRole('button'));
+  expect(await screen.findByText('Checking signature status…')).toBeTruthy();
+  expect(screen.queryByText("Couldn't check the signature status")).toBeNull();
+  release();
+  expect(await screen.findByText("Couldn't check the signature status")).toBeTruthy();
 });
 it('shows the renderer busy response next to signed copies', async () => {
   const fetcher = vi.fn<typeof fetch>().mockImplementation(async url => String(url).endsWith('/pdf')

@@ -113,13 +113,29 @@ it('shows a signed copy whose snapshot has keys this version does not know', asy
   expect(document.querySelector('time')!.dateTime).toBe('2026-11-18T12:00:00Z');
   expect(document.querySelector('time')!.textContent).toBe(dateLabel('2026-11-18T12:00:00Z', 'UTC'));
 });
-it('shows the page error for a signed copy whose snapshot lacks its signing time', async () => {
-  vi.spyOn(console, 'error').mockImplementation(() => undefined);
-  vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-  mountWaivers(payerContext, [portalPerson(portalIds.payer, 'Pat', 'Payer', '1980-01-01')], [],
-    [signedRow(snapshot => { delete snapshot.signedAt; })]);
-  expect(await screen.findByRole('heading', { name: 'Something went wrong. Please try again.' })).toBeDefined();
-  expect(screen.queryByText('Participation · Version 1')).toBeNull();
+const unreadable = "This signed copy can't be shown here. Prepare its PDF, or ask your gym for a copy.";
+it('warns in the row of a signed copy whose snapshot lacks its signing time and keeps the pending list', async () => {
+  mountWaivers(payerContext, [portalPerson(portalIds.payer, 'Pat', 'Payer', '1980-01-01')],
+    [{ memberId: portalIds.payer, template: portalTemplate }], [signedRow(snapshot => { delete snapshot.signedAt; })]);
+  const row = (await screen.findByText(unreadable)).closest('li')!;
+  expect(screen.queryByRole('heading', { name: 'Something went wrong. Please try again.' })).toBeNull();
+  expect(within(row).getByText('Pat Payer')).toBeDefined();
+  expect(row.querySelector('time')!.getAttribute('datetime')).toBe('2026-11-18T12:00:00Z');
+  expect(row.querySelector('time')!.textContent).toBe(dateLabel('2026-11-18T12:00:00Z', 'UTC'));
+  expect(within(row).queryByText(/Participation|Signed by/)).toBeNull();
+  expect(screen.getByRole('button', { name: 'Review and sign' })).toBeDefined();
+});
+it('keeps a readable signed copy beside one with a signer kind this version does not know', async () => {
+  mountWaivers(payerContext, [portalPerson(portalIds.payer, 'Pat', 'Payer', '1980-01-01')], [], [
+    { ...signedRow(snapshot => { snapshot.signer = { kind: 'witness', name: 'Wes Witness' }; }), id: '00000000-0000-7000-8000-000000000009' },
+    signedRow(() => undefined),
+  ]);
+  const row = (await screen.findByText(unreadable)).closest('li')!;
+  expect(screen.getByText('Participation · Version 1')).toBeDefined();
+  expect(screen.getByText('Pat Payer · Signed by Pat Payer')).toBeDefined();
+  expect(screen.getAllByText(unreadable)).toHaveLength(1);
+  expect(screen.queryByText(/Wes Witness/)).toBeNull();
+  expect((within(row).getByRole('button', { name: 'Prepare PDF' }) as HTMLButtonElement).disabled).toBe(false);
 });
 const ownLogin = 'Adults sign their own documents, from their own login or at the gym.';
 

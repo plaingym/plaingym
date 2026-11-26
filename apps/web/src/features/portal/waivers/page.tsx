@@ -24,6 +24,10 @@ import { WaiverDocument, useWaiverDocument } from '../../waivers/document.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('portal/waivers:' + key, values);
 type Person = { id: string; firstName: string; lastName: string; dateOfBirth: string | null };
+/** A signed copy's stored snapshot, or `null` when this version of the page can't read it. */
+function signedDetails(snapshot: string) {
+  try { return parseResponse(waiverSigningSnapshotSchema, JSON.parse(snapshot)); } catch { return null; }
+}
 
 /** Payers see and sign for every current household member; an adult member sees only their own documents. */
 export function PortalWaivers() {
@@ -71,11 +75,14 @@ function PortalWaiversPage({ context, scope }: { context: PortalContext; scope: 
       </PageSection>
       <PageSection title={text('signed')}>
         {signed.data.data.length === 0 ? <EmptyState title={text('noneSigned')} /> : <StackedList>{signed.data.data.map(row => {
-          const details = parseResponse(waiverSigningSnapshotSchema, JSON.parse(row.snapshot));
+          const details = signedDetails(row.snapshot);
           return <StackedItem key={row.id} className="gap-2">
-            <p className="font-semibold">{details.template.name} · {text('version', { version: details.template.version })}</p>
-            <p className="text-sm">{name(row.memberId)} · {text(details.signer.kind === 'guardian' ? 'signedByGuardian' : 'signedBy', { name: details.signer.name })}</p>
+            {details ? <>
+              <p className="font-semibold">{details.template.name} · {text('version', { version: details.template.version })}</p>
+              <p className="text-sm">{name(row.memberId)} · {text(details.signer.kind === 'guardian' ? 'signedByGuardian' : 'signedBy', { name: details.signer.name })}</p>
+            </> : <p className="font-semibold">{name(row.memberId)}</p>}
             <p className="text-sm text-muted-foreground"><time dateTime={row.signedAt}>{date(row.signedAt)}</time></p>
+            {!details && <Alert variant="warning">{text('unreadable')}</Alert>}
             <div><Button variant="outline" disabled={pdf.isPending} onClick={() => pdf.mutate(row.id)}>{text('pdf')}</Button></div>
           </StackedItem>;
         })}</StackedList>}
