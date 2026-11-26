@@ -505,8 +505,8 @@ describe('kiosk check-in screen', () => {
     const rect = (element: Element, top: number) =>
       vi.spyOn(element, 'getBoundingClientRect').mockReturnValue(DOMRect.fromRect({ y: top, height: 48 }));
     /** Opens name and PIN with the name field blurred at the given position, so a test controls its next focus. */
-    function open(height: number, top: number) {
-      const viewport = Object.assign(new EventTarget(), { height, offsetTop: 0, scale: 1 });
+    function open(height: number, top: number, scale = 1) {
+      const viewport = Object.assign(new EventTarget(), { height, offsetTop: 0, scale });
       vi.stubGlobal('visualViewport', viewport);
       render(<KioskApp/>);
       choosePin();
@@ -533,18 +533,30 @@ describe('kiosk check-in screen', () => {
       act(() => name.focus());
       expect(scroll).not.toHaveBeenCalled();
     });
-    it('scrolls on a resize only at an unchanged zoom while the name field is focused', () => {
-      const { viewport, name, resize } = open(400, 450);
+    it('scrolls on a resize only for a keyboard at an unchanged zoom while the name field is focused', () => {
+      const { viewport, name, resize } = open(800, 450);
       act(() => name.focus());
-      scroll.mockClear();
-      viewport.scale = 1.5;
-      resize();
       expect(scroll).not.toHaveBeenCalled();
-      resize();
+      const resizeTo = (height: number) => { viewport.height = height; resize(); };
+      resizeTo(400);
       expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: 'center' });
+      resizeTo(350);
+      resizeTo(420);
+      expect(scroll).toHaveBeenCalledOnce();
+      resizeTo(280);
+      expect(scroll).toHaveBeenCalledTimes(2);
+      viewport.scale = 1.5;
+      resizeTo(100);
+      // The zoomed height is the new starting point, and a keyboard at the new zoom scrolls again.
+      resizeTo(100);
+      expect(scroll).toHaveBeenCalledTimes(2);
+      resizeTo(300);
+      resizeTo(150);
+      expect(scroll).toHaveBeenCalledTimes(3);
       act(() => screen.getByLabelText('Household PIN').focus());
       scroll.mockClear();
-      resize();
+      resizeTo(800);
+      resizeTo(400);
       expect(scroll).not.toHaveBeenCalled();
       const removed = vi.spyOn(viewport, 'removeEventListener');
       fireEvent.click(screen.getByRole('button', { name: 'Start over' }));
@@ -562,6 +574,28 @@ describe('kiosk check-in screen', () => {
       act(() => name.focus());
       expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: 'start' });
       expect(scroll.mock.contexts[0]).toBe(form);
+    });
+    it('centres the name field when a note above it and the field do not both fit', async () => {
+      vi.mocked(kioskApi.lookup).mockResolvedValueOnce({ status: 'see_front_desk' });
+      const { name } = open(400, 450);
+      await search();
+      expect(screen.getByRole('status').textContent).not.toBe('');
+      rect(name.closest('form')!, -400);
+      act(() => name.blur());
+      scroll.mockClear();
+      act(() => name.focus());
+      expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: 'center' });
+      expect(scroll.mock.contexts[0]).toBe(name);
+    });
+    it('does not count a zoomed tall screen as short', () => {
+      const { name } = open(400, 450, 2);
+      act(() => name.focus());
+      expect(scroll).not.toHaveBeenCalled();
+    });
+    it('counts a screen as short by its height times its zoom', () => {
+      const { name } = open(400, 450, 1.25);
+      act(() => name.focus());
+      expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: 'center' });
     });
   });
   it('takes the name field focus without a visual viewport', () => {

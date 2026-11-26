@@ -177,24 +177,30 @@ function Search({ busy, message, onSearch }: { busy: boolean; message?: 'not_fou
   const nameRef = useRef<HTMLInputElement>(null);
   const form = useRef<HTMLFormElement>(null);
   const scale = useRef(window.visualViewport?.scale);
+  const height = useRef(window.visualViewport?.height);
   // A landscape phone's keyboard covers most of the screen, so bring the focused name field, and any note above it,
-  // into view when the screen is short and they aren't already fully visible.
+  // into view when the screen is short and they aren't already fully visible. When the note and field don't both fit,
+  // the field wins.
   const scrollName = useCallback(() => {
     const viewport = window.visualViewport, field = nameRef.current;
-    if (!viewport || !field || viewport.height > 500) return;
+    // Zoom shrinks the visual viewport, so a screen is short by its height times its zoom.
+    if (!viewport || !field || viewport.height * viewport.scale > 500) return;
     const top = (message && form.current ? form.current : field).getBoundingClientRect().top;
     const bottom = field.getBoundingClientRect().bottom;
     if (top >= viewport.offsetTop && bottom <= viewport.offsetTop + viewport.height) return;
-    if (message) form.current?.scrollIntoView?.({ block: 'start' });
+    if (message && form.current && bottom - top <= viewport.height) form.current.scrollIntoView?.({ block: 'start' });
     else field.scrollIntoView?.({ block: 'center' });
   }, [message]);
   useEffect(() => {
     const viewport = window.visualViewport;
     if (!viewport) return;
     const resized = () => {
+      // Only a drop larger than a toolbar's means a keyboard opened; a toolbar's resize doesn't scroll.
+      const dropped = (height.current ?? viewport.height) - viewport.height > 120;
+      height.current = viewport.height;
       // A pinch zoom resizes the visual viewport too; scrolling then would fight the gesture.
       if (viewport.scale !== scale.current) { scale.current = viewport.scale; return; }
-      if (document.activeElement === nameRef.current) scrollName();
+      if (dropped && document.activeElement === nameRef.current) scrollName();
     };
     viewport.addEventListener('resize', resized);
     return () => viewport.removeEventListener('resize', resized);
