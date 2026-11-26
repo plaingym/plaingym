@@ -184,8 +184,8 @@ export function PortalLayout({ name, person, scope, entries, children, onSignOut
     </header>
     <div className="flex min-w-0 flex-1 flex-col md:flex-row">
       {open && <div ref={backdrop} aria-hidden="true" className="fixed inset-x-0 bottom-0 z-10 bg-foreground/20 md:hidden" style={{ top: menuTop }} onClick={close} />}
-      {/* The open panel is as tall as its links, but stops 3rem short of the screen's bottom so a strip of backdrop always shows. */}
-      <nav ref={nav} id="portal-navigation" aria-label={text('navigation')} style={open && menuTop !== undefined ? { top: menuTop, maxHeight: `calc(100dvh - ${menuTop}px - 3rem)` } : undefined}
+      {/* The open panel is as tall as its links, but stops 3rem short of the screen's bottom so a strip of backdrop shows. It never gets shorter than one link. */}
+      <nav ref={nav} id="portal-navigation" aria-label={text('navigation')} style={open && menuTop !== undefined ? { top: menuTop, maxHeight: `max(calc(100dvh - ${menuTop}px - 3rem), calc(4.25rem + 1px))` } : undefined}
         className={`${open ? 'fixed inset-x-0 z-20 block overflow-y-auto overscroll-contain bg-background shadow-lg' : 'hidden'} border-b border-border p-3
           md:sticky md:top-[var(--portal-header-height)] md:bottom-auto md:block md:max-h-[calc(100dvh-var(--portal-header-height))] md:w-56 md:shrink-0 md:self-start md:overflow-y-auto md:border-b-0 md:border-r md:shadow-none`}>
         <ul className="space-y-1">{entries.map(entry => <li key={entry.id}><Link to={entry.href} onClick={() => setOpen(false)} className="flex min-h-11 items-center rounded-md px-3 hover:bg-muted" activeOptions={{ exact: true }} activeProps={{ className: 'bg-muted font-semibold', 'aria-current': 'page' }}>{t(entry.labelKey)}</Link></li>)}</ul>

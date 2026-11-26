@@ -823,7 +823,7 @@ it('stops the open phone menu short of the screen\'s bottom and makes what it co
     const user = userEvent.setup(), { menu, nav } = await portalMenu();
     keepMaxHeight(nav);
     await user.click(menu);
-    expect(nav.style.maxHeight).toMatch(/px - 3rem\)$/);
+    expect(nav.style.maxHeight).toMatch(/px - 3rem\), calc\(4\.25rem \+ 1px\)\)$/);
     expect([link.inert, footer.inert]).toEqual([true, true]);
     await user.keyboard('{Escape}');
     expect([link.inert, footer.inert]).toEqual([false, false]);
@@ -851,7 +851,7 @@ it('keeps the open phone menu under the header as the page around it resizes or 
   const at = (top: number) => {
     expect(nav.style.top).toBe(`${top}px`);
     expect(backdrop()!.style.top).toBe(`${top}px`);
-    expect(nav.style.maxHeight).toBe(`calc(100dvh - ${top}px - 3rem)`);
+    expect(nav.style.maxHeight).toBe(`max(calc(100dvh - ${top}px - 3rem), calc(4.25rem + 1px))`);
   };
   at(121);
   expect(nav.classList).not.toContain('bottom-0');

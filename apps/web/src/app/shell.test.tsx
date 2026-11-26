@@ -441,7 +441,7 @@ describe('admin shell', () => {
       keepMaxHeight(navigation);
       await user.click(opener);
       await waitFor(() => expect(navigation.style.top).toBe('56px'));
-      expect(navigation.style.maxHeight).toBe('calc(100dvh - 56px - 3rem)');
+      expect(navigation.style.maxHeight).toBe('max(calc(100dvh - 56px - 3rem), calc(3.75rem + 1px))');
       expect(navigation.classList).toContain('fixed');
       expect(navigation.classList).not.toContain('bottom-0');
       expect(navigation.classList).not.toContain('max-h-dvh');
@@ -482,7 +482,7 @@ describe('admin shell', () => {
       const navigation = screen.getByRole('navigation', { name: 'Gym navigation' });
       keepMaxHeight(navigation);
       await user.click(menu);
-      await waitFor(() => expect(navigation.style.maxHeight).toBe('calc(100dvh - 57px - 3rem)'));
+      await waitFor(() => expect(navigation.style.maxHeight).toBe('max(calc(100dvh - 57px - 3rem), calc(3.75rem + 1px))'));
       covered(true);
       await user.keyboard('{Escape}');
       expect(document.activeElement).toBe(menu);
@@ -496,6 +496,24 @@ describe('admin shell', () => {
       if (offsetHeight) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', offsetHeight);
       else delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetHeight;
     }
+  });
+  it('makes the update banner inert only while the phone menu is open', async () => {
+    const state = { ...anonymous, session: { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false } };
+    const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}
+      banner={<a href="/admin/updates">Update available</a>}><p>Child content</p></AdminShell> });
+    render(<RouterProvider router={createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) })} />);
+    const user = userEvent.setup();
+    const menu = await screen.findByRole('button', { name: 'Menu' }), link = screen.getByRole('link', { name: 'Update available' });
+    expect(link.closest('[inert]')).toBeNull();
+    await user.click(menu);
+    expect(link.closest('[inert]')).not.toBeNull();
+    // The menu's own button, Account and the backdrop stay usable.
+    expect(menu.closest('[inert]')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Account' }).closest('[inert]')).toBeNull();
+    expect(document.querySelector('div[aria-hidden="true"].fixed')!.closest('[inert]')).toBeNull();
+    await user.keyboard('{Escape}');
+    expect(menu.getAttribute('aria-expanded')).toBe('false');
+    expect(link.closest('[inert]')).toBeNull();
   });
   it('moves the open phone menu when content above the shell resizes the page', async () => {
     const offsetTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetTop');

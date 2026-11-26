@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterAll, afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { StrictMode } from 'react';
+import { StrictMode, useState } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { focusManager, onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ShellServicesContext } from '../../app/context.js';
 import { createShellServices, type ShellBootstrap, type ShellServices } from '../../app/services.js';
 import { instantLabel } from '../../lib/instant.js';
+import { useMenuCovers } from '../../app/menu-covers.js';
+import { createJsonTransport } from '../../lib/api.js';
 
 const fetcher = vi.fn();
 const loadBootstrap = vi.fn<ShellServices['loadBootstrap']>();
@@ -213,6 +215,34 @@ it('keeps the bar to one slim row: the sandbox, its expiry and the demo menu, wi
   expect(screen.queryByRole('button', { name: 'Sign in as owner' })).toBeNull();
   // The bar fetches nothing beyond discovery; the menu loads its members when opened.
   expect(fetcher.mock.calls.map(([path]) => path)).toEqual(['/api/demo']);
+});
+it('lets an open phone menu make the demo rows inert, and restores them after', async () => {
+  serve();
+  function Menu() { useMenuCovers(true); return null; }
+  function Opener() {
+    const [open, setOpen] = useState(false);
+    return <><button type="button" onClick={() => setOpen(!open)}>Toggle menu</button>{open && <Menu />}</>;
+  }
+  start(undefined, <Opener />);
+  const bar = await screen.findByRole('complementary', { name: 'Demo controls' });
+  const rows = bar.closest<HTMLElement>('[data-menu-covers]')!;
+  expect(rows).not.toBeNull();
+  const toggle = screen.getByRole('button', { name: 'Toggle menu' });
+  expect(rows.contains(toggle)).toBe(false);
+  rows.inert = false;
+  fireEvent.click(toggle);
+  expect(rows.inert).toBe(true);
+  fireEvent.click(toggle);
+  expect(rows.inert).toBe(false);
+});
+it('keeps the copy dialog outside what an open phone menu makes inert, so Tab still reaches its controls', async () => {
+  fetcher.mockResolvedValue(Response.json({ data: { mode: 'showcase', expiresAt: '2099-01-01T00:00:00.000Z', join: false } }));
+  start();
+  const bar = await screen.findByRole('complementary', { name: 'Demo controls' });
+  const refused = createJsonTransport(async () => Response.json({ error: { details: { reason: ['demo_showcase_read_only'] } } }, { status: 403 }));
+  await act(async () => { await refused('/api/demo/login', {}).catch(() => {}); });
+  expect(bar.closest('[data-menu-covers]')).not.toBeNull();
+  expect(screen.getByRole('dialog').closest('[data-menu-covers]')).toBeNull();
 });
 it('formats the sandbox bar expiry in the fixed English locale', async () => {
   const expires = '2099-01-01T18:30:00Z';

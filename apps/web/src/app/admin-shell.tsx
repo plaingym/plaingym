@@ -133,12 +133,12 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
           </p>} />
       </div>
     </header>
-    <div ref={bannerRef}>{banner}</div>
+    <div ref={bannerRef} inert={open}>{banner}</div>
     <div ref={content} className="relative flex flex-1">
       {open && <div ref={backdrop} aria-hidden="true" onClick={close} style={menuTop === undefined ? undefined : { top: menuTop }} className="fixed inset-x-0 bottom-0 z-10 bg-foreground/20 md:hidden" />}
-      {/* The open panel is as tall as its links, but stops 3rem short of the screen's bottom so a strip of backdrop always shows. */}
+      {/* The open panel is as tall as its links, but stops 3rem short of the screen's bottom so a strip of backdrop shows. It never gets shorter than one link. */}
       <nav ref={nav} id="admin-navigation" aria-label={t('shell/shell:navigation')}
-        style={open && menuTop !== undefined ? { top: menuTop, maxHeight: `calc(100dvh - ${menuTop}px - 3rem)` } : undefined}
+        style={open && menuTop !== undefined ? { top: menuTop, maxHeight: `max(calc(100dvh - ${menuTop}px - 3rem), calc(3.75rem + 1px))` } : undefined}
         className={`${open ? `fixed inset-x-0 z-20 block${menuTop === undefined ? ' max-h-dvh' : ''}` : 'hidden'} overflow-y-auto overscroll-contain border-b border-border bg-background p-2 shadow-lg
           md:sticky md:top-header md:bottom-auto md:block md:max-h-[calc(100dvh-var(--spacing-header))] md:w-60 md:shrink-0 md:self-start md:border-b-0 md:border-r md:p-3 md:shadow-none`}>
         <div className="space-y-4">{adminNavigationGroups(entriesToShow).map(group => <section key={group.id} aria-labelledby={'nav-' + group.id}>

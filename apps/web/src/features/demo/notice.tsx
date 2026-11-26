@@ -131,7 +131,7 @@ export function DemoShell({ children }: { children: ReactNode }) {
     </div>}
     {copyToken ? handoffError ? <div className="space-y-3 p-4"><Alert key={handoffSaveAttempt} variant="error" focusOnReveal={handoffSaveFailed}>{t(handoffSaveFailed ? 'kiosk/kiosk:retrySaveError' : 'demo/demo:handoffError')}</Alert>
       {handoffSaveFailed && <Button type="button" onClick={() => setHandoffSaveAttempt(value => value + 1)}>{t('shell/shell:retry')}</Button>}</div> : <LoadingState />
-      : <><CopyPrompt showcase={mode?.mode === 'showcase'} /><DemoNotice /><DemoEntry />
+      : <><CopyPrompt showcase={mode?.mode === 'showcase'} /><div data-menu-covers><DemoNotice /><DemoEntry /></div>
         {kioskToken && (discovery.isPending || activeSandbox) ? (tokenSaveFailed ? null : <LoadingState />) : children}</>}
     </LoginContext.Provider></DiscoveryStatusContext.Provider></DemoContext.Provider>
   </DemoErrorPlacement.Provider>;

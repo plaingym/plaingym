@@ -3,8 +3,8 @@ import { useLayoutEffect } from 'react';
 
 /**
  * While a phone menu is open, what it covers outside its shell takes no focus or presses: every element marked
- * `data-menu-covers` (the skip link and the source footer) is inert, and gets back what it had when the menu closes or
- * its shell unmounts. A shell marks its own `main` inert itself.
+ * `data-menu-covers` (the skip link, the demo rows and the source footer) is inert, and gets back what it had when the
+ * menu closes or its shell unmounts. A shell marks its own `main` inert itself.
  */
 export function useMenuCovers(open: boolean) {
   useLayoutEffect(() => {
