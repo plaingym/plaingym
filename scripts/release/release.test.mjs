@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { git, root } from './version.mjs';
 import { release, proposal, changelogSection, insertSection, pushPathFilter, skippedByFilter, unreleasedNotes } from './release.mjs';
+import { expectedSourceLocation, repositoryRoot } from '../../deploy/test/source-link.mjs';
 
 const pinnedNodeImage = /(?<![\w-])node:[^\s"'`@]+-bookworm-slim@sha256:[0-9a-f]{64}/g;
 
@@ -331,4 +332,43 @@ test('the Node base image pin check flags a stale digest and accepts a matching 
   };
   assert.deepEqual(staleNodeImagePins(Object.keys(files), (file) => files[file]),
     [{ file: 'e2e/compose.yaml', image: stale, expected: matching }]);
+});
+
+test('the image build refuses a SOURCE_URL that is not an http(s) URL', () => {
+  const dockerfile = readFileSync(join(root, 'deploy/Dockerfile'), 'utf8');
+  const identity = dockerfile.slice(0, dockerfile.indexOf('\nFROM ', dockerfile.indexOf(' AS identity')));
+  const lines = identity.split('\n').filter((line) => line.startsWith('RUN case "$SOURCE_URL"'));
+  assert.equal(lines.length, 1, 'the identity stage checks SOURCE_URL once');
+  const check = lines[0].slice('RUN '.length);
+  const run = (value) => {
+    const result = spawnSync('sh', ['-c', check], { env: { ...process.env, SOURCE_URL: value }, encoding: 'utf8' });
+    assert.equal(result.error, undefined, 'the check runs with sh from PATH');
+    return result;
+  };
+  for (const value of ['', 'github.com/me/gym', 'ftp://example.com/x', 'https://', 'http:/x']) {
+    const result = run(value);
+    assert.notEqual(result.status, 0, `${JSON.stringify(value)} must fail`);
+    assert.match(result.stderr, /SOURCE_URL must be an http:\/\/ or https:\/\/ URL/);
+  }
+  for (const value of ['https://github.com/plaingym/plaingym', 'https://github.com/me/gym/tree/abc', 'http://localhost/x']) {
+    const result = run(value);
+    assert.equal(result.status, 0, `${value} must pass: ${result.stderr}`);
+  }
+});
+
+test('the smoke test expects the image link for an unset, empty or root SOURCE_URL', () => {
+  const image = 'https://github.com/plaingym/plaingym/tree/abc';
+  for (const value of [undefined, '', repositoryRoot, `${repositoryRoot}/`, 'https://GitHub.com/plaingym/plaingym'])
+    assert.equal(expectedSourceLocation(value, image), image, String(value));
+  assert.equal(expectedSourceLocation('https://github.com/me/gym', image), 'https://github.com/me/gym');
+  assert.equal(expectedSourceLocation(repositoryRoot, ''), repositoryRoot);
+  // The app redirects to the parsed link: a bare origin gains its root path and the host is lower-cased.
+  assert.equal(expectedSourceLocation('https://example.org', image), 'https://example.org/');
+  assert.equal(expectedSourceLocation('https://GitHub.com/me/gym', image), 'https://github.com/me/gym');
+  assert.equal(expectedSourceLocation(undefined, 'https://Example.org'), 'https://example.org/');
+});
+
+test('the smoke test uses the same repository root as the app', () => {
+  const app = readFileSync(join(root, 'apps/server/src/core/source-link.ts'), 'utf8');
+  assert.equal(app.match(/export const defaultSourceUrl = '([^']+)';/)?.[1], repositoryRoot);
 });

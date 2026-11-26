@@ -8,6 +8,7 @@ import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { expectedSourceLocation } from './source-link.mjs';
 
 const root = resolve(fileURLToPath(new URL('../', import.meta.url)));
 const image = process.argv[2];
@@ -144,7 +145,7 @@ try {
   const imageSourceUrl = configuration.Config.Env.find((entry) => entry.startsWith('IMAGE_SOURCE_URL='))?.slice('IMAGE_SOURCE_URL='.length);
   assert.ok(imageSourceUrl, 'the image keeps its source link as IMAGE_SOURCE_URL');
   if (process.env.SMOKE_IMAGE_SOURCE_URL) assert.equal(imageSourceUrl, process.env.SMOKE_IMAGE_SOURCE_URL);
-  assert.equal(source.headers.location, process.env.SOURCE_URL || imageSourceUrl);
+  assert.equal(source.headers.location, expectedSourceLocation(process.env.SOURCE_URL, imageSourceUrl));
   assert.ok(configuration.Config.Env.includes('APP_VERSION=' + health.version));
   assert.ok(configuration.Config.Env.includes('APP_REVISION=' + health.commit));
   if (process.env.VERSION) assert.equal(health.version, process.env.VERSION);
