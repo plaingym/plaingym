@@ -70,6 +70,9 @@ export function createSetupRestore(options: {
             logError('setup.restore_failed', {}, error);
             // A gate that can't be read may hide a staged restore.
             const staged = options.gate ? await options.gate.isClosed().catch(() => true) : false;
+            // Released before the failure is published, so a status read made on that answer finds the gym free. A
+            // release that fails doesn't hold the answer back, and is tried again below.
+            if (!staged) await release?.().then(() => { release = undefined; }, () => {});
             await publish({ status: 'failed', jobId: pollingId, message: 'Restore failed.', reason: restoreFailureClass(error), staged });
           } finally {
             // A verified but interrupted restore retains its reservation until maintenance resumes it.

@@ -36,7 +36,9 @@ export function StripeStep({ fetcher = fetch, onComplete }: { fetcher?: typeof f
         hold?.hold({ mode: result.mode, webhookRegistered: result.webhookRegistered });
       } else {
         setDone(true);
-        await queries.invalidateQueries({ queryKey: ['setup', 'status'] });
+        // The wizard reads the status itself, so a failed read is shown and focused like its other reloads.
+        if (hold) await hold.release();
+        else await queries.invalidateQueries({ queryKey: ['setup', 'status'] });
         onComplete?.();
       }
     } catch (error) {

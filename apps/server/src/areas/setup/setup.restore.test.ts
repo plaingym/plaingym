@@ -168,6 +168,36 @@ describe('setup restore coordinator', () => {
       expect(await coordinator.status(job.jobId)).toMatchObject({ status: 'failed', message: 'Restore failed.', reason: 'other', staged: verified });
     }
   });
+  it('releases its hold before it answers failed when nothing is staged, and keeps it for a staged copy', async () => {
+    for (const staged of [false, true]) {
+      const directory = join(root, staged ? 'held-staged' : 'held-unstaged'), gate = new RestoreGate(directory);
+      const input: SetupRestoreRequest = { choice: 'restore', source: { endpoint: 'https://s3.example.org', region: 'auto', bucket: 'backups', accessKeyId: 'access', secretAccessKey: 'secret' }, snapshotPrefix: uuidv7(), privateKey: await generateIdentity() };
+      let free = () => {};
+      const release = vi.fn(() => new Promise<void>((resolve) => { free = resolve; }));
+      const coordinator = createSetupRestore({ gate, assertEmpty: async () => {}, claim: async (reservationId) => ({ reservationId, release }), restore: async () => {
+        if (staged) await atomicJson(gate.statePath, { id: input.snapshotPrefix, phase: 'verified' });
+        throw new Error('Verification failed');
+      } });
+      const job = await coordinator.start(input);
+      if (!staged) {
+        // While the release is still running, the failure isn't published yet.
+        await expect.poll(() => release.mock.calls.length).toBe(1);
+        expect(await coordinator.status(job.jobId)).toMatchObject({ status: 'running' });
+        free();
+      }
+      await expect.poll(async () => (await coordinator.status(job.jobId)).status).toBe('failed');
+      expect(release).toHaveBeenCalledTimes(staged ? 0 : 1);
+    }
+  });
+  it('still answers failed when releasing its hold fails, and tries the release again', async () => {
+    const release = vi.fn(async () => {}).mockRejectedValueOnce(new Error('Database unavailable'));
+    const coordinator = createSetupRestore({ assertEmpty: async () => {}, claim: async (reservationId) => ({ reservationId, release }),
+      restore: async () => { throw new Error('Verification failed'); } });
+    const job = await coordinator.start({ choice: 'restore', source: { endpoint: 'https://s3.example.org', region: 'auto', bucket: 'backups', accessKeyId: 'access', secretAccessKey: 'secret' },
+      snapshotPrefix: uuidv7(), privateKey: await generateIdentity() });
+    await expect.poll(async () => (await coordinator.status(job.jobId)).status).toBe('failed');
+    await expect.poll(() => release.mock.calls.length).toBe(2);
+  });
   it('reads a failed journal written before failures carried a cause', async () => {
     const directory = join(root, 'older'), journal = join(directory, 'setup-restore.json'), jobId = uuidv7();
     await atomicJson(journal, { result: { status: 'failed', jobId, message: 'Restore failed. Check the source and private key, or resume a verified restore.' }, snapshotId: uuidv7() });

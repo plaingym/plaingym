@@ -23,7 +23,7 @@ const restoreJob = '019a0af0-9c00-7000-8000-0000000000bb';
 /** The faked server's next answers to restore polls, in order; once they run out, the restore is complete. */
 let restorePolls: (() => Response | Promise<Response>)[] = [];
 /** What the faked server answers to a status read instead of its own progress, when set. */
-let statusAnswer: (() => Response) | null = null;
+let statusAnswer: (() => Response | Promise<Response>) | null = null;
 /** A faked setup server: its step, revision and the owner's recorded decisions, as `/api/setup` reports them. */
 function start(step = 0, completedSteps = Array.from({ length: step }, (_, i) => i), registries = createRegistries(),
   recorded: { googleSkipped?: boolean; backupsLater?: boolean } = {}) {
@@ -975,6 +975,12 @@ describe('setup wizard restore progress', () => {
   const restoring = /Restoring your verified backup/;
   async function startRestore() {
     const started = start(0);
+    await fillRestore();
+    await sendRestore();
+    return started;
+  }
+  const sendRestore = () => userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Restore a backup' }));
+  async function fillRestore() {
     await userEvent.click(await screen.findByRole('button', { name: 'Restore a backup' }));
     await userEvent.type(screen.getByLabelText('S3-compatible endpoint URL'), 'https://s3.example.test');
     await userEvent.type(screen.getByLabelText('Storage bucket'), 'backups');
@@ -982,8 +988,6 @@ describe('setup wizard restore progress', () => {
     await userEvent.type(screen.getByLabelText('S3 secret access key (not the Cloudflare API token value)'), 'secret');
     await userEvent.type(screen.getByLabelText('Snapshot ID or snapshots/ID/ prefix'), '019a0af0-9c00-7000-8000-0000000000cc');
     await userEvent.click(screen.getByLabelText('Backup private key')); await userEvent.paste(privateKey);
-    await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Restore a backup' }));
-    return started;
   }
   /** Runs the next restore poll: one second while the server answers, five while it doesn't. */
   const tick = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
@@ -1771,5 +1775,231 @@ describe('setup wizard restore progress', () => {
     await waitFor(() => expect(query.getQueryState(['setup', 'status'])?.status).toBe('success'));
     expect(screen.getByRole('heading', { name: 'Start fresh or restore a backup' })).toBeDefined();
     expect(screen.queryByText(unavailableText)).toBeNull();
+  });
+
+  const pollFailedText = 'Could not read restore progress. Reload this page to retry.';
+  /** An answer the test sends when it chooses. */
+  function later() {
+    let send!: (response: Response) => void;
+    const response = new Promise<Response>((resolve) => { send = resolve; });
+    return { response, send };
+  }
+  /** Lets requests settle and the screen take their answers. */
+  const settle = () => act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+  const refocus = () => act(async () => {
+    for (const event of ['visibilitychange', 'focus', 'offline', 'online']) window.dispatchEvent(new Event(event));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  /** Whether the unavailable screen was ever rendered from here on, however briefly. */
+  function watchUnavailable() {
+    let shown = false;
+    const observer = new MutationObserver(() => { shown ||= Boolean(document.body.textContent?.includes(unavailableText)); });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    return () => { observer.disconnect(); return shown; };
+  }
+
+  it('reads no status on focus or reconnect while the restore request is pending', async () => {
+    restorePolls = [running('verifying')];
+    const { fetcher } = start(0);
+    const base = fetcher.getMockImplementation()!, request = later();
+    fetcher.mockImplementation((path, options) => String(path) === '/api/setup/restore' ? request.response : base(path, options));
+    await fillRestore();
+    const shown = watchUnavailable();
+    await sendRestore();
+    const before = statusReads(fetcher);
+
+    // The server holds the gym for the restore before it answers the request.
+    statusAnswer = gone;
+    await refocus();
+    expect(statusReads(fetcher)).toBe(before);
+
+    await act(async () => { request.send(Response.json({ data: { status: 'running', jobId: restoreJob, phase: 'verifying' } })); });
+    expect(await screen.findByText(restoring)).toBeDefined();
+    await settle();
+    expect(statusReads(fetcher)).toBe(before);
+    expect(shown()).toBe(false);
+  });
+  it('cancels a status read running when the restore is sent, and reads again when the request fails', async () => {
+    const { fetcher, query } = start(0);
+    const base = fetcher.getMockImplementation()!, request = later(), read = later();
+    let holdRead = false;
+    fetcher.mockImplementation((path, options) => {
+      if (String(path) === '/api/setup/restore') return request.response;
+      if (String(path) === '/api/setup' && holdRead) { holdRead = false; return read.response; }
+      return base(path, options);
+    });
+    await fillRestore();
+    holdRead = true;
+    await refocus();
+    expect(query.getQueryState(['setup', 'status'])?.fetchStatus).toBe('fetching');
+    const shown = watchUnavailable();
+    await sendRestore();
+    await waitFor(() => expect(fetcher.mock.calls.some(([path]) => String(path) === '/api/setup/restore')).toBe(true));
+    const before = statusReads(fetcher);
+    await act(async () => { read.send(gone()); });
+    await settle();
+    expect(query.getQueryState(['setup', 'status'])).toMatchObject({ status: 'success', fetchStatus: 'idle' });
+
+    await act(async () => { request.send(serverError()); });
+
+    expect(await screen.findByText('Could not save this step. Check the details and try again.')).toBeDefined();
+    await settle();
+    expect(statusReads(fetcher)).toBe(before + 1);
+    expect(screen.getByLabelText('Backup private key')).toBeDefined();
+    expect(shown()).toBe(false);
+  });
+  it('cancels a first status read still running when the restore has failed, and reads again', async () => {
+    sessionStorage.setItem('setup.restore', restoreJob);
+    const first = later(), poll = later();
+    restorePolls = [() => poll.response];
+    // Only the first read is held.
+    statusAnswer = () => { statusAnswer = null; return first.response; };
+    const { fetcher, query } = start(0);
+    await waitFor(() => expect(statusReads(fetcher)).toBe(1));
+    const shown = watchUnavailable();
+
+    await act(async () => { poll.send(failed('credentials_rejected', false)()); });
+    expect(await screen.findByText(rejectedText)).toBeDefined();
+    await act(async () => { first.send(gone()); });
+    await settle();
+
+    expect(statusReads(fetcher)).toBe(2);
+    expect(query.getQueryState(['setup', 'status'])?.status).toBe('success');
+    expect(screen.getByText(rejectedText)).toBeDefined();
+    expect(shown()).toBe(false);
+  });
+  it('reads the status again when the restore poll fails, so a 404 read during the restore does not hide it', async () => {
+    sessionStorage.setItem('setup.restore', restoreJob);
+    const poll = later();
+    restorePolls = [() => poll.response];
+    statusAnswer = gone;
+    const { fetcher, query } = start(4);
+    await waitFor(() => expect(query.getQueryState(['setup', 'status'])?.status).toBe('error'));
+    statusAnswer = null;
+
+    await act(async () => { poll.send(Response.json({}, { status: 400 })); });
+
+    expect(await screen.findByRole('heading', { name: 'Your website' })).toBeDefined();
+    expect(screen.getByText(pollFailedText)).toBeDefined();
+    expect(screen.queryByText(unavailableText)).toBeNull();
+    expect(statusReads(fetcher)).toBe(2);
+  });
+  it('shows the reload alert beside a restore failure when the status has never been read', async () => {
+    sessionStorage.setItem('setup.restore', restoreJob);
+    const poll = later();
+    restorePolls = [() => poll.response];
+    statusAnswer = gone;
+    const { query } = start(0);
+    await waitFor(() => expect(query.getQueryState(['setup', 'status'])?.status).toBe('error'));
+    statusAnswer = serverError;
+
+    await act(async () => { poll.send(failed('credentials_rejected', false)()); });
+
+    expect(await screen.findByText(reloadText)).toBeDefined();
+    expect(screen.getByText(rejectedText)).toBeDefined();
+    const retry = screen.getByRole('button', { name: 'Try again' });
+
+    // A failed retry focuses the new reload alert, and one that works focuses the step's heading.
+    await userEvent.click(retry);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByText(reloadText).closest('[role="alert"]')));
+    statusAnswer = null;
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.queryByText(reloadText)).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Start fresh or restore a backup' })));
+    expect(screen.getByText(rejectedText)).toBeDefined();
+  });
+  it('puts focus on what replaces the loading state after Try again, and never moves it for a background read', async () => {
+    statusAnswer = () => Response.json({}, { status: 502 });
+    const { fetcher } = start(0);
+    await screen.findByText(reloadText);
+    const tryAgain = async (reads: number) => {
+      await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+      await waitFor(() => expect(statusReads(fetcher)).toBe(reads));
+      await settle();
+    };
+
+    await tryAgain(2);
+    expect(document.activeElement).toBe(screen.getByRole('alert'));
+    statusAnswer = gone;
+    await tryAgain(3);
+    expect(document.activeElement).toBe(screen.getByText(unavailableText));
+    // The same answer again swaps the screen out and back, and focuses it again.
+    screen.getByRole('link', { name: 'Sign in' }).focus();
+    await tryAgain(4);
+    expect(document.activeElement).toBe(screen.getByText(unavailableText));
+    statusAnswer = null;
+    await tryAgain(5);
+    const heading = screen.getByRole('heading', { name: 'Start fresh or restore a backup' });
+    expect(document.activeElement).toBe(heading);
+
+    const button = screen.getByRole('button', { name: 'Start fresh' });
+    button.focus();
+    statusAnswer = serverError;
+    await refocus();
+    expect(await screen.findByText(reloadText)).toBeDefined();
+    expect(document.activeElement).toBe(button);
+    // A retry from a screen that has status data moves no focus when it works.
+    statusAnswer = null;
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.queryByText(reloadText)).toBeNull());
+    await settle();
+    expect(document.activeElement).toBe(document.body);
+  });
+  it('focuses the step heading when Try again works on an unavailable screen reached after a status read', async () => {
+    start(0);
+    await screen.findByRole('heading', { name: 'Start fresh or restore a backup' });
+    statusAnswer = gone;
+    await refocus();
+    expect(await screen.findByText(unavailableText)).toBeDefined();
+
+    statusAnswer = null;
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    const heading = await screen.findByRole('heading', { name: 'Start fresh or restore a backup' });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+  });
+  it('says the setup changed once a later read works after the reload of a 409 failed', async () => {
+    await saveGymAnswering409(serverError);
+    await screen.findByText(reloadText);
+    expect(screen.queryByText(changedText)).toBeNull();
+
+    statusAnswer = null;
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    const message = await screen.findByText(changedText);
+    await settle();
+    expect(screen.getAllByText(changedText)).toHaveLength(1);
+    expect(screen.queryByText(reloadText)).toBeNull();
+    expect(document.activeElement).toBe(message.closest('[role="alert"]'));
+  });
+  it('leaves focus where it is when a background read brings the late conflict message', async () => {
+    await saveGymAnswering409(serverError);
+    await screen.findByText(reloadText);
+    const field = screen.getByLabelText('Gym name');
+    field.focus();
+
+    statusAnswer = null;
+    await refocus();
+
+    expect(await screen.findByText(changedText)).toBeDefined();
+    await settle();
+    expect(document.activeElement).toBe(field);
+  });
+  it('drops the pending conflict message when another save starts', async () => {
+    const { fetcher } = await saveGymAnswering409(serverError);
+    await screen.findByText(reloadText);
+    const answer409 = fetcher.getMockImplementation()!;
+    fetcher.mockImplementation((path, options) => String(path).endsWith('/gym')
+      ? Promise.resolve(Response.json({}, { status: 500 })) : answer409(path, options));
+    await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Save and continue' }));
+    expect(await screen.findByText('Could not save this step. Check the details and try again.')).toBeDefined();
+
+    statusAnswer = null;
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.queryByText(reloadText)).toBeNull());
+    await settle();
+
+    expect(screen.queryByText(changedText)).toBeNull();
+    expect(screen.getByText('Could not save this step. Check the details and try again.')).toBeDefined();
   });
 });

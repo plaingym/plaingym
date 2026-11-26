@@ -6,7 +6,11 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { StripeStep } from './stripe-step.js';
 import { SetupHoldContext } from './hold.js';
-afterEach(cleanup);
+import { SetupWizard } from './wizard.js';
+import { createSetupClient } from './api.js';
+import { ShellServicesContext } from '../../app/context.js';
+import type { ShellServices } from '../../app/services.js';
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const webhookUrl = new URL('/webhooks/stripe', location.origin).href;
 type StripeResponse = { configured: boolean; mode: 'test' | 'live' | null; webhookRegistered: boolean; revision: number };
 const connected = (overrides: Partial<StripeResponse> = {}): StripeResponse => ({
@@ -112,6 +116,39 @@ it('holds the wizard step on configure until Continue to backups runs, and never
   await user.click(screen.getByRole('button', { name: 'Set up later' }));
   await screen.findByText('Stripe step saved. Continue to backups.');
   expect(holdSkip).not.toHaveBeenCalled();
+});
+/** The wizard at the payments step, where every status read after Skip answers `reload`. */
+async function skipInWizard(reload: () => Response) {
+  const status = (currentStep: number) => Response.json({ data: { currentStep, completedSteps: [0, 1, 2, 3, 4, 5], completed: false, revision: 7, googleSkipped: true, backupsLater: false } });
+  let skipped = false;
+  const fetcher = vi.fn(async (path: RequestInfo | URL) => {
+    if (String(path) === '/api/setup') return skipped ? reload() : status(6);
+    if (String(path) !== '/api/setup/stripe') return Response.json({}, { status: 500 });
+    skipped = true;
+    return Response.json({ data: connected({ configured: false, mode: null, webhookRegistered: false }) });
+  });
+  vi.stubGlobal('fetch', fetcher);
+  const services: ShellServices = {
+    loadBootstrap: async () => ({ gym: { id: 'gym', name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: 'owner', displayName: 'Test User', roles: ['owner'] as const, member: false }, login: { password: true, magicLink: false } }),
+    signInWithPassword: vi.fn(async () => {}), requestMagicLink: vi.fn(async () => {}), signOut: vi.fn(async () => {}),
+  };
+  const queries = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={queries}><ShellServicesContext.Provider value={services}><SetupWizard client={createSetupClient(fetcher as typeof fetch)} /></ShellServicesContext.Provider></QueryClientProvider>);
+  await userEvent.click(await screen.findByRole('button', { name: 'Set up later' }));
+  return { status };
+}
+it('reads the status through the wizard on skip, so a failed read focuses the reload alert', async () => {
+  await skipInWizard(() => Response.json({}, { status: 500 }));
+  const alert = await screen.findByRole('alert');
+  expect(alert.textContent).toContain('Could not load the latest setup progress.');
+  await waitFor(() => expect(document.activeElement).toBe(alert));
+  expect(screen.getByText('Stripe step saved. Continue to backups.')).toBeDefined();
+});
+it('moves the wizard to backups on skip once the status read works', async () => {
+  await skipInWizard(() => Response.json({ data: { currentStep: 7, completedSteps: [0, 1, 2, 3, 4, 5, 6], completed: false, revision: 8, googleSkipped: true, backupsLater: false } }));
+  const heading = await screen.findByRole('heading', { name: 'Protect your gym with backups' });
+  await waitFor(() => expect(document.activeElement).toBe(heading));
+  expect(screen.queryByRole('alert')).toBeNull();
 });
 it('ignores a second Continue to backups click while the wizard is still releasing the hold', async () => {
   let finish: () => void = () => undefined;

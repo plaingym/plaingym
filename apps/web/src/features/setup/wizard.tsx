@@ -110,9 +110,10 @@ const appPaths = ['/portal', '/join', '/trial', '/drop-in'].join(' · ');
 export function SetupWizard({ client = setupClient, registries = createRegistries() }: { client?: Client; registries?: ReturnType<typeof createRegistries> }) {
   const services = useShellServices(), queries = useQueryClient();
   const [jobId, setJobId] = useState<string | null>(() => sessionStorage.getItem('setup.restore'));
-  // A running restore makes the status answer 404, and that answer would outlive a restore that then fails.
+  const [restoreSending, setRestoreSending] = useState(false);
+  // A restore, from its request on, makes the status answer 404, and that answer would outlive a restore that then fails.
   const status = useQuery({ queryKey: key, queryFn: () => client.call('status'), retry: false,
-    refetchOnWindowFocus: !jobId, refetchOnReconnect: !jobId });
+    refetchOnWindowFocus: !jobId && !restoreSending, refetchOnReconnect: !jobId && !restoreSending });
   const [override, setOverride] = useState<number | null>(null), [held, setHeld] = useState<Held | null>(null);
   // Saved in this visit: while the status can't be reloaded its old answer would bring the owner form back.
   const [ownerSaved, setOwnerSaved] = useState(false);
@@ -127,7 +128,11 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   // Counts the failed status reloads the owner asked for: each takes focus to the reload alert, and nothing else does.
   const [failedReloads, setFailedReloads] = useState(0);
   const reloadBox = useRevealed<HTMLDivElement>(failedReloads);
-  const errorBox = useRevealed<HTMLDivElement>(error);
+  // A save refused as stale whose reload failed: the owner is told once a later status read works.
+  const [conflictPending, setConflictPending] = useState(false);
+  // That late message leaves the focus alone when the owner has put it somewhere else by then.
+  const [quietError, setQuietError] = useState(false);
+  const errorBox = useRevealed<HTMLDivElement>(quietError ? null : error);
   const [restore, setRestore] = useState(false);
   const [restoreState, setRestoreState] = useState<'running' | 'failed' | 'restored' | null>(null);
   const [restoreFailure, setRestoreFailure] = useState<{ reason: SetupRestoreFailureReason; staged: boolean } | null>(null);
@@ -168,7 +173,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   const proceed = () => { setHeld(null); void refresh(); };
   const run = async (action: () => Promise<void>) => {
     if (busy) return;
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setConflictPending(false); setQuietError(false);
     try { await action(); }
     catch (failure) {
       const reasons = failure instanceof ApiError ? failure.reason : [];
@@ -178,7 +183,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
       if (failure instanceof ApiError && failure.status === 409) {
         // "Your progress has been refreshed" only when it was; otherwise the reload alert says what failed.
         const reloaded = await refresh();
-        setError(reloaded.isError ? null : 'changed');
+        if (reloaded.isError) { setError(null); setConflictPending(true); } else setError('changed');
       } else setError(failure instanceof OwnerSavedSignInError ? 'ownerSavedSignInFailed'
         : emailUnavailable ? 'emailUnavailable'
         : failure instanceof ApiError && failure.status === 429 ? 'rateLimited'
@@ -189,6 +194,8 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   useEffect(() => {
     if (!jobId) return;
     let alive = true;
+    // A read already running may have met the restore's hold, and a refetch would join one that has no data yet.
+    const reread = async () => { await queries.cancelQueries({ queryKey: key }); await queries.refetchQueries({ queryKey: key }); };
     const poll = async () => {
       try {
         const state = await client.call('restoreStatus', undefined, jobId);
@@ -200,7 +207,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
         if (state.status !== 'running') { sessionStorage.removeItem('setup.restore'); setJobId(null); }
         // A status read that met the restore's hold on the gym answers 404, which says nothing once the restore has failed.
         const read = queries.getQueryState(key);
-        if (state.status === 'failed' && (read?.status === 'error' || read?.fetchStatus === 'fetching')) void queries.refetchQueries({ queryKey: key });
+        if (state.status === 'failed' && (read?.status === 'error' || read?.fetchStatus === 'fetching')) void reread();
       } catch (failure) {
         if (!alive) return;
         polledJob.current = jobId;
@@ -209,6 +216,8 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
         // No answer, the proxy's answer for an app that is down, or a server error: the restore may still be running, so keep checking.
         if (failure instanceof TypeError || (failure instanceof ApiError && failure.status >= 500)) { setUnreachable(true); return; }
         setError('pollFailed'); setJobId(null); setRestoreState(null); setUnreachable(false); setThrottled(false); sessionStorage.removeItem('setup.restore');
+        // A cached 404 from while the restore held the gym would hide that message.
+        void reread();
       }
     };
     if (polledJob.current !== jobId) void poll();
@@ -222,15 +231,34 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   const stagedFailure = restoreState === 'failed' && Boolean(restoreFailure?.staged) && step === 0;
   const restoreStays = finished && status.data ? restoreState === 'running' || restoreState === 'restored' || stagedFailure
     : Boolean(restoreState);
-  const noSteps = !jobId && !done && !finalFinishing && !restoreStays;
+  const noSteps = !jobId && !restoreSending && !done && !finalFinishing && !restoreStays;
   const unavailable = finished && noSteps;
   // A first read that failed for any other reason says nothing about the install, so it offers only another try.
   const loadFailed = status.isError && !status.data && !finished && noSteps;
-  const reloadShown = loadFailed || (status.isError && Boolean(status.data) && !finished && !finalFinishing);
+  const reloadShown = loadFailed || (status.isError && Boolean(status.data) && !finished && !finalFinishing)
+    // Beside a failed restore with no status behind it too, so the steps never pass as if the status were known.
+    || (status.isError && !status.data && !finished && restoreState === 'failed');
+  // Before the heading's effect: after a retry removed the reload alert, the message takes the focus nothing else holds.
+  useEffect(() => {
+    if (!conflictPending || status.isError || !status.data) return;
+    setQuietError(document.activeElement !== null && document.activeElement !== document.body);
+    setConflictPending(false); setError('changed');
+  }, [conflictPending, status.data, status.dataUpdatedAt, status.isError]);
   // The reload alert is focused by an earlier effect: a step that changes along with it must not take the focus back.
   useEffect(() => { if (!reloadBox.current?.contains(document.activeElement)) heading.current?.focus(); },
     [step, restore, googlePage, held, reloadBox]);
-  const retryStatus = <Button type="button" disabled={status.isFetching} onClick={() => void readAgain()}>{t('setup/setup:retry')}</Button>;
+  // A retry from the first-load error or the unavailable screen swaps that screen out, so focus goes to what replaces it.
+  const retried = useRef(false), unavailableBox = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!retried.current || status.fetchStatus !== 'idle') return;
+    retried.current = false;
+    if (unavailable) unavailableBox.current?.focus();
+    // A failed read's reload alert takes the focus through `failedReloads`.
+    else if (!reloadShown) heading.current?.focus();
+    // The error count and the screens also change when a read settles before its loading state was ever rendered.
+  }, [status.fetchStatus, status.errorUpdateCount, unavailable, reloadShown]);
+  const retryStatus = <Button type="button" disabled={status.isFetching}
+    onClick={() => { retried.current = unavailable || !status.data; void readAgain(); }}>{t('setup/setup:retry')}</Button>;
   const reloadAlert = <Alert ref={reloadBox} variant="error"><p>{t('setup/setup:reloadFailed')}</p>{retryStatus}</Alert>;
   const deferBackups = <Button type="button" disabled={busy} variant="outline" onClick={() => void run(async () => {
     await client.call('decide', { revision, decision: 'backups_later' }); setBackupKey(null); draft.clear(); await refresh();
@@ -243,7 +271,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
     {complete ? <><h2 className="text-xl font-semibold">{t('setup/setup:completeTitle')}</h2><p role="status">{t(restoreState === 'restored' ? 'setup/setup:restored' : 'setup/setup:finished')}</p>
       {restoreState === 'restored' ? <Button asChild><a href="/login">{t('setup/setup:signIn')}</a></Button>
         : <Button asChild><a href="/admin">{t('setup/setup:openAdmin')}</a></Button>}</>
-    : unavailable ? <><Alert>{t('setup/setup:unavailable')}</Alert><div className="flex flex-wrap items-center gap-4">{retryStatus}
+    : unavailable ? <><Alert ref={unavailableBox} tabIndex={-1} className="focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">{t('setup/setup:unavailable')}</Alert><div className="flex flex-wrap items-center gap-4">{retryStatus}
       <a href="/login" className="inline-flex min-h-11 items-center underline">{t('setup/setup:signIn')}</a></div></>
     : loadFailed ? reloadAlert
     : status.isPending && !jobId ? <LoadingState label={t('setup/setup:loading')} />
@@ -261,9 +289,14 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
         {restoreFailure.staged && <p>{t('setup/setup:restoreStaged')}</p>}</Alert>
         : restoreState === 'failed' && <Alert variant="error">{t('setup/setup:restoreFailed')}</Alert>)}
       {step === 0 && (restore ? <Form action={async (data) => {
-        const result = await client.call('restore', { choice: 'restore', source: destination(data), snapshotPrefix: text(data, 'snapshotPrefix'), privateKey: text(data, 'privateKey') });
-        setRestoreFailure(null); setUnreachable(false); setThrottled(false); setPhase(null);
-        restoreAnswer(result); setJobId(result.jobId); sessionStorage.setItem('setup.restore', result.jobId);
+        // The request takes the restore's hold on the gym: no status read runs until it has answered.
+        setRestoreSending(true); await queries.cancelQueries({ queryKey: key });
+        try {
+          const result = await client.call('restore', { choice: 'restore', source: destination(data), snapshotPrefix: text(data, 'snapshotPrefix'), privateKey: text(data, 'privateKey') });
+          setRestoreFailure(null); setUnreachable(false); setThrottled(false); setPhase(null);
+          restoreAnswer(result); setJobId(result.jobId); sessionStorage.setItem('setup.restore', result.jobId);
+        } catch (failure) { void readAgain(); throw failure; }
+        finally { setRestoreSending(false); }
       }} submit="restore" secondary={<Button type="button" variant="outline" disabled={busy} onClick={() => setRestore(false)}>{t('setup/setup:back')}</Button>}>
         <p>{t('setup/setup:restoreHint')}</p><Destination /><Field name="snapshotPrefix" /><Field name="privateKey" type="password" />
       </Form> : <SetupActions><Button disabled={busy} onClick={() => void run(async () => { await client.call('start', { choice: 'fresh' }); setOverride(1); })}>{t('setup/setup:fresh')}</Button>
