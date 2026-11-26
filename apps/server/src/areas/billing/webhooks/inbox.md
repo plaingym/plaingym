@@ -47,16 +47,19 @@ job's time as `failed_at`, so Health counts it as failed even during the cooldow
 When a reset dispatch fails again, the next sweep moves `failed_at` to the
 job's latest failure on `dispatch_failed` rows. On `handler_failed` rows it
 moves it only when `failed_at` is missing, or older than both the job's failure
-and the latest reset counted since the last exhaustion (the reset dispatch
-failed before its handler recorded a time); either way the marker stays. A
-fresh handler failure keeps the time `dispatch` wrote. It waits 15 minutes
-after an exhausted batch, then 30, 60, 120 and 240 minutes after subsequent
-batches. The same
-`billing.webhook.dispatch_retried` audits count resets across restarts, including
-those triggered by redelivery. The next terminal failure after five audited resets
-records one `billing.webhook.dispatch_recovery_exhausted` audit. Later sweeps
-exclude the event before the queue lookup until a redelivery resets it (below),
-and it remains visible in Health for staff replay or redelivery. The sweep decides the cooldown from an unlocked read
+and the latest reset time counted since the last exhaustion (the reset
+dispatch failed before its handler recorded a time); either way the marker
+stays. A reset's time here is the resetting process's own clock read, the run
+time it set, which its audit records as `after.at`; a reset audited without it
+counts by its `occurred_at`. A reset's `occurred_at` can be raised past that
+clock to follow an earlier dispatch audit, so comparing against it could move a
+later failure's time. A fresh handler failure keeps the time `dispatch` wrote.
+It waits 15 minutes after an exhausted batch, then 30, 60, 120 and 240 minutes
+after subsequent batches. The same `billing.webhook.dispatch_retried` audits
+count resets across restarts, including those triggered by redelivery. The
+next terminal failure after five audited resets records one
+`billing.webhook.dispatch_recovery_exhausted` audit. Later sweeps exclude the
+event before the queue lookup until a redelivery resets it (below), and it remains visible in Health for staff replay or redelivery. The sweep decides the cooldown from an unlocked read
 and takes the event's row lock only when it may reset, mark or exhaust it; under that lock
 (shared with redeliveries) it rechecks everything and commits each reset or exhaustion with its audit. It safely logs a failed pre-check
 read and continues with the next page, and logs a per-event error

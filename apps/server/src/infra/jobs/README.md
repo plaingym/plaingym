@@ -51,6 +51,13 @@ counts once the next claim marks it failed. Its handler may still be running,
 so a retried job's handler needs the same idempotency as any other.
 `retryFailed` returns false for a job that is missing or has another status.
 
+`resetFailedJobs(jobs, name, keys, gymId, plan, record)` runs the plain recovery
+loop outside a transaction: for each failed job among `keys`, `plan(job)` returns
+its run time or `null` to leave it failed, `retryFailed` resets it, and only a
+reset that succeeded calls `record(job, runAt)` (the producer's audit). It returns
+the number reset. Announcement and link campaign recovery use it; recovery that
+resets under its own lock or cap keeps its own loop.
+
 The three recovery methods above accept an optional `JobTransaction` as their last
 argument, validated like `enqueue`'s. Invoice effect recovery takes its invoice lock
 in that transaction and uses the same handle for queue reads, resets or acknowledgments,

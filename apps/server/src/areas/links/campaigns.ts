@@ -8,7 +8,7 @@ import { campaignRecipientListQuerySchema, createLinkCampaignRequestSchema, hous
 import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
-import type { JobRecovery, Jobs } from '../../infra/jobs/index.js';
+import { resetFailedJobs, type JobRecovery, type Jobs } from '../../infra/jobs/index.js';
 import type { Payments } from '../../infra/payments/index.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { createSignedLinksIn } from './service.js';
@@ -62,12 +62,13 @@ export function createCampaignsService(options: CampaignsOptions) {
     const keys = new Map(linkIds.map(id => [`${id}:${occurrence}`, id]));
     // Like scheduled reminders, a retry goes out from 09:00 gym-local.
     const runAt = new Date(Math.max(now.getTime(), zonedInstant(today, '09:00', timezone, { gap: 'shift' })!.getTime()));
-    for (const job of await options.jobs.failedJobs(campaignSendJob, [...keys.keys()], { gymId })) {
-      if (localDate(job.failedAt, timezone) >= today) continue;
-      if (await options.jobs.retryFailed(job.jobId, { gymId, runAt })) await scope(gymId, tx => writeAudit(tx, { gymId,
-        actorKind: 'system', action: 'link_campaign.delivery_retried', targetType: 'signed_link', targetId: keys.get(job.idempotencyKey)!,
-        after: { campaignId, occurrence }, occurredAt: now }));
-    }
+    await resetFailedJobs(options.jobs, campaignSendJob, [...keys.keys()], gymId,
+      async job => localDate(job.failedAt, timezone) >= today ? null : runAt,
+      async job => {
+        await scope(gymId, tx => writeAudit(tx, { gymId,
+          actorKind: 'system', action: 'link_campaign.delivery_retried', targetType: 'signed_link', targetId: keys.get(job.idempotencyKey)!,
+          after: { campaignId, occurrence }, occurredAt: now }));
+      });
   }
   async function queue(gymId: string, campaignId: string, occurrence: string, retry = false) {
     const gym = await settings.get(gymId);

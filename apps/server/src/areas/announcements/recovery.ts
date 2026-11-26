@@ -4,7 +4,7 @@ import { announcements, auditEvents, classSessions, forGym, writeAudit } from '@
 import type { Clock } from '@plaingym/shared';
 import { clock as systemClock } from '../../core/clock.js';
 import type { JobRegistration } from '../../core/registry.js';
-import type { JobRecovery } from '../../infra/jobs/index.js';
+import { resetFailedJobs, type JobRecovery } from '../../infra/jobs/index.js';
 import { announcementSendJob } from './send.js';
 import { announcementSmsJob, announcementSmsJobKey } from './send.sms.js';
 import { cancellationNoticeJob, cancellationNoticeKeyPrefix, noticeScope } from './cancellation.js';
@@ -24,21 +24,21 @@ export function createAnnouncementRecovery(options: AnnouncementRecoveryOptions)
   async function retry(gymId: string, name: string, ids: string[], key: (id: string) => string,
     action: string, targetType: string) {
     const targets = new Map(ids.map(id => [key(id), id]));
-    let recovered = 0;
-    for (const job of await options.jobs.failedJobs(name, [...targets.keys()], { gymId })) {
+    const delays = new Map<string, number>();
+    // The queue's compare-and-set admits only one sweep. No second job or delivery key is created.
+    return resetFailedJobs(options.jobs, name, [...targets.keys()], gymId, async job => {
       const targetId = targets.get(job.idempotencyKey)!;
       const history = await scope(gymId, tx => tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
         eq(auditEvents.gymId, gymId), eq(auditEvents.targetId, targetId), eq(auditEvents.action, action)))
         .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(historyLimit));
       const now = clock.now(), delay = Math.min(maximumDelayMs, initialDelayMs * 2 ** history.length);
-      if (now.getTime() - job.failedAt.getTime() < delay) continue;
-      // The queue's compare-and-set admits only one sweep. No second job or delivery key is created.
-      if (!await options.jobs.retryFailed(job.jobId, { gymId, runAt: now })) continue;
-      await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action, targetType, targetId,
-        after: { jobId: job.jobId, delayMs: delay }, occurredAt: now }));
-      recovered++;
-    }
-    return recovered;
+      if (now.getTime() - job.failedAt.getTime() < delay) return null;
+      delays.set(job.jobId, delay);
+      return now;
+    }, async (job, now) => {
+      await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action, targetType,
+        targetId: targets.get(job.idempotencyKey)!, after: { jobId: job.jobId, delayMs: delays.get(job.jobId)! }, occurredAt: now }));
+    });
   }
   return {
     async run(gymId: string) {

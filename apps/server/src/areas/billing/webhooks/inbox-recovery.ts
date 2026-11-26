@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, count, eq, exists, gt, gte, inArray, isNotNull, isNull, max, not, notExists, or, type SQL, type SQLWrapper } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- A reset's own clock read comes from its gym-scoped audit JSON, used inside forGym only.
+import { sql } from 'drizzle-orm';
 import { auditEvents, forGym, stripeEvents, writeAudit, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { clock as defaultClock } from '../../../core/clock.js';
@@ -12,6 +14,12 @@ export const webhookDispatchRecoveryExhausted = 'billing.webhook.dispatch_recove
 export const webhookRecoveryDelayMs = 15 * 60_000, webhookRecoveryLimit = 5;
 
 type EventId = string | SQLWrapper;
+
+/**
+ * A reset's time by the resetting process's own clock (`after.at`, the run time it set); resets audited without it
+ * count by their stamp, which a skewed dispatch audit can have raised past that clock.
+ */
+const resetTime = sql<Date | string>`coalesce((${auditEvents.after}->>'at')::timestamptz, ${auditEvents.occurredAt})`;
 
 function dispatchAudits(tx: Transaction, gymId: string, action: string, eventId: EventId, condition?: SQL) {
   return tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
@@ -57,7 +65,7 @@ export function webhookRecoveryPage(tx: Transaction, gymId: string, cursor?: str
 function openEvents(tx: Transaction, gymId: string, eventIds: string[]) {
   return tx.select({
     id: stripeEvents.id, error: stripeEvents.error, failedAt: stripeEvents.failedAt,
-    resets: count(auditEvents.id), lastReset: max(auditEvents.occurredAt),
+    resets: count(auditEvents.id), lastReset: max(resetTime),
   })
     .from(stripeEvents)
     .leftJoin(auditEvents, and(eq(auditEvents.gymId, gymId), eq(auditEvents.action, webhookDispatchRetried),
@@ -104,7 +112,7 @@ export function resetRedeliveredDispatch(
       if (!await options.recovery.retryFailed(failed.jobId, { gymId, runAt: now }, transaction)) continue;
       await writeAudit(tx, {
         gymId, actorKind: 'system', action: webhookDispatchRetried, targetType: 'stripe_event',
-        targetId: eventId, after: { jobId: failed.jobId },
+        targetId: eventId, after: { jobId: failed.jobId, at: now.toISOString() },
         occurredAt: await dispatchStamp(tx, gymId, eventId, now, 'reset'),
       });
       reset++;
@@ -115,8 +123,8 @@ export function resetRedeliveredDispatch(
 
 // Health can count a failed dispatch whose attempts never recorded a handler error, from when its job failed;
 // a dispatch_failed marker's failure time follows the job's latest failure, while a handler_failed marker moves
-// only when it has no time or predates the latest reset — a handler failure that dispatch recorded after the
-// latest reset keeps its own time.
+// only when it has no time or predates the latest reset by the resetting process's own clock — a handler failure
+// that dispatch recorded after the latest reset keeps its own time.
 function markerUpdate(
   row: { error: string | null; failedAt: Date | null; lastReset: Date | null }, failedAt: Date,
 ): 'dispatch_failed' | 'failed_at' | null {
@@ -169,7 +177,7 @@ export function createWebhookInboxRecovery(options: { job: string; scope?: typeo
             const now = clock.now();
             const [current] = await recovery.failedJobs(options.job, [eventId], { gymId }, transaction);
             if (!current) return;
-            const [reset] = await tx.select({ at: max(auditEvents.occurredAt) }).from(auditEvents).where(and(
+            const [reset] = await tx.select({ at: max(resetTime) }).from(auditEvents).where(and(
               eq(auditEvents.gymId, gymId), eq(auditEvents.action, webhookDispatchRetried),
               eq(auditEvents.targetId, eventId), sinceExhaustion(tx, gymId, eventId)));
             const update = markerUpdate({ ...row, lastReset: toDate(reset?.at) }, current.failedAt);
@@ -188,7 +196,7 @@ export function createWebhookInboxRecovery(options: { job: string; scope?: typeo
             if (now.getTime() - current.failedAt.getTime() < delayMs) return;
             if (!await recovery.retryFailed(current.jobId, { gymId, runAt: now }, transaction)) return;
             await writeAudit(tx, { gymId, actorKind: 'system', action: webhookDispatchRetried, targetType: 'stripe_event',
-              targetId: eventId, after: { jobId: current.jobId, delayMs },
+              targetId: eventId, after: { jobId: current.jobId, delayMs, at: now.toISOString() },
               occurredAt: await dispatchStamp(tx, gymId, eventId, now, 'reset') });
             return 'recovered';
           });

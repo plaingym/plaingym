@@ -6,6 +6,7 @@ import { assertJobTransaction, jobTransactionStates, type JobTransaction } from 
 import { assertStoredTimezone } from './timezone.js';
 
 export { assertJobTransaction, withJobTransaction, type JobTransaction } from './transaction.js';
+export { resetFailedJobs } from './recovery.js';
 export interface JobOptions {
   readonly gymId: string;
   readonly timezone: string;
