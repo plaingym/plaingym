@@ -2047,4 +2047,143 @@ describe('setup wizard restore progress', () => {
     expect(statusReads(fetcher)).toBe(before + 1);
     expect(screen.queryByText(reloadText)).toBeNull();
   });
+
+  it('keeps the focus on the sign-in error when the status read moves the owner step on', async () => {
+    const ownerSavedSignInFailed = "Your owner account was saved, but signing in didn't finish. Sign in as the owner to continue setup.";
+    vi.mocked(services.loadBootstrap).mockResolvedValue({
+      gym: { id: 'gym', name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] },
+      session: null,
+      login: { password: true, magicLink: false },
+    });
+    vi.mocked(services.signInWithPassword).mockRejectedValueOnce(new Error('sign-in failed'));
+    start(1);
+    await userEvent.type(await screen.findByLabelText('Your name'), 'Gym Owner');
+    await userEvent.type(screen.getByLabelText('Email address'), 'owner@example.org');
+    await userEvent.type(screen.getByLabelText('Password (12–128 characters)'), 'owner-password-123');
+    await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Save and continue' }));
+
+    expect(await screen.findByRole('heading', { name: 'Gym details' })).toBeDefined();
+    expect(await screen.findByText(ownerSavedSignInFailed)).toBeDefined();
+    await settle();
+    expect(document.activeElement).toBe(alertOf(ownerSavedSignInFailed));
+  });
+  it('keeps the focus on the conflict message when the reload after a 409 moves the step', async () => {
+    // The signed-in owner, whatever an earlier test left the bootstrap answering.
+    vi.mocked(services.loadBootstrap).mockResolvedValue({
+      gym: { id: 'gym', name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] },
+      session: { userId: 'owner', displayName: 'Test User', roles: ['owner'] as const, member: false },
+      login: { password: true, magicLink: false },
+    });
+    await saveGymAnswering409(() => Response.json({ data: { currentStep: 4, completedSteps: [0, 1, 2, 3], completed: false, revision: 3, googleSkipped: false, backupsLater: false } }));
+
+    expect(await screen.findByRole('heading', { name: 'Your website' })).toBeDefined();
+    expect(await screen.findByText(changedText)).toBeDefined();
+    await settle();
+    expect(document.activeElement).toBe(alertOf(changedText));
+  });
+
+  const unansweredText = 'The restore request got no answer, so the restore may be running. Wait a few minutes, then reload this page; once the restore has finished, it shows the sign-in page.';
+  /** Sends a restore request that ends as `request` says, with the status read after it answering `reload` (the usual status when null). */
+  async function sendRestoreEnding(request: () => Promise<Response>, reload: (() => Response | Promise<Response>) | null) {
+    const started = start(0);
+    const base = started.fetcher.getMockImplementation()!;
+    started.fetcher.mockImplementation((path, options) => String(path) === '/api/setup/restore' ? request() : base(path, options));
+    await fillRestore();
+    const before = statusReads(started.fetcher);
+    statusAnswer = reload;
+    const shown = watchUnavailable();
+    await sendRestore();
+    return { ...started, before, shown };
+  }
+  const dropped = () => Promise.reject(new TypeError('Failed to fetch'));
+  const proxyAnswer = (status: number) => () => Promise.resolve(new Response('Bad gateway', { status }));
+
+  it.each([
+    ['gets no response', dropped],
+    ['answers 502', proxyAnswer(502)],
+    ['answers 504', proxyAnswer(504)],
+  ])('keeps the restore form, saying the restore may be running, when the request %s and the status read answers 404', async (_, request) => {
+    // The status read answers only after a while, as over a real connection.
+    const read = later();
+    const { fetcher, before, shown } = await sendRestoreEnding(request, () => read.response);
+    await waitFor(() => expect(statusReads(fetcher)).toBe(before + 1));
+    await settle();
+    expect(screen.queryByText(saveFailedText)).toBeNull();
+
+    await act(async () => { read.send(gone()); });
+
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+    await settle();
+    expect(document.activeElement).toBe(alertOf(unansweredText));
+    expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
+    expect(screen.getByLabelText('S3-compatible endpoint URL')).toBeDefined();
+    expect(screen.queryByText(saveFailedText)).toBeNull();
+    expect(screen.queryByText(reloadText)).toBeNull();
+    expect(statusReads(fetcher)).toBe(before + 1);
+
+    // A later read that meets the restore's hold leaves the form and the message too.
+    statusAnswer = gone;
+    await refocus();
+    await settle();
+    expect(statusReads(fetcher)).toBe(before + 2);
+    expect(screen.getByText(unansweredText)).toBeDefined();
+    expect(screen.getByLabelText('Backup private key')).toBeDefined();
+    expect(shown()).toBe(false);
+
+    await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Back' }));
+    expect(await screen.findByText(unavailableText)).toBeDefined();
+    expect(screen.queryByLabelText('Backup private key')).toBeNull();
+  });
+  it('shows the save error, as before, when an unanswered restore request is followed by a status read that works', async () => {
+    const { fetcher, before } = await sendRestoreEnding(dropped, null);
+
+    expect(await screen.findByText(saveFailedText)).toBeDefined();
+    await settle();
+    expect(document.activeElement).toBe(alertOf(saveFailedText));
+    expect(screen.queryByText(unansweredText)).toBeNull();
+    expect(screen.getByLabelText('Backup private key')).toBeDefined();
+    expect(statusReads(fetcher)).toBe(before + 1);
+  });
+  it('shows the save error and the reload alert when the status read after an unanswered restore request fails too', async () => {
+    const { fetcher, before } = await sendRestoreEnding(dropped, serverError);
+
+    expect(await screen.findByText(saveFailedText)).toBeDefined();
+    expect(await screen.findByText(reloadText)).toBeDefined();
+    await settle();
+    expect(document.activeElement).toBe(alertOf(saveFailedText));
+    expect(screen.queryByText(unansweredText)).toBeNull();
+    expect(statusReads(fetcher)).toBe(before + 1);
+  });
+  it('shows the unavailable screen when a refused restore request is followed by a 404 status read', async () => {
+    const refused = () => Promise.resolve(Response.json({ error: { code: 'invalid_request', message: 'Refused' } }, { status: 422 }));
+    const { fetcher, before } = await sendRestoreEnding(refused, gone);
+
+    expect(await screen.findByText(unavailableText)).toBeDefined();
+    await settle();
+    expect(screen.queryByText(unansweredText)).toBeNull();
+    expect(screen.queryByLabelText('Backup private key')).toBeNull();
+    expect(statusReads(fetcher)).toBe(before + 1);
+  });
+  it('drops the unanswered message’s hold on the form when a later restore request is refused', async () => {
+    const answers = [dropped, () => Promise.resolve(Response.json({ error: { code: 'invalid_request', message: 'Refused' } }, { status: 422 }))];
+    await sendRestoreEnding(() => answers.shift()!(), gone);
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+
+    await sendRestore();
+
+    expect(await screen.findByText(unavailableText)).toBeDefined();
+    expect(screen.queryByLabelText('Backup private key')).toBeNull();
+  });
+  it('drops the unanswered message on Back, so a later status read that works doesn’t repeat it', async () => {
+    await sendRestoreEnding(dropped, gone);
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+    await userEvent.click(within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Back' }));
+    expect(await screen.findByText(unavailableText)).toBeDefined();
+
+    statusAnswer = null;
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByRole('button', { name: 'Start fresh' })).toBeDefined();
+    expect(screen.queryByText(unansweredText)).toBeNull();
+  });
 });

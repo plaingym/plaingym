@@ -32,6 +32,13 @@ class OwnerSavedSignInError extends Error {
     this.name = 'OwnerSavedSignInError';
   }
 }
+/** A restore request that got no definite answer while the status read answers 404, so the restore may be running. */
+class RestoreUnansweredError extends Error {
+  constructor(options?: ErrorOptions) {
+    super('Restore request unanswered', options);
+    this.name = 'RestoreUnansweredError';
+  }
+}
 const text = (data: FormData, name: string) => String(data.get(name) ?? '');
 /** A message key in the wizard's own locale file, or a full `namespace:key`. */
 const say = (message: string, values?: Record<string, string>) => t(message.includes(':') ? message : 'setup/setup:' + message, values);
@@ -111,6 +118,8 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   const services = useShellServices(), queries = useQueryClient();
   const [jobId, setJobId] = useState<string | null>(() => sessionStorage.getItem('setup.restore'));
   const [restoreSending, setRestoreSending] = useState(false);
+  // The last restore request got no answer and the status read met a restore's hold: its form and message stay.
+  const [restoreUnanswered, setRestoreUnanswered] = useState(false);
   // A restore, from its request on, makes the status answer 404, and that answer would outlive a restore that then fails.
   const status = useQuery({ queryKey: key, queryFn: () => client.call('status'), retry: false,
     refetchOnWindowFocus: !jobId && !restoreSending, refetchOnReconnect: !jobId && !restoreSending });
@@ -184,7 +193,8 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
         // "Your progress has been refreshed" only when it was; otherwise the reload alert says what failed.
         const reloaded = await refresh();
         if (reloaded.isError) { setError(null); setConflictPending(true); } else setError('changed');
-      } else setError(failure instanceof OwnerSavedSignInError ? 'ownerSavedSignInFailed'
+      } else setError(failure instanceof RestoreUnansweredError ? 'restoreUnanswered'
+        : failure instanceof OwnerSavedSignInError ? 'ownerSavedSignInFailed'
         : emailUnavailable ? 'emailUnavailable'
         : failure instanceof ApiError && failure.status === 429 ? 'rateLimited'
         : failure instanceof ApiError && failure.status === 403 ? 'setupLink'
@@ -231,7 +241,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   const stagedFailure = restoreState === 'failed' && Boolean(restoreFailure?.staged) && step === 0;
   const restoreStays = finished && status.data ? restoreState === 'running' || restoreState === 'restored' || stagedFailure
     : Boolean(restoreState);
-  const noSteps = !jobId && !restoreSending && !done && !finalFinishing && !restoreStays;
+  const noSteps = !jobId && !restoreSending && !restoreUnanswered && !done && !finalFinishing && !restoreStays;
   const unavailable = finished && noSteps;
   // A first read that failed for any other reason says nothing about the install, so it offers only another try.
   const loadFailed = status.isError && !status.data && !finished && noSteps;
@@ -244,9 +254,11 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
     setQuietError(document.activeElement !== null && document.activeElement !== document.body);
     setConflictPending(false); setError('changed');
   }, [conflictPending, status.data, status.dataUpdatedAt, status.isError]);
-  // The reload alert is focused by an earlier effect: a step that changes along with it must not take the focus back.
-  useEffect(() => { if (!reloadBox.current?.contains(document.activeElement)) heading.current?.focus(); },
-    [step, restore, googlePage, held, reloadBox]);
+  // The reload alert and a save error are focused by earlier effects: a step that changes along with one, or after it,
+  // must not take the focus back.
+  useEffect(() => {
+    if (!reloadBox.current?.contains(document.activeElement) && !errorBox.current?.contains(document.activeElement)) heading.current?.focus();
+  }, [step, restore, googlePage, held, reloadBox, errorBox]);
   // A retry from the first-load error or the unavailable screen swaps that screen out, so focus goes to what replaces it.
   const retried = useRef(false), unavailableBox = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -290,14 +302,29 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
         : restoreState === 'failed' && <Alert variant="error">{t('setup/setup:restoreFailed')}</Alert>)}
       {step === 0 && (restore ? <Form action={async (data) => {
         // The request takes the restore's hold on the gym: no status read runs until it has answered.
-        setRestoreSending(true); await queries.cancelQueries({ queryKey: key });
+        setRestoreSending(true); setRestoreUnanswered(false); await queries.cancelQueries({ queryKey: key });
         try {
           const result = await client.call('restore', { choice: 'restore', source: destination(data), snapshotPrefix: text(data, 'snapshotPrefix'), privateKey: text(data, 'privateKey') });
           setRestoreFailure(null); setUnreachable(false); setThrottled(false); setPhase(null);
           restoreAnswer(result); setJobId(result.jobId); sessionStorage.setItem('setup.restore', result.jobId);
-        } catch (failure) { void status.refetch(); throw failure; }
-        finally { setRestoreSending(false); }
-      }} submit="restore" secondary={<Button type="button" variant="outline" disabled={busy} onClick={() => setRestore(false)}>{t('setup/setup:back')}</Button>}>
+        } catch (failure) {
+          // No answer, or a proxy's, doesn't say the server refused the restore.
+          const unanswered = failure instanceof TypeError || (failure instanceof ApiError && (failure.status === 502 || failure.status === 504));
+          if (!unanswered) { void status.refetch(); throw failure; }
+          // Awaited with the request still counted as pending, so a 404 can't swap the form out first.
+          const read = await status.refetch();
+          if (read.error instanceof ApiError && read.error.status === 404) {
+            setRestoreUnanswered(true);
+            throw new RestoreUnansweredError({ cause: failure });
+          }
+          throw failure;
+        } finally { setRestoreSending(false); }
+      }} submit="restore" secondary={<Button type="button" variant="outline" disabled={busy}
+        onClick={() => {
+          setRestore(false); setRestoreUnanswered(false);
+          // Only the form's own request can have gone unanswered: the choice screen mustn't say a restore may be running.
+          setError((shown) => shown === 'restoreUnanswered' ? null : shown);
+        }}>{t('setup/setup:back')}</Button>}>
         <p>{t('setup/setup:restoreHint')}</p><Destination /><Field name="snapshotPrefix" /><Field name="privateKey" type="password" />
       </Form> : <SetupActions><Button disabled={busy} onClick={() => void run(async () => { await client.call('start', { choice: 'fresh' }); setOverride(1); })}>{t('setup/setup:fresh')}</Button>
         <Button variant="outline" onClick={() => { setRestore(true); setRestoreState(null); setRestoreFailure(null); setUnreachable(false); setThrottled(false); }}>{t('setup/setup:restore')}</Button></SetupActions>)}

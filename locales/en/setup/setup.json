@@ -101,6 +101,7 @@
   "restoreUnreachableStaged": "The backup was verified, so the restore carries on by itself when the server is back.",
   "restoreUnreachableVerifying": "If the server restarted while the backup was being checked, start the restore again once it's back.",
   "pollFailed": "Could not read restore progress. Reload this page to retry.",
+  "restoreUnanswered": "The restore request got no answer, so the restore may be running. Wait a few minutes, then reload this page; once the restore has finished, it shows the sign-in page.",
   "restored": "Backup restored. Sign in to your restored gym. Billing, member emails and member texts remain off until you review Go-live.",
   "skipBackups": "Set up later",
   "setupLink": "Open the private setup link printed by the installer. You can reprint it with gym-app setup-link on the server.",
