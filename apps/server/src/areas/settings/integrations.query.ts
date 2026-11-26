@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, desc, eq, exists, inArray, isNotNull, isNull, ne, notExists, or } from 'drizzle-orm';
-// eslint-disable-next-line database/system-tables -- The scoped Drizzle subquery needs one isolated JSON text extraction to match the audited customer ID.
+// eslint-disable-next-line database/system-tables -- Isolated JSON text extractions from audit rows: the audited customer ID and the saved Stripe mode.
 import { sql } from 'drizzle-orm';
 import { auditEvents, households, paymentAttempts, paymentMethods, payments, type Transaction } from '@plaingym/db';
 import { stripeTestPaymentReference } from '@plaingym/shared/contracts';
@@ -55,12 +55,14 @@ const liveCardPayments = and(or(isNotNull(payments.paymentIntentId), isNotNull(p
  * doesn't have can't block a key change on its own. The app's own references come first and, when there are any, alone:
  * customers it linked, attempts, card payments and cards saved through Stripe. Imported customer IDs and cards (written
  * without asking Stripe, so possibly from another account, or mistyped) are used only when nothing else exists.
- * `customersOnly` is true when only households hold them (no attempts, card payments or cards): with no Stripe settings,
- * those are imported IDs. What a switch to live cleared is marked, not compared by time: its card payments carry the
+ * `customersOnly` is true when only imported customer IDs hold them (no customer the app linked, no attempts, card
+ * payments or cards): with no Stripe settings, those tie the gym to no account. A customer the app linked always needs
+ * the account read, with or without stored settings. `own` is true when the app's own references exist (the paths are
+ * theirs): with no stored settings, only those hold a key change to the latest saved mode. What a switch to live cleared is marked, not compared by time: its card payments carry the
  * test-mode reference, the cards it saved through Stripe are revoked (the imported cards it kept aren't), and its
  * attempts aren't sampled after a switch (a live attempt's customer is a household's, and its payment is sampled).
  */
-export async function stripeReference(tx: Transaction, gymId: string): Promise<{ paths: string[]; customersOnly: boolean } | null> {
+export async function stripeReference(tx: Transaction, gymId: string): Promise<{ paths: string[]; customersOnly: boolean; own: boolean } | null> {
   const switched = await latestTestSwitchId(tx, gymId) !== null;
   const customers = (linked: boolean) => tx.select({ id: households.stripeCustomerId }).from(households)
     .where(linkedCustomer(tx, gymId, linked))
@@ -80,10 +82,27 @@ export async function stripeReference(tx: Transaction, gymId: string): Promise<{
   const paths = own.length ? own : [...(await customers(false)).map((row) => '/v1/customers/' + row.id),
     ...importedCards.map((row) => '/v1/payment_methods/' + row.id)];
   return paths.length ? { paths: [...new Set(paths)],
-    customersOnly: !attempts.length && !paid.length && !saved.length && !importedCards.length } : null;
+    customersOnly: !linked.length && !attempts.length && !paid.length && !saved.length && !importedCards.length, own: own.length > 0 } : null;
 }
-/** Imported customer IDs alone, with no Stripe settings yet, tie the gym to no account (any key is accepted). */
+/**
+ * Imported customer IDs alone (none the app linked), with no Stripe settings stored, tie the gym to no account: any
+ * key, in either mode, is accepted.
+ */
 export const importedOnly = (config: StripeConfig | null, reference: { customersOnly: boolean } | null) => config === null && reference?.customersOnly === true;
+/**
+ * The mode of the latest key saved for the gym (in setup or Settings → Payments), or null when none was. With no
+ * settings stored (setup's skip removed them, or they can't be read) and the app's own references held, a key change
+ * compares its mode with this one. Unlike go-live's `readSavedStripeMode` (the latest save's mode, none after a skip),
+ * it passes over a skip's audit, whose mode is null.
+ */
+export async function savedStripeMode(tx: Transaction, gymId: string): Promise<'test' | 'live' | null> {
+  const [row] = await tx.select({ mode: sql<string>`${auditEvents.after}->>'mode'` }).from(auditEvents)
+    .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.targetType, 'gym'), eq(auditEvents.targetId, gymId),
+      inArray(auditEvents.action, ['integrations.stripe_saved', 'setup.stripe_configured']),
+      inArray(sql<string>`${auditEvents.after}->>'mode'`, ['test', 'live'])))
+    .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id)).limit(1);
+  return row?.mode === 'test' || row?.mode === 'live' ? row.mode : null;
+}
 /**
  * Whether a key's transport can read an object the gym's current Stripe account created: a key for another account (or
  * the other mode) gets a 404 `resource_missing`. Stripe keeps deleted customers readable, so a deleted one still matches.

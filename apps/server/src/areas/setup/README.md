@@ -60,15 +60,26 @@ A first save, a same-mode key rotation and a setup audit without `before` don't 
 A restore can bring Stripe customers, cards and card payments into an unfinished
 wizard, so while the gym holds them the step checks a new key as the Payments save
 does (`stripeReference`, `importedOnly` and `readsStripeReference` in
-`settings/integrations.query.ts`): with a key stored, one in the other mode is refused with a 400 and
+`settings/integrations.query.ts`): a key in the other mode is refused with a 400 and
 `restrictedKey: ['mode_locked']`, and a same-mode key must read one of them, checked
 after the permission probe and before the endpoint is registered (otherwise a 400 with
-`account_locked`). A save that finds references recorded while the key was checked
-fails with a conflict. Setup offers no switch from test to live: the owner finishes
-setup and switches in Settings → Payments. With no stored key (a first save, or one
-after `skip`), customer IDs on households alone (no attempts, card payments or cards,
-whether imported or linked by the app) tie the gym to no account, so a key in either
-mode is accepted without a read; `skip` is never checked.
+`account_locked`). The mode compared is the stored key's; with no key stored (after
+`skip`, or settings that can't be read) it is the latest saved key's, from the newest
+`setup.stripe_configured` or `integrations.stripe_saved` audit with a mode
+(`savedStripeMode`), while the gym holds the app's own references (customers it
+linked, attempts, card payments or cards saved through Stripe); imported customer IDs
+and cards alone still need the read but lock no mode. Customers the app linked (a `billing.customer.linked` or
+`link_campaign.customer_matched` audit names them) always need the read, whatever is
+stored. A save that finds references recorded while the key was checked fails with a
+conflict. Setup offers no switch from test to live: the owner finishes setup and
+switches in Settings → Payments. With no stored key, imported customer IDs alone (none
+the app linked, and no attempts, card payments or cards) tie the gym to no account, so
+a key in either mode is accepted without a read; `skip` is never checked. A provider
+failure during the check (the permission probe, the reference read or the endpoint
+registration) is answered as Settings → Payments answers it (`stripeFailure`): a
+missing permission is a 400 with `restrictedKey: ['missing_permission']`, anything
+else a 503 `unavailable`, logged as `setup.stripe_key_failed` without Stripe's message;
+nothing is saved.
 
 Backup setup first probes the destination through `settings/backup-destination.ts`
 (list, write, read and delete under the gym's prefix), refusing with `unreachable`

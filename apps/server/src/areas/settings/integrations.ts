@@ -19,17 +19,16 @@ import { logError } from '../../core/log.js';
 import { gymIntegrationsEditable } from '../../core/tenancy.js';
 import { passwordLogin, type AuthConfig } from '../../infra/auth/config.js';
 import { StripePayments, stripeTransport } from '../../infra/payments/stripe.js';
-import { StripePermissionError } from '../../infra/payments/setup.js';
 import type { PaymentTransport } from '../../infra/payments/transport.js';
 import { setupTestMessage } from '../../emails/setup/setup.js';
-import { createStripeConnection, readStripeConfig, restrictedKeyMode, type StripeConfig, type StripeProvisioner } from '../setup/stripe-step.js';
+import { createStripeConnection, readStripeConfig, restrictedKeyMode, stripeFailure, type StripeConfig, type StripeProvisioner } from '../setup/stripe-step.js';
 import { pauseRestoredBillingForStripe } from './go-live.restore.js';
 import { backupColumns, backupKeyPair, newBlobKey, recipientOf } from '../setup/backup-key.js';
 import { customerUnlinkedAction } from '../billing/customers.js';
 import { promoteDefaultCard } from '../billing/payments.mutations.js';
 import { stripeTestClearedAction as testClearedAction } from '../billing/stripe-writes.js';
 import { testCleared } from '../billing/transitions/store.js';
-import { importedOnly, linkedCustomer, readsStripeReference, stripeReference, testCards } from './integrations.query.js';
+import { importedOnly, linkedCustomer, readsStripeReference, savedStripeMode, stripeReference, testCards } from './integrations.query.js';
 import { encryptSmtpConfig, installSmtpFingerprint, readSmtpSchema, sendSmtpTest, smtpFromEnvironment, storedSmtpFromRequest, type SendSmtpTest } from './smtp.js';
 import { readEmailSendFailure, type EmailSendFailure } from './email-status.js';
 import { createGoogleClientResolver, encryptGoogleConfig, readGoogleConfig, requireGoogleClient, type CheckGoogle } from './google-login.js';
@@ -403,15 +402,6 @@ export function createIntegrationsService(options: IntegrationsOptions) {
   };
   const sms = createSmsIntegration({ key: options.key, scope, clock, tenancy: options.config.tenancy, sandbox,
     assertChangeable, userOf, assertCurrent, save, ...(options.smsFactory ? { smsFactory: options.smsFactory } : {}) });
-  /** Stripe's answer as a safe error: a missing permission names its resource; anything else is unavailable and logged without its message. */
-  function stripeFailure(gymId: string, error: unknown): AppError {
-    if (error instanceof AppError) return error;
-    if (error instanceof StripePermissionError)
-      return new AppError('invalid_request', 'Check the Stripe permission for ' + error.resource, { restrictedKey: ['missing_permission'] });
-    logError('settings.stripe_key_failed', { gymId }, error);
-    return new AppError('unavailable', 'Stripe could not be reached or refused the key');
-  }
-
   return {
     async bankDebitStatus(gymId: string) {
       return scope(gymId, async tx => {
@@ -534,7 +524,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
       assertChangeable();
       const userId = userOf(context), gymId = context.gymId;
       const mode = restrictedKeyMode(input.restrictedKey);
-      const { gym, previous, reference, switching } = await scope(gymId, async (tx) => {
+      const { gym, previous, reference, saved, switching } = await scope(gymId, async (tx) => {
         const [row] = await readGym(tx, gymId);
         if (!row) throw new AppError('not_found', 'Gym not found');
         const stored = readStripeConfig(options.key, row.stripeConfig, gymId);
@@ -542,11 +532,13 @@ export function createIntegrationsService(options: IntegrationsOptions) {
         const clearing = input.clearTestData && stored?.mode === 'test' && mode === 'live';
         // Checked again by the switch; here, before any endpoint is registered.
         if (clearing && row.revision === input.revision) await assertSettled(tx);
-        return { gym: row, previous: stored, reference: await stripeReference(tx, gymId), switching: clearing };
+        return { gym: row, previous: stored, reference: await stripeReference(tx, gymId), saved: await savedStripeMode(tx, gymId), switching: clearing };
       });
       assertRevised(gym.revision === input.revision ? [gym] : []);
-      if (reference && previous && previous.mode !== mode && !switching)
-        throw new AppError('conflict', 'Stripe customers and payments exist in ' + previous.mode + ' mode', { restrictedKey: ['mode_locked'] });
+      // With no key stored (a setup skip, or settings that can't be read), the latest saved key's mode, while the app's own references exist.
+      const locked = previous?.mode ?? (reference?.own ? saved : null);
+      if (reference && locked && locked !== mode && !switching)
+        throw new AppError('conflict', 'Stripe customers and payments exist in ' + locked + ' mode', { restrictedKey: ['mode_locked'] });
       const checked = reference && !switching && !importedOnly(previous, reference) ? reference : null;
       const origin = await options.origin(gymId);
       let connected: { config: StripeConfig; reused: boolean };
@@ -556,7 +548,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
           if (checked && !await readsStripeReference(transportFor(input.restrictedKey), checked))
             throw new AppError('conflict', 'The key belongs to another Stripe account', { restrictedKey: ['account_locked'] });
         });
-      } catch (error) { throw stripeFailure(gymId, error); }
+      } catch (error) { throw stripeFailure(gymId, error, 'settings.stripe_key_failed'); }
       const { config, reused } = connected;
       // Assigned inside the save's transaction; the cast keeps TypeScript from narrowing it to null here.
       let retire = null as { checkouts: string[]; intents: string[] } | null;

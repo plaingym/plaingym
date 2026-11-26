@@ -120,7 +120,9 @@ export function createCustomersService(options: CustomersOptions) {
         const cleared = event?.action === stripeTestClearedAction
           || (event?.after as { testDataCleared?: unknown } | null)?.testDataCleared === true;
         await audit(tx, gymId, householdId, customerUnlinkedAction, {
-          customerId: null, reason: cleared ? 'stripe_test_cleared' : 'stripe_mode_changed',
+          // Only setup's skip saves no mode: the key was removed, not changed.
+          customerId: null, reason: cleared ? 'stripe_test_cleared'
+            : (event?.after as { mode?: unknown } | null)?.mode === null ? 'stripe_removed' : 'stripe_mode_changed',
         });
         return null;
       }

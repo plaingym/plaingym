@@ -47,7 +47,8 @@ gym's switch snapshot changed meanwhile (`stripeSwitchSnapshot`: the latest
 the Stripe mode, or the latest setup Stripe step save that changed or removed a
 stored mode): the service
 writes the unlink audit itself (`reason: 'stripe_test_cleared'` after a clear,
-or `'stripe_mode_changed'` after any other of those saves), then starts once more. The lock and audit comparison
+`'stripe_removed'` after a setup step `skip` removed the key, or
+`'stripe_mode_changed'` after any other of those saves), then starts once more. The lock and audit comparison
 use `stripeWriteCurrent` in `stripe-writes.ts`, shared with the runner, refunds and
 webhook writes. Card setup starts record their customer, so a session made
 for an earlier customer is never reused (`signed-link-checkout.ts`).
@@ -182,6 +183,5 @@ and is finished as stale when it changes, or the household's customer does. A
 request queued by an earlier release carries no version marker: it and its pages
 are checked against the marker it was written with, the latest test-data clear. A switch after that request still makes it stale, because
 the mode of a gym with a linked customer changes only through the Payments save's clear
-(the setup wizard's Stripe step refuses a key in the other mode while a key is stored and
-the gym holds one). One path escapes it: after the setup step's `skip`, a key in either
-mode is saved without a read while households hold the only Stripe references.
+(the setup wizard's Stripe step refuses a key in the other mode while the gym holds one,
+comparing the latest saved key's mode when its `skip` left none stored).

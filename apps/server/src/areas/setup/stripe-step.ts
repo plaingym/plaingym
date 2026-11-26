@@ -8,10 +8,10 @@ import { clock as systemClock } from '../../core/clock.js';
 import { encryptSecret, decryptSecret } from '../../core/secrets.js';
 import { logError, logInfo } from '../../core/log.js';
 import { StripePayments, stripeTransport } from '../../infra/payments/stripe.js';
-import { stripeProvisioner } from '../../infra/payments/setup.js';
+import { StripePermissionError, stripeProvisioner } from '../../infra/payments/setup.js';
 import type { PaymentTransport } from '../../infra/payments/transport.js';
 import { pauseRestoredBillingForStripe } from '../settings/go-live.restore.js';
-import { importedOnly, readsStripeReference, stripeReference } from '../settings/integrations.query.js';
+import { importedOnly, readsStripeReference, savedStripeMode, stripeReference } from '../settings/integrations.query.js';
 
 export interface StripeConfig { apiKey: string; endpointId: string; webhookSecret: string; mode: 'test' | 'live' }
 export type StripeProvisioner = ReturnType<typeof stripeProvisioner>;
@@ -74,6 +74,17 @@ export function createStripeConnection(options: { provisioner?: ((key: string) =
     },
   };
 }
+/**
+ * Stripe's answer to a key change as a safe error, for setup and Settings → Payments: an `AppError` is kept, a missing
+ * permission names its resource, and anything else is `unavailable`, logged as `event` without Stripe's message.
+ */
+export function stripeFailure(gymId: string, error: unknown, event: string): AppError {
+  if (error instanceof AppError) return error;
+  if (error instanceof StripePermissionError)
+    return new AppError('invalid_request', 'Check the Stripe permission for ' + error.resource, { restrictedKey: ['missing_permission'] });
+  logError(event, { gymId }, error);
+  return new AppError('unavailable', 'Stripe could not be reached or refused the key');
+}
 export function createStripeStep(options: { key: Buffer; origin: string; clock?: Clock; scope?: typeof forGym;
   /** A sandbox accepts test-mode keys only. */
   demoMode?: boolean; provisioner?: (key: string) => StripeProvisioner;
@@ -90,30 +101,36 @@ export function createStripeStep(options: { key: Buffer; origin: string; clock?:
         throw new AppError('not_found', 'Setup not found');
       assertRevised(gym.revision === revision ? [gym] : []);
       if (!state.setup.completedSteps?.includes(5)) throw new AppError('conflict', 'Complete the preceding setup step');
-      return { gym, reference: references ? await stripeReference(tx, context.gymId) : null };
+      return { gym, reference: references ? await stripeReference(tx, context.gymId) : null,
+        saved: references ? await savedStripeMode(tx, context.gymId) : null };
     });
   }
   return {
     /**
      * Saves or skips the gym's Stripe key. While the gym holds Stripe customers, cards or card payments (a restore can
      * bring them into an unfinished wizard), a key is held to the same rules as Settings → Payments: one in the other mode
-     * is refused, and a same-mode key must read one of them. Setup offers no switch from test to live; the owner makes
-     * it later in Settings → Payments.
+     * is refused, and a same-mode key must read one of them. With no key stored (after a skip, or settings that can't
+     * be read), the latest saved key's mode is the one compared while the app's own references exist (customers it
+     * linked, attempts, card payments or cards saved through Stripe), not for imported IDs and cards alone. Setup offers
+     * no switch from test to live; the owner makes it later in Settings → Payments.
      */
     async configure(context: MutationContext, input: SetupStripeRequest) {
-      const { gym: before, reference } = await current(context, input.revision, input.choice === 'configure');
+      const { gym: before, reference, saved: savedMode } = await current(context, input.revision, input.choice === 'configure');
       const previous = readStripeConfig(options.key, before.stripeConfig, context.gymId);
       let config: StripeConfig | null = null, reused = false, checked: { paths: string[] } | null = null;
       if (input.choice === 'configure') {
         const mode = restrictedKeyMode(input.restrictedKey, options.demoMode);
-        if (reference && previous && previous.mode !== mode)
-          throw new AppError('invalid_request', 'Stripe customers and payments exist in ' + previous.mode + ' mode', { restrictedKey: ['mode_locked'] });
+        const locked = previous?.mode ?? (reference?.own ? savedMode : null);
+        if (reference && locked && locked !== mode)
+          throw new AppError('invalid_request', 'Stripe customers and payments exist in ' + locked + ' mode', { restrictedKey: ['mode_locked'] });
         checked = reference && !importedOnly(previous, reference) ? reference : null;
-        // After the permission probe, so a key missing a permission is told which one; before any endpoint is registered.
-        ({ config, reused } = await connection.connect(context.gymId, options.origin, input.revision, input.restrictedKey, previous, async () => {
-          if (checked && !await readsStripeReference(transportFor(input.restrictedKey), checked))
-            throw new AppError('invalid_request', 'The key belongs to another Stripe account', { restrictedKey: ['account_locked'] });
-        }));
+        try {
+          // After the permission probe, so a key missing a permission is told which one; before any endpoint is registered.
+          ({ config, reused } = await connection.connect(context.gymId, options.origin, input.revision, input.restrictedKey, previous, async () => {
+            if (checked && !await readsStripeReference(transportFor(input.restrictedKey), checked))
+              throw new AppError('invalid_request', 'The key belongs to another Stripe account', { restrictedKey: ['account_locked'] });
+          }));
+        } catch (error) { throw stripeFailure(context.gymId, error, 'setup.stripe_key_failed'); }
       }
       // Registration is idempotent. A failed CAS leaves an unreferenced endpoint, never active credentials; the next
       // successful save deletes it with the gym's other stale endpoints.

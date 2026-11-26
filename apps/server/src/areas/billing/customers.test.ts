@@ -346,6 +346,25 @@ describe('household Stripe customer reservations with PostgreSQL', () => {
     expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ idempotencyKey: `household:${f.household.id}:customer:after:${abandoned!.id}` }));
     expect(saved.household.stripeCustomerId).toBe(linked);
   });
+  it('records stripe_removed when the setup step skips a stored key during creation', async () => {
+    const f = await fixture(), create = f.provider.createCustomer.bind(f.provider);
+    let first: string | undefined;
+    const spy = vi.spyOn(f.provider, 'createCustomer').mockImplementationOnce(async request => {
+      const made = await create(request);
+      first = made.id;
+      // The audit the setup step's skip writes when it removes a stored key.
+      await db.forGym(f.gymId, tx => tx.insert(auditEvents).values({ gymId: f.gymId, actorKind: 'system',
+        action: 'setup.stripe_configured', targetType: 'gym', targetId: f.gymId, before: { mode: 'test' },
+        after: { configured: false, mode: null, endpointId: null, endpointReused: false }, occurredAt: f.clock.now() }));
+      return made;
+    });
+    const linked = await f.service.ensureCustomer(f.gymId, f.household.id);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(linked).not.toBe(first);
+    const saved = await f.read(), abandoned = saved.audits.find(a => a.action === customerUnlinkedAction);
+    expect(abandoned).toMatchObject({ targetId: f.household.id, after: { customerId: null, reason: 'stripe_removed' } });
+    expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ idempotencyKey: `household:${f.household.id}:customer:after:${abandoned!.id}` }));
+  });
   it('still records stripe_test_cleared when a clearing save commits both audits in one transaction', async () => {
     const f = await fixture(), create = f.provider.createCustomer.bind(f.provider);
     let first: string | undefined;

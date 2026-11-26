@@ -24,7 +24,7 @@ import { createInvoiceTransitions } from '../billing/transitions/index.js';
 import { abandonedAttempt } from '../billing/transitions/store.js';
 import { createLapsedRefundJobs } from '../billing/payments.jobs.js';
 import { refundSettleSkewMs } from '../billing/transitions/lapsed-refunds.js';
-import type { StripeConfig } from '../setup/stripe-step.js';
+import { createStripeStep, type StripeConfig } from '../setup/stripe-step.js';
 import { createIntegrationsService, type IntegrationsOptions } from './integrations.js';
 import { createIntegrationsRoutes } from './integrations.routes.js';
 
@@ -636,6 +636,39 @@ describe('Settings → Payments: test to live', () => {
     accounts.set('rk_live_gymfrotated', live);
     const rotated = await saveTo(appF(), 'rk_live_gymfrotated');
     expect(rotated.status, JSON.stringify(rotated.json)).toBe(200);
+  });
+});
+
+describe('Settings → Payments after the setup step skipped a saved key', () => {
+  it('locks the latest saved mode and the account of the customers the app linked', async () => {
+    const gymId = uuidv7(), userId = (await factory('authUser', gymId)).id;
+    await factory('gyms', gymId, { settings: { setup: { ownerId: userId, completed: false, completedSteps: [0, 1, 2, 3, 4, 5] } } });
+    const setup = createStripeStep({ key, origin, clock, scope: database.forGym, provisioner: base.provisioner! });
+    const context = { gymId, actor: { kind: 'user', userId } } as const;
+    await setup.configure(context, { choice: 'configure', revision: 1, restrictedKey: 'rk_test_skipfirst' });
+    await setup.configure(context, { choice: 'skip', revision: 2 });
+    const household = await factory('households', gymId, { stripeCustomerId: 'cus_linkedskipped' });
+    await factory('auditEvents', gymId, { action: 'billing.customer.linked', targetType: 'household', targetId: household.id,
+      after: { customerId: 'cus_linkedskipped' } });
+    const app = () => server({ gymId, userId });
+    const put = async (restrictedKey: string, extra: Record<string, unknown> = {}) =>
+      call(app(), 'PUT', '/stripe', { revision: (await read(app())).revision, restrictedKey, ...extra });
+    const before = await row(gymId);
+    expect(before.stripeConfig).toBeNull();
+    const liveAccount = account('rk_live_skippedlive');
+    for (const extra of [{}, { clearTestData: true }]) {
+      const refused = await put('rk_live_skippedlive', extra);
+      expect(refused.status).toBe(409);
+      expect(refused.json?.error?.details).toEqual({ restrictedKey: ['mode_locked'] });
+    }
+    expect(liveAccount.requests).toEqual([]);
+    // A test key for another account gets a 404 for the linked customer.
+    const foreign = await put('rk_test_skippedforeign');
+    expect(foreign.status).toBe(409);
+    expect(foreign.json?.error?.details).toEqual({ restrictedKey: ['account_locked'] });
+    expect(account('rk_test_skippedforeign').requests.some((request) => request.path === '/v1/customers/cus_linkedskipped')).toBe(true);
+    expect(await row(gymId)).toMatchObject({ stripeConfig: null, revision: before.revision });
+    expect((await read(app())).payments).toMatchObject({ configured: false, accountLocked: true, importedCustomersOnly: false });
   });
 });
 

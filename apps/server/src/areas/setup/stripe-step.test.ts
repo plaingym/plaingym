@@ -10,11 +10,11 @@ import { canStaff, staffRoles } from '@plaingym/shared';
 import type { Principal, RequestEnvironment } from '../../core/context.js';
 import { TestClock } from '../../core/clock.js';
 import { errorHandler, respondError } from '../../core/errors.js';
-import { decryptSecret } from '../../core/secrets.js';
+import { decryptSecret, encryptSecret } from '../../core/secrets.js';
 import { STRIPE_API_VERSION, STRIPE_EVENTS } from '../../infra/payments/stripe.js';
 import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
-import { stripeProvisioner } from '../../infra/payments/setup.js';
-import type { PaymentTransport } from '../../infra/payments/transport.js';
+import { StripePermissionError, stripeProvisioner } from '../../infra/payments/setup.js';
+import type { ObjectData, PaymentTransport } from '../../infra/payments/transport.js';
 import { setLogSink } from '../../core/log.js';
 import { createStripeStep, type StripeConfig, type StripeProvisioner } from './stripe-step.js';
 import { createStripeStepRoutes } from './stripe-step.routes.js';
@@ -296,5 +296,152 @@ describe("the gym's Stripe references", () => {
       code: 'conflict', message: 'Stripe customers were recorded while the key was checked; try again' });
     expect(await state(id)).toEqual(before);
     expect(paths).toEqual([]);
+  });
+});
+
+describe('customers the app linked, with no key stored', () => {
+  /** Reads of `cus_linked` get `answer` (a 404 `resource_missing` when none); records every path. */
+  function linkedStep(answer?: () => Promise<ObjectData>, validate?: () => Promise<void>) {
+    const paths: string[] = [], registered: string[] = [];
+    const transport = (_apiKey: string): PaymentTransport => ({ async request(input) {
+      assertNoTransaction('payments.transport');
+      paths.push(input.method + ' ' + input.path);
+      if (answer && input.method === 'GET' && input.path === '/v1/customers/cus_linked') return answer();
+      throw Object.assign(new Error('No such customer'), { code: 'resource_missing', statusCode: 404 });
+    } });
+    const step = createStripeStep({ key, origin: 'https://gym.invalid', clock, scope: database.forGym, transport,
+      provisioner: (apiKey) => ({ ...provisioner(apiKey),
+        ...(validate ? { validate } : {}),
+        async register(gym, origin, revision, previous) {
+          registered.push(apiKey); return provisioner(apiKey).register(gym, origin, revision, previous);
+        } }) });
+    return { step, paths, registered };
+  }
+  /** A household whose customer the customers service linked, named by its link audit. */
+  async function linkCustomer(id: string) {
+    const household = await factory('households', id, { stripeCustomerId: 'cus_linked' });
+    await factory('auditEvents', id, { action: 'billing.customer.linked', targetType: 'household', targetId: household.id,
+      after: { customerId: 'cus_linked' } });
+  }
+  /** An unfinished setup that saved a test key and then skipped (nothing stored), with an app-linked customer. */
+  async function skippedGym() {
+    const { id, context } = await newGym();
+    await service.configure(context, { choice: 'configure', revision: 1, restrictedKey: 'rk_test_LINKFIRST' });
+    await service.configure(context, { choice: 'skip', revision: 2 });
+    await linkCustomer(id);
+    return { id, context };
+  }
+  const snapshot = async (id: string) => {
+    const [gym] = await database.forGym(id, (tx) => tx.select().from(gyms));
+    const audits = await database.forGym(id, (tx) => tx.select({ id: auditEvents.id }).from(auditEvents));
+    return { stripeConfig: gym!.stripeConfig, revision: gym!.revision, settings: gym!.settings, audits: audits.length };
+  };
+  const failureLines = async (run: () => Promise<unknown>) => {
+    const lines: string[] = [], previous = setLogSink((line) => { lines.push(line); });
+    try { await run(); } finally { setLogSink(previous); }
+    return lines.filter((line) => line.includes('"event":"setup.stripe_key_failed"'));
+  };
+
+  it('refuses a key in the latest saved mode\'s other mode before any provider request, and saves nothing', async () => {
+    const { id, context } = await skippedGym(), before = await snapshot(id), { step, paths, registered } = linkedStep(), count = checks.length;
+    expect(before.stripeConfig).toBeNull();
+    await expect(step.configure(context, { choice: 'configure', revision: 3, restrictedKey: 'rk_live_LINKOTHERMODE' })).rejects.toMatchObject({
+      code: 'invalid_request', message: 'Stripe customers and payments exist in test mode', details: { restrictedKey: ['mode_locked'] } });
+    expect(await snapshot(id)).toEqual(before);
+    expect(registered).toEqual([]);
+    expect(paths).toEqual([]);
+    expect(checks.length).toBe(count);
+  });
+  it('requires a same-mode key to read the linked customer, and saves one that does after one read', async () => {
+    const { id, context } = await skippedGym(), before = await snapshot(id);
+    const refused = linkedStep();
+    await expect(refused.step.configure(context, { choice: 'configure', revision: 3, restrictedKey: 'rk_test_LINKOTHERACCOUNT' })).rejects.toMatchObject({
+      code: 'invalid_request', details: { restrictedKey: ['account_locked'] } });
+    expect(await snapshot(id)).toEqual(before);
+    expect(refused.registered).toEqual([]);
+    expect(refused.paths).toEqual(['GET /v1/customers/cus_linked']);
+    const reading = linkedStep(async () => ({ id: 'cus_linked', object: 'customer' }));
+    expect(await reading.step.configure(context, { choice: 'configure', revision: 3, restrictedKey: 'rk_test_LINKSAMEACCOUNT' }))
+      .toMatchObject({ configured: true, mode: 'test', revision: 4 });
+    expect(await stored(id)).toMatchObject({ apiKey: 'rk_test_LINKSAMEACCOUNT', mode: 'test' });
+    expect(reading.paths).toEqual(['GET /v1/customers/cus_linked']);
+  });
+  it('compares the latest saved mode when the stored settings cannot be read', async () => {
+    const { id, context } = await newGym();
+    await service.configure(context, { choice: 'configure', revision: 1, restrictedKey: 'rk_test_LINKUNREADABLE' });
+    const unreadable = encryptSecret(Buffer.alloc(32, 9), { secretClass: 'stripe_config', owner: id }, JSON.stringify({ mode: 'live' }));
+    await database.forGym(id, (tx) => tx.update(gyms).set({ stripeConfig: unreadable }).where(eq(gyms.id, id)));
+    await linkCustomer(id);
+    const before = await snapshot(id), { step, paths, registered } = linkedStep(async () => ({ id: 'cus_linked', object: 'customer' }));
+    const previous = setLogSink(() => {});
+    try {
+      await expect(step.configure(context, { choice: 'configure', revision: 2, restrictedKey: 'rk_live_UNREADLIVE' })).rejects.toMatchObject({
+        code: 'invalid_request', message: 'Stripe customers and payments exist in test mode', details: { restrictedKey: ['mode_locked'] } });
+    } finally { setLogSink(previous); }
+    expect(await snapshot(id)).toEqual(before);
+    expect(registered).toEqual([]);
+    expect(paths).toEqual([]);
+  });
+  it('still accepts a key in either mode without a read when only imported customer IDs exist and nothing is stored', async () => {
+    const { id, context } = await newGym();
+    await service.configure(context, { choice: 'configure', revision: 1, restrictedKey: 'rk_test_IMPORTEDFIRST' });
+    await service.configure(context, { choice: 'skip', revision: 2 });
+    await factory('households', id, { stripeCustomerId: 'cus_imported' });
+    const { step, paths } = linkedStep();
+    expect(await step.configure(context, { choice: 'configure', revision: 3, restrictedKey: 'rk_live_IMPORTEDLIVE' }))
+      .toMatchObject({ configured: true, mode: 'live' });
+    expect(await stored(id)).toMatchObject({ apiKey: 'rk_live_IMPORTEDLIVE', mode: 'live' });
+    expect(paths).toEqual([]);
+  });
+  it('locks no mode for imported customer IDs and cards alone with nothing stored, but still reads them', async () => {
+    const { id, context } = await newGym();
+    await service.configure(context, { choice: 'configure', revision: 1, restrictedKey: 'rk_test_IMPCARDFIRST' });
+    await service.configure(context, { choice: 'skip', revision: 2 });
+    // No link audit names it, so the customer counts as imported.
+    const household = await factory('households', id, { stripeCustomerId: 'cus_linked' });
+    const card = await factory('paymentMethods', id, { householdId: household.id });
+    await factory('auditEvents', id, { action: 'payment_method.created', targetType: 'payment_method', targetId: card.id });
+    const { step, paths } = linkedStep(async () => ({ id: 'cus_linked', object: 'customer' }));
+    expect(await step.configure(context, { choice: 'configure', revision: 3, restrictedKey: 'rk_live_IMPCARDLIVE' }))
+      .toMatchObject({ configured: true, mode: 'live' });
+    expect(await stored(id)).toMatchObject({ apiKey: 'rk_live_IMPCARDLIVE', mode: 'live' });
+    expect(paths).toEqual(['GET /v1/customers/cus_linked']);
+  });
+  it('answers a rate-limited reference read as unavailable, logged once without the message, and saves nothing', async () => {
+    const { id, context } = await skippedGym(), before = await snapshot(id);
+    const { step, registered } = linkedStep(async () => { throw Object.assign(new Error('Too many requests rk_test_LINKLIMITED'), { statusCode: 429, code: 'rate_limit' }); });
+    const lines = await failureLines(() => expect(step.configure(context, { choice: 'configure', revision: 3, restrictedKey: 'rk_test_LINKLIMITED' }))
+      .rejects.toMatchObject({ code: 'unavailable', message: 'Stripe could not be reached or refused the key' }));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toContain('rk_test_LINKLIMITED');
+    expect(await snapshot(id)).toEqual(before);
+    expect(registered).toEqual([]);
+  });
+  it('answers a probe network error as a 503 through the route, logged once, and saves nothing', async () => {
+    const { id } = await skippedGym(), before = await snapshot(id);
+    const { step, paths, registered } = linkedStep(undefined, async () => { throw new Error('network'); });
+    let status = 0;
+    const lines = await failureLines(async () => {
+      const response = await request(app({ kind: 'staff', userId: ownerId, gymId: id, roles: ['owner'] }, id, step),
+        { choice: 'configure', revision: 3, restrictedKey: 'rk_test_LINKNETWORK' });
+      status = response.status;
+      expect(JSON.stringify(await response.json())).toContain('unavailable');
+    });
+    expect(status).toBe(503);
+    expect(lines).toHaveLength(1);
+    expect(await snapshot(id)).toEqual(before);
+    expect(paths).toEqual([]);
+    expect(registered).toEqual([]);
+  });
+  it('answers a probe missing a permission as missing_permission (400), and saves nothing', async () => {
+    const { id, context } = await skippedGym(), before = await snapshot(id);
+    const { step, registered } = linkedStep(undefined, async () => { throw new StripePermissionError('Webhook Endpoints'); });
+    await expect(step.configure(context, { choice: 'configure', revision: 3, restrictedKey: 'rk_test_LINKPERMISSION' })).rejects.toMatchObject({
+      code: 'invalid_request', details: { restrictedKey: ['missing_permission'] } });
+    const response = await request(app({ kind: 'staff', userId: ownerId, gymId: id, roles: ['owner'] }, id, step),
+      { choice: 'configure', revision: 3, restrictedKey: 'rk_test_LINKPERMISSION' });
+    expect(response.status).toBe(400);
+    expect(await snapshot(id)).toEqual(before);
+    expect(registered).toEqual([]);
   });
 });
