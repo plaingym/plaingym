@@ -656,6 +656,29 @@ describe('go-live settings', () => {
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
     expect(document.activeElement).not.toBe(alert);
   });
+  it.each([
+    { status: 409, code: 'conflict', refusal: 'no_provider',
+      reason: 'No working SMS provider is saved, so member texts were not turned on, and the latest values could not be loaded.' },
+    { status: 503, code: 'unavailable', refusal: 'read_failed',
+      reason: 'The SMS provider could not be checked, so member texts were not turned on, and the latest values could not be loaded.' },
+  ])('keeps the $refusal SMS reason when the checklist read after it fails, and clears it on a good retry', async ({ status, code, refusal, reason }) => {
+    live.mockResolvedValueOnce(reply(200, checklist())).mockResolvedValueOnce(reply(500)).mockResolvedValue(reply(200, checklist()));
+    client.PATCH.mockResolvedValue({ response: { ok: false, status },
+      error: { error: { code, details: { memberSmsEnabled: [refusal] } } } });
+    const user = userEvent.setup(); start();
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Member texts' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('The request failed. Please try again.'));
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    const alert = screen.getByRole('alert'), text = alert.textContent!;
+    expect(text.indexOf(reason)).toBe(0);
+    expect(text.indexOf('The request failed. Please try again.')).toBeGreaterThan(reason.length - 1);
+    const retry = within(alert).getByRole('button', { name: 'Try again' });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(document.activeElement).not.toBe(alert);
+    await user.click(retry);
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Turn on: Member texts' }).disabled).toBe(false);
+  });
   it('keeps switches locked through overlapping explicit reloads until the latest read answers', async () => {
     let resolveFirst!: (value: unknown) => void, resolveSecond!: (value: unknown) => void;
     live.mockResolvedValueOnce(reply(200, checklist()))

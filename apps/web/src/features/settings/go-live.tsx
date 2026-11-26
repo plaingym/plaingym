@@ -89,7 +89,7 @@ export function GoLiveSettings() {
   // A refusal, a timed-out save or an unchecked Stripe whose follow-up read failed says what became of the save, in the read
   // failure's own alert.
   const refusedUnread = readFailed && (message === 'changed' || message === 'justSaved' || message === 'timeout'
-    || message === 'paymentsReadFailed') ? message : null;
+    || message === 'paymentsReadFailed' || message === 'smsProviderRequired' || message === 'smsProviderReadFailed') ? message : null;
   useEffect(() => { if (behind) void query.refetch(); }, [behind, settings?.revision, query.refetch]);
   // The past-due dialog is modal, so it closes once no save is running if a read failed (the page's retry is behind it),
   // billing is already on (a save that timed out may have turned it on, leaving nothing to confirm), or the list it asks
