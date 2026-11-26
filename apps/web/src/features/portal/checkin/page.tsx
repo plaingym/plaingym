@@ -34,10 +34,11 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
   // never drawn there, or given focus.
   const [shown, setShown] = useState(memberId);
   if (shown !== memberId) { setShown(memberId); setError(''); }
-  // A failed creation whose re-read failed too is no longer told once the read's own error replaces the section, so a later
-  // read that answers never brings it back or gives it the focus. It is kept while that re-read is still to answer: the read
-  // in error may be one made while the creation was being sent.
-  if (error === 'createError' && !waiting && code.isError) setError('');
+  // A failure told on the page (a creation's, or a replacement's once its dialog is closed) is no longer told once its
+  // re-read has failed too and the read's own error replaces the section, so a later read that answers never brings it back
+  // or gives it the focus. It is kept while that re-read is still to answer (the read in error may be one made while the
+  // request was being sent), and while the dialog is open, which has its own "Try again".
+  if (error && !waiting && code.isError && confirming !== memberId) setError('');
   // The page can move to another member by itself, when a list read drops the chosen one. The confirmation closes then; while
   // a replacement is being sent, it waits for the answer.
   useEffect(() => { if (confirming !== null && confirming !== memberId && !busy) setConfirming(null); }, [confirming, memberId, busy]);
@@ -55,7 +56,10 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
     locked.current = true; setBusy(true); setError('');
     try {
       // A code regenerated in another household than this page's is never shown.
-      cache.setQueryData([...scope.key, 'checkin-code', id], scope.own(await scope.run(() => client.regenerateCheckin(id, code.data!.revision, scope.key[4]!))).data);
+      const answer = scope.own(await scope.run(() => client.regenerateCheckin(id, code.data!.revision, scope.key[4]!))).data;
+      // A code read still in flight may have been answered before this change, so it must not overwrite the answer.
+      await cache.cancelQueries({ queryKey: [...scope.key, 'checkin-code', id], exact: true });
+      cache.setQueryData([...scope.key, 'checkin-code', id], answer);
       setConfirming(null);
     } catch (cause) {
       // The member can be changed while a first code is being created, or leave the list while a replacement is being sent.

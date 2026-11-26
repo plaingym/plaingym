@@ -296,6 +296,69 @@ describe('portal check-in code', () => {
     await screen.findByText(inactive);
     expect(screen.getByRole('alert').textContent).toBe(createError);
   });
+  it('never brings back a refused creation conflict when a read after a failed one finds a code', async () => {
+    const user = userEvent.setup(); page();
+    await user.selectOptions(await screen.findByLabelText('Code for'), child);
+    const create = await screen.findByRole('button', { name: 'Create a code' });
+    client.regenerateCheckin.mockRejectedValueOnce(new ApiError(409, 'request_failed'));
+    client.checkinCode.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await user.click(create);
+    await screen.findByText("We couldn't load the check-in code. Please try again.");
+    expect(screen.queryByText(conflict)).toBeNull();
+    expect(screen.queryByText(conflictReading)).toBeNull();
+    const picker = screen.getByLabelText('Code for');
+    act(() => picker.focus());
+    client.checkinCode.mockImplementationOnce(made);
+    refocus();
+    await screen.findByAltText('QR check-in code for Casey Parent');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(document.activeElement).toBe(picker);
+  });
+  it.each([
+    ['failed replacement', new TypeError('Failed to fetch'), replaceError],
+    ['refused replacement', new ApiError(409, 'request_failed'), conflictReading],
+  ])('never brings back the message of a %s whose dialog was closed after a failed re-read', async (_name, cause, message) => {
+    client.regenerateCheckin.mockRejectedValueOnce(cause);
+    const user = userEvent.setup(); page();
+    await user.click(await screen.findByRole('button', { name: 'Replace this code' }));
+    client.checkinCode.mockRejectedValueOnce(new ApiError(500, 'request_failed'));
+    await user.click(replace());
+    const dialog = within(screen.getByRole('dialog'));
+    await dialog.findByRole('button', { name: 'Try again' });
+    expect(dialog.getByRole('alert').textContent).toBe(message);
+    await user.click(screen.getAllByRole('button', { name: 'Keep the current code' }).at(-1)!);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByText("We couldn't load the check-in code. Please try again.")).toBeDefined();
+    expect(screen.queryByText(message)).toBeNull();
+    const picker = screen.getByLabelText('Code for');
+    act(() => picker.focus());
+    refocus();
+    await screen.findByAltText('QR check-in code for Pat Parent');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(document.activeElement).toBe(picker);
+  });
+  it('shows the replaced code when a read still in flight answers after the replacement', async () => {
+    const replaced = 'pgci1_' + 'b'.repeat(43);
+    const user = userEvent.setup(); page();
+    await screen.findByAltText('QR check-in code for Pat Parent');
+    await user.click(screen.getByRole('button', { name: 'Replace this code' }));
+    let finish!: (value: unknown) => void;
+    client.regenerateCheckin.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await user.click(replace());
+    let read!: () => void;
+    client.checkinCode.mockImplementationOnce((memberId: string) => new Promise(resolve => { read = () => resolve(answer({ memberId, code, version: 1, revision: 4 })); }));
+    refocus();
+    await waitFor(() => expect(client.checkinCode).toHaveBeenCalledTimes(2));
+    await act(async () => finish(answer({ memberId: parent, code: replaced, version: 2, revision: 5 })));
+    await act(async () => read());
+    // The cache tells the page on a later timer, so a late answer would be drawn only after it.
+    await act(() => new Promise<void>(resolve => setTimeout(resolve, 10)));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(vi.mocked(qrDataUrl).mock.lastCall![0]).toBe(replaced);
+    await user.click(screen.getByRole('button', { name: 'Replace this code' }));
+    await user.click(replace());
+    expect(client.regenerateCheckin).toHaveBeenLastCalledWith(parent, 5, 'household');
+  });
   it('keeps the failed replacement message when the re-read answers with the same code', async () => {
     client.regenerateCheckin.mockRejectedValueOnce(new TypeError('Failed to fetch'));
     const user = userEvent.setup(); page();
