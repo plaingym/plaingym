@@ -274,6 +274,7 @@ it('shows a sign-out being sent while the menu is closed', async () => {
   const status = screen.getByRole('status');
   expect(status.textContent).toBe('Signing out…');
   expect(status.classList.contains('sr-only')).toBe(false);
+  expect(status.classList.contains('pointer-events-none')).toBe(true);
   await user.click(account);
   // The open menu's disabled Sign out is the cue there.
   expect(screen.getByRole('status')).toBe(status);
