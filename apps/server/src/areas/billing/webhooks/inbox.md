@@ -47,13 +47,23 @@ job's time as `failed_at`, so Health counts it as failed even during the cooldow
 When a reset dispatch fails again, the next sweep moves `failed_at` to the
 job's latest failure on `dispatch_failed` rows. On `handler_failed` rows it
 moves it only when `failed_at` is missing, or older than both the job's failure
-and the latest reset time counted since the last exhaustion (the reset
-dispatch failed before its handler recorded a time); either way the marker
-stays. A reset's time here is the resetting process's own clock read, the run
-time it set, which its audit records as `after.at`; a reset audited without it
-counts by its `occurred_at`. A reset's `occurred_at` can be raised past that
-clock to follow an earlier dispatch audit, so comparing against it could move a
-later failure's time. A fresh handler failure keeps the time `dispatch` wrote.
+and the latest reset's time since the last exhaustion (the reset dispatch
+failed before its handler recorded a time); either way the marker stays. The
+latest reset is the last reset audit by `occurred_at`: reset audits are stamped
+under the event's row lock at least 1 ms after its latest dispatch audit, so
+that order is the order they committed in. Reset audits written before that
+rule can share a stamp; the audit ID breaks the tie, but it comes from each
+process's own clock, so among those older rows an earlier reset from a clock
+ahead can still count as the latest. A reset's time is the resetting process's
+own clock read, the run time it set, which its audit records as `after.at`; a reset
+audited without it counts by its `occurred_at`. A reset's `occurred_at` can be
+raised past that clock to follow an earlier dispatch audit, so comparing against
+it could move a later failure's time, and an earlier reset from a clock ahead
+doesn't count against a later one. A fresh handler failure keeps the time
+`dispatch` wrote. When the latest reset came from a process whose clock lags
+the one that recorded the handler failure, its time can predate that failure,
+so a reset dispatch that then fails before its handler leaves the older
+`failed_at` in place.
 It waits 15 minutes after an exhausted batch, then 30, 60, 120 and 240 minutes
 after subsequent batches. The same `billing.webhook.dispatch_retried` audits
 count resets across restarts, including those triggered by redelivery. The
@@ -73,9 +83,9 @@ only resets at or after the latest exhaustion audit, and the redelivery's own
 reset is the first of them, so the sweep resets the event up to four more times,
 after 30, 60, 120 and 240 minutes, before the next terminal failure records a new
 exhaustion audit. Every dispatch audit (a reset from a redelivery or the sweep, or
-an exhaustion) is written under the event's `stripe_events` row lock and stamped no
-earlier than the event's latest dispatch audit (an exhaustion strictly later, at
-least 1 ms after it), so their timestamp order is the order they committed even when
+an exhaustion) is written under the event's `stripe_events` row lock and stamped
+strictly after the event's latest dispatch audit (by its own clock, or at least 1 ms
+after that audit), so their timestamp order is the order they committed even when
 app processes' clocks disagree. Stripe's automatic redelivery covers failures
 reported by the endpoint in a non-2xx response.
 

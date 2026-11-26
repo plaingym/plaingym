@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, count, eq, exists, gt, gte, inArray, isNotNull, isNull, max, not, notExists, or, type SQL, type SQLWrapper } from 'drizzle-orm';
+import { and, asc, count, desc, eq, exists, gt, gte, inArray, isNotNull, isNull, max, not, notExists, or, type SQL, type SQLWrapper } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- A reset's own clock read comes from its gym-scoped audit JSON, used inside forGym only.
 import { sql } from 'drizzle-orm';
 import { auditEvents, forGym, stripeEvents, writeAudit, type Transaction } from '@plaingym/db';
@@ -17,7 +17,8 @@ type EventId = string | SQLWrapper;
 
 /**
  * A reset's time by the resetting process's own clock (`after.at`, the run time it set); resets audited without it
- * count by their stamp, which a skewed dispatch audit can have raised past that clock.
+ * count by their stamp, which a skewed dispatch audit can have raised past that clock. Only the latest reset's own
+ * time counts (`latestReset`): an earlier reset from a clock ahead never outweighs it.
  */
 const resetTime = sql<Date | string>`coalesce((${auditEvents.after}->>'at')::timestamptz, ${auditEvents.occurredAt})`;
 
@@ -61,11 +62,26 @@ export function webhookRecoveryPage(tx: Transaction, gymId: string, cursor?: str
     .orderBy(asc(candidates.id)).limit(100);
 }
 
+/**
+ * The own time of the event's latest reset since exhaustion, by commit order: reset audits are stamped under the
+ * event's row lock strictly after its latest dispatch audit, so the last by stamp is the last one written. Rows
+ * written before that rule can tie; the ID, from each process's own clock, breaks the tie but may pick an earlier
+ * reset from a clock ahead.
+ */
+function latestReset(tx: Transaction, gymId: string, eventId: EventId) {
+  return tx.select({ at: resetTime }).from(auditEvents).where(and(
+    eq(auditEvents.gymId, gymId), eq(auditEvents.action, webhookDispatchRetried), eq(auditEvents.targetId, eventId),
+    sinceExhaustion(tx, gymId, eventId)))
+    .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
+}
+
 /** Unlocked read of the open, unprocessed events among `eventIds`: their marker, reset count and latest reset since exhaustion. */
 function openEvents(tx: Transaction, gymId: string, eventIds: string[]) {
   return tx.select({
     id: stripeEvents.id, error: stripeEvents.error, failedAt: stripeEvents.failedAt,
-    resets: count(auditEvents.id), lastReset: max(resetTime),
+    resets: count(auditEvents.id),
+    // A scalar subquery: its `audit_events` columns bind to its own FROM, not to the joined rows.
+    lastReset: sql<Date | string | null>`(${latestReset(tx, gymId, stripeEvents.id)})`,
   })
     .from(stripeEvents)
     .leftJoin(auditEvents, and(eq(auditEvents.gymId, gymId), eq(auditEvents.action, webhookDispatchRetried),
@@ -79,10 +95,11 @@ function toDate(value: Date | string | null | undefined): Date | null {
   return value == null ? null : value instanceof Date ? value : new Date(value);
 }
 
-/** Stamps a dispatch audit under the event's row lock so commit order holds across skewed process clocks. */
-async function dispatchStamp(
-  tx: Transaction, gymId: string, eventId: string, now: Date, kind: 'reset' | 'exhausted',
-): Promise<Date> {
+/**
+ * Stamps a dispatch audit under the event's row lock, at least 1 ms after the event's latest one, so its stamps
+ * strictly increase in commit order across skewed process clocks (IDs come from each process's own clock).
+ */
+async function dispatchStamp(tx: Transaction, gymId: string, eventId: string, now: Date): Promise<Date> {
   const [latest] = await tx.select({ at: max(auditEvents.occurredAt) }).from(auditEvents).where(and(
     eq(auditEvents.gymId, gymId),
     inArray(auditEvents.action, [webhookDispatchRetried, webhookDispatchRecoveryExhausted]),
@@ -90,7 +107,7 @@ async function dispatchStamp(
   ));
   const last = toDate(latest?.at);
   if (!last) return now;
-  const floor = kind === 'exhausted' ? last.getTime() + 1 : last.getTime();
+  const floor = last.getTime() + 1;
   return now.getTime() >= floor ? now : new Date(floor);
 }
 
@@ -113,7 +130,7 @@ export function resetRedeliveredDispatch(
       await writeAudit(tx, {
         gymId, actorKind: 'system', action: webhookDispatchRetried, targetType: 'stripe_event',
         targetId: eventId, after: { jobId: failed.jobId, at: now.toISOString() },
-        occurredAt: await dispatchStamp(tx, gymId, eventId, now, 'reset'),
+        occurredAt: await dispatchStamp(tx, gymId, eventId, now),
       });
       reset++;
     }
@@ -177,9 +194,7 @@ export function createWebhookInboxRecovery(options: { job: string; scope?: typeo
             const now = clock.now();
             const [current] = await recovery.failedJobs(options.job, [eventId], { gymId }, transaction);
             if (!current) return;
-            const [reset] = await tx.select({ at: max(resetTime) }).from(auditEvents).where(and(
-              eq(auditEvents.gymId, gymId), eq(auditEvents.action, webhookDispatchRetried),
-              eq(auditEvents.targetId, eventId), sinceExhaustion(tx, gymId, eventId)));
+            const [reset] = await latestReset(tx, gymId, eventId);
             const update = markerUpdate({ ...row, lastReset: toDate(reset?.at) }, current.failedAt);
             if (update === 'dispatch_failed')
               await tx.update(stripeEvents).set({ error: 'dispatch_failed', failedAt: current.failedAt }).where(event);
@@ -189,7 +204,7 @@ export function createWebhookInboxRecovery(options: { job: string; scope?: typeo
             if (resets >= webhookRecoveryLimit) {
               await writeAudit(tx, { gymId, actorKind: 'system', action: webhookDispatchRecoveryExhausted, targetType: 'stripe_event',
                 targetId: eventId, after: { jobId: current.jobId, resets },
-                occurredAt: await dispatchStamp(tx, gymId, eventId, now, 'exhausted') });
+                occurredAt: await dispatchStamp(tx, gymId, eventId, now) });
               return 'exhausted';
             }
             const delayMs = webhookRecoveryDelayMs * 2 ** resets;
@@ -197,7 +212,7 @@ export function createWebhookInboxRecovery(options: { job: string; scope?: typeo
             if (!await recovery.retryFailed(current.jobId, { gymId, runAt: now }, transaction)) return;
             await writeAudit(tx, { gymId, actorKind: 'system', action: webhookDispatchRetried, targetType: 'stripe_event',
               targetId: eventId, after: { jobId: current.jobId, delayMs, at: now.toISOString() },
-              occurredAt: await dispatchStamp(tx, gymId, eventId, now, 'reset') });
+              occurredAt: await dispatchStamp(tx, gymId, eventId, now) });
             return 'recovered';
           });
           if (outcome === 'exhausted') exhausted++;

@@ -304,8 +304,9 @@ it('keeps a handler failure recorded after a reset whose stamp a clock ahead rai
   }));
   expect(await resetRedeliveredDispatch({ job: webhookDispatchJob, scope: db.forGym, clock: f.clock, recovery: f.queue },
     f.gymId, saved.id)).toBe(1);
-  // The stamp follows the exhaustion audit; the reset's own clock read stays in the audit.
-  expect(await f.audits()).toMatchObject([{ targetId: saved.id, occurredAt: ahead, after: { jobId: failed!.jobId, at: resetAt.toISOString() } }]);
+  // The stamp follows the exhaustion audit by 1 ms; the reset's own clock read stays in the audit.
+  expect(await f.audits()).toMatchObject([{ targetId: saved.id, occurredAt: new Date(ahead.getTime() + 1),
+    after: { jobId: failed!.jobId, at: resetAt.toISOString() } }]);
   f.clock.advance(1000);
   await expect(f.inbox.dispatch({ eventId: saved.eventId, replay: true },
     { gymId: f.gymId, timezone: 'UTC', clock: f.clock, jobId: uuidv7(), attempt: 1 })).rejects.toThrow('Unavailable');
@@ -321,6 +322,67 @@ it('keeps a handler failure recorded after a reset whose stamp a clock ahead rai
   expect(await createWebhookInbox({ ...f.options, scope }).recoverFailed(f.gymId)).toEqual({ recovered: 0, exhausted: 0 });
   expect(scopes).toBe(3);
   expect(await f.stored()).toMatchObject({ error: 'handler_failed', failedAt: handlerFailedAt, processedAt: null });
+});
+
+/**
+ * A handler_failed event whose failed dispatch job redeliveries reset, each from a process on its own clock (`resets`,
+ * in commit order); the job fails again after each reset, the last time at 10:20, and then one sweep runs.
+ */
+async function skewedResets(failedAt: string, resets: string[], sweepAt?: string) {
+  const f = await fixture();
+  const queue = new PostgresJobs({ database: db, clock: f.clock }), id = uuidv7();
+  await db.forGym(f.gymId, tx => tx.insert(stripeEvents).values({
+    id, gymId: f.gymId, eventId: 'evt_' + id, type: 'payment_intent.succeeded',
+    payload: {}, receivedAt: new Date('2028-03-01T09:00:00Z'), error: 'handler_failed', failedAt: new Date(failedAt),
+  }));
+  queue.handle(webhookDispatchJob, async () => { throw new Error('Unavailable'); });
+  await queue.enqueue(webhookDispatchJob, { eventId: 'evt_' + id }, { gymId: f.gymId, timezone: 'UTC', idempotencyKey: id, maxAttempts: 1 });
+  expect(await queue.runNext()).toBe(true);
+  for (const [n, at] of resets.entries()) {
+    expect(await resetRedeliveredDispatch({ job: webhookDispatchJob, scope: db.forGym, clock: new TestClock(at), recovery: queue },
+      f.gymId, id)).toBe(1);
+    f.clock.set(new Date(n === resets.length - 1 ? '2028-03-01T10:20:00Z' : at));
+    expect(await queue.runNext()).toBe(true);
+  }
+  const [failed] = await queue.failedJobs(webhookDispatchJob, [id], { gymId: f.gymId });
+  expect(failed!.failedAt).toEqual(new Date('2028-03-01T10:20:00Z'));
+  const audits = await f.audits();
+  if (sweepAt) f.clock.set(new Date(sweepAt));
+  let scopes = 0;
+  const scope: typeof db.forGym = (gymId, fn) => { scopes++; return db.forGym(gymId, fn); };
+  const result = await createWebhookInbox({ ...f.options, scope, jobs: queue, recovery: queue }).recoverFailed(f.gymId);
+  return { result, scopes, audits, stored: await f.stored(), failed: failed! };
+}
+
+it('compares a handler failure with the latest reset’s own time, not an earlier reset’s clock ahead', async () => {
+  // The first reset came from a clock ten minutes ahead; the later one from a correct clock, before the handler failure.
+  const { result, scopes, audits, stored } = await skewedResets('2028-03-01T10:07:00Z',
+    ['2028-03-01T10:10:00Z', '2028-03-01T10:05:00Z']);
+  // The later reset's stamp passes the earlier one's, so stamps alone give commit order; each keeps its own clock read.
+  expect(audits).toMatchObject([
+    { occurredAt: new Date('2028-03-01T10:10:00Z'), after: { at: '2028-03-01T10:10:00.000Z' } },
+    { occurredAt: new Date('2028-03-01T10:10:00.001Z'), after: { at: '2028-03-01T10:05:00.000Z' } },
+  ]);
+  expect(result).toEqual({ recovered: 0, exhausted: 0 });
+  // Page, pre-check, empty page: no locked transaction.
+  expect(scopes).toBe(3);
+  expect(stored).toMatchObject({ error: 'handler_failed', failedAt: new Date('2028-03-01T10:07:00Z'), processedAt: null });
+});
+
+it('keeps a handler failure in the locked step when it follows the latest reset’s own time', async () => {
+  // Two resets make the cooldown 60 minutes from the job's failure at 10:20, so this sweep takes the locked step.
+  const { result, scopes, stored } = await skewedResets('2028-03-01T10:07:00Z',
+    ['2028-03-01T10:10:00Z', '2028-03-01T10:05:00Z'], '2028-03-01T11:20:00Z');
+  expect(result).toEqual({ recovered: 1, exhausted: 0 });
+  expect(scopes).toBe(4);
+  expect(stored).toMatchObject({ error: 'handler_failed', failedAt: new Date('2028-03-01T10:07:00Z'), processedAt: null });
+});
+
+it('moves a handler failure that predates the latest reset’s own time to its job’s failure', async () => {
+  const { result, scopes, stored, failed } = await skewedResets('2028-03-01T10:00:00Z', ['2028-03-01T10:05:00Z']);
+  expect(result).toEqual({ recovered: 0, exhausted: 0 });
+  expect(scopes).toBe(4);
+  expect(stored).toMatchObject({ error: 'handler_failed', failedAt: failed.failedAt, processedAt: null });
 });
 
 it('records the run time each reset set in its audit, from a redelivery and from the sweep', async () => {
@@ -411,7 +473,8 @@ it('reopens recovery when a redelivery arrives from a process whose clock is beh
     id: saved.eventId, gymId: f.gymId, type: 'payment_intent.succeeded', objectId: 'pi_fixture', objectKind: 'charge',
   }));
   await skewedInbox.receive(f.gymId, body, skewedProvider.signWebhook(body));
-  expect(await f.audits()).toMatchObject([{ targetId: saved.id, after: { jobId: failed!.jobId }, occurredAt: exhaustedAt }]);
+  expect(await f.audits()).toMatchObject([{ targetId: saved.id, after: { jobId: failed!.jobId },
+    occurredAt: new Date(exhaustedAt.getTime() + 1) }]);
   expect(await paged()).toContain(saved.id);
   await f.exhaust();
   const sweep = () => f.build().recoverFailed(f.gymId);
