@@ -16,10 +16,10 @@ test('import → schedule → coach check-in → kiosk → promote persists acro
   await page.getByRole('button', { name: 'Preview', exact: true }).click();
   await expect(page.getByRole('cell', { name: /Jamie/ })).toBeVisible();
   await page.getByRole('button', { name: 'Dry run', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('Dry run: Complete', { timeout: 30_000 });
+  await expect(page.getByRole('main').getByRole('status')).toContainText('Dry run: Complete', { timeout: 30_000 });
   expect((await people()).data).toHaveLength(0);
   await page.getByRole('button', { name: 'Commit import', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('Import CSV: Complete', { timeout: 30_000 });
+  await expect(page.getByRole('main').getByRole('status')).toContainText('Import CSV: Complete', { timeout: 30_000 });
   const members = (await people()).data;
   expect(members).toHaveLength(2);
   const jamie = members.find((person) => person.firstName === 'Jamie')!, robin = members.find((person) => person.firstName === 'Robin')!;
@@ -39,9 +39,9 @@ test('import → schedule → coach check-in → kiosk → promote persists acro
   await page.getByLabel('CSV file (UTF-8, up to 20 MB)', { exact: true }).setInputFiles({ name: 'qa-mat.csv', mimeType: 'text/csv', buffer: Buffer.from(history) });
   await page.getByLabel('Import type').selectOption('mat');
   await page.getByRole('button', { name: 'Dry run', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('Dry run: Complete', { timeout: 30_000 });
+  await expect(page.getByRole('main').getByRole('status')).toContainText('Dry run: Complete', { timeout: 30_000 });
   await page.getByRole('button', { name: 'Commit import', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('Import CSV: Complete', { timeout: 30_000 });
+  await expect(page.getByRole('main').getByRole('status')).toContainText('Import CSV: Complete', { timeout: 30_000 });
 
   const imported = await owner.json<{ data: { source: string; programId: string | null }[] }>('/api/attendance?memberId=' + jamie.id + '&source=import');
   expect(imported.data).toMatchObject([{ source: 'import', programId: install.program.id }]);

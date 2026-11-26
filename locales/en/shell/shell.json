@@ -34,6 +34,7 @@
   "nav.communication": "Communication",
   "nav.administration": "Administration",
   "signOut": "Sign out",
+  "signingOut": "Signing out…",
   "noAccess": "Your account does not have staff access.",
   "admin": "Gym administration",
   "closeMenu": "Close menu",

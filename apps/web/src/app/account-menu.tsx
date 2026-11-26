@@ -74,5 +74,9 @@ export function AccountMenu({ accountPath, identity, onSignOut, signingOut }:
       {open && <ThemeChoice choice={theme} onChoose={chooseTheme} />}
       <Button variant="ghost" className="w-full justify-start" onClick={() => { close(); trigger.current?.focus(); onSignOut(); }} disabled={signingOut}>{t('shell/shell:signOut')}</Button>
     </div>
+    {/* The closed menu hides its disabled Sign out, so the wait shows here. Always mounted, so that it is announced. */}
+    <p role="status" className={signingOut && !open ? 'absolute right-0 top-full z-40 mt-1 w-max max-w-[calc(100vw-2rem)] rounded-md border border-border bg-card px-3 py-2 text-sm text-card-foreground shadow-lg' : 'sr-only'}>
+      {signingOut && !open && t('shell/shell:signingOut')}
+    </p>
   </div>;
 }

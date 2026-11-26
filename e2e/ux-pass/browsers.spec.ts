@@ -137,7 +137,7 @@ for (const [name, viewport] of [['phone', { width: 360, height: 740 }], ['deskto
       await page.getByRole('button', { name: 'Preview', exact: true }).click();
       await expect(page.getByRole('cell', { name: new RegExp('Upload' + tag) })).toBeVisible();
       await page.getByRole('button', { name: 'Dry run', exact: true }).click();
-      await expect(page.getByRole('status')).toContainText('Dry run: Complete', { timeout: 30_000 });
+      await expect(page.getByRole('main').getByRole('status')).toContainText('Dry run: Complete', { timeout: 30_000 });
       await report(browserName, `upload-${name}`, page, seen, cspViolations);
       expect(seen.map((entry) => entry.path)).toContain('/api/imports/uploads');
       expect(seen.filter((entry) => entry.status === null || entry.status >= 400), 'every bounded request was accepted').toEqual([]);

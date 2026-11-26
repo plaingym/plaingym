@@ -192,6 +192,20 @@ describe('admin shell', () => {
     await user.click(screen.getByRole('button', { name: 'Sign out' }));
     expect(signOut).toHaveBeenCalledOnce();
   });
+  it('says it is signing out once the account menu has closed', async () => {
+    const state = { ...anonymous, session: { userId: 'owner', displayName: 'Test Owner', roles: ['owner'] as const, member: false } };
+    const service = services(state);
+    vi.mocked(service.signOut).mockReturnValue(new Promise<void>(() => undefined));
+    start(service, '/admin');
+    const user = userEvent.setup();
+    const account = await screen.findByRole('button', { name: 'Account' });
+    expect(screen.queryByText('Signing out…')).toBeNull();
+    await user.click(account);
+    await user.click(screen.getByRole('button', { name: 'Sign out' }));
+    expect((await screen.findByText('Signing out…')).getAttribute('role')).toBe('status');
+    expect(account.getAttribute('aria-expanded')).toBe('false');
+    expect(service.signOut).toHaveBeenCalledOnce();
+  });
   it('shows the stored admin theme and applies each selection immediately', async () => {
     localStorage.setItem(themeStorageKey, 'light');
     const state = { ...anonymous, session: { userId: 'owner', displayName: 'Test Owner', roles: ['owner'] as const, member: false } };

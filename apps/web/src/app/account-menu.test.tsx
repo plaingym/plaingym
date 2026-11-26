@@ -7,9 +7,9 @@ import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } fr
 import { AccountMenu } from './account-menu.js';
 import { resetThemeChoice, themeStorageKey } from '../lib/theme.js';
 
-function renderMenu(shell: 'admin' | 'portal' = 'admin', onSignOut: () => void = vi.fn()) {
+function renderMenu(shell: 'admin' | 'portal' = 'admin', onSignOut: () => void = vi.fn(), signingOut = false) {
   const root = createRootRoute({ component: () => <AccountMenu
-    accountPath={shell === 'admin' ? '/admin/account' : '/portal/account'} onSignOut={onSignOut} signingOut={false} /> });
+    accountPath={shell === 'admin' ? '/admin/account' : '/portal/account'} onSignOut={onSignOut} signingOut={signingOut} /> });
   const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: [`/${shell}`] }) });
   render(<RouterProvider router={router} />);
   return router;
@@ -265,6 +265,30 @@ it('closes the menu and returns focus to its button when Sign out is pressed', a
   expect(account.getAttribute('aria-expanded')).toBe('false');
   expect(document.getElementById('account-menu')?.hidden).toBe(true);
   expect(document.activeElement).toBe(account);
+});
+
+it('shows a sign-out being sent while the menu is closed', async () => {
+  const user = userEvent.setup();
+  renderMenu('portal', vi.fn(), true);
+  const account = await screen.findByRole('button', { name: 'Account' });
+  const status = screen.getByRole('status');
+  expect(status.textContent).toBe('Signing out…');
+  expect(status.classList.contains('sr-only')).toBe(false);
+  await user.click(account);
+  // The open menu's disabled Sign out is the cue there.
+  expect(screen.getByRole('status')).toBe(status);
+  expect(status.classList.contains('sr-only')).toBe(true);
+  expect(status.textContent).toBe('');
+  expect((screen.getByRole('button', { name: 'Sign out' }) as HTMLButtonElement).disabled).toBe(true);
+  await user.keyboard('{Escape}');
+  expect(status.textContent).toBe('Signing out…');
+});
+
+it('keeps an empty status while no sign-out is being sent', async () => {
+  renderMenu();
+  await screen.findByRole('button', { name: 'Account' });
+  expect(screen.getByRole('status').textContent).toBe('');
+  expect(screen.getByRole('status').classList.contains('sr-only')).toBe(true);
 });
 
 it('applies the stored theme when the shell mounts, before the menu opens', async () => {

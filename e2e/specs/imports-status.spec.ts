@@ -36,8 +36,8 @@ for (const width of [360, 1280]) {
         job = { ...job, id: '01900000-0000-7000-8000-000000000003', dryRun: false, status: outcome.status, processedRows: outcome.processedRows,
           committedRows: outcome.committedRows, errorCount: outcome.errorCount };
         await page.getByRole('button', { name: 'Commit import', exact: true }).click();
-        await expect(page.getByRole('status')).toContainText('Import CSV: ' + outcome.label);
-        await expect(page.getByRole('status')).toContainText('Committed: ' + outcome.committedRows.toLocaleString('en'));
+        await expect(page.getByRole('main').getByRole('status')).toContainText('Import CSV: ' + outcome.label);
+        await expect(page.getByRole('main').getByRole('status')).toContainText('Committed: ' + outcome.committedRows.toLocaleString('en'));
         await accessibleLayout(page, info, 'import-' + outcome.name);
         await mkdir('coverage/imports-status', { recursive: true });
         await writeFile(`coverage/imports-status/${outcome.name}-${width}.png`, await page.screenshot({ fullPage: true }));

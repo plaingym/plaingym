@@ -139,8 +139,9 @@ try {
     expect(scrolled).toBeGreaterThan(0);
     await page.keyboard.press('Enter');
     await expect(page.getByRole('dialog')).toBeHidden();
-    await expect(page.getByRole('status')).toContainText('Loading');
-    await expect(page.getByRole('status')).toBeInViewport();
+    // The header holds the account menu's own status, so the page's is read inside main.
+    await expect(page.getByRole('main').getByRole('status')).toContainText('Loading');
+    await expect(page.getByRole('main').getByRole('status')).toBeInViewport();
     // A real pointer reaches the shell while the modal is temporarily closed.
     if (width === 360) {
       await page.getByRole('button', { name: 'Menu' }).click();

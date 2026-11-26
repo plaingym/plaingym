@@ -159,9 +159,9 @@ async function createWitness(page: Page, url: string) {
     buffer: Buffer.from('externalId,firstName,lastName,email\nvm-qa-river,VM,River,vm-member@example.invalid\n')
   });
   await page.getByRole('button', { name: 'Dry run', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('Dry run: Complete', { timeout: 120_000 });
+  await expect(page.getByRole('main').getByRole('status')).toContainText('Dry run: Complete', { timeout: 120_000 });
   await page.getByRole('button', { name: 'Commit import', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('Import CSV: Complete', { timeout: 120_000 });
+  await expect(page.getByRole('main').getByRole('status')).toContainText('Import CSV: Complete', { timeout: 120_000 });
   await page.goto(url + '/admin/members');
   await page.getByRole('link', { name: 'VM River', exact: true }).click();
   const memberId = new URL(page.url()).pathname.split('/').at(-1)!;

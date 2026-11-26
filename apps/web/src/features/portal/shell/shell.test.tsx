@@ -180,7 +180,7 @@ it('keeps a page read failure loading while the shell context 404 refreshes hous
   await waitFor(() => expect(f.householdGates).toHaveLength(1));
   await waitFor(() => expect(f.cache.getQueryState([...household(ids.first), 'household', 'details'])?.status).toBe('error'));
   expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
-  expect(screen.getByRole('status').textContent).toContain('Loading');
+  expect(within(screen.getByRole('main')).getByRole('status').textContent).toContain('Loading');
   await act(async () => { f.release(); });
   expect((await screen.findAllByRole('button', { name: 'Try again' })).length).toBeGreaterThan(0);
 });
@@ -675,6 +675,18 @@ it('closes the account menu for a failed sign-out, and a household choice clears
   await user.click(screen.getByRole('button', { name: /Alder household/ }));
   await screen.findByRole('heading', { name: 'Welcome to your member portal' });
   expect(screen.queryByText(signOutFailed)).toBeNull();
+});
+it('says it is signing out once the account menu has closed', async () => {
+  const f = portal(ids.first), user = userEvent.setup();
+  f.signOut.mockImplementation(() => new Promise(() => undefined));
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  const account = screen.getByRole('button', { name: 'Account' });
+  expect(screen.queryByText('Signing out…')).toBeNull();
+  await user.click(account);
+  await user.click(screen.getByRole('button', { name: 'Sign out' }));
+  expect((await screen.findByText('Signing out…')).getAttribute('role')).toBe('status');
+  expect(account.getAttribute('aria-expanded')).toBe('false');
+  expect(f.signOut).toHaveBeenCalledOnce();
 });
 it('clears a failed sign-out when the household switcher chooses another household', async () => {
   const f = portal(ids.first), user = userEvent.setup();

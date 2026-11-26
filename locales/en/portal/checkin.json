@@ -20,6 +20,9 @@
   "unavailable": "Check-in codes aren't available right now. Please ask the front desk.",
   "conflict": "The code changed on another device. The latest code is shown; try again if you still want to replace it.",
   "replaceError": "We couldn't replace the check-in code. Please try again.",
+  "createError": "We couldn't create a check-in code. Please try again.",
+  "createRereading": "A code may have been created, so this page waits until the code has been read again. That needs a connection.",
+  "retry": "Try again",
   "conflictReading": "The code changed on another device. The latest code shows once it has been read; then try again if you still want to replace it.",
   "rereading": "This code may have been replaced, so it's hidden until it has been read again. That needs a connection.",
   "waiting": "Replace code turns back on once the current code has been read again. That needs a connection."
