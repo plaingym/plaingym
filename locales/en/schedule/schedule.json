@@ -114,7 +114,7 @@
   "noTemplates": "No weekly classes yet",
   "minutes": "min",
   "noTemplatesHelp": "Weekly classes fill the calendar automatically. Use New weekly class to add one.",
-  "templateCapacityHelp": "Changing it also updates upcoming sessions of this class that still have its old capacity. Sessions with their own capacity keep it.",
+  "templateCapacityHelp": "Changing it also updates upcoming sessions of this class that still have its old capacity. Sessions with their own capacity keep it. A cancelled date with more members booked than a lowered capacity keeps its own capacity.",
   "templateCapacityBelowBooked": "An upcoming session of this class has more booked members than that capacity. Choose a higher capacity, or change that session on its own.",
   "templateCapacityBelowBookedOn": "The session on {when} has more booked members than that capacity. Choose a higher capacity, or change that session on its own.",
   "coachesHelpPending": "Coaches come from staff profiles.",

@@ -627,7 +627,7 @@ describe('schedule calendar and session detail', () => {
 describe('weekly class capacity and the coach hint', () => {
   const template: ClassTemplate = { id, name: 'Evening class', weekday: 1, localStartTime: '18:00', durationMinutes: 60, coachId: null, capacity: null,
     notes: null, kind: 'class', revision: 3, createdAt: '2026-03-01T00:00:00Z', programIds: [programId], tagIds: [] };
-  const capacityHelp = 'Changing it also updates upcoming sessions of this class that still have its old capacity. Sessions with their own capacity keep it.';
+  const capacityHelp = 'Changing it also updates upcoming sessions of this class that still have its old capacity. Sessions with their own capacity keep it. A cancelled date with more members booked than a lowered capacity keeps its own capacity.';
   const coachesHelpPending = 'Coaches come from staff profiles.';
   const coachesHelp = 'Coaches come from staff profiles. Add one in Staff → Staff profiles, and link it to a login to coach from your own account.';
   const coachesHelpAsk = 'Coaches come from staff profiles. Ask an owner or admin to add one.';

@@ -22,13 +22,14 @@ except a capacity change, which also updates the template's upcoming scheduled
 and cancelled sessions that still have its previous capacity (one
 `schedule.session.capacity` audit each, with booking reconciliation for scheduled
 sessions and none for cancelled ones). A lowered capacity leaves a cancelled
-session alone when more members were booked at its cancellation than the new
-capacity (no change and no audit), so restoring it books them all; it then keeps
-its own capacity. Any other updated cancelled session restores up to the new
-capacity. A session whose capacity differs from the previous one keeps it; one
-set by hand to that same value can't be told apart and changes too. The whole
-template save is refused when one of those scheduled sessions has more booked
-members than the new capacity. The refusal names one blocking session's start
+session alone when more members were booked at its cancellation (members erased
+since the cancellation don't count) than the new capacity (no change and no
+audit), so restoring it books them all; it then keeps its own capacity. Any other
+updated cancelled session restores up to the new capacity. A session whose
+capacity differs from the previous one keeps it; one set by hand to that same
+value can't be told apart and changes too. The whole template save is refused
+when one of those scheduled sessions has more booked members than the new
+capacity. The refusal names one blocking session's start
 (`details.startsAt`; of several, the first by session ID, not necessarily the
 earliest), which the editor shows in the gym's timezone.
 Cancellation, coach swaps, notes and capacity overrides survive retries.

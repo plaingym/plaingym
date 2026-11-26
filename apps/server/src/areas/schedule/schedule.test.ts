@@ -722,6 +722,31 @@ describe('template capacity edits on upcoming sessions', () => {
     expect(await f.capacityAudits()).toHaveLength(1);
     expect(await f.restore()).toEqual({ booked: count, waitlisted: 0 });
   });
+  async function erase(f: Awaited<ReturnType<typeof cancelledWith>>, count: number) {
+    const rows = await database.forGym(f.gymId, tx => tx.select().from(classBookings).where(eq(classBookings.sessionId, f.target.id))
+      .orderBy(asc(classBookings.createdAt), asc(classBookings.id)));
+    const ids = rows.slice(0, count).map(row => row.memberId);
+    await database.forGym(f.gymId, tx => tx.update(members).set({ anonymizedAt: f.at.now() }).where(inArray(members.id, ids)));
+    return ids;
+  }
+  it('lowers a cancelled session when the members left after erasures fit the new capacity', async () => {
+    const f = await cancelledWith(10, 7);
+    const erased = await erase(f, 3);
+    await f.edit({ capacity: 5 });
+    expect(await f.current()).toMatchObject({ status: 'cancelled', capacity: 5 });
+    expect(await f.capacityAudits()).toHaveLength(1);
+    expect(await f.restore()).toEqual({ booked: 4, waitlisted: 0 });
+    const rows = await database.forGym(f.gymId, tx => tx.select().from(classBookings).where(eq(classBookings.sessionId, f.target.id)));
+    expect(rows.filter(row => row.status === 'cancelled').map(row => row.memberId).sort()).toEqual([...erased].sort());
+  });
+  it('leaves a cancelled session alone when the members left after erasures exceed the new capacity', async () => {
+    const f = await cancelledWith(10, 7);
+    await erase(f, 1);
+    await f.edit({ capacity: 5 });
+    expect((await f.current()).capacity).toBe(10);
+    expect(await f.capacityAudits()).toEqual([]);
+    expect(await f.restore()).toEqual({ booked: 6, waitlisted: 0 });
+  });
   it('keeps no limit on a cancelled session with more booked members than a new limit', async () => {
     const f = await cancelledWith(null, 8);
     await f.edit({ capacity: 6 });
