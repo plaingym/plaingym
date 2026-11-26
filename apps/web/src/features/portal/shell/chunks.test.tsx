@@ -43,7 +43,11 @@ function mount(online: boolean) {
   const wrapper = ({ children }: { children: ReactNode }) => <RouterContextProvider router={router}>{children}</RouterContextProvider>;
   const view = () => renderHook(() => usePortalChunks(), { wrapper });
   const reconnect = () => act(async () => { connection.mockReturnValue(true); window.dispatchEvent(new Event('online')); });
-  return { load, view, reconnect };
+  const navigated = () => act(async () => {
+    const { location } = router.state;
+    router.emit({ type: 'onResolved', fromLocation: location, toLocation: location, pathChanged: false, hrefChanged: false, hashChanged: false });
+  });
+  return { load, view, reconnect, navigated };
 }
 
 it('waits for the connection, then loads once', async () => {
@@ -89,11 +93,49 @@ it('runs again when the connection returned during a pass that then fails', asyn
   expect(load).toHaveBeenCalledTimes(sections.length * 2);
 });
 
+it('tries again on the next portal navigation after a failed pass', async () => {
+  const { load, view, navigated } = mount(true);
+  load.mockRejectedValueOnce(new Error('dropped request'));
+  await act(async () => { view(); });
+  expect(load).toHaveBeenCalledTimes(sections.length);
+  await navigated();
+  expect(load).toHaveBeenCalledTimes(sections.length * 2);
+  await navigated();
+  expect(load).toHaveBeenCalledTimes(sections.length * 2);
+});
+
+it('loads nothing on a navigation while offline', async () => {
+  const { load, view, navigated } = mount(false);
+  view();
+  await navigated();
+  expect(load).not.toHaveBeenCalled();
+});
+
+it('loads nothing more once a pass has succeeded', async () => {
+  const { load, view, reconnect, navigated } = mount(true);
+  await act(async () => { view(); });
+  await navigated();
+  await reconnect();
+  expect(load).toHaveBeenCalledTimes(sections.length);
+});
+
+it('does not run again once unmounted during a pass that then fails', async () => {
+  const { load, view, navigated } = mount(true);
+  let fail!: () => void;
+  load.mockReturnValueOnce(new Promise<undefined>((_, reject) => { fail = () => reject(new Error('dropped request')); }));
+  const { unmount } = view();
+  await navigated();
+  unmount();
+  await act(async () => { fail(); });
+  expect(load).toHaveBeenCalledTimes(sections.length);
+});
+
 it('stops listening once unmounted', async () => {
-  const { load, view, reconnect } = mount(false);
+  const { load, view, reconnect, navigated } = mount(false);
   const removed = vi.spyOn(window, 'removeEventListener');
   view().unmount();
   expect(removed).toHaveBeenCalledWith('online', expect.any(Function));
   await reconnect();
+  await navigated();
   expect(load).not.toHaveBeenCalled();
 });

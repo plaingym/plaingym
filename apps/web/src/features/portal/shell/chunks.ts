@@ -20,27 +20,29 @@ export async function warmPortalChunks(router: Pick<AnyRouter, 'routesById' | 'l
 
 /**
  * Loads the portal sections' code in the background while the browser is online, so a section first opened offline
- * doesn't need the network for it. A pass that fails runs again on the next `online` event.
+ * doesn't need the network for it. A pass that fails runs again on the next `online` event or portal navigation.
  */
 export function usePortalChunks() {
   const router = useRouter();
-  const pass = useRef({ running: false, done: false, again: false });
+  const pass = useRef({ mounted: false, running: false, done: false, again: false });
   useEffect(() => {
     const state = pass.current;
+    state.mounted = true;
     const warm = () => {
       if (!navigator.onLine || state.done) return;
-      // A connection that returned during a pass counts if that pass fails.
+      // A connection that returned, or a navigation, during a pass counts if that pass fails.
       if (state.running) { state.again = true; return; }
       state.running = true;
       state.again = false;
       void warmPortalChunks(router).then((loaded) => {
         state.running = false;
         state.done = loaded;
-        if (state.again) warm();
+        if (state.again && state.mounted) warm();
       });
     };
     warm();
     window.addEventListener('online', warm);
-    return () => window.removeEventListener('online', warm);
+    const stop = router.subscribe('onResolved', warm);
+    return () => { state.mounted = false; window.removeEventListener('online', warm); stop(); };
   }, [router]);
 }
