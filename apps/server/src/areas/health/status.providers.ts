@@ -10,6 +10,7 @@ import type { JobStatsQuery } from '../../core/interfaces/job-stats.js';
 import { sourceUrl } from '../../core/source-link.js';
 import { restoreStagingDirectory } from '../../core/maintenance-credentials.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
+import { tenancyMode } from '../../core/tenancy.js';
 import { createSmtpResolver } from '../settings/smtp.js';
 import { readEmailSendFailure } from '../settings/email-status.js';
 import { createSmsResolver } from '../settings/sms.js';
@@ -84,13 +85,19 @@ export function createStatusProviders(options: StatusOptions = {}) {
         sendFailure: await readEmailSendFailure(tx, context.gymId),
       }));
       const test = latestEmailTest(rows, source === 'gym');
-      return { id: 'smtp', status: unreadable || test?.failed || sendFailure ? 'warning' : configured ? 'healthy' : 'not_configured', checkedAt: context.clock.now().toISOString(),
+      // A refused login through the install's `SMTP_*` settings is fixed on the server (single-gym) or by whoever runs the install.
+      const failureKey = sendFailure && (source === 'install' && sendFailure.failure === 'authentication'
+        ? 'smtpLastFailed.authentication_' + (tenancyMode(env.TENANCY ?? 'single') === 'single' ? 'install' : 'operator')
+        : 'smtpLastFailed.' + sendFailure.failure);
+      // With no settings in use and none unreadable, nothing can send, so an old failure or test doesn't make it a warning.
+      const status = !configured && !unreadable ? 'not_configured' : unreadable || test?.failed || sendFailure ? 'warning' : 'healthy';
+      return { id: 'smtp', status, checkedAt: context.clock.now().toISOString(),
         details: { configured, lastTestAt: test?.at ?? null },
         message: [
           configured ? statusMessage(source === 'gym' ? 'smtpGym' : 'smtpInstall') : !unreadable && statusMessage('smtpMissing'),
           unreadable && statusMessage('smtpUnreadable'),
           test?.failed && statusMessage('smtpTestFailed'),
-          sendFailure && statusMessage('smtpLastFailed.' + sendFailure.failure),
+          configured && failureKey && statusMessage(failureKey),
         ].filter(Boolean).join(' ') };
     }),
     healthProvider('sms', async context => {

@@ -55,6 +55,27 @@ describe('Settings → Email: the last send failure', () => {
     expect(await screen.findByText(/Sends through your own SMTP/)).toBeDefined();
     expect(screen.queryByText(/The last email/)).toBeNull();
   });
+  const installEmail: Integrations = { ...integrations, revision: 4, email: { ...integrations.email, source: 'install' } };
+  it.each([
+    ['a single-gym install names the server\'s settings', installEmail,
+      'failed: the service rejected the login. Check the server\'s SMTP_USER and SMTP_PASS settings and restart the app, or save this gym\'s own settings below.'],
+    ['a multi-gym install names whoever runs it', { ...installEmail, backups: null },
+      'failed: the service rejected the login. Whoever runs this install manages that login.'],
+  ] as const)('words a refused login through the install\'s settings: %s', async (_name, base, ending) => {
+    current = { ...base, email: { ...base.email, lastSendFailure: { failure: 'authentication', at } } };
+    renderSection();
+    const when = instantLabel(at, 'America/Los_Angeles');
+    expect((await screen.findByText(`The last email, at ${when}, ${ending}`)).getAttribute('role')).toBe('alert');
+    expect(screen.queryByText(/Test and save the current password below/)).toBeNull();
+  });
+  it.each([
+    ['the gym\'s', gymEmail], ['a single-gym install\'s', installEmail], ['a multi-gym install\'s', { ...installEmail, backups: null }],
+  ] as const)('keeps the connection failure\'s text for %s settings', async (_name, base) => {
+    current = { ...base, email: { ...base.email, lastSendFailure: { failure: 'connection', at } } };
+    renderSection();
+    const when = instantLabel(at, 'America/Los_Angeles');
+    expect(await screen.findByText(`The last email, at ${when}, failed: the app couldn't connect to the sending service.`)).toBeDefined();
+  });
 });
 
 describe('Settings → Email', () => {

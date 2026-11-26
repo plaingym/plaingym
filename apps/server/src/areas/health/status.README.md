@@ -13,7 +13,8 @@ waiting for the newest read while it does; once the newest read is two minutes o
 refresh starts another even while the replaced one is pending (the older read keeps
 running, no longer tracked), up to at most three unsettled reads per gym and tile at once:
 while three are unsettled a refresh waits on the newest, and one settling lets the next
-refresh start another). A read slower than 2 seconds logs `health.tile_slow` once, with its
+refresh start another; a read still unsettled 30 minutes after it started no longer counts
+toward the three, so a tile whose reads hang for good is checked again). A read slower than 2 seconds logs `health.tile_slow` once, with its
 tile ID and duration from the read's start; each request that reaches the 5-second limit logs
 its own line with `timedOut: true`. The Last backup tile reuses its bucket inventory
 for up to one minute from the start of the read that listed it (it is released from memory
@@ -176,8 +177,15 @@ saved.
 Real sends report too: while the gym's last email failed through its sending service
 (`readEmailSendFailure`, `areas/settings/email-status.ts`), the tile is a warning and its
 message adds the failure's class (`smtpLastFailed.<class>`: connection, secure connection,
-refused login, or refused sender), whichever settings were in use. A send that works, or
-a change to the email settings, clears it; `details` don't change.
+refused login, or refused sender). A refused login while the install's `SMTP_*` settings
+are in use names the server's `SMTP_USER` and `SMTP_PASS` and a restart on a single-gym
+install (`smtpLastFailed.authentication_install`), and whoever runs the install on a
+multi-gym one (`smtpLastFailed.authentication_operator`); with the gym's own settings it
+points to Settings → Integrations → Email. A send that works, or a change to the email
+settings, clears it; a failure through the install's settings also stops counting once
+the app restarts, since changing `SMTP_*` takes a restart. With no settings in use (and
+none unreadable) the tile is `not_configured` and says only that email is not
+configured, whatever failure or test came before; `details` don't change.
 
 Malformed install Google variables are reported to single-gym owners only. With a
 working stored client the Google tile reports that client in use and warns about

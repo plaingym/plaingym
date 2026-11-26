@@ -56,12 +56,12 @@ describe('the last send failure in Settings → Integrations → Email', () => {
     expect((await read(gymA, ownerA)).lastSendFailure).toBeNull();
     clock.advance(1000);
     const at = clock.now().toISOString();
-    await recorder(gymA, smtp)({ ok: false, error: new SmtpDeliveryError('not_accepted', 'SMTP authentication failed',
+    await recorder(gymA, { ...smtp, source: 'gym' })({ ok: false, error: new SmtpDeliveryError('not_accepted', 'SMTP authentication failed',
       { cause: { code: 'EAUTH', responseCode: 535, response: '535 5.7.8 Authentication failed' } }) });
     expect((await read(gymA, ownerA)).lastSendFailure).toEqual({ failure: 'authentication', at });
     expect((await read(gymB, ownerB)).lastSendFailure).toBeNull();
     clock.advance(1000);
-    await recorder(gymA, smtp)({ ok: true });
+    await recorder(gymA, { ...smtp, source: 'gym' })({ ok: true });
     expect((await read(gymA, ownerA)).lastSendFailure).toBeNull();
     expect((await read(gymB, ownerB)).lastSendFailure).toBeNull();
   });

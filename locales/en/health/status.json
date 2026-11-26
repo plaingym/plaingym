@@ -48,6 +48,8 @@
   "smtpLastFailed.connection": "The last email failed: the app couldn't connect to the sending service.",
   "smtpLastFailed.tls": "The last email failed: the secure connection to the sending service didn't start.",
   "smtpLastFailed.authentication": "The last email failed: the service rejected the login. Check the username and password in Settings → Integrations → Email.",
+  "smtpLastFailed.authentication_install": "The last email failed: the service rejected the login. Check the server's SMTP_USER and SMTP_PASS settings, then restart the app.",
+  "smtpLastFailed.authentication_operator": "The last email failed: the service rejected the login. Whoever runs this install manages that login.",
   "smtpLastFailed.sender_refused": "The last email failed: the service refused the sender address.",
   "diskMissing": "The uploads directory must be configured to check free space.",
   "diskFree": "Free space: uploads {uploads} GB; backup staging {staging} GB.",

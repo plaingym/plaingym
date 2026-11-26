@@ -88,7 +88,7 @@ export function createSmtpResolver(options: { key: Buffer; env?: NodeJS.ProcessE
     });
     const own = readOwnConfig(gymId, stored);
     const resolved = own ? fromStored(own, tenantHosts) : fallback;
-    return resolved && { ...resolved, report: recorder(gymId, { port: resolved.port, security: resolved.security ?? 'starttls' }, mark) };
+    return resolved && { ...resolved, report: recorder(gymId, { port: resolved.port, security: resolved.security ?? 'starttls', source: own ? 'gym' : 'install' }, mark) };
   }
   return { config, async status(gymId) {
     const stored = await storedConfig(gymId);

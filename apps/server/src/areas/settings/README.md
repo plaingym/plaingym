@@ -53,8 +53,8 @@ Failed tests leave the saved settings unchanged. The audit records
 `test: 'sent'` only with the save.
 Real sends record the gym's email state (`email-status.ts`): every config from
 `createSmtpResolver().config(gymId)`, the gym's own or the install's, carries a `report`
-that writes a system `email.delivery_failed` audit row (`after: { failure }`, the class
-only) when a send fails through the sending service (`emailServiceFailure`:
+that writes a system `email.delivery_failed` audit row (`after: { failure, source }`: the
+class and whose settings were used, `gym` or `install`, nothing else) when a send fails through the sending service (`emailServiceFailure`:
 connection, TLS, authentication, or a refused sender address, never an unknown
 outcome, a failure that never reached SMTP, or a refused recipient: a recipient
 refused at `RCPT TO` with 550 or 554 counts only as the recipient's, while 530 at
@@ -65,7 +65,14 @@ skipped when the email settings changed (saved, removed, or saved at setup step 
 after its settings were resolved, and a failed record is logged and never changes
 the send. `readEmailSendFailure` returns the newest failure
 until a recovery, `integrations.email_saved`, `integrations.email_removed`, or setup
-step 5 with settings saved (a skip, `test: 'not_sent'`, doesn't count) follows it; the Email section shows it as `lastSendFailure`, with its time.
+step 5 with settings saved (a skip, `test: 'not_sent'`, doesn't count) follows it. A
+failure through the install's `SMTP_*` settings also stops standing once it is older than
+the app process's start (`installSince`, default `processStartedAt`): changing those
+settings takes a restart, which writes no audit row. A row without a `source`, written by
+an earlier version, is read as the gym's. The Email section shows it as `lastSendFailure`,
+with its time; a refused login through the install's settings names the server's
+`SMTP_USER` and `SMTP_PASS` on a single-gym install and whoever runs the install on a
+multi-gym one.
 Removing an unreadable stored value is never refused, since it takes no sign-in
 method away; its audit still records `source: 'gym'` for the stored value. Operator-managed refusals reload the
 integrations and show the operator notice in place of the editable forms.

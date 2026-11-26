@@ -41,7 +41,7 @@ export function IntegrationsSettings() {
     <h2 className="text-lg font-semibold">{text('title')}</h2>
     <p className="text-sm text-muted-foreground">{text(sandbox ? 'sandbox' : integrationsEditable ? 'intro' : 'operatorManaged')}</p>
     <div className="divide-y divide-border">
-      {!sandbox && <div className="pb-6"><EmailIntegrationSection email={email} editable={integrationsEditable} state={state}/></div>}
+      {!sandbox && <div className="pb-6"><EmailIntegrationSection email={email} editable={integrationsEditable} singleGym={backups !== null} state={state}/></div>}
       <div className="py-6"><SmsIntegrationSection sms={sms} editable={!sandbox && integrationsEditable} state={state}/></div>
       {!sandbox && <div className="py-6"><PaymentsIntegrationSection payments={payments} editable={integrationsEditable} lastEventAt={health.isError ? undefined : health.data?.lastEventAt} state={state}/></div>}
       {!sandbox && backups && <div className="pt-6"><BackupsIntegrationSection backups={backups} lastSnapshot={health.isError ? 'unknown' : health.data?.lastSnapshot} state={state}/></div>}

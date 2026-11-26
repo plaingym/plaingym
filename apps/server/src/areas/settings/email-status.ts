@@ -18,7 +18,13 @@ const savedAtEmailStep = (after: unknown) => {
   const step = after as { step?: unknown; test?: unknown } | null;
   return step?.step === emailSetupStep && step.test !== 'not_sent';
 };
-type SmtpSettings ={ port: number; security: 'starttls' | 'tls' | 'plain' };
+/** Whose settings a send used: the gym's own, saved in Settings, or the install's `SMTP_*` environment. */
+type SmtpSettings = { port: number; security: 'starttls' | 'tls' | 'plain'; source: 'gym' | 'install' };
+/**
+ * When this process started. The install's `SMTP_*` settings change only with a restart, which writes no audit row,
+ * so a failure through them recorded before this process started no longer stands.
+ */
+export const processStartedAt = new Date();
 type Report = NonNullable<SmtpConfig['report']>;
 type Row = { id: string; action: string; after: unknown; occurredAt: Date };
 export type SettingsMark = { occurredAt: Date; id: string } | null;
@@ -51,12 +57,16 @@ async function newestStatus(tx: Transaction, gymId: string): Promise<Row | undef
 /**
  * The gym's last send failure, while it stands: the newest `email.delivery_failed` row, unless a send worked since
  * (`email.delivery_recovered`) or the email settings changed since (saved or removed in Settings, or saved at setup's email step).
+ * A failure through the install's settings (`source: 'install'`) also lapses when it is older than `installSince`
+ * (default: this process's start); a row without a source is read as one through the gym's.
  */
-export async function readEmailSendFailure(tx: Transaction, gymId: string): Promise<{ failure: SmtpTestFailure; at: string } | null> {
+export async function readEmailSendFailure(tx: Transaction, gymId: string, options: { installSince?: Date } = {}): Promise<{ failure: SmtpTestFailure; at: string } | null> {
   const newest = await newestStatus(tx, gymId);
   if (newest?.action !== 'email.delivery_failed') return null;
-  const failure = smtpTestFailureSchema.safeParse((newest.after as { failure?: unknown } | null)?.failure);
+  const after = newest.after as { failure?: unknown; source?: unknown } | null;
+  const failure = smtpTestFailureSchema.safeParse(after?.failure);
   if (!failure.success) return null;
+  if (after?.source === 'install' && newest.occurredAt < (options.installSince ?? processStartedAt)) return null;
   if (await settingsChangedAfter(tx, gymId, { occurredAt: newest.occurredAt, id: newest.id })) return null;
   return { failure: failure.data, at: newest.occurredAt.toISOString() };
 }
@@ -67,8 +77,8 @@ export async function readEmailSendFailure(tx: Transaction, gymId: string): Prom
  * recorded failure. Each record is one short transaction of its own, after the send. The row holds the failure class
  * only, never a recipient, reply or credential. A failed record is logged and never reaches the send.
  */
-export function createEmailStatusRecorder(options: { scope?: typeof forGym; clock?: Clock } = {}) {
-  const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
+export function createEmailStatusRecorder(options: { scope?: typeof forGym; clock?: Clock; installSince?: Date } = {}) {
+  const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock, installSince = options.installSince ?? processStartedAt;
   return (gymId: string, settings: SmtpSettings, mark?: SettingsMark): Report => async (outcome) => {
     const failure = outcome.ok ? null : emailServiceFailure(outcome.error, settings);
     if (!outcome.ok && failure === null) return;
@@ -82,9 +92,9 @@ export function createEmailStatusRecorder(options: { scope?: typeof forGym; cloc
           return settingsChangedAfter(tx, gymId, mark);
         };
         if (failure !== null) {
-          if ((await readEmailSendFailure(tx, gymId))?.failure === failure || await stale()) return;
+          if ((await readEmailSendFailure(tx, gymId, { installSince }))?.failure === failure || await stale()) return;
           await writeAudit(tx, { gymId, actorKind: 'system', action: 'email.delivery_failed', targetType: 'gym', targetId: gymId,
-            after: { failure }, occurredAt: clock.now() });
+            after: { failure, source: settings.source }, occurredAt: clock.now() });
         } else if ((await newestStatus(tx, gymId))?.action === 'email.delivery_failed' && !await stale()) {
           await writeAudit(tx, { gymId, actorKind: 'system', action: 'email.delivery_recovered', targetType: 'gym', targetId: gymId,
             after: null, occurredAt: clock.now() });

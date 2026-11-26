@@ -33,9 +33,10 @@ function Field({ name, type = 'text', value, required = true, onChange, hint }: 
 }
 /**
  * The gym's sending service: shown without its password, replaced only after a test email is accepted, or removed. Only
- * shown when `editable` is false, where the install's operator manages it.
+ * shown when `editable` is false, where the install's operator manages it. `singleGym` says whether the install's own
+ * `SMTP_*` settings are the server's to fix here (a single-gym install) or the install operator's.
  */
-export function EmailIntegrationSection({ email, editable, state }: { email: EmailIntegration; editable: boolean; state: ReturnType<typeof useIntegrations> }) {
+export function EmailIntegrationSection({ email, editable, singleGym, state }: { email: EmailIntegration; editable: boolean; singleGym: boolean; state: ReturnType<typeof useIntegrations> }) {
   const [busy, setBusy] = useState<'save' | 'remove' | null>(null), [message, setMessage] = useState<Message | null>(null);
   const { instantLabel } = useGymTime();
   const [host, setHost] = useState(email.source === 'gym' ? email.host ?? '' : ''), [open, setOpen] = useState(false);
@@ -81,7 +82,8 @@ export function EmailIntegrationSection({ email, editable, state }: { email: Ema
       : label(email.source === 'install' ? 'sourceInstall' : 'sourceNone')}</p>
     <p className="text-sm text-muted-foreground">{text('email.signIn', { methods: methods(email.signIn) })}</p>
     {email.lastSendFailure && <p role="alert" className="text-sm">
-      {text('email.lastFailed_' + email.lastSendFailure.failure, { at: instantLabel(email.lastSendFailure.at) })}</p>}
+      {text('email.lastFailed_' + email.lastSendFailure.failure + (email.source === 'install' && email.lastSendFailure.failure === 'authentication'
+        ? (singleGym ? '_install' : '_operator') : ''), { at: instantLabel(email.lastSendFailure.at) })}</p>}
     {editable && email.source === 'gym' && email.googleConfigured && <p className="text-sm text-muted-foreground">{label('googleRemovalRule')}</p>}
     <FormMessage message={message}/>
     {editable && <>

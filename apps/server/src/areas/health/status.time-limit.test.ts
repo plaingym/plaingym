@@ -189,14 +189,76 @@ describe('health tile time limit', () => {
     expect(calls).toBe(3);
     await vi.advanceTimersByTimeAsync(5000);
     expect((await r275).data.tiles.find((tile) => tile.id === b)).toMatchObject({ message: 'Still checking. Refresh in a moment.' });
-    // Continuing with a refresh every 31 s up to 3,600 s never exceeds three unsettled calls.
-    for (let next = 306_000; next <= 3_600_000; next += 31_000) {
+    // Continuing with a refresh every 31 s until the first read is 30 minutes old never exceeds three unsettled calls.
+    for (let next = 306_000; next < 1_800_000; next += 31_000) {
       await vi.advanceTimersByTimeAsync(next - Date.now());
       const response = service.get(context);
       expect(calls).toBe(3);
       await vi.advanceTimersByTimeAsync(5000);
       expect((await response).data.tiles.find((tile) => tile.id === b)).toMatchObject({ message: 'Still checking. Refresh in a moment.' });
     }
+  });
+  it('stops counting an unsettled read toward the cap once it is 30 minutes old, so a hung tile is read again', async () => {
+    let calls = 0;
+    const provider = healthProvider(b, () => {
+      calls++;
+      return calls <= 3 ? new Promise<HealthTile>(() => undefined) : Promise.resolve(tileOf(b));
+    });
+    const service = createHealthService([provider], options);
+    for (const at of [0, 31_000, 155_000]) {
+      await vi.advanceTimersByTimeAsync(at - Date.now());
+      const response = service.get(context);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect((await response).data.tiles.find((tile) => tile.id === b)).toMatchObject({ message: 'Still checking. Refresh in a moment.' });
+    }
+    expect(calls).toBe(3);
+    // A minute after the third read started, all three are unsettled and young: the refresh waits on the newest.
+    await vi.advanceTimersByTimeAsync(215_000 - Date.now());
+    const r215 = service.get(context);
+    expect(calls).toBe(3);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect((await r215).data.tiles.find((tile) => tile.id === b)).toMatchObject({ message: 'Still checking. Refresh in a moment.' });
+    // Just before the first read is 30 minutes old it still counts.
+    await vi.advanceTimersByTimeAsync(1_799_999 - Date.now());
+    const before = service.get(context);
+    expect(calls).toBe(3);
+    // At 30 minutes and 1 ms after the first read, it no longer counts: a fourth read starts and serves the tile.
+    await vi.advanceTimersByTimeAsync(2);
+    expect(Date.now()).toBe(1_800_001);
+    const late = service.get(context);
+    expect(calls).toBe(4);
+    expect((await late).data.tiles.find((tile) => tile.id === b)).toMatchObject({ status: 'warning', message: 'Answered smtp' });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect((await before).data.tiles.find((tile) => tile.id === b)).toMatchObject({ message: 'Still checking. Refresh in a moment.' });
+  });
+  it('starts a new read once one of three never-settling reads settles at five minutes', async () => {
+    let calls = 0;
+    let resolveSecond!: (tile: HealthTile) => void;
+    const provider = healthProvider(b, () => {
+      calls++;
+      return new Promise<HealthTile>((resolve) => {
+        if (calls === 2) resolveSecond = resolve;
+      });
+    });
+    const service = createHealthService([provider], options);
+    for (const at of [0, 31_000, 155_000]) {
+      await vi.advanceTimersByTimeAsync(at - Date.now());
+      const response = service.get(context);
+      await vi.advanceTimersByTimeAsync(5000);
+      await response;
+    }
+    expect(calls).toBe(3);
+    await vi.advanceTimersByTimeAsync(300_000 - Date.now());
+    const r300 = service.get(context);
+    expect(calls).toBe(3);
+    await vi.advanceTimersByTimeAsync(5000);
+    await r300;
+    resolveSecond(tileOf(b));
+    await vi.advanceTimersByTimeAsync(1000);
+    const next = service.get(context);
+    expect(calls).toBe(4);
+    await vi.advanceTimersByTimeAsync(5000);
+    await next;
   });
   it('starts a fourth read past two minutes once one of three unsettled reads settles, and shares it for 30 s', async () => {
     let calls = 0;

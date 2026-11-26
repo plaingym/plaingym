@@ -104,6 +104,8 @@
   "email.lastFailed_connection": "The last email, at {at}, failed: the app couldn't connect to the sending service.",
   "email.lastFailed_tls": "The last email, at {at}, failed: the secure connection didn't start.",
   "email.lastFailed_authentication": "The last email, at {at}, failed: the service rejected the login. Test and save the current password below.",
+  "email.lastFailed_authentication_install": "The last email, at {at}, failed: the service rejected the login. Check the server's SMTP_USER and SMTP_PASS settings and restart the app, or save this gym's own settings below.",
+  "email.lastFailed_authentication_operator": "The last email, at {at}, failed: the service rejected the login. Whoever runs this install manages that login.",
   "email.lastFailed_sender_refused": "The last email, at {at}, failed: the service refused the sender address.",
   "email.remove": "Remove and use the install’s settings",
   "email.removeNone": "Remove (the gym will have no email)",

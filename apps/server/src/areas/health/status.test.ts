@@ -158,12 +158,14 @@ describe('built-in providers', () => {
   it('warns about the last email the sending service refused, until a send works', async () => {
     const id = uuidv7(), smtp = { host: 'sending.host', port: 587, security: 'starttls', from: 'owner@example.test', username: 'u', password: 'p' } as const;
     await factory('gyms', id, { smtpConfig: encryptSmtpConfig(key, id, smtp) });
-    const sendClock = new TestClock('2026-11-21T09:00:00Z'), report = createEmailStatusRecorder({ scope: database.forGym, clock: sendClock })(id, smtp);
+    const sendClock = new TestClock('2026-11-21T09:00:00Z'), report = createEmailStatusRecorder({ scope: database.forGym, clock: sendClock })(id, { ...smtp, source: 'gym' });
     await report({ ok: false, error: new SmtpDeliveryError('not_accepted', 'SMTP authentication failed', { cause: { code: 'EAUTH', responseCode: 535 } }) });
     const failed = await tile('smtp', id);
     expect(failed).toMatchObject({ status: 'warning', details: { configured: true, lastTestAt: null } });
     expect(failed.message).toContain('own SMTP');
     expect(failed.message).toContain('the service rejected the login');
+    expect(failed.message).toContain('Settings → Integrations → Email');
+    expect(failed.message).not.toContain('SMTP_USER');
     // Another gym's failure says nothing about this one.
     expect((await tile('smtp', gymA)).message).not.toContain('The last email failed');
     sendClock.advance(60_000);
@@ -171,6 +173,32 @@ describe('built-in providers', () => {
     const recovered = await tile('smtp', id);
     expect(recovered).toMatchObject({ status: 'healthy', details: { configured: true, lastTestAt: null } });
     expect(recovered.message).not.toContain('the service rejected the login');
+  });
+  it('words a refused login through the install\'s settings for the server or its operator, and keeps other classes', async () => {
+    const id = uuidv7(); await factory('gyms', id);
+    const install = { ...env, SMTP_HOST: 'fallback.private', SMTP_FROM: 'install@example.test', SMTP_USER: 'fallback-user', SMTP_PASS: 'fallback-secret' };
+    // Written after this process started, so the install-source failure stands.
+    const failure = (failed: string) => database.forGym(id, (tx) => writeAudit(tx, { gymId: id, actorKind: 'system', action: 'email.delivery_failed',
+      targetType: 'gym', targetId: id, after: { failure: failed, source: 'install' }, occurredAt: new Date() }));
+    await failure('authentication');
+    const single = await tile('smtp', id, { env: { ...install, TENANCY: 'single' } });
+    expect(single).toMatchObject({ status: 'warning', details: { configured: true } });
+    expect(single.message).toContain("install's SMTP settings");
+    expect(single.message).toContain('SMTP_USER and SMTP_PASS');
+    expect(single.message).not.toContain('Settings → Integrations → Email');
+    const multi = await tile('smtp', id, { env: install });
+    expect(multi).toMatchObject({ status: 'warning' });
+    expect(multi.message).toContain('Whoever runs this install');
+    expect(multi.message).not.toContain('SMTP_USER');
+    await failure('connection');
+    expect((await tile('smtp', id, { env: { ...install, TENANCY: 'single' } })).message)
+      .toContain("The last email failed: the app couldn't connect to the sending service.");
+  });
+  it('reports no settings as not configured, even with a standing send failure', async () => {
+    const id = uuidv7(); await factory('gyms', id);
+    await database.forGym(id, (tx) => writeAudit(tx, { gymId: id, actorKind: 'system', action: 'email.delivery_failed',
+      targetType: 'gym', targetId: id, after: { failure: 'authentication' }, occurredAt: new Date() }));
+    expect(await tile('smtp', id)).toMatchObject({ status: 'not_configured', details: { configured: false }, message: 'Email is not configured.' });
   });
   it('reports Google sign-in: the install’s client, the gym’s own, none, and a malformed variable by name and reason', async () => {
     const single = { ...env, TENANCY: 'single' };
