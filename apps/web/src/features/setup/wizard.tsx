@@ -32,7 +32,7 @@ class OwnerSavedSignInError extends Error {
     this.name = 'OwnerSavedSignInError';
   }
 }
-/** A restore request that got no definite answer while the status read answers 404, so the restore may be running. */
+/** A restore request that may be running: after no definite answer, a status read or a resend's refusal suggests it. */
 class RestoreUnansweredError extends Error {
   constructor(options?: ErrorOptions) {
     super('Restore request unanswered', options);
@@ -120,9 +120,10 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   const services = useShellServices(), queries = useQueryClient();
   const [jobId, setJobId] = useState<string | null>(() => sessionStorage.getItem('setup.restore'));
   const [restoreSending, setRestoreSending] = useState(false);
-  // The last restore request got no answer and the status read met a restore's hold: its form and message stay.
+  // A restore request got no answer, then a status read met a restore's hold or a resend was refused with 404, 409 or
+  // 429: the form stays.
   const [restoreUnanswered, setRestoreUnanswered] = useState(false);
-  // When the last restore request went unanswered, until a status read works: a later 404 keeps the form too.
+  // When the last restore request went unanswered, until a status read works: a later 404 or 503 keeps the form too.
   const [unansweredAt, setUnansweredAt] = useState<number | null>(null);
   // A restore, from its request on, makes the status answer 404, and that answer would outlive a restore that then fails.
   const status = useQuery({ queryKey: key, queryFn: () => client.call('status'), retry: false,
@@ -240,18 +241,20 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   }, [client, queries, jobId, unreachable, throttled, restoreAnswer]);
   const complete = done || restoreState === 'restored';
   const finished = status.error instanceof ApiError && status.error.status === 404;
+  // The status read answers 503 while a restore holds the server; that matters only after an unanswered restore request.
+  const gateClosed = status.error instanceof ApiError && status.error.status === 503;
   // With no status data, any restore answer keeps its screen. Once the status was read, a 404 ends the steps unless a
   // restore is running, done, or failed with a staged copy while step 0 is still on screen.
   const stagedFailure = restoreState === 'failed' && Boolean(restoreFailure?.staged) && step === 0;
   const restoreStays = finished && status.data ? restoreState === 'running' || restoreState === 'restored' || stagedFailure
     : Boolean(restoreState);
-  // Known in the render where the 404 arrives, so the form is never swapped out and keeps its values.
-  const awaitingAnswer = unansweredAt !== null && finished;
+  // Known in the render where the 404 or 503 arrives, so the form is never swapped out and keeps its values.
+  const awaitingAnswer = unansweredAt !== null && (finished || gateClosed);
   const noSteps = !jobId && !restoreSending && !restoreUnanswered && !awaitingAnswer && !done && !finalFinishing && !restoreStays;
   const unavailable = finished && noSteps;
   // A first read that failed for any other reason says nothing about the install, so it offers only another try.
   const loadFailed = status.isError && !status.data && !finished && noSteps;
-  const reloadShown = loadFailed || (status.isError && Boolean(status.data) && !finished && !finalFinishing)
+  const reloadShown = loadFailed || (status.isError && Boolean(status.data) && !finished && !awaitingAnswer && !finalFinishing)
     // Beside a failed restore with no status behind it too, so the steps never pass as if the status were known.
     || (status.isError && !status.data && !finished && restoreState === 'failed');
   // Before the heading's effect: after a retry removed the reload alert, the message takes the focus nothing else holds.
@@ -282,17 +285,24 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
     backedOut.current = false;
     unavailableBox.current?.focus();
   }, [restore]);
-  // A 404 read after the request's own wait was over: its message replaces the earlier error without moving the focus.
-  // While a request is being sent, its own action decides the message and takes the focus to it.
+  // A 404 or 503 read after the request's own wait was over: its message replaces the earlier error, and takes the focus
+  // only when nothing else holds it, as after a retry removed the reload alert. A message a refused resend left on screen
+  // stays, and takes the focus the same way. While a request is being sent, its own action decides the message and takes
+  // the focus to it.
   useEffect(() => {
-    if (!awaitingAnswer || restoreSending || restoreUnanswered) return;
-    setQuietError(true); setRestoreUnanswered(true); setError('restoreUnanswered');
-  }, [awaitingAnswer, restoreSending, restoreUnanswered]);
-  // A status read that works ends the unanswered state, so a still later 404 is news of its own.
+    if (!awaitingAnswer || restoreSending) return;
+    const unfocused = document.activeElement === null || document.activeElement === document.body;
+    if (restoreUnanswered) { if (unfocused) errorBox.current?.focus(); return; }
+    setQuietError(!unfocused); setRestoreUnanswered(true); setError('restoreUnanswered');
+  }, [awaitingAnswer, restoreSending, restoreUnanswered, errorBox]);
+  // A status read that works ends the unanswered state and its message, so a still later 404 is news of its own.
   useEffect(() => {
     if (!status.isSuccess || unansweredAt === null || status.dataUpdatedAt < unansweredAt) return;
     setUnansweredAt(null); setRestoreUnanswered(false);
-  }, [status.isSuccess, status.dataUpdatedAt, unansweredAt]);
+    // Removing the focused message would leave the focus on the page body, so the step's heading takes it.
+    if (error === 'restoreUnanswered' && errorBox.current?.contains(document.activeElement)) heading.current?.focus();
+    setError((shown) => shown === 'restoreUnanswered' ? null : shown);
+  }, [status.isSuccess, status.dataUpdatedAt, unansweredAt, error, errorBox]);
   const retryStatus = <Button type="button" disabled={status.isFetching}
     onClick={() => { retried.current = unavailable || !status.data; void readAgain(); }}>{t('setup/setup:retry')}</Button>;
   const reloadAlert = <Alert ref={reloadBox} variant="error"><p>{t('setup/setup:reloadFailed')}</p>{retryStatus}</Alert>;
@@ -337,10 +347,15 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
           const unanswered = failure instanceof TypeError || (failure instanceof ApiError && (failure.status === 502 || failure.status === 504));
           if (!unanswered) {
             // After an unanswered request, a 409 (a restore is already running) or a 404 (it holds the gym, or has
-            // closed setup) is most likely that restore's doing.
+            // closed setup) is most likely that restore's doing. A 429 says nothing about it either way, so that restore
+            // may still be running while the owner is told to wait.
             if (wasUnanswered && failure instanceof ApiError && (failure.status === 404 || failure.status === 409)) {
               setUnansweredAt(Date.now()); setRestoreUnanswered(true);
               throw new RestoreUnansweredError({ cause: failure });
+            }
+            if (wasUnanswered && failure instanceof ApiError && failure.status === 429) {
+              setUnansweredAt(Date.now()); setRestoreUnanswered(true);
+              throw failure;
             }
             void status.refetch(); throw failure;
           }
@@ -350,7 +365,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
           const read = await Promise.race([status.refetch(),
             new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), restoreReadLimit); })])
             .finally(() => clearTimeout(timer));
-          if (read?.error instanceof ApiError && read.error.status === 404) {
+          if (read?.error instanceof ApiError && (read.error.status === 404 || read.error.status === 503)) {
             setRestoreUnanswered(true);
             throw new RestoreUnansweredError({ cause: failure });
           }

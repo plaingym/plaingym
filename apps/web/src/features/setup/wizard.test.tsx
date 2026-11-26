@@ -2082,7 +2082,7 @@ describe('setup wizard restore progress', () => {
     expect(document.activeElement).toBe(alertOf(changedText));
   });
 
-  const unansweredText = 'The restore request got no answer, so the restore may be running. Wait a few minutes, then reload this page; once the restore has finished, it says setup is unavailable, with a link to sign in.';
+  const unansweredText = 'The restore request got no answer, so the restore may be running. Wait a few minutes, then reload this page. While the restore checks the backup, this page can say setup is unavailable even though the restore could still fail, so the restore has finished only once you can sign in with an account from the backup.';
   /** Sends a restore request that ends as `request` says, with the status read after it answering `reload` (the usual status when null). */
   async function sendRestoreEnding(request: () => Promise<Response>, reload: (() => Response | Promise<Response>) | null) {
     const started = start(0);
@@ -2327,5 +2327,113 @@ describe('setup wizard restore progress', () => {
     await settle();
 
     expect(document.activeElement).toBe(startFresh);
+  });
+  const busy503 = () => Response.json({ error: { code: 'unavailable', message: 'A restore is in progress.' } }, { status: 503 });
+  const rateLimitedText = 'Too many attempts. Please wait before trying again.';
+
+  it('treats a 503 status read after an unanswered restore request as the restore still running', async () => {
+    const { fetcher, before } = await sendRestoreEnding(dropped, busy503);
+
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+    await settle();
+    expect(document.activeElement).toBe(alertOf(unansweredText));
+    expect(screen.queryByText(saveFailedText)).toBeNull();
+    expect(screen.queryByText(reloadText)).toBeNull();
+    expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
+    expect(statusReads(fetcher)).toBe(before + 1);
+  });
+  it('keeps the form, saying the restore may be running, when a later status read answers 503', async () => {
+    const { shown } = await dropWithoutStatus();
+    const errorAlert = alertOf(saveFailedText);
+
+    statusAnswer = busy503;
+    await refocus();
+
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+    await settle();
+    expect(alertOf(unansweredText)).toBe(errorAlert);
+    expect(document.activeElement).toBe(errorAlert);
+    expect(screen.queryByText(reloadText)).toBeNull();
+    expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
+    expect(shown()).toBe(false);
+  });
+  it('keeps the unanswered state when sending again is refused with 429', async () => {
+    const answers = [dropped,
+      () => Promise.resolve(Response.json({ error: { code: 'rate_limited', message: 'Slow down' } }, { status: 429 }))];
+    const { fetcher, shown } = await sendRestoreEnding(() => answers.shift()!(), gone);
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+
+    await sendRestore();
+
+    expect(await screen.findByText(rateLimitedText)).toBeDefined();
+    expect(screen.queryByText(unansweredText)).toBeNull();
+    expect(fetcher.mock.calls.filter(([path]) => String(path) === '/api/setup/restore')).toHaveLength(2);
+
+    statusAnswer = gone;
+    await refocus();
+    await settle();
+    expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
+    expect(screen.getByText(rateLimitedText)).toBeDefined();
+    expect(screen.queryByText(unansweredText)).toBeNull();
+    expect(shown()).toBe(false);
+  });
+  it('clears the message when a status read works, leaving the focus in a field', async () => {
+    await sendRestoreEnding(dropped, gone);
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+    const field = screen.getByLabelText('Storage bucket');
+    await userEvent.click(field);
+
+    statusAnswer = null;
+    await refocus();
+    await settle();
+
+    expect(screen.queryByText(unansweredText)).toBeNull();
+    expect(document.activeElement).toBe(field);
+
+    statusAnswer = gone;
+    await refocus();
+    expect(await screen.findByText(unavailableText)).toBeDefined();
+  });
+  it('focuses the message when Try again answers 404 and removes its own button', async () => {
+    await dropWithoutStatus();
+
+    statusAnswer = gone;
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+    await settle();
+    expect(screen.queryByText(reloadText)).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(alertOf(unansweredText));
+  });
+  it('focuses the step heading when a working status read removes the focused message', async () => {
+    await sendRestoreEnding(dropped, gone);
+    expect(await screen.findByText(unansweredText)).toBeDefined();
+    await settle();
+    expect(document.activeElement).toBe(alertOf(unansweredText));
+
+    statusAnswer = null;
+    await refocus();
+    await settle();
+
+    expect(screen.queryByText(unansweredText)).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Start fresh or restore a backup' }));
+  });
+  it('focuses the message already shown when Try again answers 503 and removes its own button', async () => {
+    const answers = [dropped,
+      () => Promise.resolve(Response.json({ error: { code: 'rate_limited', message: 'Slow down' } }, { status: 429 }))];
+    await sendRestoreEnding(() => answers.shift()!(), serverError);
+    expect(await screen.findByText(saveFailedText)).toBeDefined();
+    await sendRestore();
+    expect(await screen.findByText(rateLimitedText)).toBeDefined();
+    await settle();
+
+    statusAnswer = busy503;
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => expect(screen.queryByText(reloadText)).toBeNull());
+    await settle();
+    expect(document.activeElement).toBe(alertOf(rateLimitedText));
+    expect(screen.getByLabelText('Backup private key')).toHaveProperty('value', privateKey);
   });
 });
