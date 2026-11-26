@@ -377,3 +377,23 @@ test('the smoke test uses the same repository root as the app', () => {
   const app = readFileSync(join(root, 'apps/server/src/core/source-link.ts'), 'utf8');
   assert.equal(app.match(/export const defaultSourceUrl = '([^']+)';/)?.[1], repositoryRoot);
 });
+
+test('a version that still ships code due for removal is refused before anything is written', () => {
+  const f = fixture();
+  try {
+    // Below the listed version the code may stay.
+    f.write('apps/server/src/core/cookies.ts', 'legacyNames\n'); f.commit('feat: cookies'); f.publishFixture();
+    assert.equal(release({ ...f.options, version: '1.0.0' }).version, '1.0.0');
+    f.publishFixture();
+    f.write('apps/server/src/core/cookies.ts', 'legacyNames // still here\n'); f.commit('feat: x'); f.publishFixture();
+    const head = f.run('rev-parse', 'HEAD');
+    assert.throws(() => release({ ...f.options, version: '1.1.0' }),
+      /^Error: 1\.1\.0 .*legacyNames in apps\/server\/src\/core\/cookies\.ts/);
+    assert.equal(f.run('rev-parse', 'HEAD'), head);
+    assert.equal(f.run('tag', '--list', 'v1.1.0'), '');
+    assert.equal(f.run('status', '--porcelain'), '');
+    // Once the listed file no longer holds it, the same version releases.
+    f.write('apps/server/src/core/cookies.ts', 'removed\n'); f.commit('fix: drop the old names'); f.publishFixture();
+    assert.equal(release({ ...f.options, version: '1.1.0' }).version, '1.1.0');
+  } finally { f.close(); }
+});

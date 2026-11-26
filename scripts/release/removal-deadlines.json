@@ -1,0 +1,7 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "removals": [
+    { "from": "1.1.0", "file": "apps/server/src/infra/auth/service.ts", "identifier": "legacySessionCookies" },
+    { "from": "1.1.0", "file": "apps/server/src/core/cookies.ts", "identifier": "legacyNames" }
+  ]
+}

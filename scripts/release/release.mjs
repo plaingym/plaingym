@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -129,6 +129,15 @@ export function release({ cwd = process.cwd(), version: explicit, notesFile, rol
   const requiredBranch = isPatch ? `release/${major}.${minor}` : 'main';
   if (branch !== requiredBranch) throw new Error(`${version} must be released on ${requiredBranch}`);
   if (run('tag', '--list', `v${version}`)) throw new Error(`v${version} already exists`);
+  const { removals } = JSON.parse(readFileSync(new URL('./removal-deadlines.json', import.meta.url), 'utf8'));
+  // A malformed version would compare as NaN and never refuse anything.
+  for (const { from, file, identifier } of removals)
+    if (!releasePattern.test(from) || !file || !identifier) throw new Error('removal-deadlines.json needs X.Y.Z, file and identifier in every entry');
+  // A listed file that is gone counts as removed. The tree is clean and level with origin, so these are the released files.
+  const overdue = removals.filter(({ from, file, identifier }) => compare(version, from) >= 0 &&
+    existsSync(join(cwd, file)) && readFileSync(join(cwd, file), 'utf8').includes(identifier));
+  if (overdue.length)
+    throw new Error(`${version} must not ship code due for removal: ${overdue.map(({ identifier, file }) => `${identifier} in ${file}`).join(', ')}`);
   if (previous) { checkCommits(previous, head, cwd); checkMigrations(previous, head, cwd); }
   let signingKey = '', signingFormat = '';
   try { signingKey = run('config', '--get', 'user.signingkey'); } catch { /* Config exits 1 when absent. */ }

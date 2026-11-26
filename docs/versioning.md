@@ -237,7 +237,9 @@ tag signing (`user.signingkey`, or SSH signing with `gpg.format=ssh`). A workflo
 path filters skipped the commit (**CI** skips a Markdown-only one) counts from the
 nearest earlier commit it ran on, since the previous release, when it would have
 skipped every commit in between too. GitHub queries name the repository explicitly.
-A fork can set `git config plaingym.repository OWNER/REPO`.
+A fork can set `git config plaingym.repository OWNER/REPO`. It also refuses a
+version that has reached a removal date in `scripts/release/removal-deadlines.json`
+while the file named there still holds that code.
 
 For a patch, first get that exact commit checked on an `integration/**` branch,
 then fast-forward and push `release/X.Y` to it. The CI workflows run on integration
