@@ -22,43 +22,77 @@ export class SmokeInterrupted extends Error {
   get exitCode() { return this.#exitCode; }
 }
 
+/**
+ * The exit code for a child stopped by an interrupt: killed by the signal, or exiting the way a shell reports it.
+ * A timeout is a failure even when the signal that stopped the child was SIGTERM.
+ */
+export function childInterruptCode(error) {
+  if (error?.code === 'ETIMEDOUT') return undefined;
+  if (error?.signal === 'SIGINT' || error?.status === 130) return 130;
+  if (error?.signal === 'SIGTERM' || error?.status === 143) return 143;
+  return undefined;
+}
+
 /** Callers wrap and clean up; find the interrupt without treating it as a smoke failure. */
 export function interruptExitCode(error) {
   let current = error;
   for (let level = 0; current && level < 5; level += 1) {
-    if (current instanceof SmokeInterrupted) return current.exitCode;
+    const code = current instanceof SmokeInterrupted ? current.exitCode : childInterruptCode(current);
+    if (code !== undefined) return code;
     current = current.cause;
   }
   return undefined;
 }
 
-/** Keep the process alive until a blocked child returns, then let its caller's finally blocks finish. */
-export function holdInterrupts(signals = process) {
+/** An error that is only warned about must still end the run as interrupted. The first recorded code stays. */
+export function recordInterrupt(error, target = process) {
+  const code = childInterruptCode(error);
+  if (code !== undefined && target.exitCode !== 130 && target.exitCode !== 143) target.exitCode = code;
+  return code;
+}
+
+/**
+ * Keep the process alive until a blocked child returns, then let its caller's finally blocks finish.
+ * A second signal that reaches these listeners gets its default action.
+ */
+export function holdInterrupts(signals = process, kill = (pid, signal) => process.kill(pid, signal)) {
   let held = false;
-  const hold = code => () => {
-    if (held) return;
-    held = true;
-    signals.exitCode = code;
-  };
-  signals.on('SIGINT', hold(130));
-  signals.on('SIGTERM', hold(143));
+  const listeners = [['SIGINT', 130], ['SIGTERM', 143]].map(([signal, code]) => {
+    const listener = () => {
+      if (!held) {
+        held = true;
+        signals.exitCode = code;
+        return;
+      }
+      for (const [name, added] of listeners) signals.off(name, added);
+      kill(process.pid, signal);
+    };
+    signals.on(signal, listener);
+    return [signal, listener];
+  });
 }
 
 /** Cleanup must neither replace the check's result nor skip subsequent cleanup. */
-export function removeImage(image, run = execFileSync, warn = console.warn) {
+export function removeImage(image, run = execFileSync, warn = console.warn, target = process) {
   // SIGKILL: the default SIGTERM leaves execFileSync blocked past its timeout if the client ignores it.
   try { run('docker', ['image', 'rm', '--force', image], { stdio: 'pipe', timeout: 120_000, killSignal: 'SIGKILL' }); }
-  catch (error) { warn(`::warning::Could not remove image ${image}: ${error.message}`); }
+  catch (error) {
+    warn(`::warning::Could not remove image ${image}: ${error.message}`);
+    recordInterrupt(error, target);
+  }
 }
 
 /** Keep the smoke script beside its own Compose configuration and other fixtures. */
-export function withPreviousTree(commit, operation, runGit = git, warn = console.warn) {
+export function withPreviousTree(commit, operation, runGit = git, warn = console.warn, target = process) {
   const worktree = resolve(runGit(['rev-parse', '--path-format=absolute', '--git-common-dir']), '..', '.worktrees', `previous-code-${randomUUID()}`);
   runGit(['worktree', 'add', '--detach', worktree, commit]);
   try { return operation(worktree); }
   finally {
     try { runGit(['worktree', 'remove', '--force', worktree]); }
-    catch (error) { warn(`::warning::Could not remove worktree ${worktree}: ${error.message}`); }
+    catch (error) {
+      warn(`::warning::Could not remove worktree ${worktree}: ${error.message}`);
+      recordInterrupt(error, target);
+    }
   }
 }
 
@@ -107,8 +141,17 @@ export function compatibilityAssertions(source) {
   return source.replace(/ {2}console\.log\('PASS: .*'\);/, "  console.log('PASS: previous application compatibility with current deployment files.');");
 }
 
-/** Remove only the caller's unique project, even when the child never gets to its finally block. */
-export function removeSmokeProject(project, run = execFileSync, warn = console.warn) {
+/**
+ * Remove only the caller's unique project, even when the child never gets to its finally block.
+ * Every kind is still attempted after an interrupted call; returns the first interrupt's exit code.
+ */
+export function removeSmokeProject(project, run = execFileSync, warn = console.warn, target = process) {
+  let interrupted;
+  const failed = (error, message) => {
+    warn(`::warning::${message}: ${error.message}`);
+    const code = recordInterrupt(error, target);
+    interrupted ??= code;
+  };
   for (const [kind, list, remove] of [
     ['containers', ['ps', '-aq'], ['rm', '-f', '-v']],
     ['networks', ['network', 'ls', '-q'], ['network', 'rm']],
@@ -119,10 +162,11 @@ export function removeSmokeProject(project, run = execFileSync, warn = console.w
         { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' }).trim().split(/\s+/).filter(Boolean);
       for (const name of names) {
         try { run('docker', [...remove, name], { stdio: 'pipe', timeout: 120_000, killSignal: 'SIGKILL' }); }
-        catch (error) { warn(`::warning::Could not remove ${project} ${kind} ${name}: ${error.message}`); }
+        catch (error) { failed(error, `Could not remove ${project} ${kind} ${name}`); }
       }
-    } catch (error) { warn(`::warning::Could not list ${project} ${kind}: ${error.message}`); }
+    } catch (error) { failed(error, `Could not list ${project} ${kind}`); }
   }
+  return interrupted;
 }
 
 /** Both supported host-file paths: an upgraded install, and an install using the current deployment files. */
@@ -136,20 +180,22 @@ export function smokePreviousImage(previousImage, image, tree, commit, run = exe
     const script = resolve(tree, 'deploy/test', `${project}.mjs`);
     const description = `Smoke test ${commit}:deploy/test/smoke.mjs (${original}) against ${previousImage}, schema migrated by ${image}, deployment files ${deployment}`;
     console.log(description);
+    let interrupted;
     try {
       writeFileSync(script, adaptPreviousSmoke(source, deployment, resolve(root, 'deploy'), project));
       run(process.execPath, [fileURLToPath(new URL('./run-smoke.mjs', import.meta.url)), script, previousImage],
         { cwd: tree, stdio: 'inherit', timeout: 915_000, killSignal: 'SIGKILL',
         env: { ...process.env, SMOKE_MIGRATE_IMAGE: image, VERSION: variable('APP_VERSION'), SOURCE_URL: variable('SOURCE_URL') } });
     } catch (error) {
-      const exitCode = error?.signal === 'SIGINT' ? 130 : error?.signal === 'SIGTERM' ? 143
-        : error?.status === 130 ? 130 : error?.status === 143 ? 143 : undefined;
+      const exitCode = childInterruptCode(error);
       if (exitCode !== undefined) throw new SmokeInterrupted(exitCode, { cause: error });
       throw new Error(`${description} failed: ${error.message}`, { cause: error });
     } finally {
-      removeSmokeProject(project, run);
+      interrupted = removeSmokeProject(project, run);
       try { rmSync(script, { force: true }); }
       catch (error) { console.warn(`::warning::Could not remove compatibility harness ${script}: ${error.message}`); }
     }
+    // Reached only after a passing smoke: a smoke error is already on its way out and keeps priority.
+    if (interrupted !== undefined) throw new SmokeInterrupted(interrupted);
   }
 }

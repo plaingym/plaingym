@@ -72,8 +72,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   holdInterrupts();
   try {
     const [image, tag, mode, previous] = process.argv.slice(2);
-    if (mode === '--prerelease') console.log(`floor=${prereleaseFloor(image, tag, previous || undefined, { log: console.error })}`);
-    else previousMinor(image, tag);
+    if (mode === '--prerelease') {
+      const floor = prereleaseFloor(image, tag, previous || undefined, { log: console.error });
+      // An interrupted cleanup is only recorded in the exit code; such a run reports no floor.
+      if (process.exitCode !== 130 && process.exitCode !== 143) console.log(`floor=${floor}`);
+    } else previousMinor(image, tag);
   } catch (error) {
     const code = interruptExitCode(error);
     if (code === undefined) throw error;

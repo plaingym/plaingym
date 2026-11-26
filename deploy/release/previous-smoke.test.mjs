@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
-import { adaptPreviousSmoke, compatibilityAssertions, holdInterrupts, interruptExitCode, removeImage, removeSmokeProject, SmokeInterrupted, smokePreviousImage, withPreviousTree } from './previous-smoke.mjs';
+import { adaptPreviousSmoke, childInterruptCode, compatibilityAssertions, holdInterrupts, interruptExitCode, recordInterrupt, removeImage, removeSmokeProject, SmokeInterrupted, smokePreviousImage, withPreviousTree } from './previous-smoke.mjs';
 import { prereleaseFloor } from './previous-minor.mjs';
 import { runSmoke } from './run-smoke.mjs';
 
@@ -372,6 +372,22 @@ for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
   });
 }
 
+test('a terminal SIGINT during cleanup between deployments exits 130 before the second smoke', { skip: process.platform === 'win32' }, async t => {
+  const result = await runInterruptFixture(t, { signal: 'SIGINT', mode: 'cleanup' });
+  assert.equal(result.code, 130, result.output);
+  const calls = readFileSync(result.calls, 'utf8').trim().split('\n');
+  assert.equal(calls.filter(line => line.includes('run-smoke.mjs')).length, 1, calls.join('\n'));
+  const listings = calls.filter(line => line.includes('--filter label=com.docker.compose.project=plaingym-compat-'));
+  assert.deepEqual(listings.map(line => line.split(' ')[1]), ['ps', 'network', 'volume'], calls.join('\n'));
+  assert.deepEqual(readdirSync(join(result.tree, 'deploy/test')), ['smoke.mjs']);
+});
+
+test('a terminal SIGINT during a prerelease pull exits 130 and prints no floor', { skip: process.platform === 'win32' }, async t => {
+  const result = await runInterruptFixture(t, { signal: 'SIGINT', mode: 'pull' });
+  assert.equal(result.code, 130, result.output);
+  assert.doesNotMatch(result.output, /floor=|did not pass/);
+});
+
 test('a failed compatibility smoke still exits 1 and cleans its project', async t => {
   const result = await runInterruptFixture(t, { mode: 'fail' });
   assert.equal(result.code, 1, result.output);
@@ -390,15 +406,108 @@ test('an interrupt code is found through a short cause chain and nothing else', 
   assert.equal(interruptExitCode(new Error('wrapper', { cause: deep })), undefined);
 });
 
-test('holding interrupts records the first signal and leaves its listeners in place', () => {
-  const signals = new EventEmitter();
-  holdInterrupts(signals);
+test('holding interrupts records the first signal and re-raises a second one with its listeners removed', () => {
+  const signals = new EventEmitter(), killed = [];
+  holdInterrupts(signals, (pid, signal) => killed.push([pid, signal]));
   signals.emit('SIGINT');
-  assert.equal(signals.exitCode, 130);
-  signals.emit('SIGTERM');
   assert.equal(signals.exitCode, 130);
   assert.equal(signals.listenerCount('SIGINT'), 1);
   assert.equal(signals.listenerCount('SIGTERM'), 1);
+  assert.deepEqual(killed, []);
+  signals.emit('SIGTERM');
+  assert.equal(signals.exitCode, 130);
+  assert.equal(signals.listenerCount('SIGINT'), 0);
+  assert.equal(signals.listenerCount('SIGTERM'), 0);
+  assert.deepEqual(killed, [[process.pid, 'SIGTERM']]);
+});
+
+test('a child stopped by an interrupt is recognised, and a timeout or other failure is not', () => {
+  for (const [error, code] of [[{ signal: 'SIGINT' }, 130], [{ status: 130 }, 130], [{ signal: 'SIGTERM' }, 143], [{ status: 143 }, 143]])
+    assert.equal(childInterruptCode(error), code, JSON.stringify(error));
+  // A timed-out child with the default kill signal reports SIGTERM, but it is a failure.
+  for (const error of [{ status: 1 }, { signal: 'SIGKILL' }, new Error('x'), { code: 'ETIMEDOUT', signal: 'SIGTERM' }, undefined])
+    assert.equal(childInterruptCode(error), undefined, JSON.stringify(error));
+  assert.equal(interruptExitCode(new Error('wrapped', { cause: { status: 143 } })), 143);
+});
+
+test('the first recorded interrupt code stays', () => {
+  const target = {};
+  assert.equal(recordInterrupt({ status: 1 }, target), undefined);
+  assert.equal(target.exitCode, undefined);
+  assert.equal(recordInterrupt({ signal: 'SIGINT' }, target), 130);
+  assert.equal(recordInterrupt({ signal: 'SIGTERM' }, target), 143);
+  assert.equal(target.exitCode, 130);
+});
+
+test('an interrupted project cleanup still attempts every kind and reports the interrupt', () => {
+  const calls = [], warnings = [], target = {};
+  const code = removeSmokeProject('unique-project', (binary, args) => {
+    calls.push(args);
+    if (args.includes('--filter')) return 'owned-resource\n';
+    if (args[0] === 'rm') throw { status: 130 };
+    return '';
+  }, message => warnings.push(message), target);
+  assert.equal(code, 130);
+  assert.equal(target.exitCode, 130);
+  assert.equal(warnings.length, 1);
+  assert.deepEqual(calls.filter(args => args.includes('--filter')).map(args => args[0]), ['ps', 'network', 'volume']);
+
+  const listing = {};
+  assert.equal(removeSmokeProject('unique-project', (binary, args) => {
+    if (args[0] === 'network') throw { signal: 'SIGTERM' };
+    return '';
+  }, () => {}, listing), 143);
+  assert.equal(listing.exitCode, 143);
+  assert.equal(removeSmokeProject('unique-project', () => { throw new Error('daemon unavailable'); }, () => {}, {}), undefined);
+});
+
+for (const smokeFails of [false, true]) {
+  test(`an interrupted cleanup after a ${smokeFails ? 'failed smoke keeps its error' : 'passing smoke stops the run'} and starts no second smoke`, t => {
+    const tree = mkdtempSync(join(tmpdir(), 'cleanup-interrupt-'));
+    // The cleanup records the interrupt on this process, which is the test runner.
+    const exitCode = process.exitCode;
+    t.after(() => { process.exitCode = exitCode; rmSync(tree, { recursive: true, force: true }); });
+    mkdirSync(join(tree, 'deploy/test'), { recursive: true });
+    writeFileSync(join(tree, 'deploy/test/smoke.mjs'), readFileSync(new URL('../test/smoke.mjs', import.meta.url)));
+    const original = new Error('real schema incompatibility');
+    let smokes = 0, listings = 0;
+    assert.throws(() => smokePreviousImage('old-image', 'new-image', tree, 'old-ref', (binary, args) => {
+      if (binary !== 'docker') {
+        smokes += 1;
+        if (smokeFails) throw original;
+        return '';
+      }
+      if (args[0] === 'image') return JSON.stringify([{ Config: { Env: [] } }]);
+      listings += 1;
+      if (listings === 1) throw { status: 130 };
+      return '';
+    }), error => (smokeFails ? error.cause === original && interruptExitCode(error) === undefined
+      : error instanceof SmokeInterrupted && error.exitCode === 130));
+    assert.equal(smokes, 1);
+    assert.equal(listings, 3);
+    assert.equal(process.exitCode, 130);
+  });
+}
+
+test('an interrupted image removal records its signal and another failure only warns', () => {
+  for (const [error, code] of [[{ signal: 'SIGTERM' }, 143], [{ status: 1 }, undefined]]) {
+    const warnings = [], target = {};
+    removeImage('unique-test-image', () => { throw error; }, line => warnings.push(line), target);
+    assert.equal(warnings.length, 1);
+    assert.equal(target.exitCode, code);
+  }
+});
+
+test('an interrupted worktree removal keeps the result and records the interrupt', () => {
+  const warnings = [], target = {};
+  const runGit = args => {
+    if (args[0] === 'rev-parse') return join(tmpdir(), 'fixture', '.git');
+    if (args[1] === 'remove') throw { status: 130 };
+    return '';
+  };
+  assert.equal(withPreviousTree('old-ref', () => 'passed', runGit, line => warnings.push(line), target), 'passed');
+  assert.equal(warnings.length, 1);
+  assert.equal(target.exitCode, 130);
 });
 
 test('an interrupted prerelease smoke is rethrown instead of raising the floor', () => {
