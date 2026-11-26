@@ -326,7 +326,7 @@ export function createSignedLinksService(options: {
           const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.gymId, context.gymId),
             eq(invoices.id, request.invoiceId), eq(invoices.householdId, request.householdId))).for('update');
           if (!invoice) missing();
-          if (!['open', 'past_due'].includes(invoice.status)) throw new AppError('conflict', 'Invoice cannot be paid');
+          if (!['open', 'past_due'].includes(invoice.status)) throw new AppError('conflict', 'Invoice cannot be paid', { reason: ['not_payable'] });
           if (invoice.amountCents === 0) throw new AppError('conflict', 'No payment is needed', { reason: ['zero_invoice'] });
           manualPayment = !!cardChargeIssue(invoice.amountCents, invoice.currency);
         }
@@ -357,8 +357,9 @@ export function createSignedLinksService(options: {
           if (request.purpose === 'pay_invoice') {
             const invoice = await scope(context.gymId, async tx => (await tx.select().from(invoices)
               .where(and(eq(invoices.id, request.invoiceId), eq(invoices.householdId, request.householdId))))[0]);
-            if (!invoice || !['open', 'past_due'].includes(invoice.status) || invoice.amountCents === 0)
-              throw new AppError('conflict', 'Invoice cannot be paid');
+            if (!invoice) throw new AppError('not_found', 'Invoice not found');
+            if (!['open', 'past_due'].includes(invoice.status)) throw new AppError('conflict', 'Invoice cannot be paid', { reason: ['not_payable'] });
+            if (invoice.amountCents === 0) throw new AppError('conflict', 'No payment is needed', { reason: ['zero_invoice'] });
             manual ||= !!cardChargeIssue(invoice.amountCents, invoice.currency);
           }
           const body = manual ? preparedSms.t('links/service:manualPayment')
@@ -383,7 +384,7 @@ export function createSignedLinksService(options: {
           try { await cleanup(); }
           catch (cleanupError) { cause = new AggregateError([error, cleanupError], 'Signed link delivery and cleanup failed'); }
         }
-        if (error instanceof AppError && error.code === 'conflict' && !entered && cause === error) throw error;
+        if (error instanceof AppError && (error.code === 'conflict' || error.code === 'not_found') && !entered && cause === error) throw error;
         const firstReason = error instanceof AppError ? error.details?.reason?.[0] : undefined;
         const reason = firstReason && sendRefusalReasons.has(firstReason) ? firstReason : 'delivery_failed';
         throw Object.assign(new AppError('unavailable', `Signed link ${channel === 'email' ? 'email' : 'text'} was not delivered`, { reason: [reason] }), { cause });

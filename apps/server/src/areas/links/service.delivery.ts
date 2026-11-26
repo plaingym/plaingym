@@ -120,7 +120,7 @@ export async function deliverSignedLink(input: {
     if (!invoice) throw new AppError('not_found', 'Invoice not found');
     if (!['open', 'past_due'].includes(invoice.status) || invoice.amountCents === 0) {
       if (input.prepareSelected) return 'skip';
-      if (!['open', 'past_due'].includes(invoice.status)) throw new AppError('conflict', 'Invoice cannot be paid');
+      if (!['open', 'past_due'].includes(invoice.status)) throw new AppError('conflict', 'Invoice cannot be paid', { reason: ['not_payable'] });
       throw new AppError('conflict', 'No payment is needed', { reason: ['zero_invoice'] });
     }
     return input.manualPayment || !!cardChargeIssue(invoice.amountCents, invoice.currency) ? 'manual' : 'link';

@@ -259,24 +259,55 @@ describe('signed links by text', () => {
     expect(await f.links.send(f.context, request)).toEqual(sent);
     expect(f.sms.messages).toHaveLength(1);
   });
-  it.each(['paid', 'void'] as const)('answers conflict and revokes without texting when a pay_invoice invoice becomes %s mid-send', async status => {
+  it.each([
+    ['paid', { status: 'paid' as const }, { code: 'conflict', status: 409, message: 'Invoice cannot be paid', details: { reason: ['not_payable'] } }],
+    ['void', { status: 'void' as const }, { code: 'conflict', status: 409, message: 'Invoice cannot be paid', details: { reason: ['not_payable'] } }],
+    ['zero', { amountCents: 0 }, { code: 'conflict', status: 409, message: 'No payment is needed', details: { reason: ['zero_invoice'] } }],
+    ['gone', null, { code: 'not_found', status: 404, message: 'Invoice not found' }],
+  ] as const)('answers the same refusal and revokes without texting when a pay_invoice invoice becomes %s mid-send', async (kind, update, expected) => {
     const f = await fixture();
     let reserved = false;
+    const hideInvoices = (tx: Parameters<Parameters<typeof db.forGym>[1]>[0]) => new Proxy(tx, {
+      get(target, prop, receiver) {
+        if (prop !== 'select') return Reflect.get(target, prop, receiver);
+        return (fields?: Parameters<typeof target.select>[0]) => {
+          const builder = fields ? target.select(fields) : target.select();
+          return new Proxy(builder, {
+            get(bTarget, bProp, bReceiver) {
+              if (bProp !== 'from') return Reflect.get(bTarget, bProp, bReceiver);
+              return (table: Parameters<typeof builder.from>[0]) => {
+                const query = bTarget.from(table);
+                if (table !== invoices) return query;
+                return new Proxy(query, {
+                  get(qTarget, qProp, qReceiver) {
+                    if (qProp !== 'where') return Reflect.get(qTarget, qProp, qReceiver);
+                    return () => qTarget.where(eq(invoices.id, uuidv7()));
+                  },
+                });
+              };
+            },
+          });
+        };
+      },
+    });
     const scope: typeof db.forGym = async (id, fn) => {
-      const result = await db.forGym(id, fn);
+      const result = await db.forGym(id, tx => fn(reserved && kind === 'gone' ? hideInvoices(tx) : tx));
       if (!reserved && (await f.rows()).length > 0) {
         reserved = true;
-        await db.forGym(id, tx => tx.update(invoices).set({ status }).where(eq(invoices.id, f.invoice.id)));
+        if (update) await db.forGym(id, tx => tx.update(invoices).set(update).where(eq(invoices.id, f.invoice.id)));
       }
       return result;
     };
     const links = createSignedLinksService({ scope, clock: f.clock, smsDelivery: f.smsDelivery });
     const request = { ...f.request(), purpose: 'pay_invoice' as const, invoiceId: f.invoice.id };
-    await expect(links.send(f.context, request)).rejects.toMatchObject({ code: 'conflict', message: 'Invoice cannot be paid' });
+    await expect(links.send(f.context, request)).rejects.toMatchObject(expected);
     expect(f.sms.messages).toHaveLength(0);
     expect((await f.rows())[0]!.revokedAt).not.toBeNull();
-    await expect(links.send(f.context, request)).rejects.toMatchObject({ code: 'conflict', message: 'Invoice cannot be paid' });
+    await expect(links.send(f.context, request)).rejects.toMatchObject(
+      kind === 'gone' ? { code: 'not_found', status: 404 } : expected,
+    );
     expect(f.sms.messages).toHaveLength(0);
+    expect(await f.rows()).toHaveLength(1);
   });
   it.each(['owner', 'admin', 'front_desk', 'coach'] as const)('enforces links.send for %s', async role => {
     const f = await fixture();
