@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { and, asc, eq, ne } from 'drizzle-orm';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { announcementOptOuts, announcements, announcementSmsRecipients, members, smsDailyUsage, smsDeliveries, uuidv7 } from '@plaingym/db';
+// eslint-disable-next-line database/system-tables -- Isolated fixtures switch the persisted member text setting mid-page.
+import { announcementOptOuts, announcements, announcementSmsRecipients, gyms, members, smsDailyUsage, smsDeliveries, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { createMembersService } from '../members/members.js';
@@ -10,6 +11,7 @@ import { announcementSmsBody, AppError, errorResponse, smsSegments, type StaffRo
 import { announcementDraftSchema } from '@plaingym/shared/contracts';
 import type { RequestEnvironment } from '../../core/context.js';
 import { TestClock } from '../../core/clock.js';
+import { setLogSink } from '../../core/log.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { FakeEmail } from '../../infra/email/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
@@ -351,6 +353,74 @@ it('flushes counts when deferring mid-page and completes instead of deferring wi
   await unflushed.run(stale.id);
   expect(await unflushed.service.get(unflushed.gymId, stale.id)).toMatchObject({ smsSent: 1, smsCompletedAt: '2026-11-11T02:00:00.000Z', smsScheduledFor: null });
   expect(unflushed.jobs.jobs.filter(job => job.name === announcementSmsJob && job.runAt.toISOString() === '2026-11-11T13:00:00.000Z')).toHaveLength(0);
+});
+const textsOn = (gymId: string, memberSmsEnabled: boolean) =>
+  db.forGym(gymId, tx => tx.update(gyms).set({ memberSmsEnabled }).where(eq(gyms.id, gymId)));
+const ordered = (f: Fixture, id: string) => db.forGym(f.gymId, tx => tx.select().from(announcementSmsRecipients)
+  .where(eq(announcementSmsRecipients.announcementId, id)).orderBy(asc(announcementSmsRecipients.id)));
+async function pageFixture() {
+  const f = await fixture();
+  for (const number of ['+12025550141', '+12025550142', '+12025550143']) await f.member({ phone: number, phoneE164: number });
+  return { f, row: await f.send() };
+}
+it('sends the rest of a page that started with texts off once the owner turns them on', async () => {
+  const { f, row } = await pageFixture();
+  await textsOn(f.gymId, false);
+  const base = createGymSettingsAccessor({ scope: db.forGym });
+  const settings = { async get(gymId: string) {
+    // The owner turns texts on as soon as the first row is decided.
+    const decided = await db.forGym(gymId, tx => tx.select({ id: announcementSmsRecipients.id }).from(announcementSmsRecipients)
+      .where(and(eq(announcementSmsRecipients.announcementId, row.id), ne(announcementSmsRecipients.state, 'pending'))));
+    if (decided.length) await textsOn(gymId, true);
+    return base.get(gymId);
+  } };
+  await createAnnouncementSmsDelivery({ scope: db.forGym, clock: f.clock, jobs: f.jobs, settings, sms: f.options.sms }).run(f.gymId, row.id);
+  expect((await ordered(f, row.id)).map(recipient => [recipient.state, recipient.reason]))
+    .toEqual([['skipped', 'disabled'], ['sent', null], ['sent', null]]);
+  expect(f.sms.messages).toHaveLength(2);
+  expect(await f.service.get(f.gymId, row.id)).toMatchObject({ smsSent: 2, smsSkipped: 1, smsFailed: 0, smsCompletedAt: '2026-11-10T15:00:00.000Z' });
+});
+it('skips the rest of a page through the recheck when texts go off mid-page', async () => {
+  const { f, row } = await pageFixture(), send = f.sms.sendSms.bind(f.sms);
+  vi.spyOn(f.sms, 'sendSms').mockImplementation(async message => {
+    const result = await send(message);
+    await textsOn(f.gymId, false);
+    return result;
+  });
+  await f.run(row.id);
+  expect((await ordered(f, row.id)).map(recipient => [recipient.state, recipient.reason]))
+    .toEqual([['sent', null], ['skipped', 'disabled'], ['skipped', 'disabled']]);
+  expect(f.sms.messages).toHaveLength(1);
+  expect(await f.service.get(f.gymId, row.id)).toMatchObject({ smsSent: 1, smsSkipped: 2 });
+});
+it('writes the counts of a page whose row throws before the error fails the job', async () => {
+  const { f, row } = await pageFixture(), [, skipped, busy] = await ordered(f, row.id);
+  // The second row's member withdraws consent; the third row's text is still in flight from another worker.
+  await db.forGym(f.gymId, tx => tx.update(members).set({ smsAnnouncementsConsentAt: null, smsAnnouncementsConsentSource: null })
+    .where(eq(members.id, skipped!.memberId)));
+  await factory('smsDeliveries', f.gymId, { key: announcementSmsKey(row.id, busy!.id), state: 'sending',
+    commandDigest: `announcement-sms:${row.id}:${busy!.phoneDigest}`, updatedAt: f.clock.now() });
+  await expect(f.run(row.id)).rejects.toMatchObject({ code: 'conflict' });
+  const states = (await ordered(f, row.id)).map(recipient => recipient.state);
+  expect(states).toEqual(['sent', 'skipped', 'pending']);
+  expect(await f.service.get(f.gymId, row.id)).toMatchObject({ smsSent: 1, smsSkipped: 1, smsFailed: 0, smsCompletedAt: null });
+});
+it('fails each row of a page whose provider cannot be resolved and completes the send', async () => {
+  const { f, row } = await pageFixture(), error = new Error('Stored credentials are unreadable');
+  f.resolver.resolve.mockRejectedValue(error);
+  expect(await f.jobs.runNext()).toBe(true); // Email.
+  const log = vi.fn(), previousSink = setLogSink(log);
+  try { expect(await f.jobs.runNext()).toBe(true); } finally { setLogSink(previousSink); }
+  expect(log.mock.calls.map(([line]) => JSON.parse(line as string))).toContainEqual(expect.objectContaining({
+    event: 'announcements.sms_provider_unresolved', gymId: f.gymId, announcementId: row.id }));
+  // MemberSms reports a failed preparation as a definite non-send, as it did when each row resolved its own provider.
+  expect((await ordered(f, row.id)).map(recipient => [recipient.state, recipient.reason]))
+    .toEqual(Array.from({ length: 3 }, () => ['failed', 'not_accepted']));
+  expect(f.resolver.resolve).toHaveBeenCalled();
+  expect(f.sms.messages).toHaveLength(0);
+  expect(await f.service.get(f.gymId, row.id)).toMatchObject({ smsFailed: 3, smsCompletedAt: '2026-11-10T15:00:00.000Z' });
+  expect(f.jobs.jobs.filter(job => job.name === announcementSmsJob)).toEqual([expect.objectContaining({ status: 'completed', attempt: 1 })]);
+  expect(await f.jobs.runNext()).toBe(false);
 });
 it('builds the delivered body with the shared helper when spaces surround the body', async () => {
   const f = await fixture(); await f.member();

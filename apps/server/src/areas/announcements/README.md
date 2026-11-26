@@ -45,9 +45,15 @@ handle clock changes. The window is also checked in `MemberSms`'s cap transactio
 before a slot is taken, and again at the provider boundary for slow preparation
 crossing 21:00. Provider credentials and the gym settings are read once per page
 of 25 recipients; the switch, cap, timezone and country are read again under
-lock in each text's cap transaction. Independent `announcement_sms_recipients` rows and persisted SMS
-counts (written once per page and before a deferral) leave email outcomes
-unchanged. `smsCompletedAt` marks text completion, independently of the email
+lock in each text's cap transaction. A page that starts with texts off or no
+provider reads both again for each text instead, so texts turned on mid-page
+send the page's remaining rows. When reading the provider throws (a database
+error), the error is logged, each of the page's texts fails as not accepted and
+the send completes; the job doesn't retry. Stored credentials that can't be
+decrypted read as no provider, so those texts are skipped as `no_provider`. Independent
+`announcement_sms_recipients` rows and persisted SMS counts (written after each
+page, before a deferral, and when a text throws mid-page, before the job fails)
+leave email outcomes unchanged. `smsCompletedAt` marks text completion, independently of the email
 `status`.
 
 Text reservations use `announcement-sms:<announcementId>:<recipientRowId>` and

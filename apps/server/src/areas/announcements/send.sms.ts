@@ -9,7 +9,8 @@ import { createSmsDeliveries, deliveryAcceptance, DeliveryError, MemberSms } fro
 import { smsInFlightMs } from '../../infra/sms/deliveries.js';
 import { noticeCapSettings } from '../bookings/bookings.sms.js';
 import { holdGymSettings, readGymSettings } from '../settings/settings.js';
-import type { SmsResolver } from '../settings/sms.js';
+import type { ResolvedSms, SmsResolver } from '../settings/sms.js';
+import { logError } from '../../core/log.js';
 import { readSmsAudience } from './audience.js';
 
 export const announcementSmsJob = 'announcements.send-sms';
@@ -85,67 +86,87 @@ export function createAnnouncementSmsDelivery(options: {
           await flush(gymId, id);
           return;
         }
-        const resolved = await sms.resolver.resolve(gymId);
-        const pageSettings: GymSettingsAccessor = { get: async () => gym };
-        for (const snapshot of rows) {
-          const next = nextAnnouncementSmsTime(clock.now(), gym.timezone);
-          if (next) { await defer(gymId, id, gym.timezone, next); return; }
-          const reservation = await scope(gymId, async tx => {
-            await tx.select({ id: announcements.id }).from(announcements).where(eq(announcements.id, id)).for('update');
-            const [row] = await tx.select().from(recipients).where(eq(recipients.id, snapshot.id)).for('update');
-            if (!row || row.state !== 'pending') return;
-            const legacyKey = announcementSmsKey(id, row.memberId), recipientKey = announcementSmsKey(id, row.id);
-            const priorRows = await tx.select({ key: smsDeliveries.key, state: smsDeliveries.state, updatedAt: smsDeliveries.updatedAt })
-              .from(smsDeliveries).where(and(eq(smsDeliveries.gymId, gymId), inArray(smsDeliveries.key, [legacyKey, recipientKey])));
-            const previous = priorRows.find(delivery => delivery.key === legacyKey) ?? priorRows[0];
-            const key = previous?.key ?? recipientKey;
-            if (previous?.state === 'sending' && previous.updatedAt.getTime() > clock.now().getTime() - smsInFlightMs)
-              throw new AppError('conflict', 'Announcement text is in flight');
-            if (previous && previous.state !== 'not_accepted') {
-              await decide(tx, gymId, row, { state: previous.state === 'accepted' ? 'sent' : 'failed', reason: previous.state === 'accepted' ? null : 'unknown' }); return;
-            }
-            const groups = await readSmsAudience(tx, announcement.audience, gym.country, { memberIds: row.memberIds });
-            const group = groups.find(group => sms.phoneDigest(group.phone) === row.phoneDigest);
-            if (!group) { await decide(tx, gymId, row, { state: 'skipped', reason: 'ineligible' }); return; }
-            const digest = `announcement-sms:${id}:${row.phoneDigest}`;
-            // A definite non-send can retry after erasure without restoring a cleared digest.
-            const reserved = previous ? await deliveries.reserve(tx, gymId, key) : await deliveries.reserve(tx, gymId, key, digest);
-            if (reserved) return { row, group, reserved };
+        // A resolver error fails each row's send (through `MemberSms`) instead of the job.
+        const resolution: { value: ResolvedSms | null } | { error: unknown } = await sms.resolver.resolve(gymId)
+          .then(value => ({ value }), (error: unknown) => {
+            // MemberSms replaces the cause with a generic non-send, so name it here.
+            logError('announcements.sms_provider_unresolved', { gymId, announcementId: id }, error);
+            return { error };
           });
-          if (!reservation) continue;
-          let quiet: { runAt: Date; timezone: string } | undefined;
-          let lockedTimezone = gym.timezone;
-          // Check the clock at the final transport boundary too: the moment after the cap transaction commits can cross 21:00.
-          const resolver: SmsResolver = { ...sms.resolver, async resolve() {
-            return resolved && { ...resolved, sms: { verifyAccount: () => resolved.sms.verifyAccount(), async sendSms(message) {
-              const at = nextAnnouncementSmsTime(clock.now(), lockedTimezone);
-              if (at) { quiet = { runAt: at, timezone: lockedTimezone }; throw new DeliveryError('not_accepted', 'Quiet hours'); }
-              if (message.body.length > 480) throw new DeliveryError('not_accepted', 'Announcement text is too long');
-              return resolved.sms.sendSms(message);
-            } } };
-          } };
-          const guarded = new MemberSms({
-            gymId, memberIds: reservation.group.memberIds, householdIds: [], kind: 'announcements',
-            resolver, settings: pageSettings, scope, clock,
-            recheck: async tx => {
-              await holdGymSettings(tx, gymId);
-              const locked = await readGymSettings(tx, gymId);
-              const at = nextAnnouncementSmsTime(clock.now(), locked.timezone);
-              if (at) { quiet = { runAt: at, timezone: locked.timezone }; throw new DeliveryError('not_accepted', 'Quiet hours'); }
-              lockedTimezone = locked.timezone;
-              return noticeCapSettings(locked);
-            },
-          });
-          let outcome: Outcome;
-          try {
-            const result = await deliveries.attempt(reservation.reserved, guarded, { to: reservation.group.phone, body: announcementSmsText(announcement.smsBody) });
-            outcome = result.status === 'sent' ? { state: 'sent', reason: null } : { state: 'skipped', reason: result.reason };
-          } catch (error) { outcome = { state: 'failed', reason: deliveryAcceptance(error) }; }
-          if (quiet) { await defer(gymId, id, quiet.timezone, quiet.runAt); return; }
-          await scope(gymId, async tx => {
-            await tx.select({ id: announcements.id }).from(announcements).where(eq(announcements.id, id)).for('update');
-            await decide(tx, gymId, reservation.row, outcome);
-          });
+        // A page that starts with texts off or no provider reads both per row, so turning texts on mid-page sends the rest.
+        const live = !gym.memberSmsEnabled || ('value' in resolution && !resolution.value);
+        const pageSettings: GymSettingsAccessor = live ? settings : { get: async () => gym };
+        const resolveProvider = async (): Promise<ResolvedSms | null> => {
+          if (live) return sms.resolver.resolve(gymId);
+          if ('error' in resolution) throw resolution.error;
+          return resolution.value;
+        };
+        try {
+          for (const snapshot of rows) {
+            const next = nextAnnouncementSmsTime(clock.now(), gym.timezone);
+            if (next) { await defer(gymId, id, gym.timezone, next); return; }
+            const reservation = await scope(gymId, async tx => {
+              await tx.select({ id: announcements.id }).from(announcements).where(eq(announcements.id, id)).for('update');
+              const [row] = await tx.select().from(recipients).where(eq(recipients.id, snapshot.id)).for('update');
+              if (!row || row.state !== 'pending') return;
+              const legacyKey = announcementSmsKey(id, row.memberId), recipientKey = announcementSmsKey(id, row.id);
+              const priorRows = await tx.select({ key: smsDeliveries.key, state: smsDeliveries.state, updatedAt: smsDeliveries.updatedAt })
+                .from(smsDeliveries).where(and(eq(smsDeliveries.gymId, gymId), inArray(smsDeliveries.key, [legacyKey, recipientKey])));
+              const previous = priorRows.find(delivery => delivery.key === legacyKey) ?? priorRows[0];
+              const key = previous?.key ?? recipientKey;
+              if (previous?.state === 'sending' && previous.updatedAt.getTime() > clock.now().getTime() - smsInFlightMs)
+                throw new AppError('conflict', 'Announcement text is in flight');
+              if (previous && previous.state !== 'not_accepted') {
+                await decide(tx, gymId, row, { state: previous.state === 'accepted' ? 'sent' : 'failed', reason: previous.state === 'accepted' ? null : 'unknown' }); return;
+              }
+              const groups = await readSmsAudience(tx, announcement.audience, gym.country, { memberIds: row.memberIds });
+              const group = groups.find(group => sms.phoneDigest(group.phone) === row.phoneDigest);
+              if (!group) { await decide(tx, gymId, row, { state: 'skipped', reason: 'ineligible' }); return; }
+              const digest = `announcement-sms:${id}:${row.phoneDigest}`;
+              // A definite non-send can retry after erasure without restoring a cleared digest.
+              const reserved = previous ? await deliveries.reserve(tx, gymId, key) : await deliveries.reserve(tx, gymId, key, digest);
+              if (reserved) return { row, group, reserved };
+            });
+            if (!reservation) continue;
+            let quiet: { runAt: Date; timezone: string } | undefined;
+            let lockedTimezone = gym.timezone;
+            // Check the clock at the final transport boundary too: the moment after the cap transaction commits can cross 21:00.
+            const resolver: SmsResolver = { ...sms.resolver, async resolve() {
+              const resolved = await resolveProvider();
+              return resolved && { ...resolved, sms: { verifyAccount: () => resolved.sms.verifyAccount(), async sendSms(message) {
+                const at = nextAnnouncementSmsTime(clock.now(), lockedTimezone);
+                if (at) { quiet = { runAt: at, timezone: lockedTimezone }; throw new DeliveryError('not_accepted', 'Quiet hours'); }
+                if (message.body.length > 480) throw new DeliveryError('not_accepted', 'Announcement text is too long');
+                return resolved.sms.sendSms(message);
+              } } };
+            } };
+            const guarded = new MemberSms({
+              gymId, memberIds: reservation.group.memberIds, householdIds: [], kind: 'announcements',
+              resolver, settings: pageSettings, scope, clock,
+              recheck: async tx => {
+                await holdGymSettings(tx, gymId);
+                const locked = await readGymSettings(tx, gymId);
+                const at = nextAnnouncementSmsTime(clock.now(), locked.timezone);
+                if (at) { quiet = { runAt: at, timezone: locked.timezone }; throw new DeliveryError('not_accepted', 'Quiet hours'); }
+                lockedTimezone = locked.timezone;
+                return noticeCapSettings(locked);
+              },
+            });
+            let outcome: Outcome;
+            try {
+              const result = await deliveries.attempt(reservation.reserved, guarded, { to: reservation.group.phone, body: announcementSmsText(announcement.smsBody) });
+              outcome = result.status === 'sent' ? { state: 'sent', reason: null } : { state: 'skipped', reason: result.reason };
+            } catch (error) { outcome = { state: 'failed', reason: deliveryAcceptance(error) }; }
+            if (quiet) { await defer(gymId, id, quiet.timezone, quiet.runAt); return; }
+            await scope(gymId, async tx => {
+              await tx.select({ id: announcements.id }).from(announcements).where(eq(announcements.id, id)).for('update');
+              await decide(tx, gymId, reservation.row, outcome);
+            });
+          }
+        } catch (error) {
+          // Counts follow the rows decided before the throw; the original error still fails the job.
+          await flush(gymId, id).catch((flushError: unknown) => logError('announcements.sms_flush_failed', { gymId, announcementId: id }, flushError));
+          throw error;
         }
         await flush(gymId, id);
       }
