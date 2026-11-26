@@ -125,7 +125,7 @@ the provider base URL is included only in single-gym mode. Tokens and API key
 secrets are never returned, logged or audited. Save checks the account without
 sending, then tests only the typed, normalized `testTo` through the raw adapter
 (member consent, switches and caps do not apply to an owner's test), prefixing
-the text with the gym name. Both numbers are normalized with the gym's country. When the gym has no country (or a stored one the phone library doesn't support, read through `supportedCountry`), a From number must start with + and a test number without + takes the From number's calling code (`callingCodeOf`, `normalizePhoneWithCallingCode` in `@plaingym/shared/phone`); with a Messaging Service SID the test number must start with +. Network calls happen outside transactions. Each test
+the text with the gym name. Both numbers are normalized with the gym's country. When the gym has no country (or a stored one that doesn't parse, such as `us`, or that the phone library doesn't support, read through `supportedCountry`), a From number must start with + and a test number without + takes the From number's calling code (`callingCodeOf`, `normalizePhoneWithCallingCode` in `@plaingym/shared/phone`); with a Messaging Service SID the test number must start with +. Network calls happen outside transactions. Each test
 outcome is audited on its own (`integrations.sms_tested`, sent or failed), so a
 text the provider accepted stays recorded even if the save then conflicts. Both
 must succeed before an encrypted config is committed with its revision and the

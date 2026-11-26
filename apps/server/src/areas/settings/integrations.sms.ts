@@ -9,7 +9,7 @@ import type { MutationContext } from '../../core/interfaces/common.js';
 import { logError } from '../../core/log.js';
 import { DeliveryError, SmsDeliveryError, TwilioSms, type Sms } from '../../infra/sms/index.js';
 import { encryptSmsConfig, readSmsConfig, storedSmsSchema, twilioBaseUrl, type StoredSmsConfig } from './sms.js';
-import { readGymSettings } from './settings.js';
+import { readGymSettings, storedAddress } from './settings.js';
 import type { IntegrationSave } from './integrations.js';
 
 type Gym = typeof gyms.$inferSelect;
@@ -84,8 +84,7 @@ export function createSmsIntegration(options: SmsIntegrationOptions) {
       const baseUrl = new URL(input.baseUrl ?? twilioBaseUrl).href.replace(/\/$/, '');
       if (options.tenancy === 'multi' && baseUrl !== twilioBaseUrl)
         throw new AppError('invalid_request', 'Use the Twilio provider URL', { baseUrl: ['twilio_only'] });
-      const address = gym.address as { country?: unknown };
-      const country = supportedCountry(address.country);
+      const country = supportedCountry(storedAddress(gym.address).country);
       const from = 'from' in input.sender ? normalizePhone(input.sender.from, country) : null;
       // With no gym country, the owner's test number may be typed nationally: it takes the From number's calling code.
       const fromCode = country ? null : callingCodeOf(from);

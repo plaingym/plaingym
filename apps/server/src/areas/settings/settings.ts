@@ -130,12 +130,15 @@ export function createGymSettingsAccessor(options: Parameters<typeof createSetti
   } };
 }
 export const gymSettingsAccessor = createGymSettingsAccessor();
-/** Settings fields that import previews depend on, without parsing address or branding schemas. */
+/**
+ * Settings fields that import previews depend on. The country is read as every settings read does, a stored value that
+ * doesn't parse counting as none; a bad address or branding never fails the read.
+ */
 export async function readPreviewSettings(tx: Transaction, gymId: string) {
   const [row] = await tx.select({ currency: gyms.currency, address: gyms.address, bankDebitsEnabled: gyms.bankDebitsEnabled })
     .from(gyms).where(eq(gyms.id, gymId));
   if (!row) throw new AppError('not_found', 'Gym not found');
-  const address = row.address && typeof row.address === 'object' ? row.address as Record<string, unknown> : null;
-  const country = typeof address?.country === 'string' ? address.country : null;
+  const stored = storedAddress(row.address).country;
+  const country = typeof stored === 'string' ? stored : null;
   return { currency: row.currency, country, bankDebitsEnabled: row.bankDebitsEnabled };
 }

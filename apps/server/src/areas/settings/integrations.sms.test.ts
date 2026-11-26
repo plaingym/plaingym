@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
+// eslint-disable-next-line database/system-tables -- One test stores a JSON null address.
+import { sql } from 'drizzle-orm';
 import { auditEvents, gyms, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -331,6 +333,22 @@ describe('SMS integration settings', () => {
   });
   it('treats a stored unsupported gym country as none', async () => {
     await database.forGym(gymId, tx => tx.update(gyms).set({ address: { country: 'UK' } }));
+    const result = await save(server(), { sender: { from: '+1 (415) 555-2671' }, testTo: '(202) 555-0123' });
+    expect(result.status).toBe(200);
+    expect(send).toHaveBeenCalledExactlyOnceWith({ to: '+12025550123', body: 'Test gym: PlainGym SMS test.' });
+  });
+  it('treats a stored address of JSON null as no gym country', async () => {
+    await database.forGym(gymId, tx => tx.update(gyms).set({ address: sql`'null'::jsonb` }));
+    const result = await save(server(), { sender: { from: '+1 (415) 555-2671' }, testTo: '(202) 555-0123' });
+    expect(result.status).toBe(200);
+    expect(send).toHaveBeenCalledExactlyOnceWith({ to: '+12025550123', body: 'Test gym: PlainGym SMS test.' });
+  });
+  it('treats a stored lowercase gym country as none', async () => {
+    await database.forGym(gymId, tx => tx.update(gyms).set({ address: { country: 'us' } }));
+    const refused = await save(server(), { sender: { from: '(415) 555-2671' }, testTo: '(202) 555-0123' });
+    expect(refused.status).toBe(400);
+    expect(refused.body).toMatchObject({ error: { code: 'invalid_request', details: { phone: ['invalid_phone'] } } });
+    expect(smsFactory).not.toHaveBeenCalled();
     const result = await save(server(), { sender: { from: '+1 (415) 555-2671' }, testTo: '(202) 555-0123' });
     expect(result.status).toBe(200);
     expect(send).toHaveBeenCalledExactlyOnceWith({ to: '+12025550123', body: 'Test gym: PlainGym SMS test.' });

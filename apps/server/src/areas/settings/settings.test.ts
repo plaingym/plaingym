@@ -8,7 +8,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError, canStaff, staffRoles, errorResponse, type StaffRole } from '@plaingym/shared';
 import { gymSettingsResponseSchema } from '@plaingym/shared/contracts';
-import { createSettingsService, createGymSettingsAccessor, readGymSettings } from './settings.js';
+import { createSettingsService, createGymSettingsAccessor, readGymSettings, readPreviewSettings } from './settings.js';
 import { readGymAndModuleSettings } from './module-settings.js';
 import { createSettingsRoutes } from './settings.routes.js';
 import { createServerRegistry } from '../../core/registry.js';
@@ -381,5 +381,18 @@ describe('settings service and routes', () => {
     }
     const row = await database.forGym(gymA, (tx) => tx.select({ smtp: gyms.smtpConfig }).from(gyms).where(eq(gyms.id, gymA)));
     expect(row[0]!.smtp).toMatch(/^v2\./);
+  });
+  it.each<{ name: string; stored: unknown; country: string | null }>([
+    { name: 'JSON null', stored: sql`'null'::jsonb`, country: null },
+    { name: 'a lowercase country', stored: { country: 'us' }, country: null },
+    { name: 'a numeric country', stored: { country: 3 }, country: null },
+    { name: 'empty', stored: {}, country: null },
+    { name: 'a valid country', stored: { country: 'US' }, country: 'US' },
+  ])('reads the import preview settings for a stored address that is $name', async ({ stored, country }) => {
+    const gymId = uuidv7();
+    await factory('gyms', gymId, { currency: 'CAD', bankDebitsEnabled: true });
+    await database.forGym(gymId, (tx) => tx.update(gyms).set({ address: stored }).where(eq(gyms.id, gymId)));
+    expect(await database.forGym(gymId, (tx) => readPreviewSettings(tx, gymId)))
+      .toStrictEqual({ currency: 'CAD', country, bankDebitsEnabled: true });
   });
 });
