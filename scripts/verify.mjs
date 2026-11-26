@@ -30,6 +30,7 @@ const sourceScanningTests = [
   'apps/server/src/core/registry.test.ts',
   'apps/server/src/demo/landing-menu.test.ts',
   'apps/server/src/demo/landing.test.ts',
+  'apps/server/src/infra/auth/legacy-cookies.test.ts',
   'apps/web/src/app/styles.test.ts',
   'apps/web/src/components/ui/no-break-words.test.ts',
   'apps/web/src/lib/api.sources.test.ts',
