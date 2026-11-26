@@ -19,8 +19,10 @@ passed. A full class stops offering Join the waitlist after that instant; a free
 place still offers Book. An open page updates these actions with one timeout for
 the nearest cutoff, booking opening, session start or week rollover. It also
 refreshes on window focus or when the page becomes visible again.
-A conflict from the booking engine shows a general message and refreshes
-the schedule. Household members' places appear with their names. Class and member
+The schedule is read again after every booking or cancellation. A coded refusal
+from the booking service shows the service's message, any other conflict shows a
+general one, and any other failure says the booking or cancellation could not be
+confirmed. Household members' places appear with their names. Class and member
 names wrap, even with no break opportunity, rather than truncating or widening the page at 360 px.
 
 The check-in page renders the member's code as a QR image in the browser, shows a
