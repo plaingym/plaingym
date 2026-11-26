@@ -135,7 +135,8 @@ checklist item, and reloads current values on a revision conflict. It uses the
 phone/full-screen confirmation dialog shows the Stripe message during a failed
 billing enable and uses an explicit checkbox. Once no save is running, it closes
 and clears the checkbox if a failed settings or checklist read has locked the
-switches (the page behind it shows the error and **Try again**) or the past-due
+switches (the page behind it shows the error and **Try again**), billing is
+already on (closing for this also puts away the Stripe message) or the past-due
 list is empty.
 
 ## Switch inventory

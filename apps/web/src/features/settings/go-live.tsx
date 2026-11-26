@@ -116,13 +116,14 @@ export function GoLiveSettings() {
   }, [messageRevision, settings?.revision]);
   // The past-due dialog is modal, so it closes once no save is running if a read failed (the page's retry is behind it),
   // billing is already on (a save that timed out may have turned it on, leaving nothing to confirm), or the list it asks
-  // about is empty.
+  // about is empty. A refusal that asks to turn billing on is put away once billing is on.
   useEffect(() => {
     if (confirmBilling && !busy && (readFailed || checklist?.billingEnabled || !checklist?.pastDueMemberships.length)) {
       setConfirmBilling(false); setConfirmedKey(null);
       if (readFailed) setReadAlertFocus(true);
+      if (!readFailed && checklist?.billingEnabled && message === 'paymentsReadFailed') { setMessage(null); setMessageRevision(null); }
     }
-  }, [confirmBilling, busy, readFailed, checklist]);
+  }, [confirmBilling, busy, readFailed, checklist, message]);
   useEffect(() => { if (!readFailed) setReadAlertFocus(false); }, [readFailed]);
   // Read while rendering, before a swap between the two alerts can move the focus: a reason the settings have moved past,
   // with the owner working elsewhere, is about to be dropped, so the plain alert must not take the focus for it first.

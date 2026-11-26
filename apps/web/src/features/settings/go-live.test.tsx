@@ -917,6 +917,28 @@ describe('go-live settings', () => {
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     expect(screen.getByRole('dialog')).toBe(dialog);
   });
+  it('puts a Stripe refusal away when the past-due dialog closes because billing is already on', async () => {
+    const { queryClient, alert } = await refuseInDialog();
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    live.mockResolvedValue(reply(200, { data: { ...overdue().data, revision: 4, billingEnabled: true } }));
+    moveSettings(queryClient);
+    await waitFor(() => expect(live).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getByRole('button', { name: 'Turn off: Billing' })).toBeDefined();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+  it('keeps a Stripe refusal when the past-due dialog closes because the list emptied with billing off', async () => {
+    const { queryClient, alert } = await refuseInDialog();
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    live.mockResolvedValue(reply(200, checklist(4)));
+    moveSettings(queryClient);
+    await waitFor(() => expect(live).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.getByRole('alert').textContent).toBe('Stripe could not be checked. Try turning billing on again.');
+  });
   it('keeps switches locked through overlapping explicit reloads until the latest read answers', async () => {
     let resolveFirst!: (value: unknown) => void, resolveSecond!: (value: unknown) => void;
     live.mockResolvedValueOnce(reply(200, checklist()))
