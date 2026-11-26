@@ -55,7 +55,7 @@ function isEmptyLocaleArg(node) {
 /** @param {Syntax} node @returns {boolean} */
 function isResolvedOptionsObject(node) {
   let child = node, parent = syntax(node.parent);
-  while (parent && typeWrappers.has(parent.type) && parent.expression === child) {
+  while (parent && (typeWrappers.has(parent.type) || parent.type === 'ChainExpression') && parent.expression === child) {
     child = parent;
     parent = syntax(parent.parent);
   }
