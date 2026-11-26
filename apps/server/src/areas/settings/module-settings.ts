@@ -50,12 +50,14 @@ export function createModuleSettings(options: { scope?: typeof forGym; clock?: C
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   return {
     get: (gymId: string, moduleId: string) => scope(gymId, tx => readModuleSettings(tx, gymId, moduleId)),
-    /** `change` gets the stored value and branding under the gym row's lock and returns what to save. */
+    /** `change` gets the stored value and branding under the gym row's lock, once the revision matches, and returns what to save. */
     async save(context: MutationContext, moduleId: string, revision: number, change: (current: ModuleSettings) => ModuleSettingsChange): Promise<ModuleSettings> {
       return scope(context.gymId, async (tx) => {
         const [row] = await tx.select({ settings: gyms.settings, branding: gyms.branding, revision: gyms.revision })
           .from(gyms).where(eq(gyms.id, context.gymId)).for('update');
         if (!row) throw new AppError('not_found', 'Gym not found');
+        // A stale save is a conflict, whatever `change` would have made of the newer value.
+        assertRevised(row.revision === revision ? [row] : []);
         const before = read(row, moduleId), next = change(before);
         const branding = next.branding === undefined ? before.branding : storedBrandingSchema.parse(next.branding);
         const settings = { ...(row.settings && typeof row.settings === 'object' ? row.settings : {}),

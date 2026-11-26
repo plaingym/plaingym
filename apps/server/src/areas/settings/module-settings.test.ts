@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { auditEvents, gyms, uuidv7, RevisionConflictError } from '@plaingym/db';
 import { eq } from 'drizzle-orm';
+import { AppError } from '@plaingym/shared';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
@@ -37,6 +38,20 @@ it('keeps a module value beside the gym\'s other settings, under the gym revisio
   expect(await store.get(other, 'website')).toEqual({ value: null, branding: {}, revision: 1 });
   // Inside another gym's scope, row-level security hides this gym's row.
   await expect(db.forGym(other, (tx) => readModuleSettings(tx, gymId, 'website'))).rejects.toThrow('Gym not found');
+});
+
+it('answers a stale save with the revision conflict without running its change', async () => {
+  const gymId = uuidv7();
+  await factory('gyms', gymId);
+  await store.save({ gymId, actor: system }, 'website', 1, () => ({ value: { about: 'Current' } }));
+  const change = vi.fn((): never => { throw new AppError('not_found', 'x'); });
+  await expect(store.save({ gymId, actor: system }, 'website', 1, change)).rejects.toBeInstanceOf(RevisionConflictError);
+  expect(change).not.toHaveBeenCalled();
+  expect(await store.get(gymId, 'website')).toMatchObject({ value: { about: 'Current' }, revision: 2 });
+  const audits = await db.forGym(gymId, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'settings.module.updated')));
+  expect(audits).toHaveLength(1);
+  // A current save keeps the error its change throws.
+  await expect(store.save({ gymId, actor: system }, 'website', 2, change)).rejects.toMatchObject({ code: 'not_found', message: 'x' });
 });
 
 it('leaves stored branding it can\'t read untouched by a save that doesn\'t change branding', async () => {

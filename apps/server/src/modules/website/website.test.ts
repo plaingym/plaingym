@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import '@hono/zod-openapi';
-import { auditEvents, uuidv7 } from '@plaingym/db';
+import { auditEvents, uuidv7, RevisionConflictError } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { staffRoles, type StaffRole } from '@plaingym/shared';
@@ -423,6 +423,25 @@ describe('the customization API', () => {
     for (let i = (await service.settings(gymA)).photos.length; i < 8; i++) expect((await upload(jpeg, 'image/jpeg')).status).toBe(200);
     expect((await upload(jpeg, 'image/jpeg')).status).toBe(409);
     expect((await service.settings(gymA)).photos).toHaveLength(8);
+  });
+
+  it('answers a stale save listing a removed photo with the conflict, and a current one naming a missing photo with 404', async () => {
+    const gymId = uuidv7();
+    await factory('gyms', gymId);
+    uploads.set(gymId, new FakeUploads(gymId, clock));
+    const context = { gymId, actor: { kind: 'system' } } as const;
+    for (const [at, alt] of ['First', 'Second'].entries()) {
+      await service.uploadPhoto(context, { revision: at + 1, contentType: 'image/jpeg', base64: jpeg.toString('base64'), alt });
+    }
+    const stale = editable(await service.settings(gymId));
+    expect(stale.photos).toHaveLength(2);
+    const saved = await service.update(context, { ...stale, photos: stale.photos.slice(0, 1) });
+    await expect(service.update(context, stale)).rejects.toBeInstanceOf(RevisionConflictError);
+    expect((await send('PUT', '/api/website', stale, app(gymId, owner(gymId)))).status).toBe(409);
+    await expect(service.update(context, { ...editable(saved), photos: [{ id: uuidv7(), alt: 'Not uploaded' }] }))
+      .rejects.toMatchObject({ code: 'not_found', message: 'Photo not found' });
+    expect(await service.settings(gymId)).toEqual(saved);
+    expect(saved.photos).toEqual(stale.photos.slice(0, 1));
   });
 
   it('uploads and removes the logo, which the core public pages show too', async () => {
