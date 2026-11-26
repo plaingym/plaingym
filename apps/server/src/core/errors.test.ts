@@ -119,6 +119,38 @@ it('falls back to the link baked into the image when SOURCE_URL is unset or empt
   expect(sourceUrl()).toBe('https://github.com/plaingym/plaingym');
 }));
 
+it.each(['https://github.com/plaingym/plaingym', 'https://github.com/plaingym/plaingym/', 'https://GitHub.com/plaingym/plaingym'])(
+  'uses the link baked into the image in place of the repository root: %s', (root) => withSourceVariables(() => {
+    const release = 'https://example.org/plaingym/tree/v1.2.3';
+    process.env.IMAGE_SOURCE_URL = release;
+    process.env.SOURCE_URL = root;
+    expect(sourceUrl()).toBe(release);
+    expect(sourceUrl('')).toBe(release);
+    delete process.env.SOURCE_URL;
+    expect(sourceUrl(root)).toBe(release);
+  }));
+
+it.each(['https://github.com/plaingym/plaingym/tree/v1.0.0', 'https://example.org/fork', 'https://github.com/plaingym/plaingym?ref=fork',
+  'https://github.com/plaingym/plaingym#fork'])('keeps any other SOURCE_URL over the link baked into the image: %s', (own) => withSourceVariables(() => {
+  process.env.IMAGE_SOURCE_URL = 'https://example.org/plaingym/tree/v1.2.3';
+  process.env.SOURCE_URL = own;
+  expect(sourceUrl()).toBe(own);
+  expect(sourceUrl(own)).toBe(own);
+}));
+
+it('refuses a credentialed repository root even when the image bakes a link', () => withSourceVariables(() => {
+  process.env.IMAGE_SOURCE_URL = 'https://example.org/plaingym/tree/v1.2.3';
+  expect(() => sourceUrl('https://user:password@github.com/plaingym/plaingym')).toThrow('Invalid SOURCE_URL');
+}));
+
+// The trailing slash tells a kept SOURCE_URL apart from the default link.
+it.each(['https://github.com/plaingym/plaingym', 'https://github.com/plaingym/plaingym/'])(
+  'keeps the repository root as SOURCE_URL when the image bakes no link: %s', (root) => withSourceVariables(() => {
+    delete process.env.IMAGE_SOURCE_URL;
+    process.env.SOURCE_URL = root;
+    expect(sourceUrl()).toBe(root);
+  }));
+
 it('rejects an unsafe link baked into the image', () => withSourceVariables(() => {
   delete process.env.SOURCE_URL;
   process.env.IMAGE_SOURCE_URL = 'javascript:x';

@@ -96,8 +96,8 @@ and `unknown` revision explicitly, including in the image labels and runtime
 environment. Direct `docker build` calls must pass both `VERSION` and `REVISION`;
 missing arguments fail before dependency installation with a message naming the helper.
 The image retains the supplied `SOURCE_URL` for its Source code link, also as
-`IMAGE_SOURCE_URL`, which the app uses when `SOURCE_URL` is unset or empty (as
-`.env.example` leaves it).
+`IMAGE_SOURCE_URL`, which the app uses when `SOURCE_URL` is unset, empty (as
+`.env.example` leaves it) or only the project repository's root.
 Matching archive identities do not trigger a browser reload; a
 different version or commit does. Two archives with the same package version
 and unknown commit cannot be distinguished by the navigation check.
