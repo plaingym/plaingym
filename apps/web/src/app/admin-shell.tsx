@@ -11,6 +11,7 @@ import type { ShellBootstrap, ShellSession } from './services.js';
 import { sessionName } from './identity.js';
 import { useDemoSandbox } from '../features/demo/notice.js';
 import { AccountMenu, useDismiss } from './account-menu.js';
+import { useMenuCovers } from './menu-covers.js';
 export function visibleAdminNavigation(
   entries: readonly NavigationEntry[], session: ShellSession, enabledModules: readonly string[],
 ) {
@@ -47,6 +48,7 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
   const [refs] = useState(() => [menuButton, nav, backdrop]);
   const [close] = useState(() => () => setOpen(false));
   useDismiss(open, close, refs, menuButton);
+  useMenuCovers(open);
   // Any navigation, including back/forward, closes the phone menu.
   useEffect(() => { setOpen(false); }, [pathname]);
   // Tailwind's `md` breakpoint shows the sidebar, so the menu is no longer open. Read the same media query the
@@ -62,6 +64,7 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
   // Anchor the menu below whatever chrome is above the content: the header, the demo row and the update banner.
   // The menu is fixed, so convert the content's document top to viewport coordinates with the scroll at measure time.
   // The content container is observed too: showing or hiding a banner above it moves the menu without resizing the header.
+  // So is the page: content above the shell moves the menu without resizing anything in it.
   useLayoutEffect(() => {
     if (!open) { setMenuTop(undefined); return; }
     const measure = () => {
@@ -76,6 +79,7 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
     if (header.current) observer?.observe(header.current);
     if (bannerRef.current) observer?.observe(bannerRef.current);
     if (content.current) observer?.observe(content.current);
+    if (document.body) observer?.observe(document.body);
     window.addEventListener('resize', measure);
     window.addEventListener('scroll', measure, { passive: true });
     return () => {
@@ -132,9 +136,9 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
     <div ref={bannerRef}>{banner}</div>
     <div ref={content} className="relative flex flex-1">
       {open && <div ref={backdrop} aria-hidden="true" onClick={close} style={menuTop === undefined ? undefined : { top: menuTop }} className="fixed inset-x-0 bottom-0 z-10 bg-foreground/20 md:hidden" />}
-      {/* The open panel is as tall as its links, up to the space below the header, so the backdrop shows below it. */}
+      {/* The open panel is as tall as its links, but stops 3rem short of the screen's bottom so a strip of backdrop always shows. */}
       <nav ref={nav} id="admin-navigation" aria-label={t('shell/shell:navigation')}
-        style={open && menuTop !== undefined ? { top: menuTop, maxHeight: `calc(100dvh - ${menuTop}px)` } : undefined}
+        style={open && menuTop !== undefined ? { top: menuTop, maxHeight: `calc(100dvh - ${menuTop}px - 3rem)` } : undefined}
         className={`${open ? `fixed inset-x-0 z-20 block${menuTop === undefined ? ' max-h-dvh' : ''}` : 'hidden'} overflow-y-auto overscroll-contain border-b border-border bg-background p-2 shadow-lg
           md:sticky md:top-header md:bottom-auto md:block md:max-h-[calc(100dvh-var(--spacing-header))] md:w-60 md:shrink-0 md:self-start md:border-b-0 md:border-r md:p-3 md:shadow-none`}>
         <div className="space-y-4">{adminNavigationGroups(entriesToShow).map(group => <section key={group.id} aria-labelledby={'nav-' + group.id}>
@@ -145,7 +149,8 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
             className="flex min-h-11 items-center rounded-md px-3 text-base hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:text-sm">{t(entry.labelKey)}</Link>
         </li>)}</ul></section>)}</div>
       </nav>
-      <main id="main-content" tabIndex={-1} className="min-w-0 flex-1 px-4 py-6 focus:outline-none sm:px-6 lg:px-8">{children}</main>
+      {/* The page the open panel covers takes no focus or presses. */}
+      <main id="main-content" tabIndex={-1} inert={open} className="min-w-0 flex-1 px-4 py-6 focus:outline-none sm:px-6 lg:px-8">{children}</main>
     </div>
   </div>;
 }

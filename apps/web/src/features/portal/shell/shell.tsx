@@ -5,6 +5,7 @@ import { onlineManager, useMutation, useQuery, useQueryClient, type QueryClient 
 import { canMember, type NavigationEntry } from '@plaingym/shared';
 import { portalContracts, type PortalContext, type PortalHouseholdChoice as HouseholdChoice } from '@plaingym/shared/contracts';
 import { AccountMenu, useDismiss } from '../../../app/account-menu.js';
+import { useMenuCovers } from '../../../app/menu-covers.js';
 import { bootstrapKey, useBootstrap, useShellServices } from '../../../app/context.js';
 import { sessionName } from '../../../app/identity.js';
 import { createRegistries } from '../../../lib/registries.js';
@@ -114,6 +115,7 @@ export function PortalLayout({ name, person, scope, entries, children, onSignOut
   const [refs] = useState(() => [menuButton, nav, backdrop]);
   const [close] = useState(() => () => setOpen(false));
   useDismiss(open, close, refs, menuButton);
+  useMenuCovers(open);
   const pathname = useRouterState({ select: state => state.location.pathname });
   // The banner and React Query's reads follow the same answer.
   const update = useCallback(() => { setOnline(navigator.onLine); onlineManager.setOnline(navigator.onLine); }, []);
@@ -182,8 +184,8 @@ export function PortalLayout({ name, person, scope, entries, children, onSignOut
     </header>
     <div className="flex min-w-0 flex-1 flex-col md:flex-row">
       {open && <div ref={backdrop} aria-hidden="true" className="fixed inset-x-0 bottom-0 z-10 bg-foreground/20 md:hidden" style={{ top: menuTop }} onClick={close} />}
-      {/* The open panel is as tall as its links, up to the space below the header, so the backdrop shows below it. */}
-      <nav ref={nav} id="portal-navigation" aria-label={text('navigation')} style={open && menuTop !== undefined ? { top: menuTop, maxHeight: `calc(100dvh - ${menuTop}px)` } : undefined}
+      {/* The open panel is as tall as its links, but stops 3rem short of the screen's bottom so a strip of backdrop always shows. */}
+      <nav ref={nav} id="portal-navigation" aria-label={text('navigation')} style={open && menuTop !== undefined ? { top: menuTop, maxHeight: `calc(100dvh - ${menuTop}px - 3rem)` } : undefined}
         className={`${open ? 'fixed inset-x-0 z-20 block overflow-y-auto overscroll-contain bg-background shadow-lg' : 'hidden'} border-b border-border p-3
           md:sticky md:top-[var(--portal-header-height)] md:bottom-auto md:block md:max-h-[calc(100dvh-var(--portal-header-height))] md:w-56 md:shrink-0 md:self-start md:overflow-y-auto md:border-b-0 md:border-r md:shadow-none`}>
         <ul className="space-y-1">{entries.map(entry => <li key={entry.id}><Link to={entry.href} onClick={() => setOpen(false)} className="flex min-h-11 items-center rounded-md px-3 hover:bg-muted" activeOptions={{ exact: true }} activeProps={{ className: 'bg-muted font-semibold', 'aria-current': 'page' }}>{t(entry.labelKey)}</Link></li>)}</ul>

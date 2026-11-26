@@ -711,6 +711,11 @@ it.each(['/api/portal/households', '/api/portal/context'])('shows the offline ba
   connect(true);
   expect(screen.queryByText(offlineBanner)).toBeNull();
 });
+/** jsdom reads a `calc()` that subtracts twice back with its last term added, so keep the string the layout writes. */
+function keepMaxHeight(element: HTMLElement) {
+  let written = '';
+  Object.defineProperty(element.style, 'maxHeight', { configurable: true, get: () => written, set: (value: string) => { written = value; } });
+}
 const portalMenu = async () => {
   await screen.findByRole('heading', { name: 'Welcome to your member portal' });
   return { menu: screen.getByRole('button', { name: 'Menu' }), nav: screen.getByRole('navigation', { name: 'Member navigation' }),
@@ -743,6 +748,20 @@ it('moves focus into the open phone menu, back to Menu on Escape, and keeps the 
   await user.click(backdrop);
   expect(menu.getAttribute('aria-expanded')).toBe('false');
 });
+it('stops the open phone menu short of the screen\'s bottom and makes what it covers inert until Escape', async () => {
+  const link = document.createElement('a'), footer = document.createElement('footer');
+  for (const element of [link, footer]) { element.setAttribute('data-menu-covers', ''); element.inert = false; document.body.append(element); }
+  try {
+    portal(ids.first);
+    const user = userEvent.setup(), { menu, nav } = await portalMenu();
+    keepMaxHeight(nav);
+    await user.click(menu);
+    expect(nav.style.maxHeight).toMatch(/px - 3rem\)$/);
+    expect([link.inert, footer.inert]).toEqual([true, true]);
+    await user.keyboard('{Escape}');
+    expect([link.inert, footer.inert]).toEqual([false, false]);
+  } finally { link.remove(); footer.remove(); }
+});
 it('keeps the open phone menu under the header as the page around it resizes or scrolls', async () => {
   const observers = new Set<{ callback: ResizeObserverCallback; observed: Set<Element> }>();
   vi.stubGlobal('ResizeObserver', class {
@@ -756,6 +775,7 @@ it('keeps the open phone menu under the header as the page around it resizes or 
   const user = userEvent.setup(), { menu, nav, backdrop } = await portalMenu(), header = screen.getByRole('banner');
   let bottom = 121;
   vi.spyOn(header, 'getBoundingClientRect').mockImplementation(() => ({ bottom }) as DOMRect);
+  keepMaxHeight(nav);
   await user.click(menu);
   const observed = () => [...observers].flatMap(observer => [...observer.observed]);
   expect(observed()).toContain(document.body);
@@ -764,7 +784,7 @@ it('keeps the open phone menu under the header as the page around it resizes or 
   const at = (top: number) => {
     expect(nav.style.top).toBe(`${top}px`);
     expect(backdrop()!.style.top).toBe(`${top}px`);
-    expect(nav.style.maxHeight).toBe(`calc(100dvh - ${top}px)`);
+    expect(nav.style.maxHeight).toBe(`calc(100dvh - ${top}px - 3rem)`);
   };
   at(121);
   expect(nav.classList).not.toContain('bottom-0');

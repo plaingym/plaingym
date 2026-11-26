@@ -16,7 +16,7 @@ export function useSectionListed(entry: SettingsSection) {
 }
 function SectionLink({ entry }: { entry: SettingsSection }) {
   if (!useSectionListed(entry)) return null;
-  return <a href={'#' + entry.id} className="inline-flex min-h-11 min-w-0 scroll-mt-[calc(var(--spacing-header)+0.5rem)] items-center rounded-md px-3 py-2 text-sm underline underline-offset-4 hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring [overflow-wrap:anywhere]">{t(entry.labelKey)}</a>;
+  return <a href={'#' + entry.id} className="inline-flex min-h-11 min-w-0 items-center rounded-md px-3 py-2 text-sm underline underline-offset-4 hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring [overflow-wrap:anywhere]">{t(entry.labelKey)}</a>;
 }
 export function SettingsSectionMenu({ sections }: { sections: SettingsSection[] }) {
   return <nav aria-label={t('settings/settings:sections')} className="hidden flex-wrap gap-1 rounded-xl border border-border p-2 has-[a]:flex">

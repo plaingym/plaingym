@@ -13,7 +13,7 @@ function Section({ entry }: { entry: SettingsSection }) {
   useSectionHash(entry.id, listed);
   if (!listed) return null;
   const Component = entry.component;
-  return <section id={entry.id} tabIndex={-1} aria-label={t(entry.labelKey)} className="min-w-0 scroll-mt-[calc(var(--spacing-header)+1rem)] rounded-xl border border-border bg-card p-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring sm:p-6"><Component/></section>;
+  return <section id={entry.id} tabIndex={-1} aria-label={t(entry.labelKey)} className="min-w-0 scroll-mt-2 rounded-xl border border-border bg-card p-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring sm:p-6"><Component/></section>;
 }
 export function SettingsPage() {
   const bootstrap = useBootstrap();

@@ -12,7 +12,7 @@ export function SourceFooter({ sourceUrl = '/source', version = clientVersion?.v
   const fetched = useSourceRepository(release && repository === undefined);
   const label = version ? versionLabel(version, repository ?? fetched) : undefined;
   const shown = label && <><span aria-hidden="true">{label.text}</span><span className="sr-only">{t('shell/shell:version', { version: label.text })}</span></>;
-  return <footer className="flex flex-wrap items-center justify-center gap-x-4 border-t border-border px-4 py-2 text-center text-sm text-muted-foreground sm:px-6">
+  return <footer data-menu-covers className="flex flex-wrap items-center justify-center gap-x-4 border-t border-border px-4 py-2 text-center text-sm text-muted-foreground sm:px-6">
     <a className="inline-flex min-h-11 items-center underline underline-offset-4" href={sourceUrl}>{t('shell/shell:source')}</a>
     {label && (label.href
       ? <a className="inline-flex min-h-11 min-w-11 items-center justify-center break-all underline underline-offset-4" href={label.href}>{shown}</a>
@@ -21,7 +21,7 @@ export function SourceFooter({ sourceUrl = '/source', version = clientVersion?.v
 }
 export function RootLayout() {
   return <div className="flex min-h-dvh flex-col bg-background font-sans text-foreground">
-    <a href="#main-content" className="sr-only focus:not-sr-only focus:p-3">{t('shell/shell:skip')}</a>
+    <a data-menu-covers href="#main-content" className="sr-only focus:not-sr-only focus:p-3">{t('shell/shell:skip')}</a>
     <DemoShell><div className="flex flex-1 flex-col"><Outlet /></div></DemoShell><SourceFooter />
   </div>;
 }

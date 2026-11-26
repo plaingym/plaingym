@@ -2,7 +2,7 @@
 // @vitest-environment jsdom
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from '@tanstack/react-router';
 import type { NavigationEntry } from '@plaingym/shared';
@@ -31,6 +31,11 @@ const anonymous: ShellBootstrap = {
 function services(state: ShellBootstrap = anonymous): ShellServices {
   return { loadBootstrap: vi.fn().mockResolvedValue(state), signInWithPassword: vi.fn().mockResolvedValue(undefined),
     requestMagicLink: vi.fn().mockResolvedValue(undefined), signOut: vi.fn().mockResolvedValue(undefined) };
+}
+/** jsdom reads a `calc()` that subtracts twice back with its last term added, so keep the string the shell writes. */
+function keepMaxHeight(element: HTMLElement) {
+  let written = '';
+  Object.defineProperty(element.style, 'maxHeight', { configurable: true, get: () => written, set: (value: string) => { written = value; } });
 }
 function start(service: ShellServices, path = '/login') {
   const router = createAppRouter(createMemoryHistory({ initialEntries: [path] }));
@@ -431,10 +436,12 @@ describe('admin shell', () => {
       const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });
       render(<RouterProvider router={createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) })} />);
       const user = userEvent.setup();
-      await user.click(await screen.findByRole('button', { name: 'Menu' }));
+      const opener = await screen.findByRole('button', { name: 'Menu' });
       const navigation = screen.getByRole('navigation', { name: 'Gym navigation' });
+      keepMaxHeight(navigation);
+      await user.click(opener);
       await waitFor(() => expect(navigation.style.top).toBe('56px'));
-      expect(navigation.style.maxHeight).toBe('calc(100dvh - 56px)');
+      expect(navigation.style.maxHeight).toBe('calc(100dvh - 56px - 3rem)');
       expect(navigation.classList).toContain('fixed');
       expect(navigation.classList).not.toContain('bottom-0');
       expect(navigation.classList).not.toContain('max-h-dvh');
@@ -453,6 +460,81 @@ describe('admin shell', () => {
       if (offsetHeight) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', offsetHeight);
       else delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetHeight;
     }
+  });
+  it('stops the open phone menu short of the screen\'s bottom and makes what it covers inert until it closes', async () => {
+    const offsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get() { return this.tagName === 'HEADER' ? 57 : 0; } });
+    const link = document.createElement('a'), footer = document.createElement('footer'), already = document.createElement('div');
+    for (const element of [link, footer, already]) { element.setAttribute('data-menu-covers', ''); document.body.append(element); }
+    link.inert = false; footer.inert = false; already.inert = true;
+    try {
+      const state = { ...anonymous, session: { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false } };
+      const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });
+      const view = render(<RouterProvider router={createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) })} />);
+      const user = userEvent.setup();
+      const menu = await screen.findByRole('button', { name: 'Menu' }), main = screen.getByRole('main');
+      const covered = (inert: boolean) => {
+        expect(main.hasAttribute('inert')).toBe(inert);
+        expect([link.inert, footer.inert]).toEqual([inert, inert]);
+        expect(already.inert).toBe(true);
+      };
+      covered(false);
+      const navigation = screen.getByRole('navigation', { name: 'Gym navigation' });
+      keepMaxHeight(navigation);
+      await user.click(menu);
+      await waitFor(() => expect(navigation.style.maxHeight).toBe('calc(100dvh - 57px - 3rem)'));
+      covered(true);
+      await user.keyboard('{Escape}');
+      expect(document.activeElement).toBe(menu);
+      covered(false);
+      // A shell that goes away with its menu open gives them back too.
+      await user.click(menu); covered(true);
+      view.unmount();
+      expect([link.inert, footer.inert, already.inert]).toEqual([false, false, true]);
+    } finally {
+      for (const element of [link, footer, already]) element.remove();
+      if (offsetHeight) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', offsetHeight);
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetHeight;
+    }
+  });
+  it('moves the open phone menu when content above the shell resizes the page', async () => {
+    const offsetTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetTop');
+    let contentTop = 57;
+    Object.defineProperty(HTMLElement.prototype, 'offsetTop', { configurable: true, get() { return this.classList.contains('relative') ? contentTop : 0; } });
+    const observers = new Set<{ callback: ResizeObserverCallback; observed: Set<Element> }>();
+    vi.stubGlobal('ResizeObserver', class {
+      private own: { callback: ResizeObserverCallback; observed: Set<Element> };
+      constructor(callback: ResizeObserverCallback) { this.own = { callback, observed: new Set() }; observers.add(this.own); }
+      observe(element: Element) { this.own.observed.add(element); }
+      disconnect() { observers.delete(this.own); }
+    });
+    try {
+      const state = { ...anonymous, session: { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false } };
+      const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });
+      render(<RouterProvider router={createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) })} />);
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole('button', { name: 'Menu' }));
+      const navigation = screen.getByRole('navigation', { name: 'Gym navigation' });
+      await waitFor(() => expect(navigation.style.top).toBe('57px'));
+      const watching = [...observers].filter(observer => observer.observed.has(document.body));
+      expect(watching).toHaveLength(1);
+      contentTop = 97;
+      act(() => { watching[0]!.callback([], {} as ResizeObserver); });
+      expect(navigation.style.top).toBe('97px');
+    } finally {
+      if (offsetTop) Object.defineProperty(HTMLElement.prototype, 'offsetTop', offsetTop);
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetTop;
+    }
+  });
+  it('covers the app\'s own skip link and source footer while the phone menu is open', async () => {
+    const state = { ...anonymous, session: { userId: 'owner', displayName: 'Test Owner', roles: ['owner'] as const, member: false } };
+    start(services(state), '/admin');
+    const user = userEvent.setup(), menu = await screen.findByRole('button', { name: 'Menu' });
+    const covered = [screen.getByRole('link', { name: 'Skip to content' }), screen.getByRole('contentinfo')];
+    await user.click(menu);
+    expect(covered.map(element => element.inert)).toEqual([true, true]);
+    await user.keyboard('{Escape}');
+    expect(covered.map(element => Boolean(element.inert))).toEqual([false, false]);
   });
   it('locks the page behind the phone menu without a scrollbar shift and releases it on Escape, outside press and navigation', async () => {
     const width = window.innerWidth;
