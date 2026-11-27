@@ -13,9 +13,9 @@ import { createPaymentService } from '../payments.js';
 import { createChargeRunner } from './index.js';
 import { createMembersService } from '../../members/members.js';
 import { FakeJobs } from '../../../infra/jobs/index.js';
-import { useRunnerFixture } from './runner.fixture.test-helper.js';
+import { useRunnerFixture, type Fixture } from './runner.fixture.test-helper.js';
 
-const { db, factory, fixture, invoice } = useRunnerFixture();
+const { db, factory, fixture, invoice, oneOff } = useRunnerFixture();
 
 describe('charge runner with PostgreSQL', () => {
   it('holds erased household invoices through collection and dunning, and permits staff review without a saved card', async () => {
@@ -260,6 +260,99 @@ describe('charge runner with PostgreSQL', () => {
     const rows = await f.read();
     expect(rows.invoices).toHaveLength(2); expect(rows.invoices.map(row => row.amountCents).sort()).toEqual([2500, 7097]);
     expect(rows.attempts).toHaveLength(0);
+  });
+  describe('a saved method the provider no longer has', () => {
+    async function detached(f: Fixture, processorId = 'pm_test', type?: 'us_bank_account') {
+      f.provider.recordPaymentMethod(type ? { type, id: processorId, customerId: 'cus_test', last4: '6789', bankName: 'Test bank' }
+        : { id: processorId, customerId: 'cus_test', brand: 'visa', last4: '4242', expiresMonth: 12, expiresYear: 2030 });
+      if (type) await db.forGym(f.gymId, tx => tx.update(paymentMethods).set({ type, processorId }).where(eq(paymentMethods.householdId, f.home.id)));
+      await f.provider.detachPaymentMethod(processorId);
+    }
+    const methods = (f: Fixture) => db.forGym(f.gymId, tx => tx.select().from(paymentMethods).where(eq(paymentMethods.householdId, f.home.id)));
+    const actions = (rows: Awaited<ReturnType<Fixture['read']>>, action: string) => rows.audits.filter(row => row.action === action);
+    const dunning = (rows: Awaited<ReturnType<Fixture['read']>>) => actions(rows, 'billing.transition.effect.created')
+      .map(row => row.after as { kind: string; staffCharge?: true }).filter(effect => effect.kind === 'dunning');
+    async function failedOnce(f: Fixture, invoiceId: string, processorId: string) {
+      const rows = await f.read();
+      expect(rows.attempts).toMatchObject([{ status: 'failed', declineCode: 'method_unusable', paymentIntentId: null, resolvedAt: f.clock.now() }]);
+      expect(rows.invoices.find(row => row.id === invoiceId)).toMatchObject({ status: 'past_due' });
+      expect((await methods(f)).find(row => row.processorId === processorId)).toMatchObject({ revokedAt: f.clock.now(), isDefault: false });
+      for (const action of ['billing.payment_method.revoked', 'billing.invoice.payment_failed', 'billing.invoice.dunning_started'])
+        expect(actions(rows, action)).toHaveLength(1);
+      expect(dunning(rows)).toHaveLength(1);
+      return rows;
+    }
+    it('fails the attempt once, revokes the card and starts dunning, then never charges it again', async () => {
+      const f = await fixture(), bill = await invoice(f);
+      await detached(f);
+      const confirm = vi.spyOn(f.provider, 'confirmCharge');
+      expect(await f.runner.charge(f.gymId, bill.id)).toEqual({ status: 'failed' });
+      await failedOnce(f, bill.id, 'pm_test');
+      expect(confirm).not.toHaveBeenCalled();
+      const create = vi.spyOn(f.provider, 'createCharge');
+      f.clock.advance(86400_000);
+      expect(await f.runner.charge(f.gymId, bill.id)).toEqual({ status: 'skipped', reason: 'already_attempted' });
+      // The first retry window: 09:00 gym time three days after the failure.
+      f.clock.advance(2 * 86400_000);
+      expect(await f.runner.charge(f.gymId, bill.id, { mode: 'retry' })).toEqual({ status: 'skipped', reason: 'no_saved_card' });
+      expect(create).not.toHaveBeenCalled();
+      expect((await f.read()).attempts).toHaveLength(1);
+    });
+    it('makes the household\'s other card the default and charges it at the first retry', async () => {
+      const f = await fixture(), bill = await invoice(f);
+      await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_second', isDefault: false });
+      await detached(f);
+      expect(await f.runner.charge(f.gymId, bill.id)).toEqual({ status: 'failed' });
+      await failedOnce(f, bill.id, 'pm_test');
+      expect((await methods(f)).find(row => row.processorId === 'pm_second')).toMatchObject({ revokedAt: null, isDefault: true });
+      f.clock.advance(3 * 86400_000);
+      expect(await f.runner.charge(f.gymId, bill.id, { mode: 'retry' })).toEqual({ status: 'succeeded' });
+      const rows = await f.read();
+      expect(rows.attempts.map(row => [row.savedPaymentMethod, row.status])).toEqual([['pm_test', 'failed'], ['pm_second', 'succeeded']]);
+      expect(rows.invoices.find(row => row.id === bill.id)).toMatchObject({ status: 'paid' });
+    });
+    it('keeps a staff-charged one-off open with one notice', async () => {
+      const f = await fixture(), bill = await oneOff(f);
+      await detached(f);
+      const context = { gymId: f.gymId, actor: { kind: 'user' as const, userId: (await factory('authUser', f.gymId)).id } };
+      expect(await f.runner.charge(f.gymId, bill.id, { mode: 'staff', context })).toEqual({ status: 'failed' });
+      const rows = await f.read();
+      expect(rows.attempts).toMatchObject([{ status: 'failed', declineCode: 'method_unusable', paymentIntentId: null }]);
+      expect(rows.invoices.find(row => row.id === bill.id)).toMatchObject({ status: 'open' });
+      expect((await methods(f))[0]).toMatchObject({ revokedAt: f.clock.now(), isDefault: false });
+      expect(dunning(rows)).toEqual([expect.objectContaining({ staffCharge: true })]);
+    });
+    it('treats a detached bank account as a decline, without stopping retries', async () => {
+      const f = await fixture({ currency: 'USD' }), bill = await invoice(f);
+      await detached(f, 'pm_usbank_6789', 'us_bank_account');
+      expect(await f.runner.charge(f.gymId, bill.id)).toEqual({ status: 'failed' });
+      const rows = await failedOnce(f, bill.id, 'pm_usbank_6789');
+      expect(actions(rows, 'billing.invoice.retries_stopped')).toEqual([]);
+      // That attempt never reached the bank, so it isn't one of the three failed debits that stop collection.
+      const next = { type: 'us_bank_account' as const, id: 'pm_usbank_2227', customerId: 'cus_test', last4: '2227', bankName: 'Test bank' };
+      f.provider.recordPaymentMethod(next);
+      await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: next.id, type: next.type, brand: null,
+        last4: next.last4, bankName: next.bankName, isDefault: true });
+      const context = { gymId: f.gymId, actor: { kind: 'user' as const, userId: (await factory('authUser', f.gymId)).id } };
+      for (let n = 1; n <= 3; n++) {
+        expect(actions(await f.read(), 'billing.invoice.retries_stopped')).toEqual([]);
+        expect(await f.runner.charge(f.gymId, bill.id, { mode: 'staff', context })).toEqual({ status: 'processing' });
+        const attempt = (await f.read()).attempts.at(-1)!;
+        await f.transitions.cardFailed(context, { invoiceId: bill.id, attemptId: attempt.id,
+          paymentIntentId: attempt.paymentIntentId!, outcome: 'insufficient_funds' });
+      }
+      expect(actions(await f.read(), 'billing.invoice.retries_stopped')).toHaveLength(1);
+    });
+    it('leaves a create that fails for another reason pending, with nothing revoked or queued', async () => {
+      const f = await fixture(), bill = await invoice(f);
+      vi.spyOn(f.provider, 'createCharge').mockRejectedValueOnce(new Error('socket hang up'));
+      await expect(f.runner.charge(f.gymId, bill.id)).rejects.toThrow('socket hang up');
+      const rows = await f.read();
+      expect(rows.attempts).toMatchObject([{ status: 'pending', paymentIntentId: null, resolvedAt: null }]);
+      expect((await methods(f))[0]).toMatchObject({ revokedAt: null, isDefault: true });
+      expect(actions(rows, 'billing.transition.effect.created')).toEqual([]);
+      expect(actions(rows, 'billing.payment_method.revoked')).toEqual([]);
+    });
   });
   it('cannot charge or reconcile another gym invoice', async () => {
     const a = await fixture(), b = await fixture(), bill = await invoice(b);

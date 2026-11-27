@@ -31,13 +31,16 @@ export interface CardSuccess extends Money {
 export interface CardFailure {
   readonly invoiceId: Id;
   readonly attemptId: Id;
-  readonly paymentIntentId: string;
+  /** Null only with method_unusable: the attempt failed before any intent was created. */
+  readonly paymentIntentId: string | null;
   /** Provider outcome: canceled is persisted as failed. A cancelled attempt that was still pending (its intent was
    * never confirmed) gets declineCode confirm_abandoned and leaves the invoice, dunning and retries untouched;
    * cancelling a requires_action attempt gets intent_canceled and moves the invoice as a failure without queueing a
    * second dunning notice; any other cancellation gets intent_canceled and is a decline.
+   * method_unusable (the provider no longer has the saved method for the customer) fails a still-pending attempt with
+   * declineCode method_unusable and is a decline; an attempt no longer pending ignores it.
    * The adapter normalizes every authentication_required shape to requires_action. */
-  readonly outcome: 'failed' | 'requires_action' | 'canceled' | BankFailureCode;
+  readonly outcome: 'failed' | 'requires_action' | 'canceled' | 'method_unusable' | BankFailureCode;
 }
 export type BankFailureCode = 'insufficient_funds' | 'payment_method_unusable';
 export interface ProcessingPayment { invoiceId: Id; paymentIntentId: string; attemptId?: Id }
@@ -114,7 +117,8 @@ export interface InvoiceAttemptFixture {
   readonly invoiceId: Id;
   readonly id: Id;
   readonly number: number;
-  readonly paymentIntentId: string;
+  /** Null while the attempt has no intent yet. */
+  readonly paymentIntentId: string | null;
   readonly status: 'pending' | 'processing' | 'succeeded' | 'failed' | 'requires_action';
   readonly processingAt?: IsoInstant;
   /** Persisted diagnostic; intent_canceled and confirm_abandoned prevent stale successes resurrecting an intent. */
@@ -176,7 +180,7 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
     if (!Number.isSafeInteger(attempt.number) || attempt.number < 1) throw new Error('Invalid attempt number');
     const key = scopedKey(attempt.gymId, attempt.id);
     if (this.#attempts.has(key) || [...this.#attempts.values()].some((other) => other.gymId === attempt.gymId
-      && (other.paymentIntentId === attempt.paymentIntentId
+      && ((attempt.paymentIntentId !== null && other.paymentIntentId === attempt.paymentIntentId)
         || (other.invoiceId === attempt.invoiceId && other.number === attempt.number)))) conflict('Attempt already exists');
     this.#attempts.set(key, structuredClone(attempt));
   }
@@ -202,7 +206,7 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
   #invoice(gymId: Id, invoiceId: Id): InvoiceSnapshot {
     return this.#invoices.get(scopedKey(gymId, invoiceId)) ?? notFound();
   }
-  #attempt(gymId: Id, invoiceId: Id, attemptId: Id, paymentIntentId: string): InvoiceAttemptFixture {
+  #attempt(gymId: Id, invoiceId: Id, attemptId: Id, paymentIntentId: string | null): InvoiceAttemptFixture {
     const attempt = this.#attempts.get(scopedKey(gymId, attemptId)) ?? notFound();
     if (attempt.invoiceId !== invoiceId || attempt.paymentIntentId !== paymentIntentId) notFound();
     return attempt;
@@ -291,8 +295,11 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
     return result;
   }
   async cardFailed(context: MutationContext, request: CardFailure): Promise<InvoiceTransitionResult> {
+    if (request.paymentIntentId === null && request.outcome !== 'method_unusable') conflict('Invalid payment outcome');
     const invoice = this.#invoice(context.gymId, request.invoiceId);
     const attempt = this.#attempt(context.gymId, invoice.id, request.attemptId, request.paymentIntentId);
+    // An unusable method ends only an attempt still pending; one already resolved (or abandoned) keeps its outcome.
+    if (request.outcome === 'method_unusable' && attempt.status !== 'pending') return this.#result('ignored', invoice);
     // A terminal invoice never moves; only an attempt still unresolved on it is closed.
     if (terminal.has(invoice.status) && !['pending', 'processing', 'requires_action'].includes(attempt.status)) return this.#result('ignored', invoice);
     if (attempt.status === 'succeeded' || canceled(attempt) || (attempt.status === 'requires_action' && request.outcome === 'failed')) return this.#result('ignored', invoice);
@@ -305,7 +312,8 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
     const alreadyResolved = attempt.status === status;
     this.#attempts.set(scopedKey(context.gymId, attempt.id), { ...attempt, status,
       ...(request.outcome === 'canceled' ? { declineCode: 'intent_canceled' } :
-        request.outcome === 'insufficient_funds' || request.outcome === 'payment_method_unusable' ? { declineCode: request.outcome } : {}) });
+        request.outcome === 'insufficient_funds' || request.outcome === 'payment_method_unusable'
+          || request.outcome === 'method_unusable' ? { declineCode: request.outcome } : {}) });
     const latest = Math.max(...[...this.#attempts.values()].filter((item) => item.gymId === context.gymId
       && item.invoiceId === invoice.id).map((item) => item.number));
     if (terminal.has(invoice.status) || attempt.number < latest || alreadyResolved) return this.#result('ignored', invoice);

@@ -7,7 +7,7 @@ import { clock as defaultClock } from '../../../core/clock.js';
 import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
 import type { BillingInvoiceTransitions } from '../transitions/index.js';
 import type { JobContext, Jobs } from '../../../infra/jobs/index.js';
-import type { Payments } from '../../../infra/payments/index.js';
+import { PaymentMethodUnusable, type Payments } from '../../../infra/payments/index.js';
 import type { MutationContext } from '../../../core/interfaces/common.js';
 import { logError, logInfo } from '../../../core/log.js';
 import { assignmentInvoices, audit, generateCycle, latestAttempt, system } from './store.js';
@@ -147,10 +147,19 @@ export function createChargeRunner(options: RunnerOptions) {
         });
       }
       const key = `${invoiceId}:${attempt.attemptNumber}`;
-      const intent = await provider.createCharge({ amount: attempt.amountCents, currency: attempt.currency.toLowerCase(),
-        customerId: attempt.stripeCustomerId, paymentMethodId: attempt.savedPaymentMethod,
-        ...(reservation.mandateId ? { mandateId: reservation.mandateId } : {}),
-        invoiceId, attemptId: attempt.id, idempotencyKey: `${key}:create` });
+      let intent: { id: string };
+      try {
+        intent = await provider.createCharge({ amount: attempt.amountCents, currency: attempt.currency.toLowerCase(),
+          customerId: attempt.stripeCustomerId, paymentMethodId: attempt.savedPaymentMethod,
+          ...(reservation.mandateId ? { mandateId: reservation.mandateId } : {}),
+          invoiceId, attemptId: attempt.id, idempotencyKey: `${key}:create` });
+      } catch (error) {
+        // The provider no longer has the saved method for this customer: charging it again can never work, so the
+        // attempt fails once (no intent exists) and the invoice moves as for a decline. Other errors stay pending.
+        if (!(error instanceof PaymentMethodUnusable)) throw error;
+        await options.transitions.cardFailed(context, { invoiceId, attemptId: attempt.id, paymentIntentId: null, outcome: 'method_unusable' });
+        return { status: 'failed' };
+      }
       const saved = await scope(gymId, async tx => {
         const changed = await tx.update(paymentAttempts).set({ paymentIntentId: intent.id }).where(and(
           eq(paymentAttempts.id, attempt.id), eq(paymentAttempts.status, 'pending'),

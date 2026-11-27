@@ -170,7 +170,12 @@ later reads.
 
 `createCharge` reads the saved payment method with its customer expanded: one
 request checks both that the method is attached to the payer and that the payer
-carries this gym's `gym_id`, before the intent is created. A successful saved-card
+carries this gym's `gym_id`, before the intent is created. A method Stripe no
+longer has (a 404 `resource_missing`) or one attached to no customer or to another
+customer raises `PaymentMethodUnusable`, and nothing is created: charging it again
+can never work. `FakePayments` raises it for a detached method. Another gym's
+customer is still refused as not this gym's, and any other read error is thrown as
+it is. A successful saved-card
 charge makes four requests: that read, the create, the confirmation's ownership
 read and the confirmation. The charge runner's customer adoption adds a fifth,
 and a sixth and seventh when it first tags an untagged customer (the tag write

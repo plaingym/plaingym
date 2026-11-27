@@ -191,7 +191,16 @@ creating the PaymentIntent. Keys are `<invoiceId>:<attemptNumber>:create` and
 `:confirm`. An exit before `createCharge`, including failed customer adoption, a
 failed adoption audit, or billing being disabled, immediately marks the unstarted
 attempt `failed` with `create_abandoned`.
-Once create starts, an unknown result stays pending for reconciliation.
+Once create starts, an unknown result stays pending for reconciliation. The one
+exception is `PaymentMethodUnusable`: the provider no longer has the saved method
+for the customer, so no intent exists and none ever could. The runner applies it
+through the transitions' `cardFailed` with outcome `method_unusable` and no intent
+ID and answers `failed`: the attempt fails once with that code, the saved method is
+revoked, and the invoice moves as for a decline (a cycle invoice goes past due and
+into dunning; a staff-charged one-off stays open with one notice). That attempt
+counts as attempted, so the next daily run answers `already_attempted`, and a
+retry finds the household's next active card or answers `no_saved_card`. Every
+other create or confirm error is still abandoned by reconciliation and tried again.
 The intent ID is saved
 only if the attempt is still pending, unresolved and has no ID. A worker losing
 that compare-and-set never confirms it, and cancels only when the attempt does

@@ -4,7 +4,7 @@ import { randomUUID, createHmac } from 'node:crypto';
 import { afterAll, expect, it, vi } from 'vitest';
 import Stripe from 'stripe';
 import { runInTransaction } from '@plaingym/shared/transaction';
-import { BankDebitUnavailable, CustomerCreationInProgress, CustomerDeleted, FakePayments, isProviderOutage, PaymentMethodCustomerDeleted, PaymentObjectNotForGym, PaymentObjectUntagged } from './index.js';
+import { BankDebitUnavailable, CustomerCreationInProgress, CustomerDeleted, FakePayments, isProviderOutage, PaymentMethodCustomerDeleted, PaymentMethodUnusable, PaymentObjectNotForGym, PaymentObjectUntagged } from './index.js';
 import { FixtureRecorder, replayPayments } from './recording.js';
 import { recordingTransport, replayTransport, type PaymentTransport } from './transport.js';
 import { StripePayments, STRIPE_API_VERSION, stripeTransport } from './stripe.js';
@@ -304,6 +304,28 @@ it('charges a saved card in four requests, checking the payer and its gym throug
   await expect(payments.createCharge({ ...charge, customerId: 'cus_foreign', paymentMethodId: detach.foreign, idempotencyKey: 'foreign:1:create' }))
     .rejects.toThrow('another gym');
   expect(transport.requests.slice(before).map(({ method }) => method)).toEqual(['GET', 'GET']);
+});
+it('refuses a saved method Stripe no longer has for the payer as unusable, before creating anything', async () => {
+  const { payments, transport, charge } = fixture();
+  transport.objects.set('cus_other', { id: 'cus_other', object: 'customer', metadata: { gym_id: gymId } });
+  transport.objects.set('pm_other', { id: 'pm_other', object: 'payment_method', customer: 'cus_other', metadata: {} });
+  transport.objects.set('pm_loose', { id: 'pm_loose', object: 'payment_method', customer: null, metadata: {} });
+  // No customer, another customer of the gym, and a method Stripe answers 404 for.
+  for (const paymentMethodId of ['pm_loose', 'pm_other', 'pm_gone']) {
+    const error = await payments.createCharge({ ...charge, paymentMethodId, idempotencyKey: paymentMethodId + ':1:create' }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(PaymentMethodUnusable);
+    expect(error).toMatchObject({ name: 'PaymentMethodUnusable', message: 'Payment method is not attached to payer' });
+  }
+  // Another gym's customer is still refused as not this gym's, and a failed read stays that error.
+  const foreign = await payments.createCharge({ ...charge, customerId: 'cus_foreign', paymentMethodId: detach.foreign, idempotencyKey: 'foreign:1:create' })
+    .catch((caught: unknown) => caught);
+  expect(foreign).toBeInstanceOf(PaymentObjectNotForGym);
+  expect(foreign).not.toBeInstanceOf(PaymentMethodUnusable);
+  expect(String(foreign)).toContain('another gym');
+  const outage = Object.assign(new Error('Stripe outage'), { statusCode: 500 });
+  vi.spyOn(transport, 'request').mockRejectedValueOnce(outage);
+  await expect(payments.createCharge({ ...charge, idempotencyKey: 'outage:1:create' })).rejects.toBe(outage);
+  expect(transport.requests.filter(({ method }) => method === 'POST')).toEqual([]);
 });
 it('reads the Charge for the success time only when the expanded one cannot supply it', async () => {
   const { payments, transport } = fixture(), intent = await payments.createCharge(charge);

@@ -17,10 +17,10 @@ const failure = { invoiceId, attemptId, paymentIntentId: 'pi_1', outcome: 'faile
 const refund: RefundTransition = { invoiceId, paymentId, refundId: id(30), processorId: 're_1',
   amountCents: 4000, currency: 'CAD', status: 'succeeded' };
 const build = (overrides: Partial<InvoiceSnapshot> = {}, options?: {
-  packSale?: boolean; checkout?: Pick<InvoiceFixture, 'checkoutSessionId' | 'checkoutExpiresAt'>;
+  packSale?: boolean; checkout?: Pick<InvoiceFixture, 'checkoutSessionId' | 'checkoutExpiresAt'>; noIntent?: boolean;
 }, clock = new TestClock('2026-10-21T12:00:00Z')) => new FakeInvoiceTransitions(
   [{ gymId: gym, invoice: { ...invoice, ...overrides }, ...options?.checkout }],
-  [{ gymId: gym, invoiceId, id: attemptId, number: 1, paymentIntentId: 'pi_1', status: 'pending' }],
+  [{ gymId: gym, invoiceId, id: attemptId, number: 1, paymentIntentId: options?.noIntent ? null : 'pi_1', status: 'pending' }],
   clock, { packSale: id => id === invoiceId && options?.packSale === true },
 );
 describe('InvoiceTransitions fake', () => {

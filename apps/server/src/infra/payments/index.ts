@@ -69,6 +69,16 @@ export class CustomerDeleted extends Error {
     this.name = 'CustomerDeleted';
   }
 }
+/**
+ * The saved payment method is gone at the processor, or attached to no customer or to another one than the payer:
+ * charging it again can never work. Raised before anything is created at the processor.
+ */
+export class PaymentMethodUnusable extends Error {
+  constructor(options?: ErrorOptions) {
+    super('Payment method is not attached to payer', options);
+    this.name = 'PaymentMethodUnusable';
+  }
+}
 export class BankDebitUnavailable extends Error {}
 /** The provider refused an object, or its customer, as not this gym's. */
 export class PaymentObjectNotForGym extends Error {}
@@ -529,7 +539,7 @@ export class FakePayments implements Payments {
   }
   async createCharge(request: CreateCharge): Promise<{ id: string }> {
     assertNoTransaction('payments.createCharge');
-    if (this.#detached.has(request.paymentMethodId)) throw new Error('Payment method is detached');
+    if (this.#detached.has(request.paymentMethodId)) throw new PaymentMethodUnusable();
     const type = this.#methods.get(request.paymentMethodId)?.method.type ?? 'card';
     if (type === 'acss_debit' && !request.mandateId) throw new Error('A saved PAD mandate is required');
     money(request.amount, request.currency);

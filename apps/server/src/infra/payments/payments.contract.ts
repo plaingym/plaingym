@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
 import { paymentsContract } from '../../core/registry-infra-contracts.js';
-import type { Payments, CreateCharge, CheckoutRequest, CustomerCardPage, PaymentMethodType } from './index.js';
+import { PaymentMethodUnusable, type Payments, type CreateCharge, type CheckoutRequest, type CustomerCardPage, type PaymentMethodType } from './index.js';
 import type { ClearCustomerEmail } from './email-erasure.js';
 import { runInTransaction } from '@plaingym/shared/transaction';
 
@@ -235,6 +235,12 @@ export function fullPaymentsContract(name: string, create: (card?: Card) => Prom
       await expect(payments.detachPaymentMethod(detach.owned)).resolves.toBeUndefined();
       await expect(payments.detachPaymentMethod('pm_missing')).resolves.toBeUndefined();
       expect(await payments.readPaymentObject({ kind: 'payment_method', id: detach.owned })).toEqual({ status: 'unknown', reference: { kind: 'payment_method', id: detach.owned } });
+    });
+    it('refuses to charge a detached card as an unusable method', async () => {
+      const { payments, charge, detach } = await create();
+      await payments.detachPaymentMethod(detach.owned);
+      await expect(payments.createCharge({ ...charge, paymentMethodId: detach.owned, idempotencyKey: charge.idempotencyKey + ':detached' }))
+        .rejects.toBeInstanceOf(PaymentMethodUnusable);
     });
     it('detaches a card for an erasure with its billing details cleared first, idempotently', async () => {
       const { payments, detach } = await create();

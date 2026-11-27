@@ -166,7 +166,16 @@ and changes nothing else: no invoice status, dunning or retry effects (on the la
 retry day the runner queues one more retry itself; `../runner/README.md`). Cancelling an
 action-needed attempt records `intent_canceled` and moves the invoice as a failure, but
 queues no new failed-payment notice, for both one-off and recurring invoices. Neither
-cancelled intent can later record a success or another outcome. `applyChargeOutcome`
+cancelled intent can later record a success or another outcome. `method_unusable`
+(the processor no longer has the saved method for the customer, reported before any
+intent exists) is the only outcome that takes a `null` intent ID; any other outcome
+with one is refused. It takes the gym settings lock before the invoice, ends only an
+attempt still `pending` (one already resolved or abandoned answers `ignored` and keeps
+its code), records `failed` with `method_unusable`, revokes the saved method whatever
+its type with `revokeBankMethod` (the household's next active card becomes the
+default), and moves the invoice as a card decline, with the existing failed-payment
+notice; it doesn't stop retries as the bank codes do, and a bank attempt it fails
+isn't one of the three failed debits that stop bank collection. `applyChargeOutcome`
 records a cancelled intent that carries a processor Charge (`latestChargeId`) as a
 decline first: its confirmation reached the card and was declined before the
 cancellation, even if that response was lost and the attempt is still pending. Authentication-needed

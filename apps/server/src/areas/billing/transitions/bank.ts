@@ -20,16 +20,18 @@ export async function processingIntents(tx: Transaction, invoiceId: string) {
     .sort((first, second) => first.sequence - second.sequence).map(event => event.paymentIntentId);
 }
 
-/** Three failed debits that reached the bank; an abandoned or cancelled-before-confirm attempt never did. */
+/** Three failed debits that reached the bank; an abandoned, cancelled-before-confirm or method_unusable attempt never did. */
 export async function bankAttemptsExhausted(tx: Transaction, invoice: InvoiceRow) {
   const failed = await tx.select({ declineCode: paymentAttempts.declineCode }).from(paymentAttempts).innerJoin(paymentMethods, and(
     eq(paymentMethods.gymId, paymentAttempts.gymId), eq(paymentMethods.processorId, paymentAttempts.savedPaymentMethod)))
     .where(and(eq(paymentAttempts.invoiceId, invoice.id), eq(paymentMethods.householdId, invoice.householdId),
       eq(paymentAttempts.status, 'failed'), inArray(paymentMethods.type, ['us_bank_account', 'acss_debit'])));
-  return failed.filter(row => !abandonedAttempt(row) && !canceledAttempt(row)).length >= 3;
+  return failed.filter(row => !abandonedAttempt(row) && !canceledAttempt(row) && row.declineCode !== 'method_unusable').length >= 3;
 }
 
-export async function revokeBankMethod(tx: Transaction, context: MutationContext, clock: Clock, invoice: InvoiceRow, processorId: string) {
+/** `anyType` revokes a saved card too: the processor no longer has the method for the customer, whatever its type. */
+export async function revokeBankMethod(tx: Transaction, context: MutationContext, clock: Clock, invoice: InvoiceRow, processorId: string,
+  anyType = false) {
   // Lock order: gym settings (key share; the caller takes them before the invoice for an unusable method, so this is a
   // second take), invoice (caller), household, as staff default changes, card removal and the Stripe key switch take the
   // gym before households, and the key switch's test-to-live clear takes the gym before invoices.
@@ -37,7 +39,7 @@ export async function revokeBankMethod(tx: Transaction, context: MutationContext
   await tx.select({ id: households.id }).from(households).where(eq(households.id, invoice.householdId)).for('update');
   const [removed] = await tx.update(paymentMethods).set({ revokedAt: clock.now(), isDefault: false }).where(and(
     eq(paymentMethods.householdId, invoice.householdId), eq(paymentMethods.processorId, processorId),
-    inArray(paymentMethods.type, ['us_bank_account', 'acss_debit']), isNull(paymentMethods.revokedAt))).returning();
+    ...(anyType ? [] : [inArray(paymentMethods.type, ['us_bank_account', 'acss_debit'])]), isNull(paymentMethods.revokedAt))).returning();
   if (!removed) {
     // A saved row may have already been revoked.
     const [saved] = await tx.select({ id: paymentMethods.id }).from(paymentMethods).where(and(

@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { and, asc, eq, gte, notInArray } from 'drizzle-orm';
-import { auditEvents, invoiceLineItems, invoices, members, memberships, paymentAttempts, payments, refunds, signedLinks, uuidv7, writeAudit } from '@plaingym/db';
+import { auditEvents, invoiceLineItems, invoices, members, memberships, paymentAttempts, paymentMethods, payments, refunds, signedLinks, uuidv7, writeAudit } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../../core/clock.js';
@@ -266,6 +266,40 @@ describe('invoice transitions with real PostgreSQL', () => {
     await f.transitions.cardFailed(f.context, { ...f.failure, outcome }); await f.drain();
     expect((await f.read()).invoice.status).toBe('open'); expect(f.jobs.jobs).toEqual([]); expect(f.email.messages).toEqual([]);
     expect((await f.read()).audits.filter(a => a.action === effectCreated)).toEqual([]);
+  });
+  describe('a saved method the processor no longer has', () => {
+    async function unusable() {
+      const f = await fixture();
+      await db.forGym(f.gymId, tx => tx.update(paymentAttempts).set({ paymentIntentId: null }).where(eq(paymentAttempts.id, f.attempt.id)));
+      await factory('paymentMethods', f.gymId, { householdId: f.household.id, processorId: 'pm_test', isDefault: true });
+      const methods = () => db.forGym(f.gymId, tx => tx.select().from(paymentMethods));
+      return { f, methods, request: { invoiceId: f.invoice.id, attemptId: f.attempt.id, paymentIntentId: null, outcome: 'method_unusable' as const } };
+    }
+    it('leaves an attempt a reconciler already abandoned, its invoice and the saved method as they are', async () => {
+      const { f, methods, request } = await unusable();
+      await db.forGym(f.gymId, tx => tx.update(paymentAttempts).set({ status: 'failed', declineCode: 'create_abandoned', resolvedAt: f.clock.now() })
+        .where(eq(paymentAttempts.id, f.attempt.id)));
+      const before = await f.read(), saved = await methods();
+      expect(await f.transitions.cardFailed(f.context, request)).toMatchObject({ outcome: 'ignored', invoice: { status: 'open' } });
+      const after = await f.read();
+      expect(after.attempts).toEqual(before.attempts);
+      expect(after.attempts[0]).toMatchObject({ status: 'failed', declineCode: 'create_abandoned' });
+      expect(after.invoice.status).toBe('open');
+      expect(after.audits).toEqual(before.audits);
+      expect(await methods()).toEqual(saved);
+      expect(saved[0]).toMatchObject({ revokedAt: null, isDefault: true });
+    });
+    it('applies two concurrent failures once: one revocation and one dunning effect', async () => {
+      const { f, methods, request } = await unusable();
+      expect((await Promise.all([f.transitions.cardFailed(f.context, request), f.transitions.cardFailed(f.context, request)]))
+        .map(result => result.outcome).sort()).toEqual(['applied', 'ignored']);
+      const rows = await f.read();
+      expect(rows.invoice.status).toBe('past_due');
+      expect(rows.attempts[0]).toMatchObject({ status: 'failed', declineCode: 'method_unusable', paymentIntentId: null });
+      expect(rows.audits.filter(a => a.action === 'billing.payment_method.revoked')).toHaveLength(1);
+      expect(rows.audits.filter(a => a.action === effectCreated && (a.after as TransitionEffect).kind === 'dunning')).toHaveLength(1);
+      expect((await methods())[0]).toMatchObject({ revokedAt: f.clock.now(), isDefault: false });
+    });
   });
   describe('a declined staff charge of a one-off', () => {
     const notices = (f: Fixture) => f.email.messages.filter(m => /needed for invoice/.test(m.subject));
@@ -1611,6 +1645,7 @@ invoiceTransitionsContract('invoice transitions with real PostgreSQL', async opt
   // The void contract starts with a payable invoice, so refusals can name its outstanding collection.
   await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'open' }).where(eq(invoices.id, f.invoice.id)));
   if (options?.packSale) await factory('classPackSales', f.gymId, { memberId: f.member.id, householdId: f.household.id, invoiceId: f.invoice.id });
+  if (options?.noIntent) await db.forGym(f.gymId, tx => tx.update(paymentAttempts).set({ paymentIntentId: null }).where(eq(paymentAttempts.id, f.attempt.id)));
   if (options?.checkout) await db.forGym(f.gymId, tx => tx.update(invoices).set({
     checkoutSessionId: options.checkout!.checkoutSessionId ?? null,
     checkoutExpiresAt: options.checkout!.checkoutExpiresAt ? new Date(options.checkout!.checkoutExpiresAt) : null,

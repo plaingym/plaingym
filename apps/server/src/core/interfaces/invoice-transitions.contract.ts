@@ -25,7 +25,9 @@ export interface InvoiceTransitionsHarness {
 
 /** Both the fake and the real transitions run these cases, so the fake can't drift from cancellation or refund rules. */
 export function invoiceTransitionsContract(name: string, create: (options?: { packSale?: boolean;
-  checkout?: Pick<InvoiceFixture, 'checkoutSessionId' | 'checkoutExpiresAt'> }) => Promise<InvoiceTransitionsHarness>) {
+  checkout?: Pick<InvoiceFixture, 'checkoutSessionId' | 'checkoutExpiresAt'>;
+  /** The seeded attempt has no intent yet: its create failed before one existed. */
+  noIntent?: boolean }) => Promise<InvoiceTransitionsHarness>) {
   describe(name + ': cancellations and refund reversals', () => {
     const count = (effects: readonly string[], kind: InvoiceEffect['kind']) => effects.filter((effect) => effect === kind).length;
     const processor = (h: InvoiceTransitionsHarness, value: Partial<Refund> = {}, pendingRefunds: Refund[] = []): ProcessorRefundTransition => ({
@@ -588,6 +590,38 @@ export function invoiceTransitionsContract(name: string, create: (options?: { pa
       const after = await h.read();
       expect(after.invoice).toBe('partially_refunded');
       expect(count(after.effects, 'staff_notice')).toBe(0);
+    });
+  });
+  describe(name + ': a saved method the processor no longer has', () => {
+    const unusable = (h: InvoiceTransitionsHarness) => ({ invoiceId: h.success.invoiceId, attemptId: h.success.attemptId,
+      paymentIntentId: null, outcome: 'method_unusable' as const });
+    it('fails a pending attempt without an intent once, and moves the invoice as a decline', async () => {
+      const declined = await create(), { invoiceId, attemptId, paymentIntentId } = declined.success;
+      await declined.transitions.cardFailed(declined.context, { invoiceId, attemptId, paymentIntentId, outcome: 'failed' });
+      const decline = await declined.read();
+      const h = await create({ noIntent: true });
+      const result = await h.transitions.cardFailed(h.context, unusable(h));
+      expect(result).toMatchObject({ outcome: 'applied', invoice: { status: decline.invoice } });
+      const after = await h.read();
+      expect(after).toEqual({ ...decline, attempt: { status: 'failed', declineCode: 'method_unusable' } });
+      expect((await h.transitions.cardFailed(h.context, unusable(h))).outcome).toBe('ignored');
+      expect(await h.read()).toEqual(after);
+    });
+    it('refuses an attempt without an intent for any other outcome', async () => {
+      const h = await create({ noIntent: true }), before = await h.read();
+      for (const outcome of ['failed', 'requires_action', 'canceled', 'insufficient_funds', 'payment_method_unusable'] as const)
+        await expect(h.transitions.cardFailed(h.context, { ...unusable(h), outcome })).rejects.toMatchObject({ code: 'conflict' });
+      expect(await h.read()).toEqual(before);
+    });
+    it('leaves a paid invoice paid', async () => {
+      const h = await create({ noIntent: true });
+      await h.transitions.manualPayment(h.context, h.manual);
+      const before = await h.read();
+      expect(before.invoice).toBe('paid');
+      expect(await h.transitions.cardFailed(h.context, unusable(h))).toMatchObject({ outcome: 'ignored', invoice: { status: 'paid' } });
+      const after = await h.read();
+      expect(after.invoice).toBe('paid');
+      expect(after.effects).toEqual(before.effects);
     });
   });
 }

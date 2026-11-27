@@ -9,7 +9,7 @@ import { CustomerCreationInProgress, CustomerDeleted, ERASED_CUSTOMER_NAME, norm
   type PaymentEvent, type Refund, type RefundRequest, type CustomerMatch, CardImportRefused, CardCursorRefused,
   type CustomerCardPage, type CustomerCardQuery, type PaymentMethod, type PaymentMethodType, type BankPaymentMethod,
   type BankAccountImportRead, type BankPaymentMethodForImport, BankDebitUnavailable, hasBankLast4,
-  PaymentObjectNotForGym, PaymentObjectUntagged, PaymentMethodCustomerDeleted, isProviderOutage } from './index.js';
+  PaymentObjectNotForGym, PaymentObjectUntagged, PaymentMethodCustomerDeleted, PaymentMethodUnusable, isProviderOutage } from './index.js';
 import type { Json, ObjectData, PaymentTransport, ProviderRequest } from './transport.js';
 import { PaymentWebhookError } from './webhook-error.js';
 import { matchesBillingEmail, type ClearCustomerEmail } from './email-erasure.js';
@@ -230,9 +230,12 @@ export class StripePayments implements Payments {
   async createCharge(request: CreateCharge): Promise<{ id: string }> {
     assertNoTransaction('payments.createCharge'); money(request.amount, request.currency); key(request.idempotencyKey);
     // One read checks both: the method is attached to the payer, and the payer (expanded) is this gym's.
-    const method = await this.#get(this.#path('payment_methods', request.paymentMethodId), { expand: ['customer'] });
+    // A method Stripe no longer has, or one attached to no customer or another one, can never be charged for this payer.
+    let method: ObjectData;
+    try { method = await this.#get(this.#path('payment_methods', request.paymentMethodId), { expand: ['customer'] }); }
+    catch (error) { if (missing(error)) throw new PaymentMethodUnusable({ cause: error }); throw error; }
     const payer = method.customer && typeof method.customer === 'object' ? data(method.customer) : undefined;
-    if (!payer || id(payer.id) !== request.customerId) throw new Error('Payment method is not attached to payer');
+    if (!payer || id(payer.id) !== request.customerId) throw new PaymentMethodUnusable();
     this.#metadata(payer);
     const type = methodType(method);
     if (type === 'acss_debit' && !request.mandateId) throw new Error('A saved PAD mandate is required');

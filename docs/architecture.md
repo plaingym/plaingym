@@ -313,7 +313,12 @@ source of truth; Stripe is the processor. In outline:
   resolving audit that removes it from future sweeps.
   A failed bank payment can be retried on the gym's schedule until three bank
   attempts have failed. An unusable bank account is revoked and its invoice's
-  automatic retries stop.
+  automatic retries stop. A saved method Stripe no longer has for the customer
+  (removed in its dashboard, or attached to another customer) fails the attempt
+  once, before any PaymentIntent exists: the method is revoked and the invoice
+  moves into dunning as for a decline (it isn't one of the three failed bank
+  attempts). Other errors creating or confirming a
+  charge leave the attempt for reconciliation, which abandons it to be tried again.
 * **Transitions** (`areas/billing/transitions/`): the only code that changes invoice
   state; its effects (receipts, dunning, membership activation, class credit grants
   and full-refund reversals)

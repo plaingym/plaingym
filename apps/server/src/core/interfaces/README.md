@@ -33,7 +33,10 @@ are implemented here.
   an action-needed attempt records intent_canceled and moves the invoice as a
   failure with no second dunning notice). Both codes
   preserve terminal cancellation through the locked schema and after reloading a
-  fake fixture. Refunds reserve pending amounts and only successful refunds change
+  fake fixture. Outcome method_unusable (the provider no longer has the saved
+  method for the customer) is the only one that takes a null intent ID: it fails a
+  still-pending attempt with declineCode method_unusable as a decline, and an
+  attempt no longer pending ignores it. Refunds reserve pending amounts and only successful refunds change
   the invoice's refund state, with one backward move: a processor refund that fails
   after it succeeded (same processor ID) releases its amount, recomputes the
   invoice's refund status (back to partially refunded or paid) and notifies staff.

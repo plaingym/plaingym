@@ -40,9 +40,12 @@ export type BillingInvoiceTransitions = Omit<InvoiceTransitions, 'processingFail
 };
 export function createInvoiceTransitions(options: TransitionOptions = {}): BillingInvoiceTransitions {
   const scope = stripeWriteScope(options.scope ?? forGym), clock = options.clock ?? defaultClock;
-  async function attempt(tx: Transaction, invoice: InvoiceRow, intentId: string, attemptId?: string) {
-    const row = (await tx.select().from(paymentAttempts).where(attemptId === undefined
-      ? eq(paymentAttempts.paymentIntentId, intentId) : eq(paymentAttempts.id, attemptId)))[0];
+  async function attempt(tx: Transaction, invoice: InvoiceRow, intentId: string | null, attemptId?: string) {
+    // An attempt without an intent is found only by its ID.
+    const match = attemptId !== undefined ? eq(paymentAttempts.id, attemptId)
+      : intentId !== null ? eq(paymentAttempts.paymentIntentId, intentId) : undefined;
+    if (!match) return undefined;
+    const row = (await tx.select().from(paymentAttempts).where(match))[0];
     if (attemptId !== undefined && !row) notFound();
     if (row && (row.invoiceId !== invoice.id || row.paymentIntentId !== intentId)) notFound();
     return row;
@@ -214,12 +217,18 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Billi
     },
     async cardFailed(context: MutationContext, request: CardFailure) {
       idSchema.parse(request.attemptId);
-      if (!['failed', 'requires_action', 'canceled', 'insufficient_funds', 'payment_method_unusable'].includes(request.outcome)) conflict('Invalid payment outcome');
+      if (!['failed', 'requires_action', 'canceled', 'insufficient_funds', 'payment_method_unusable', 'method_unusable'].includes(request.outcome))
+        conflict('Invalid payment outcome');
+      // Only an unusable method fails an attempt before any intent exists.
+      const unusable = request.outcome === 'method_unusable';
+      if (request.paymentIntentId === null && !unusable) conflict('Invalid payment outcome');
       return scope(context.gymId, async tx => {
         // The gym first, as the Stripe key switch's clear takes the gym before invoices.
-        if (request.outcome === 'payment_method_unusable') await holdGymSettings(tx, context.gymId);
+        if (request.outcome === 'payment_method_unusable' || unusable) await holdGymSettings(tx, context.gymId);
         const invoice = await lockInvoice(tx, request.invoiceId);
         const row = await attempt(tx, invoice, request.paymentIntentId, request.attemptId) ?? notFound();
+        // An unusable method ends only an attempt still pending: one a reconciler already abandoned keeps its outcome.
+        if (unusable && row.status !== 'pending') return result('ignored', invoice);
         // A terminal invoice never moves, and an attempt already resolved on it stays as recorded. One still unresolved
         // (a charge that crossed a manual payment, say) is closed below, so reconciliation stops listing it.
         if (terminal(invoice) && !['pending', 'processing', 'requires_action'].includes(row.status)) return result('ignored', invoice);
@@ -235,7 +244,7 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Billi
         const bankCode = request.outcome === 'insufficient_funds' || request.outcome === 'payment_method_unusable' ? request.outcome : undefined;
         const status = request.outcome === 'requires_action' ? 'requires_action' : 'failed';
         const declineCode = request.outcome === 'canceled' ? 'intent_canceled'
-          : request.outcome === 'requires_action' ? 'authentication_required' : bankCode ?? null;
+          : request.outcome === 'requires_action' ? 'authentication_required' : unusable ? 'method_unusable' : bankCode ?? null;
         if (row.status === status && row.declineCode === declineCode) return result('ignored', invoice);
         const alreadyResolved = row.status === status;
         await resolveAttempt(tx, context, row, status, declineCode);
@@ -244,6 +253,11 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Billi
         if (terminal(invoice) || row.attemptNumber < latest.attemptNumber || alreadyResolved) return result('ignored', invoice);
         if (invoice.status === 'processing' && row.status !== 'processing' && (await processingIntents(tx, invoice.id)).at(-1) !== request.paymentIntentId)
           return result('ignored', invoice);
+        if (unusable) {
+          // The processor no longer has the method, whatever its type: revoke it, then move the invoice as a decline.
+          await revokeBankMethod(tx, context, clock, invoice, row.savedPaymentMethod, true);
+          return failedInvoice(tx, context, invoice, row.id, undefined, undefined, false);
+        }
         return failedInvoice(tx, context, invoice, row.id, bankCode, row.savedPaymentMethod,
           request.outcome !== 'canceled' ? false : row.status === 'requires_action' ? 'action_needed' : 'other');
       });
