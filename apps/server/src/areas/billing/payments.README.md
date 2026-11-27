@@ -39,7 +39,10 @@ expiry that reveals success pays the invoice and refuses cash as already paid.
 Pending and processing attempts block cash. Unavailable Stripe blocks any required release.
 The `checkout.session.expired` webhook also clears the session and reservation of
 the open or past-due invoice that stores that exact session; an older session's
-event leaves a newer one in place.
+event leaves a newer one in place. That webhook can clear the session between
+the app's own expiry and its next read: a release or a link restart that finds
+the session it just expired at Stripe already cleared, with no other session in
+its place, carries on as released.
 
 Owners and admins may release a review hold through the audited `release-hold`
 action, which clears `needsReview` under the invoice lock and records the staff

@@ -1281,6 +1281,62 @@ describe('one-off collection and payment durability', () => {
     expect((await invoiceRow(f)).status).toBe('void');
     expect(await auditRows(f, 'billing.invoice.voided')).toHaveLength(1);
   });
+  /** The expired Checkout webhook writes the invoice between the provider expiry and reconciliation's read. */
+  function webhookRace(f: Fixture, race: 'cleared' | 'replaced' | 'paid') {
+    const expire = f.provider.expireCheckout.bind(f.provider);
+    vi.spyOn(f.provider, 'expireCheckout').mockImplementationOnce(async id => {
+      const result = await expire(id);
+      await db.forGym(f.gymId, async tx => {
+        if (race === 'replaced') {
+          await tx.update(invoices).set({ checkoutSessionId: 'cs_replaced' }).where(eq(invoices.id, f.invoice.id));
+          return;
+        }
+        await tx.update(invoices).set({ checkoutSessionId: null, checkoutExpiresAt: null,
+          ...(race === 'paid' ? { status: 'paid' } : {}) }).where(eq(invoices.id, f.invoice.id));
+        if (race === 'cleared') await tx.insert(auditEvents).values({ id: uuidv7(), gymId: f.gymId, actorKind: 'system',
+          action: 'billing.webhook.checkout_expired', targetType: 'invoice', targetId: f.invoice.id, occurredAt: f.clock.now(),
+          after: { checkoutSessionId: null, expiredSessionId: id } });
+      });
+      return result;
+    });
+  }
+  const cashIt = (f: Fixture) => f.service.manualPayment(f.context, f.invoice.id,
+    { amountCents: 2500, currency: 'USD', method: 'cash', paidAt: f.clock.now().toISOString() });
+  it('voids an invoice whose reserved Checkout the expired webhook cleared after the provider expiry', async () => {
+    const f = await fixture(); await reservedCheckout(f); webhookRace(f, 'cleared');
+    expect(await voidIt(f)).toMatchObject({ status: 'void' });
+    expect(await invoiceRow(f)).toMatchObject({ status: 'void', checkoutSessionId: null });
+    expect(await auditRows(f, 'billing.webhook.checkout_expired')).toHaveLength(1);
+    expect(await auditRows(f, 'billing.runner.checkout_released')).toHaveLength(0);
+  });
+  it('records cash for an invoice whose reserved Checkout the expired webhook cleared after the provider expiry', async () => {
+    const f = await fixture(); await reservedCheckout(f); webhookRace(f, 'cleared');
+    await cashIt(f);
+    const detail = await f.service.getInvoice(f.gymId, f.invoice.id);
+    expect(detail.invoice.status).toBe('paid'); expect(detail.payments.map(row => row.method)).toEqual(['cash']);
+    expect(await auditRows(f, 'billing.webhook.checkout_expired')).toHaveLength(1);
+    expect(await auditRows(f, 'billing.runner.checkout_released')).toHaveLength(0);
+  });
+  it('refuses the void and cash as changed when another session replaced the expired one', async () => {
+    const f = await fixture(); await reservedCheckout(f);
+    webhookRace(f, 'replaced');
+    await expect(voidIt(f)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['checkout_changed'] } });
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ checkoutSessionId: null }).where(eq(invoices.id, f.invoice.id)));
+    await reservedCheckout(f); webhookRace(f, 'replaced');
+    await expect(cashIt(f)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['checkout_changed'] } });
+    expect(await invoiceRow(f)).toMatchObject({ status: 'open', checkoutSessionId: 'cs_replaced' });
+    expect((await f.service.getInvoice(f.gymId, f.invoice.id)).payments).toHaveLength(0);
+  });
+  it('never releases an invoice the race left paid: void and cash refuse as today', async () => {
+    const f = await fixture(); await reservedCheckout(f); webhookRace(f, 'paid');
+    await expect(voidIt(f)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['checkout_changed'] } });
+    expect(await auditRows(f, 'billing.invoice.voided')).toHaveLength(0);
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'open' }).where(eq(invoices.id, f.invoice.id)));
+    await reservedCheckout(f); webhookRace(f, 'paid');
+    await expect(cashIt(f)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['checkout_changed'] } });
+    const detail = await f.service.getInvoice(f.gymId, f.invoice.id);
+    expect(detail.invoice.status).toBe('paid'); expect(detail.payments).toHaveLength(0);
+  });
   it('answers a void of an already void invoice with no provider call', async () => {
     const f = await fixture(); await voidIt(f);
     const calls = (['cancelCharge', 'expireCheckout', 'readPaymentObject', 'findCharge'] as const).map(name => vi.spyOn(f.provider, name));

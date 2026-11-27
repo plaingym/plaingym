@@ -17,9 +17,13 @@ export async function releaseActionNeeded(gymId: string, intentId: string, provi
 
 export async function releaseCheckout(gymId: string, invoiceId: string, sessionId: string, provider: Payments,
   reconciliation: Reconciliation, scope: typeof forGym, context: MutationContext): Promise<'released' | 'paid' | 'changed'> {
-  await provider.expireCheckout(sessionId);
+  const expiry = await provider.expireCheckout(sessionId);
   if (!await reconciliation.checkout(gymId, sessionId, provider, context)) {
     const current = await scope(gymId, async tx => (await tx.select().from(invoices).where(eq(invoices.id, invoiceId)))[0]);
+    // The expired-Checkout webhook can clear this very session before reconciliation reads it.
+    // Released only when the provider confirmed the expiry and no other session took its place.
+    if (expiry.status === 'expired' && current && current.checkoutSessionId === null
+      && ['open', 'past_due'].includes(current.status)) return 'released';
     if (current?.checkoutSessionId !== sessionId) return 'changed';
     throw new Error('Checkout must be reconciled before collecting payment');
   }

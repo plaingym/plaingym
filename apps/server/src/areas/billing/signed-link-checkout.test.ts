@@ -1027,3 +1027,96 @@ describe('an onboarding link keeping a card already on file', () => {
     expect(await f.usedAt()).toBeNull();
   });
 });
+
+describe('a link restart racing the expired Checkout webhook', () => {
+  type Race = 'cleared' | 'replaced' | 'voided' | 'reconciled';
+  /** Link A holds an open session; every expiry at the provider is followed by the invoice write the race names. */
+  async function raced(race: Race) {
+    const f = await fixture('pay_invoice');
+    const b = await f.links.create(f.context, { purpose: 'pay_invoice', householdId: f.household.id,
+      invoiceId: f.invoice.id, expiresAt: f.created.link.expiresAt });
+    const a = await f.checkout.start(f.gymId, f.linkId);
+    // The member opens link B a minute later: the webhook clears the old reservation's expiry, so B's is a new one.
+    f.clock.advance(60_000);
+    const expire = f.fake.expireCheckout.bind(f.fake);
+    vi.spyOn(f.fake, 'expireCheckout').mockImplementation(async id => {
+      const result = await expire(id);
+      await db.forGym(f.gymId, async tx => {
+        // As the webhook handler does: only the open or past-due invoice still storing this exact session.
+        const [invoice] = await tx.select().from(invoices).where(eq(invoices.checkoutSessionId, id)).for('update');
+        if (!invoice || !['open', 'past_due'].includes(invoice.status)) return;
+        if (race === 'replaced') {
+          await tx.update(invoices).set({ checkoutSessionId: 'cs_replaced' }).where(eq(invoices.id, invoice.id));
+          return;
+        }
+        if (race === 'reconciled') {
+          // As reconciliation does: it clears the session and leaves its reservation in place.
+          await tx.update(invoices).set({ checkoutSessionId: null }).where(eq(invoices.id, invoice.id));
+          return;
+        }
+        await tx.update(invoices).set({ checkoutSessionId: null, checkoutExpiresAt: null,
+          ...(race === 'voided' ? { status: 'void' } : {}) }).where(eq(invoices.id, invoice.id));
+        if (race === 'cleared') await writeAudit(tx, { gymId: f.gymId, actorKind: 'system', action: 'billing.webhook.checkout_expired',
+          targetType: 'invoice', targetId: invoice.id, occurredAt: f.clock.now(), after: { checkoutSessionId: null, expiredSessionId: id } });
+      });
+      return result;
+    });
+    const audits = async (action: string, targetId = b.link.id) => (await db.forGym(f.gymId, tx => tx.select().from(auditEvents)
+      .where(and(eq(auditEvents.action, action), eq(auditEvents.targetId, targetId)))));
+    const stored = async () => (await db.forGym(f.gymId, tx => tx.select().from(invoices).where(eq(invoices.id, f.invoice.id))))[0]!;
+    return Object.assign(f, { a, b, audits, stored });
+  }
+  it('opens a new session for the second link once the webhook cleared the first', async () => {
+    const f = await raced('cleared');
+    const started = await f.checkout.start(f.gymId, f.b.link.id);
+    expect(started.session).toMatchObject({ status: 'open', metadata: { linkId: f.b.link.id } });
+    expect(started.session.id).not.toBe(f.a.session.id);
+    expect(await f.fake.readPaymentObject({ kind: 'checkout', id: f.a.session.id })).toMatchObject({ value: { object: { status: 'expired' } } });
+    expect((await f.stored()).checkoutSessionId).toBe(started.session.id);
+    expect(await f.audits('billing.checkout.reserved')).toHaveLength(1);
+    expect(await f.audits('billing.checkout.reservation_renewed')).toHaveLength(0);
+    expect(await f.audits('billing.checkout.expired')).toHaveLength(0);
+    expect(await f.audits('billing.checkout.expired', f.linkId)).toHaveLength(0);
+    expect(await f.audits('billing.webhook.checkout_expired', f.invoice.id)).toHaveLength(1);
+  });
+  it('still answers Invoice changed when another session took the cleared one’s place', async () => {
+    const f = await raced('replaced'), create = vi.spyOn(f.fake, 'createCheckout');
+    await expect(f.checkout.start(f.gymId, f.b.link.id)).rejects.toMatchObject({ code: 'conflict', message: 'Invoice changed' });
+    expect(create).not.toHaveBeenCalled();
+    expect((await f.stored()).checkoutSessionId).toBe('cs_replaced');
+  });
+  it('refuses an invoice voided meanwhile as one that cannot be paid', async () => {
+    const f = await raced('voided'), create = vi.spyOn(f.fake, 'createCheckout');
+    await expect(f.checkout.start(f.gymId, f.b.link.id)).rejects.toMatchObject({ code: 'conflict', message: 'Invoice cannot be paid' });
+    expect(create).not.toHaveBeenCalled();
+    expect(await f.stored()).toMatchObject({ status: 'void', checkoutSessionId: null });
+  });
+  it('answers Invoice changed as before when reconciliation, not the webhook, cleared the session and left its reservation', async () => {
+    const f = await raced('reconciled');
+    await expect(f.checkout.start(f.gymId, f.b.link.id)).rejects.toMatchObject({ code: 'conflict', message: 'Invoice changed' });
+    expect((await f.stored()).checkoutSessionId).toBeNull();
+    expect(await f.audits('billing.checkout.started', f.linkId)).toHaveLength(1);
+    // The member's retry renews link A's leftover reservation and opens B's own session.
+    const started = await f.checkout.start(f.gymId, f.b.link.id);
+    expect(started.session).toMatchObject({ status: 'open', metadata: { linkId: f.b.link.id } });
+    expect(started.session.id).not.toBe(f.a.session.id);
+    expect((await f.stored()).checkoutSessionId).toBe(started.session.id);
+  });
+  it('stores one session when two restarts of the second link race the webhook', async () => {
+    const f = await raced('cleared'), create = f.fake.createCheckout.bind(f.fake), created: string[] = [];
+    vi.spyOn(f.fake, 'createCheckout').mockImplementation(async request => {
+      const session = await create(request); created.push(session.id); return session;
+    });
+    const results = await Promise.allSettled([f.checkout.start(f.gymId, f.b.link.id), f.checkout.start(f.gymId, f.b.link.id)]);
+    const stored = (await f.stored()).checkoutSessionId;
+    expect(stored).not.toBeNull(); expect(stored).not.toBe(f.a.session.id);
+    expect(results.some(result => result.status === 'fulfilled')).toBe(true);
+    for (const result of results) {
+      if (result.status === 'fulfilled') expect(result.value.session.id).toBe(stored);
+      else expect(result.reason).toMatchObject({ code: 'conflict' });
+    }
+    expect(new Set(created)).toEqual(new Set([stored]));
+    expect(await f.audits('billing.checkout.reserved')).toHaveLength(1);
+    expect(await f.audits('billing.checkout.expired')).toHaveLength(0);
+  });
+});

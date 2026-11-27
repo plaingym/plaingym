@@ -313,7 +313,13 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
         await scope(gymId, async tx => {
           const { link } = await locked(tx, gymId, linkId);
           const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, prepared.invoice!.id), eq(invoices.householdId, link.householdId))).for('update');
-          if (!invoice || invoice.checkoutSessionId !== session.id) throw new AppError('conflict', 'Invoice changed');
+          if (!invoice) throw new AppError('conflict', 'Invoice changed');
+          // The expired-Checkout webhook may have cleared this session and its reservation first: nothing to write here,
+          // and the restarted call reserves under the invoice lock by its usual rule. Reconciliation clears only the
+          // session, and the restarted call would replay the old link's reservation, so that case stays a conflict.
+          if (invoice.checkoutSessionId === null && (!invoice.checkoutExpiresAt
+            || invoice.checkoutExpiresAt.getTime() !== prepared.invoice!.checkoutExpiresAt?.getTime())) return payable(tx, invoice);
+          if (invoice.checkoutSessionId !== session.id) throw new AppError('conflict', 'Invoice changed');
           await payable(tx, invoice);
           const checkoutExpiresAt = new Date(Math.max(clock.now().getTime() + windowMs, (invoice.checkoutExpiresAt?.getTime() ?? 0) + 1));
           await tx.update(invoices).set({ checkoutSessionId: null,

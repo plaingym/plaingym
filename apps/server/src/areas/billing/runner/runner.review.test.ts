@@ -2,7 +2,7 @@
 import '@hono/zod-openapi';
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { households, invoices, paymentAttempts, paymentMethods, uuidv7 } from '@plaingym/db';
+import { households, invoices, paymentAttempts, paymentMethods, uuidv7, writeAudit } from '@plaingym/db';
 import { createGymSettingsAccessor } from '../../settings/settings.js';
 import { createChargeRunner } from './index.js';
 import { createRunnerJobs } from './runner.jobs.js';
@@ -92,6 +92,40 @@ describe('runner review regression cases with PostgreSQL', () => {
     });
     expect(await f.runner.charge(f.gymId, bill.id)).toEqual({ status: 'skipped', reason: 'checkout_changed' });
     expect((await f.read()).attempts).toHaveLength(0); expect(session.id).not.toBe('cs_replaced');
+  });
+  /** The expired Checkout webhook clears the invoice between the provider expiry and reconciliation, as its handler does. */
+  async function webhookRace(f: Awaited<ReturnType<typeof fixture>>, invoiceId: string, answer?: 'uncertain' | 'already_completed') {
+    const expire = f.provider.expireCheckout.bind(f.provider);
+    vi.spyOn(f.provider, 'expireCheckout').mockImplementationOnce(async id => {
+      const result = await expire(id);
+      await db.forGym(f.gymId, async tx => {
+        await tx.update(invoices).set({ checkoutSessionId: null, checkoutExpiresAt: null }).where(eq(invoices.id, invoiceId));
+        await writeAudit(tx, { gymId: f.gymId, actorKind: 'system', action: 'billing.webhook.checkout_expired', targetType: 'invoice',
+          targetId: invoiceId, occurredAt: f.clock.now(), after: { checkoutSessionId: null, expiredSessionId: id } });
+      });
+      if (answer === 'uncertain') return { status: 'uncertain' };
+      if (answer === 'already_completed') {
+        const found = await f.provider.readPaymentObject({ kind: 'checkout', id });
+        if (found.status !== 'found' || found.value.kind !== 'checkout') throw new Error('Checkout missing');
+        return { status: 'already_completed', session: found.value.object };
+      }
+      return result;
+    });
+  }
+  it('charges once the expired Checkout webhook cleared the session it just expired', async () => {
+    const f = await fixture(), bill = await oneOff(f, 'membership'); await checkout(f, bill.id);
+    await webhookRace(f, bill.id);
+    expect(await f.runner.charge(f.gymId, bill.id)).toEqual({ status: 'succeeded' });
+    const rows = await f.read();
+    expect(rows.attempts.filter(row => row.invoiceId === bill.id)).toMatchObject([{ status: 'succeeded' }]);
+    expect(rows.audits.filter(row => row.action === 'billing.runner.checkout_released')).toHaveLength(0);
+    expect(rows.audits.filter(row => row.action === 'billing.webhook.checkout_expired')).toHaveLength(1);
+  });
+  it.each(['uncertain', 'already_completed'] as const)('skips as changed when the cleared session’s expiry answered %s', async answer => {
+    const f = await fixture(), bill = await oneOff(f, 'membership'); await checkout(f, bill.id);
+    await webhookRace(f, bill.id, answer);
+    expect(await f.runner.charge(f.gymId, bill.id)).toEqual({ status: 'skipped', reason: 'checkout_changed' });
+    expect((await f.read()).attempts.filter(row => row.invoiceId === bill.id)).toHaveLength(0);
   });
   it.each(['paid', 'void'])('keeps a %s historical cycle unchanged while holding the late membership and advancing to the next cycle', async status => {
     const f = await fixture({ now: '2028-04-01T17:00:00Z' }); const old = await invoice(f);
