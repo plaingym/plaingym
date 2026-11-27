@@ -47,11 +47,42 @@ jobs:
               const maintainerIds = (process.env.CLA_MAINTAINER_IDS ?? '').split(',').map((id) => id.trim()).filter(Boolean);
               if (maintainerIds.some((id) => !/^\d+$/.test(id))) throw new Error('CLA_MAINTAINER_IDS must contain numeric GitHub user IDs');
               const dependencyBots = new Set(['dependabot[bot]', 'renovate[bot]']);
-              const permission = pr.user.type === 'User'
-                ? (await api.repos.getCollaboratorPermissionLevel({ owner, repo, username: pr.user.login })).data.permission
-                : 'none';
-              if (maintainerIds.includes(String(pr.user.id)) || ['admin', 'maintain'].includes(permission)
-                  || (pr.user.type === 'Bot' && dependencyBots.has(pr.user.login))) {
+              const permissions = new Map();
+              const isExempt = async (user) => {
+                if (maintainerIds.includes(String(user.id))) return true;
+                if (user.type === 'Bot') return dependencyBots.has(user.login);
+                if (user.type !== 'User') return false;
+                // Ask once per account in a run.
+                if (!permissions.has(user.id)) {
+                  permissions.set(user.id, api.repos.getCollaboratorPermissionLevel({ owner, repo, username: user.login })
+                    .then(({ data }) => data.permission));
+                }
+                return ['admin', 'maintain'].includes(await permissions.get(user.id));
+              };
+
+              // Signers: the opener, then every commit's linked GitHub user account by ID. A commit
+              // with no linked account, or by a bot, is covered by the opener's signature.
+              if (pr.commits > 250) throw new Error('Too many commits to check the contributor agreement');
+              const commits = await github.paginate(api.pulls.listCommits, { owner, repo, pull_number: issueNumber, per_page: 100 });
+              const commitAuthors = new Map();
+              for (const { author } of commits) {
+                if (author && author.type === 'User' && author.id !== pr.user.id) commitAuthors.set(author.id, author);
+              }
+              const signers = [];
+              for (const user of [pr.user, ...[...commitAuthors.values()].sort((a, b) => a.id - b.id)]) {
+                if (!await isExempt(user)) signers.push({ id: user.id, login: user.login });
+              }
+              // The status belongs to the head commit, which other open pull requests may share.
+              const listOtherOpeners = async () => {
+                const pulls = await github.paginate(api.pulls.list, { owner, repo, state: 'open', per_page: 100 });
+                const others = [];
+                for (const other of pulls) {
+                  if (other.number === issueNumber || other.head?.sha !== pr.head.sha || other.base?.repo?.full_name !== `${owner}/${repo}`) continue;
+                  if (!await isExempt(other.user)) others.push(other);
+                }
+                return others;
+              };
+              if (signers.length === 0 && (await listOtherOpeners()).length === 0) {
                 await status('success', 'Maintainer or approved dependency bot');
                 return;
               }
@@ -113,17 +144,20 @@ jobs:
                 if (!version) throw new Error('CLA.md must declare a version');
                 const hash = createHash('sha256').update(text).digest('hex');
                 const marker = `<!-- plaingym-cla:${hash} -->`;
+                const isSigned = (ledger, user) => ledger.signatures.some((entry) => entry.userId === user.id && entry.claSha256 === hash);
+                const unsignedIn = (ledger) => signers.filter((signer) => !isSigned(ledger, signer));
                 const { ledger } = await readLedger();
-                let signed = ledger.signatures.some((entry) => entry.userId === pr.user.id && entry.claSha256 === hash);
-                if (!signed && context.eventName === 'issue_comment') {
+                let unsigned = unsignedIn(ledger);
+                if (unsigned.length > 0 && context.eventName === 'issue_comment') {
                   // Refetch the comment: payload strings are data and are never evaluated as code.
                   const { data: comment } = await api.issues.getComment({ owner, repo, comment_id: context.payload.comment.id });
-                  const isCandidate = comment.user.id === pr.user.id && comment.user.type === 'User' && comment.body.trim() === phrase
+                  const isCandidate = unsigned.some((signer) => signer.id === comment.user.id) && comment.user.type === 'User'
+                    && comment.body.trim() === phrase
                     && comment.issue_url === `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`;
                   const [prompt] = isCandidate ? await listTrustedPromptsById() : [];
                   if (prompt?.body.startsWith(marker) && Date.parse(comment.updated_at) >= Date.parse(prompt.updated_at)) {
                     const signature = {
-                      userId: pr.user.id, login: pr.user.login, commentId: comment.id,
+                      userId: comment.user.id, login: comment.user.login, commentId: comment.id,
                       signedAt: comment.updated_at, claVersion: version, claSha256: hash, claBlobSha: agreement.sha,
                     };
                     // Bootstrap only our fixed signature branch; never use a PR-controlled ref.
@@ -143,19 +177,17 @@ jobs:
                     // event run, and merge signatures against the latest blob on conflict.
                     for (let attempt = 0; attempt < 5; attempt++) {
                       const { stored, ledger } = await readLedger();
-                      if (ledger.signatures.some(entry => entry.userId === pr.user.id && entry.claSha256 === hash)) {
-                        signed = true;
-                        break;
-                      }
+                      unsigned = unsignedIn(ledger);
+                      if (isSigned(ledger, comment.user)) break;
                       ledger.signatures.push(signature);
                       try {
                         await api.repos.createOrUpdateFileContents({
                           owner, repo, path: signaturePath, branch: signatureBranch,
-                          message: `docs: record CLA signature for user ${pr.user.id}`,
+                          message: `docs: record CLA signature for user ${comment.user.id}`,
                           content: Buffer.from(JSON.stringify(ledger, null, 2) + '\n').toString('base64'),
                           ...(stored ? { sha: stored.sha } : {}),
                         });
-                        signed = true;
+                        unsigned = unsignedIn(ledger);
                         break;
                       } catch (error) {
                         // A stale sha answers 409; a sha-less write to a file another run just created answers 422.
@@ -165,9 +197,11 @@ jobs:
                     }
                   }
                 }
-                if (!signed) {
+                if (unsigned.length > 0) {
                   const agreementMarkers = `${marker}\n<!-- plaingym-cla-blob:${agreement.sha} -->\n`;
-                  const body = `${agreementMarkers}@${pr.user.login}, please read [Contributor License Agreement v${version}](${context.serverUrl}/${owner}/${repo}/blob/${defaultSha}/CLA.md).\n\nReply with this exact comment to sign:\n\n> ${phrase}\n\nYou keep your copyright. Your signature records this agreement's SHA-256: \`${hash}\`.`;
+                  // Mention every unsigned signer: the opener first, then by account ID.
+                  const greeting = `${agreementMarkers}${unsigned.map((signer) => `@${signer.login}`).join(', ')}, please read `;
+                  const body = `${greeting}[Contributor License Agreement v${version}](${context.serverUrl}/${owner}/${repo}/blob/${defaultSha}/CLA.md).\n\nReply with this exact comment to sign:\n\n> ${phrase}\n\nYou keep your copyright. Your signature records this agreement's SHA-256: \`${hash}\`.`;
                   let [prompt, ...duplicates] = await listTrustedPromptsById();
                   if (!prompt) {
                     // If the agreement moved, keep the created prompt only when it is the earliest trusted one.
@@ -181,7 +215,8 @@ jobs:
                     }
                   }
                   if (prompt) {
-                    const needsRefresh = !prompt.body.startsWith(agreementMarkers);
+                    // Refresh for another agreement, or when the unsigned signers it mentions changed.
+                    const needsRefresh = !prompt.body.startsWith(greeting);
                     if (needsRefresh || duplicates.length > 0) {
                       if (!await isAgreementCurrent()) continue;
                     }
@@ -192,18 +227,34 @@ jobs:
                     for (const duplicate of duplicates) await deletePrompt(duplicate.id);
                   }
                   // A signing run may have completed while we were preparing the prompt.
-                  signed = (await readLedger()).ledger.signatures.some((entry) => entry.userId === pr.user.id && entry.claSha256 === hash);
+                  unsigned = unsignedIn((await readLedger()).ledger);
                 }
-                if (!signed) {
+                if (unsigned.length > 0) {
                   if (!await isAgreementCurrent()) continue;
                   await status('failure', 'CLA signature required; see the signing comment');
                   // Also repair a failure request that was in flight when signing succeeded.
-                  signed = (await readLedger()).ledger.signatures.some((entry) => entry.userId === pr.user.id && entry.claSha256 === hash);
-                  if (!signed) core.setFailed('The pull request author must sign CLA.md');
+                  unsigned = unsignedIn((await readLedger()).ledger);
+                  if (unsigned.some((signer) => signer.id !== pr.user.id)) core.setFailed('Every contributor to the pull request must sign CLA.md');
+                  else if (unsigned.length > 0) core.setFailed('The pull request author must sign CLA.md');
                 }
-                if (signed) {
+                if (unsigned.length === 0) {
                   if (!await isAgreementCurrent()) continue;
-                  await status('success', 'Contributor agreement signed');
+                  // Another open pull request with this head commit is covered only when its opener is exempt or signed.
+                  const uncoveredPulls = async () => {
+                    const others = await listOtherOpeners();
+                    if (others.length === 0) return [];
+                    const { ledger } = await readLedger();
+                    return others.filter((other) => !isSigned(ledger, other.user));
+                  };
+                  let [uncovered] = await uncoveredPulls();
+                  if (uncovered) {
+                    await status('failure', 'Another pull request on this commit needs a CLA signature');
+                    // Repair the same way when the other opener signed meanwhile.
+                    [uncovered] = await uncoveredPulls();
+                    if (uncovered) core.setFailed(`Pull request #${uncovered.number} has the same head commit and its author has not signed CLA.md`);
+                    else if (!await isAgreementCurrent()) continue;
+                  }
+                  if (!uncovered) await status('success', signers.length > 0 ? 'Contributor agreement signed' : 'Maintainer or approved dependency bot');
                 }
                 break;
               }

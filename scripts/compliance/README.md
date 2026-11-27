@@ -72,15 +72,32 @@ If the agreement changes again during that check, the run stops and `CLA` stays
 pending until the next pull request or comment event.
 Unresolved publication placeholders prevent external signing.
 
-The `CLA` commit status covers the current PR author and head commit.
-Repository collaborators with admin/maintain permission and the exact
+The check covers the pull request's author and the GitHub user account that
+authored each of its commits. A commit whose author email has no linked GitHub
+account, or whose author is a bot, is covered by the pull request author's
+signature; committers and `Co-authored-by` lines are not checked. Each person
+who must sign does so by replying with the signing phrase on the pull request;
+the signing comment mentions everyone still unsigned. A pull request with more
+than 250 commits needs a maintainer.
+
+The `CLA` status is written on the pull request's head commit, which other open
+pull requests can share. It is green only when every open pull request in this
+repository with that head commit is covered too: its author is exempt or has
+signed the current agreement. After the other pull request closes or its author
+signs, a comment on this pull request (or a new push) checks it again.
+
+Exempt accounts never sign, as a pull request author or as a commit author:
+repository collaborators with admin/maintain permission and the exact
 dependabot/renovate bot identities are exempt. Additional maintainer GitHub numeric
 user IDs can be configured with the comma-separated `CLA_MAINTAINER_IDS`
 repository variable.
 
-An unsigned author receives a prompt containing the agreement version, immutable
-link and SHA-256. The author replies with the exact signing phrase from `CLA.md`.
-A signature can only follow a prompt for that agreement hash. Records contain
+The signing comment is a prompt containing the agreement version, immutable
+link and SHA-256. Each unsigned person it mentions replies with the exact signing
+phrase from `CLA.md`. A signature can only follow a prompt for that agreement
+hash, and must be posted or edited after the prompt's latest revision; the prompt
+is revised when the agreement or the list of people still unsigned changes.
+Records contain
 the GitHub user ID/login, signing comment ID, timestamp, agreement version, SHA-256
 and blob SHA. They are saved at `signatures/cla.json` on `cla-signatures`;
 the workflow bootstraps the branch if needed and serializes writes.
@@ -88,4 +105,4 @@ the workflow bootstraps the branch if needed and serializes writes.
 The workflow requests its own write permissions, so the repository default for
 the Actions token can stay read-only. Require `CLA` and the compliance checks in
 the repository's branch rules. Keep the signature branch restricted to maintainers
-and this workflow. Posting a comment on an open PR rechecks its author's signature.
+and this workflow. Posting a comment on an open PR rechecks every signature it needs.

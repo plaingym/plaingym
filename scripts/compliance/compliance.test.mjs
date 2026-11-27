@@ -203,7 +203,20 @@ function claFixture(options = {}) {
   let branch = Boolean(ledger);
   let revision = 1, conflicts = options.writeConflicts ?? 0;
   const author = { id: 42, login: 'contributor', type: 'User', ...options.author };
-  const pr = { state: 'open', user: author, head: { sha: 'current-head' }, base: { repo: { full_name: 'plaingym/plaingym' } }, ...options.pr };
+  // GitHub's commit listing carries the linked account as `author` (null when the email has none).
+  const commits = options.commits ?? [{ sha: 'current-head', author }];
+  const pr = {
+    number: 1, state: 'open', user: author, commits: commits.length, head: { sha: 'current-head' },
+    base: { repo: { full_name: 'plaingym/plaingym' } }, ...options.pr,
+  };
+  const otherPulls = options.otherPulls ?? [];
+  const permissions = { [author.login]: options.permission ?? 'none', ...options.permissions };
+  const permissionCalls = [];
+  const paginated = [];
+  let signingComment = options.comment ?? {
+    id: 10, user: author, body: phrase, updated_at: '2026-01-02T00:00:00Z',
+    issue_url: 'https://api.github.com/repos/plaingym/plaingym/issues/1',
+  };
   const context = {
     repo: { owner: 'plaingym', repo: 'plaingym' }, eventName: options.eventName ?? 'pull_request_target',
     runId: 100, serverUrl: 'https://github.com',
@@ -212,10 +225,15 @@ function claFixture(options = {}) {
   const file = (content, sha = `blob-${sha256(content)}`) => ({ type: 'file', sha, encoding: 'base64', content: Buffer.from(content).toString('base64') });
   const notFound = () => { throw Object.assign(new Error('Not found'), { status: 404 }); };
   const api = {
-    pulls: { get: async () => ({ data: pr }) },
+    pulls: { get: async () => ({ data: pr }), listCommits: async () => {}, list: async () => {} },
     repos: {
       createCommitStatus: async (value) => statuses.push(value),
-      getCollaboratorPermissionLevel: async () => ({ data: { permission: options.permission ?? 'none' } }),
+      getCollaboratorPermissionLevel: async (value) => {
+        assert.equal(value.owner, context.repo.owner);
+        assert.equal(value.repo, context.repo.repo);
+        permissionCalls.push(value.username);
+        return { data: { permission: permissions[value.username] ?? 'none' } };
+      },
       get: async () => ({ data: { default_branch: 'main' } }),
       getContent: async (value) => {
         if (value.path === 'CLA.md') {
@@ -263,10 +281,7 @@ function claFixture(options = {}) {
     },
     issues: {
       listComments: async () => {},
-      getComment: async () => ({ data: options.comment ?? {
-        id: 10, user: author, body: phrase, updated_at: '2026-01-02T00:00:00Z',
-        issue_url: 'https://api.github.com/repos/plaingym/plaingym/issues/1',
-      } }),
+      getComment: async () => ({ data: signingComment }),
       createComment: async (value) => {
         commentCalls.create++;
         const comment = { ...value, id: Math.max(4, ...comments.map((comment) => comment.id)) + 1, user: { login: 'github-actions[bot]', type: 'Bot' }, updated_at: '2026-01-01T00:00:00Z' };
@@ -288,8 +303,9 @@ function claFixture(options = {}) {
     },
   };
   return {
-    text, hash, statuses, failures, writes, comments, commentCalls, agreementReads, context,
+    text, hash, statuses, failures, writes, comments, commentCalls, agreementReads, context, permissionCalls, paginated,
     ledger: () => ledger,
+    setComment: (comment) => { signingComment = comment; },
     setAgreement: (sha, content) => {
       agreements.set(sha, content);
       defaultSha = sha;
@@ -306,7 +322,9 @@ function claFixture(options = {}) {
         }
       };
       const getContent = captureAssertion(api.repos.getContent);
-      await execute(require, { ...context, ...hooks.context }, {
+      const runContext = { ...context, ...hooks.context };
+      const runNumber = runContext.payload.pull_request?.number ?? runContext.payload.issue?.number;
+      await execute(require, runContext, {
         rest: {
           ...api,
           repos: {
@@ -339,7 +357,19 @@ function claFixture(options = {}) {
           },
         },
         paginate: captureAssertion(async (method, params) => {
+          if (method === api.pulls.listCommits) {
+            // The commits of the pull request the event names.
+            assert.deepEqual(params, { owner: 'plaingym', repo: 'plaingym', pull_number: runNumber, per_page: 100 });
+            paginated.push('listCommits');
+            return structuredClone(commits);
+          }
+          if (method === api.pulls.list) {
+            assert.deepEqual(params, { owner: 'plaingym', repo: 'plaingym', state: 'open', per_page: 100 });
+            paginated.push('list');
+            return structuredClone([{ number: pr.number, user: pr.user, head: pr.head, base: pr.base }, ...otherPulls]);
+          }
           assert.equal(method, api.issues.listComments);
+          paginated.push('listComments');
           assert.deepEqual(params, { owner: 'plaingym', repo: 'plaingym', issue_number: 1, per_page: 100 });
           commentCalls.list++;
           const snapshot = structuredClone(comments);
@@ -848,6 +878,164 @@ test('maintainers and exact dependency bot identities are exempt', async () => {
     assert.equal(fixture.statuses.at(-1).state, 'success');
     assert.equal(fixture.writes.length, 0);
   }
+});
+
+const coAuthor = { id: 77, login: 'co-author', type: 'User' };
+const signedOpener = (text = 'Version 1.0\nPublic fixture contributor agreement.\n') => ({
+  schemaVersion: 1, signatures: [{ userId: 42, login: 'contributor', claSha256: sha256(text) }],
+});
+
+const openerCommit = { sha: 'opener-commit', author: { id: 42, login: 'contributor', type: 'User' } };
+const coAuthorCommit = { sha: 'current-head', author: coAuthor };
+const signingComment = (user, updatedAt = '2026-01-02T00:00:00Z') => ({
+  id: 10 + user.id, user, body: phrase, updated_at: updatedAt,
+  issue_url: 'https://api.github.com/repos/plaingym/plaingym/issues/1',
+});
+const otherPull = (overrides = {}) => ({
+  number: 2, user: { id: 55, login: 'other-opener', type: 'User' }, head: { sha: 'current-head' },
+  base: { repo: { full_name: 'plaingym/plaingym' } }, ...overrides,
+});
+
+test('a signed opener whose pull request has a commit by an unsigned account is not covered', async () => {
+  const fixture = claFixture({ ledger: signedOpener(), commits: [coAuthorCommit] });
+  await fixture.run();
+  assert.deepEqual(fixture.paginated.slice(0, 1), ['listCommits']);
+  assert.equal(fixture.statuses.at(-1).state, 'failure');
+  assert.equal(fixture.statuses.at(-1).description, 'CLA signature required; see the signing comment');
+  assert.equal(fixture.statuses.at(-1).sha, 'current-head');
+  assert.equal(fixture.comments.length, 1);
+  assert.match(fixture.comments[0].body, /@co-author, please read /);
+  assert.doesNotMatch(fixture.comments[0].body, /@contributor/);
+  assert.deepEqual(fixture.failures, ['Every contributor to the pull request must sign CLA.md']);
+});
+
+test('a commit author signs by comment; a commenter who authored no commit cannot', async () => {
+  const fixture = claFixture({ ledger: signedOpener(), commits: [openerCommit, coAuthorCommit] });
+  await fixture.run();
+  fixture.context.eventName = 'issue_comment';
+
+  fixture.setComment(signingComment({ id: 78, login: 'bystander', type: 'User' }));
+  await fixture.run();
+  assert.equal(fixture.writes.length, 0);
+  assert.deepEqual(fixture.ledger().signatures.map((entry) => entry.userId), [42]);
+  assert.equal(fixture.statuses.at(-1).state, 'failure');
+
+  fixture.setComment(signingComment(coAuthor));
+  await fixture.run();
+  assert.equal(fixture.writes.length, 1);
+  assert.match(fixture.writes[0].message, /user 77$/);
+  assert.deepEqual(fixture.ledger().signatures.map((entry) => [entry.userId, entry.login]), [[42, 'contributor'], [77, 'co-author']]);
+  assert.equal(fixture.statuses.at(-1).state, 'success');
+  assert.equal(fixture.statuses.at(-1).description, 'Contributor agreement signed');
+});
+
+test('an unsigned opener and co-author are both prompted, and the prompt follows who is left', async () => {
+  const fixture = claFixture({ commits: [coAuthorCommit, openerCommit] });
+  await fixture.run();
+  assert.equal(fixture.comments.length, 1);
+  assert.match(fixture.comments[0].body, /^<!-- plaingym-cla:[0-9a-f]{64} -->\n<!-- plaingym-cla-blob:[^\n]+ -->\n@contributor, @co-author, please read /);
+
+  fixture.context.eventName = 'issue_comment';
+  await fixture.run();
+  assert.deepEqual(fixture.ledger().signatures.map((entry) => entry.userId), [42]);
+  assert.equal(fixture.statuses.at(-1).state, 'failure');
+  assert.match(fixture.comments[0].body, /-->\n@co-author, please read /);
+  assert.doesNotMatch(fixture.comments[0].body, /@contributor/);
+  assert.deepEqual(fixture.commentCalls, { list: 4, create: 1, update: 1, delete: 0 });
+
+  // A signature must follow the prompt's latest revision.
+  fixture.setComment(signingComment(coAuthor, '2026-01-04T00:00:00Z'));
+  await fixture.run();
+  assert.deepEqual(fixture.ledger().signatures.map((entry) => entry.userId), [42, 77]);
+  assert.equal(fixture.statuses.at(-1).state, 'success');
+});
+
+test('commits with no linked account or by a bot are covered by the signed opener', async () => {
+  const fixture = claFixture({ ledger: signedOpener(), commits: [
+    { sha: 'unlinked', author: null }, { sha: 'current-head', author: { id: 90, login: 'helper[bot]', type: 'Bot' } },
+  ] });
+  await fixture.run();
+  assert.equal(fixture.statuses.at(-1).state, 'success');
+  assert.equal(fixture.comments.length, 0);
+  assert.deepEqual(fixture.permissionCalls, ['contributor']);
+});
+
+test('an exempt opener does not cover an outside commit author, and exempt commit authors never sign', async () => {
+  const outside = claFixture({ permission: 'admin', commits: [openerCommit, coAuthorCommit, { ...coAuthorCommit, sha: 'second' }] });
+  await outside.run();
+  assert.equal(outside.statuses.at(-1).state, 'failure');
+  assert.equal(outside.comments.length, 1);
+  assert.match(outside.comments[0].body, /-->\n@co-author, please read /);
+  assert.deepEqual(outside.permissionCalls, ['contributor', 'co-author']);
+
+  const own = claFixture({ permission: 'admin', commits: [openerCommit] });
+  await own.run();
+  assert.deepEqual(own.statuses.map((status) => [status.state, status.description]), [
+    ['pending', 'Checking contributor agreement'], ['success', 'Maintainer or approved dependency bot'],
+  ]);
+  assert.equal(own.comments.length, 0);
+
+  const maintainer = { id: 80, login: 'maintainer', type: 'User' };
+  const fixture = claFixture({ ledger: signedOpener(), permissions: { maintainer: 'maintain' }, commits: [{ sha: 'current-head', author: maintainer }] });
+  await fixture.run();
+  assert.equal(fixture.statuses.at(-1).state, 'success');
+  assert.equal(fixture.comments.length, 0);
+});
+
+test('another open pull request on the same head commit must be covered before success', async () => {
+  const fixture = claFixture({ ledger: signedOpener(), otherPulls: [otherPull()] });
+  await fixture.run();
+  assert.equal(fixture.statuses.at(-1).state, 'failure');
+  assert.equal(fixture.statuses.at(-1).description, 'Another pull request on this commit needs a CLA signature');
+  assert.equal(fixture.statuses.some((status) => status.state === 'success'), false);
+  assert.deepEqual(fixture.failures, ['Pull request #2 has the same head commit and its author has not signed CLA.md']);
+  assert.equal(fixture.comments.length, 0);
+
+  const text = 'Version 1.0\nPublic fixture contributor agreement.\n';
+  for (const options of [
+    { ledger: { schemaVersion: 1, signatures: [...signedOpener().signatures, { userId: 55, claSha256: sha256(text) }] }, otherPulls: [otherPull()] },
+    { ledger: signedOpener(), permissions: { 'other-opener': 'admin' }, otherPulls: [otherPull()] },
+    { ledger: signedOpener(), otherPulls: [otherPull({ head: { sha: 'other-head' } })] },
+    { ledger: signedOpener(), otherPulls: [otherPull({ base: { repo: { full_name: 'someone/fork' } } })] },
+  ]) {
+    const covered = claFixture(options);
+    await covered.run();
+    assert.equal(covered.statuses.at(-1).state, 'success');
+    assert.deepEqual(covered.failures, []);
+  }
+});
+
+test('an exempt opener still needs every other pull request on its head commit covered', async () => {
+  const fixture = claFixture({ permission: 'admin', otherPulls: [otherPull()] });
+  await fixture.run();
+  assert.equal(fixture.statuses.at(-1).description, 'Another pull request on this commit needs a CLA signature');
+  assert.equal(fixture.comments.length, 0);
+
+  const text = 'Version 1.0\nPublic fixture contributor agreement.\n';
+  const covered = claFixture({ permission: 'admin', otherPulls: [otherPull()], ledger: { schemaVersion: 1, signatures: [{ userId: 55, claSha256: sha256(text) }] } });
+  await covered.run();
+  assert.equal(covered.statuses.at(-1).state, 'success');
+  assert.equal(covered.statuses.at(-1).description, 'Maintainer or approved dependency bot');
+});
+
+test('a pull request with more than 250 commits needs a maintainer', async () => {
+  const fixture = claFixture({ ledger: signedOpener(), pr: { commits: 251 } });
+  await fixture.run();
+  assert.equal(fixture.statuses.at(-1).state, 'failure');
+  assert.equal(fixture.statuses.at(-1).description, 'CLA check needs maintainer attention');
+  assert.deepEqual(fixture.failures, ['Too many commits to check the contributor agreement']);
+  assert.equal(fixture.paginated.includes('listCommits'), false);
+});
+
+test('two signers signing at once both stay in the ledger', async () => {
+  const text = 'Version 1.0\nPublic fixture contributor agreement.\n';
+  const fixture = claFixture({ commits: [openerCommit, coAuthorCommit], writeConflicts: 1, concurrentSignatures: [{ userId: 77, login: 'co-author', claSha256: sha256(text) }] });
+  await fixture.run();
+  fixture.context.eventName = 'issue_comment';
+  await fixture.run();
+  assert.equal(fixture.writes.length, 1);
+  assert.deepEqual(fixture.ledger().signatures.map((entry) => entry.userId), [77, 42]);
+  assert.equal(fixture.statuses.at(-1).state, 'success');
 });
 
 test('publication placeholders and storage failures fail closed', async () => {
