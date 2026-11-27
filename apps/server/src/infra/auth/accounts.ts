@@ -26,6 +26,14 @@ export interface OwnPasswordChange {
   readonly keepSessionId: string | null;
   readonly clock: Clock;
 }
+/** The one refusal for an existing address whose password doesn't prove it: wrong, missing, or a protected account. */
+export const existingAccountRefusal = () => new AppError('conflict', 'Account already exists with different credentials');
+/** Whether this login has a password. */
+export async function hasCredential(tx: Transaction, userId: string): Promise<boolean> {
+  const [credential] = await tx.select({ id: authAccount.id }).from(authAccount)
+    .where(and(eq(authAccount.userId, userId), eq(authAccount.providerId, 'credential'))).limit(1);
+  return Boolean(credential);
+}
 /** Runs with the identity write in its gym-scoped transaction. No delivery here. */
 export type ProvisionAccount = (tx: Transaction, userId: string) => Promise<void>;
 export function createAccountService(config: AuthConfig, database = systemDatabase) {
@@ -66,10 +74,18 @@ export function createAccountService(config: AuthConfig, database = systemDataba
         await provision?.(tx, id);
         return { userId: id, password: hash, created: true };
       });
-      if (!result.userId || !result.password || (!result.created && !await passwordAdapter.verify({ hash: result.password, password })))
-        throw new AppError('conflict', 'Account already exists with different credentials');
       const userId = result.userId;
-      if (!result.created && provision) await forGym(gymId, (tx) => provision(tx, userId));
+      if (result.created && userId) return { userId };
+      // An existing login's password is checked against the password sign-in account budget, as sign-in checks it.
+      // Single mode only, so no gym scope: the owner CLI's recovery clears this window too.
+      const attempt = await reserveAccountAttempt(database(), '/sign-in/email', email, signInLimits.account, clock.now().getTime());
+      if (!attempt.reservation) throw new AppError('rate_limited', 'Too many attempts. Try again later.');
+      // A login with no password is still checked, against the hash just made, so its refusal takes as long.
+      const matches = await passwordAdapter.verify({ hash: result.password ?? hash, password }) && Boolean(userId && result.password);
+      if (!matches || !userId) throw existingAccountRefusal();
+      if (provision) await forGym(gymId, (tx) => provision(tx, userId));
+      // Only a right password whose claim went through gives its slot back; a refused claim stays counted.
+      await releaseAccountAttempt(database(), attempt.reservation).catch(() => undefined);
       return { userId };
     },
     async resetPassword(input: PasswordReset) {

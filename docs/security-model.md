@@ -333,7 +333,10 @@ sign-in when enabled, magic-link request and verification when email is set up,
 Google sign-in and its callback when the gym has a Google client, get-session,
 sign-out); every other library endpoint is a 404, and no endpoint
 lists or bulk-revokes sessions. There is no public sign-up: identities are created
-by setup, the gym CLI, staff and portal invitations, and the join flow.
+by setup, the gym CLI, staff and portal invitations, and the join flow. Password
+mode never verifies an address, so there a staff invitation is refused for an
+address whose login already has a password and no staff role in the gym: that
+password may have been set by someone other than the invitee.
 
 * **Magic links** are sent when the gym has SMTP (its own or the install's). The
   token names the issuing gym, is stored hashed, expires after five minutes and
@@ -369,7 +372,11 @@ by setup, the gym CLI, staff and portal invitations, and the join flow.
     Password checks reserve a slot before verification and release it on a 200
     response; concurrent checks therefore count while in flight, and interrupted
     requests keep their slots. Successful sign-ins do not spend the account's
-    budget. Refusals do not extend the window. This bounds guessing one account's
+    budget. Refusals do not extend the window. The password window also counts
+    the password checks a portal onboarding claim makes for an address that
+    already has a login (password mode); a right password whose claim goes
+    through gives its slot back, and a wrong password, a staff account and a
+    login with no password get the same refusal. This bounds guessing one account's
     password from many addresses and the sign-in emails one address can be sent
     (in `multi` mode each gym counts its own window, so one address can be sent
     up to 10 links a window from each gym of the install).

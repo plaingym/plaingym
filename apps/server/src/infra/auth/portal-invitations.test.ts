@@ -6,7 +6,7 @@ import { auditEvents, authVerification, authAccount, authSession, authUser, hous
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
-import { staffRoles, type StaffRole } from '@plaingym/shared';
+import { staffRoles, type AppError, type StaffRole } from '@plaingym/shared';
 import { createPortalInvitationService, type PortalLoginLinkSender } from '../../areas/members/household-users.invitations.js';
 import { createPortalInvitationRoutes, configurePortalAccess } from '../../areas/portal/access.routes.js';
 import { createPortalAuthorization } from '../../areas/portal/auth.permissions.js';
@@ -22,6 +22,7 @@ import { authConfig } from './config.js';
 import { createAuthService } from './service.js';
 import { sessionMiddleware } from './middleware.js';
 import { passwordAdapter } from './password.js';
+import { reserveAccountAttempt, signInLimits } from './account-limit.js';
 import { createPortalClaimCodes } from './portal-invitations.js';
 import { createMembersService } from '../../areas/members/members.js';
 import { createMembersRoutes } from '../../areas/members/members.routes.js';
@@ -221,6 +222,60 @@ describe('portal invitations', () => {
     expect(await links(f.gymId, user.id)).toEqual([]);
     await invitations.claimOnboarding(f.gymId, link.id, { email: user.email, password }, clock);
     expect((await links(f.gymId, user.id)).map(row => row.householdId)).toEqual([f.home.id]);
+  });
+  const wrong = 'not-the-password-123', refusal = { code: 'conflict', message: 'Account already exists with different credentials' };
+  async function passwordLogin(f: Fixture) {
+    const user = await factory('authUser', f.gymId);
+    await factory('authAccount', f.gymId, { userId: user.id, accountId: user.id, password: await passwordAdapter.hash(password) });
+    return user;
+  }
+  const claim = (f: Fixture, linkId: string, email: string, guess: string) => invitations.claimOnboarding(f.gymId, linkId, { email, password: guess }, clock);
+  const refusalOf = async (attempt: Promise<unknown>) => {
+    const error = await attempt.then(() => { throw new Error('claimed'); }, (e: unknown) => e as AppError);
+    return [error.code, error.status, error.message, error.details];
+  };
+  it('password onboarding claims spend the account sign-in budget, so ten wrong guesses lock even the right password out', async () => {
+    const f = await fixture(), link = await onboardingLink(f), user = await passwordLogin(f);
+    for (let guess = 0; guess < 10; guess++) await expect(claim(f, link.id, user.email, wrong)).rejects.toMatchObject(refusal);
+    await expect(claim(f, link.id, user.email, password)).rejects.toMatchObject({ code: 'rate_limited' });
+    expect((await reserveAccountAttempt(db.system.db, '/sign-in/email', user.email, signInLimits.account, clock.now().getTime())).reservation).toBeNull();
+    expect(await links(f.gymId, user.id)).toEqual([]);
+    const [stored] = await db.forGym(f.gymId, tx => tx.select().from(signedLinks).where(eq(signedLinks.id, link.id)));
+    expect(stored!.usedAt).toBeNull();
+  });
+  it('concurrent wrong onboarding guesses never pass the account budget', async () => {
+    const f = await fixture(), link = await onboardingLink(f), user = await passwordLogin(f);
+    const results = await Promise.allSettled(Array.from({ length: 12 }, () => claim(f, link.id, user.email, wrong)));
+    const codes = results.map(result => result.status === 'rejected' ? (result.reason as AppError).code : 'claimed');
+    expect(codes.filter(code => code === 'conflict')).toHaveLength(10);
+    expect(codes.filter(code => code === 'rate_limited')).toHaveLength(2);
+  });
+  it('a right onboarding password gives its slot back and a wrong one never does', async () => {
+    const f = await fixture(), link = await onboardingLink(f), next = await onboardingLink(f), user = await passwordLogin(f);
+    for (let guess = 0; guess < 9; guess++) await expect(claim(f, link.id, user.email, wrong)).rejects.toMatchObject(refusal);
+    expect(await claim(f, link.id, user.email, password)).toEqual({ data: { status: 'claimed' } });
+    await expect(claim(f, next.id, user.email, wrong)).rejects.toMatchObject(refusal);
+    await expect(claim(f, next.id, user.email, wrong)).rejects.toMatchObject({ code: 'rate_limited' });
+  });
+  it('an onboarding claim refuses a wrong password, a staff account and a login with no password alike', async () => {
+    const f = await fixture(), link = await onboardingLink(f);
+    const member = await passwordLogin(f), staff = await passwordLogin(f), passwordless = await factory('authUser', f.gymId);
+    await factory('staffRoles', f.gymId, { userId: staff.id, role: 'coach' });
+    const refusals = [await refusalOf(claim(f, link.id, member.email, wrong)), await refusalOf(claim(f, link.id, staff.email, password)),
+      await refusalOf(claim(f, link.id, passwordless.email, password))];
+    expect(refusals[0]).toEqual(['conflict', 409, refusal.message, undefined]);
+    expect(refusals[1]).toEqual(refusals[0]); expect(refusals[2]).toEqual(refusals[0]);
+    expect([...await links(f.gymId, staff.id), ...await links(f.gymId, passwordless.id)]).toEqual([]);
+  });
+  it('an onboarding claim for a new address creates its login without spending the account budget', async () => {
+    const f = await fixture(), link = await onboardingLink(f), next = await onboardingLink(f), email = uuidv7() + '@example.test';
+    expect(await claim(f, link.id, email, password)).toEqual({ data: { status: 'claimed' } });
+    const users = await db.system.db.select().from(authUser).where(eq(authUser.email, email));
+    expect(users).toHaveLength(1);
+    const [credential] = await db.system.db.select().from(authAccount).where(eq(authAccount.userId, users[0]!.id));
+    expect(await passwordAdapter.verify({ hash: credential!.password!, password })).toBe(true);
+    for (let guess = 0; guess < 10; guess++) await expect(claim(f, next.id, email, wrong)).rejects.toMatchObject(refusal);
+    await expect(claim(f, next.id, email, wrong)).rejects.toMatchObject({ code: 'rate_limited' });
   });
   it.each(['existing', 'new'] as const)('passwordless onboarding claims link a %s account only on its own login-link callback', async kind => {
     const f = await fixture(), link = await onboardingLink(f);

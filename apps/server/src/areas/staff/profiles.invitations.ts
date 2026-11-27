@@ -5,7 +5,7 @@ import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { acceptStaffInvitationRequestSchema, staffRoleSchema, type AcceptStaffInvitationRequest, type InviteStaffRequest, type InviteStaffResponse } from '@plaingym/shared/contracts';
-import { createAccountService } from '../../infra/auth/accounts.js';
+import { createAccountService, hasCredential } from '../../infra/auth/accounts.js';
 import { createInvitationStore } from '../../infra/auth/invitations.js';
 import { passwordLogin, type AuthConfig } from '../../infra/auth/config.js';
 import { commandDigest, createEmailDeliveries, recipientDigest, SmtpEmail, type Email, type EmailReservation } from '../../infra/email/index.js';
@@ -57,10 +57,15 @@ export function createStaffInvitationService(options: StaffInvitationOptions) {
         if (replayed) return { data: { delivery: 'email', staffRole: staffRoleSchema.parse(replayed.result), ...(replayed.outcome ? { outcome: replayed.outcome } : {}) } };
       }
       let result: { staffRole: InviteStaffResponse['data']['staffRole']; token: string; reservation: EmailReservation | null } | undefined;
+      const passwordMode = await passwordRequired(actor.gymId);
       await accounts.provisionUser(actor.gymId, email, email, actor.clock, async (tx, userId) => {
         await assertStaffManager(tx, actor.actorUserId);
         const reservation = command && await deliveries.reserve(tx, actor.gymId, command.key, command.digest);
         const [row] = await tx.insert(staffRoles).values({ gymId: actor.gymId, userId, role: input.role, createdAt: actor.clock.now() }).onConflictDoNothing().returning();
+        // Password mode never proves an address, and the role works before its invitation is accepted: a login someone
+        // already set a password for at this address could be someone else's. Throwing rolls back the role and identity.
+        if (row && passwordMode && await hasCredential(tx, userId))
+          throw new AppError('conflict', 'This address already has a login. Use another address.', { reason: ['existing_login'] });
         const current = row ?? (await tx.select().from(staffRoles).where(eq(staffRoles.userId, userId)))[0];
         if (!current || current.role !== input.role) throw new AppError('conflict', 'Account already has a different staff role');
         const binding = { userId, staffRoleId: current.id, role: input.role, revision: current.revision };

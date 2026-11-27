@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { beforeAll, expect, it } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { eq } from 'drizzle-orm';
+import { eq, inArray, like } from 'drizzle-orm';
 import { authVerification, authAccount, staffRoles, staffProfiles, auditEvents, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -120,12 +120,52 @@ it('never resets an existing password or uses invitations to take over protected
   const email = uuidv7() + '@example.test', password = 'existing-account-password';
   const accounts = createAccountService(config, () => db.system.db);
   const user = await accounts.createPasswordUser(gymA, email, 'Existing member', password, clock);
-  const invite = await printed(email);
-  await expect(service.acceptInvitation(gymA, { token: invite.token, name: 'Coach', password: 'replacement-password' }, clock)).rejects.toMatchObject({ code: 'forbidden' });
-  await expect(service.acceptInvitation(gymA, { token: invite.token, name: 'Coach', password }, clock)).resolves.toEqual({ data: null });
+  await expectExistingLoginRefused(email, user.userId);
   const [credential] = await db.system.db.select().from(authAccount).where(eq(authAccount.userId, user.userId));
   expect(await passwordAdapter.verify({ hash: credential!.password!, password })).toBe(true);
-  await expect(printed(email)).rejects.toMatchObject({ code: 'conflict' });
+});
+async function expectExistingLoginRefused(email: string, userId: string) {
+  const audits = () => db.forGym(gymA, tx => tx.select().from(auditEvents).where(inArray(auditEvents.action, ['staff.role_granted', 'staff.invited'])));
+  const before = (await audits()).length;
+  await expect(printed(email)).rejects.toMatchObject({ code: 'conflict', message: 'This address already has a login. Use another address.', details: { reason: ['existing_login'] } });
+  expect(await db.forGym(gymA, tx => tx.select().from(staffRoles).where(eq(staffRoles.userId, userId)))).toEqual([]);
+  expect(await audits()).toHaveLength(before);
+  const tokens = await db.system.db.select().from(authVerification).where(like(authVerification.identifier, `staff-invitation:${gymA}:%`));
+  expect(tokens.filter(row => row.value.includes(userId))).toEqual([]);
+}
+it('in password mode refuses to invite an address whose login already has a password, leaving no role, audit or token', async () => {
+  const email = uuidv7() + '@example.test';
+  const user = await createAccountService(config, () => db.system.db).createPasswordUser(gymA, email, 'Portal member', 'portal-member-password', clock);
+  await expectExistingLoginRefused(email, user.userId);
+});
+it('accepting an invitation issued outside password mode needs an existing login\'s own password and never replaces it', async () => {
+  const email = uuidv7() + '@example.test', password = 'existing-account-password';
+  const user = await createAccountService(config, () => db.system.db).createPasswordUser(gymA, email, 'Existing member', password, clock);
+  const emailMode = createStaffInvitationService({ config: { ...config, passwordMode: 'auto' }, smtpConfigured: async () => true, mailer: smtpMailer(smtp), database: () => db.system.db });
+  const result = await emailMode.inviteStaff(actor(), { email, role: 'coach', delivery: 'print' }, 'https://gym-a.example.test');
+  if (result.data.delivery !== 'print') throw new Error('Expected printed invitation');
+  const token = new URL(result.data.invitationUrl).hash.slice(1);
+  await expect(service.acceptInvitation(gymA, { token, name: 'Coach', password: 'replacement-password' }, clock)).rejects.toMatchObject({ code: 'forbidden' });
+  await expect(service.acceptInvitation(gymA, { token, name: 'Coach', password }, clock)).resolves.toEqual({ data: null });
+  const [credential] = await db.system.db.select().from(authAccount).where(eq(authAccount.userId, user.userId));
+  expect(await passwordAdapter.verify({ hash: credential!.password!, password })).toBe(true);
+});
+it('still invites a new address, an identity with no password, and an invited address again before it accepts', async () => {
+  expect((await printed()).token).toMatch(/^[a-f0-9]{64}$/);
+  const identity = await factory('authUser', gymA), first = await printed(identity.email);
+  expect(first.staffRole.userId).toBe(identity.id);
+  const again = await printed(identity.email);
+  expect(again.staffRole.id).toBe(first.staffRole.id); expect(again.token).not.toBe(first.token);
+});
+it('a gym with password sign-in off invites an identity that has a password as before', async () => {
+  const gymId = uuidv7(), owner = await factory('staffRoles', gymA, { role: 'owner' });
+  await factory('gyms', gymId); await factory('staffRoles', gymId, { userId: owner.userId, role: 'owner' });
+  const identity = await factory('authUser', gymId);
+  await factory('authAccount', gymId, { userId: identity.id, accountId: identity.id, password: await passwordAdapter.hash('identity-password-123') });
+  const multi = createStaffInvitationService({ config: { ...config, tenancy: 'multi', passwordEnabled: false, passwordMode: 'off' }, smtpConfigured: smtp.configured, mailer: smtpMailer(smtp), database: () => db.system.db, scope: db.forGym });
+  const result = await multi.inviteStaff({ gymId, actorUserId: owner.userId, clock }, { email: identity.email, role: 'coach', delivery: 'print' }, 'https://gym-c.example.test');
+  expect(result.data.staffRole.userId).toBe(identity.id);
+  expect(result.data.delivery).toBe('print');
 });
 it('renders a public, translated acceptance page with a source link and hides password in email mode', async () => {
   const page = await server('anonymous').request('/staff-invitation');

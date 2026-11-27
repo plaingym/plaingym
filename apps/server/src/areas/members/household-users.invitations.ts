@@ -5,7 +5,7 @@ import { AppError, canStaff, createTranslator, type Clock, type StaffRole } from
 import { locales } from '@plaingym/shared/locales';
 import { portalClaimCompletionRequestSchema, portalClaimRequestSchema, portalInvitationRequestSchema, portalOnboardingClaimRequestSchema, portalPendingInvitationSchema, type PortalInvitationRequest } from '@plaingym/shared/contracts';
 import type { z } from 'zod';
-import { createAccountService } from '../../infra/auth/accounts.js';
+import { createAccountService, existingAccountRefusal } from '../../infra/auth/accounts.js';
 import { createPortalClaimCodes, createPortalInvitationStore, type PortalInvitationBinding, type PortalInvitationStore } from '../../infra/auth/portal-invitations.js';
 import { passwordLogin, type AuthConfig } from '../../infra/auth/config.js';
 import { createEmailDeliveries, createKeyedCommandDigest, normalizeAddress, portalInvitationKeyPrefix, type Email, type EmailReservation } from '../../infra/email/index.js';
@@ -30,10 +30,11 @@ export interface PortalInvitationOptions {
 }
 /** A claim code outlives the login link it rides on, but never the onboarding link or invitation it names. */
 const claimLifetime = 60 * 60 * 1000;
+async function isStaff(tx: Transaction, userId: string): Promise<boolean> {
+  return Boolean((await tx.select({ id: staffRoles.id }).from(staffRoles).where(eq(staffRoles.userId, userId)).limit(1))[0]);
+}
 async function refuseStaff(tx: Transaction, userId: string, reason?: 'staff_account') {
-  if ((await tx.select({ id: staffRoles.id }).from(staffRoles).where(eq(staffRoles.userId, userId)))[0]) {
-    throw new AppError('forbidden', 'Protected account', reason ? { reason: [reason] } : undefined);
-  }
+  if (await isStaff(tx, userId)) throw new AppError('forbidden', 'Protected account', reason ? { reason: [reason] } : undefined);
 }
 /** Creates the household login an invitation or onboarding claim grants, once its address is proven. */
 async function grant(tx: Transaction, gymId: string, binding: PortalInvitationBinding, clock: Clock) {
@@ -180,9 +181,10 @@ export function createPortalInvitationService(options: PortalInvitationOptions) 
       if (passwordMode && !input.password) throw new AppError('invalid_request', 'Password required');
       if (!passwordMode && input.password !== undefined) throw new AppError('forbidden', 'Password login is disabled');
       if (passwordMode) {
-        // The account's password proves it: a new account sets one, an existing one must match.
+        // The account's password proves it: a new account sets one, an existing one must match. A staff account gets the
+        // same refusal as a wrong password, so the claim never tells the two apart.
         await accounts.createPasswordUser(gymId, input.email, input.email, input.password!, clock, async (tx, userId) => {
-          await refuseStaff(tx, userId);
+          if (await isStaff(tx, userId)) throw existingAccountRefusal();
           const link = await lockOnboardingLink(tx, linkId, clock);
           await assertPortalLoginTarget(tx, link.householdId, null, 'payer', clock);
           const login = await grant(tx, gymId, { userId, householdId: link.householdId, scope: 'payer', memberId: null }, clock);

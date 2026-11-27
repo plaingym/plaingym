@@ -60,6 +60,7 @@
   "saved": "Staff changes saved.",
   "error": "Unable to save or load staff. Check your input and access, then try again.",
   "conflict": "This record changed. Reload staff before saving again.",
+  "existingLogin": "This address already has a login here, so it can't be invited as staff. Use another address.",
   "forbidden": "Only owners and admins can manage staff.",
   "inviteSubject": "Your staff invitation",
   "inviteDescription": "You have been invited to join the gym staff. Accept this invitation within seven days.",

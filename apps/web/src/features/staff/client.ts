@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { parseResponse } from '../../lib/response.js';
-import { createApiClient } from '../../lib/api.js';
+import { createApiClient, reasonsIn } from '../../lib/api.js';
 import { staffProfileListResponseSchema, staffProfileResponseSchema, staffRoleListResponseSchema, inviteStaffResponseSchema,
   createStaffProfileRequestSchema, updateStaffProfileRequestSchema, inviteStaffRequestSchema, grantStaffRoleRequestSchema,
   staffAccountListResponseSchema, memberListResponseSchema, memberResponseSchema,
   type CreateStaffProfileRequest, type UpdateStaffProfileRequest, type InviteStaffRequest, type AssignableStaffRole } from '@plaingym/shared/contracts';
 export class StaffRequestError extends Error {
-  constructor(readonly status: number) { super('Staff request failed'); }
+  constructor(readonly status: number, readonly reason: readonly string[] = []) { super('Staff request failed'); }
 }
 export type PersonKind = 'member' | 'account' | 'staff';
 export interface PersonOption { id: string; displayName: string; email: string | null }
@@ -15,8 +15,8 @@ function defined<T extends object>(value: T): { [K in keyof T]: Exclude<T[K], un
 }
 export function createStaffClient(fetcher: typeof fetch = fetch) {
   const api = createApiClient({ fetch: fetcher, credentials: 'same-origin' });
-  function check<T>(result: { response: Response; data?: T }) {
-    if (!result.response.ok) throw new StaffRequestError(result.response.status);
+  function check<T>(result: { response: Response; data?: T; error?: unknown }) {
+    if (!result.response.ok) throw new StaffRequestError(result.response.status, reasonsIn(result.error));
     return result.data;
   }
   return {

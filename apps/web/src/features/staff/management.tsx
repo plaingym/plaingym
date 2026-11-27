@@ -44,7 +44,10 @@ export function StaffManagement({ roles: actorRoles, passwordEnabled, services =
   const [revoking, setRevoking] = useState<string | null>(null);
   const [grantUserId, setGrantUserId] = useState(''), [grantPicker, setGrantPicker] = useState(0);
   const allowed = canStaff(actorRoles, 'staff.manage');
-  function error(e: unknown) { setMessage(label((e instanceof StaffRequestError || e instanceof ApiError) && e.status === 409 ? 'conflict' : 'error')); }
+  function error(e: unknown) {
+    if (e instanceof StaffRequestError && e.reason.includes('existing_login')) { setMessage(label('existingLogin')); return; }
+    setMessage(label((e instanceof StaffRequestError || e instanceof ApiError) && e.status === 409 ? 'conflict' : 'error'));
+  }
   async function load() {
     const [p, r] = await Promise.all([services.profiles(offset, search), services.roles(roleOffset)]);
     setProfiles(p); setRoles(r.data); setTotalRoles(r.pagination.total);

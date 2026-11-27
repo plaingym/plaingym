@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { test, expect, gymOrigin, type Person, type RecordId } from '../support.js';
+import { test, expect, gymOrigin, password, Client, type Person, type RecordId } from '../support.js';
 
 for (const width of [360, 1280]) {
   test(`member search, profile tabs and staff person links at ${width}px`, async ({ page, context, install }, info) => {
@@ -70,6 +70,22 @@ for (const width of [360, 1280]) {
     await expect(dialog).toHaveCount(0);
     const saved = (await owner.json<{ data: { memberId: string | null; userId: string | null }[] }>('/api/staff/profiles?search=' + encodeURIComponent('Search Coach ' + width))).data;
     expect(saved).toHaveLength(1); expect(saved[0]?.memberId).toBe(member.id); expect(saved[0]?.userId).toBeNull();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  });
+  test(`a staff invitation to an address whose login has a portal password says why at ${width}px`, async ({ page, context, install }, info) => {
+    await page.setViewportSize({ width, height: 800 });
+    const owner = install.clients.owner, guest = new Client(gymOrigin), email = `portal-login-${width}-${Date.now()}@example.invalid`;
+    const home = (await owner.json<{ data: RecordId }>('/api/households', 'POST', { name: 'Existing login ' + width })).data;
+    await owner.json('/api/members', 'POST', { householdId: home.id, firstName: 'Pat', lastName: 'Portal' + width });
+    const invitation = await owner.json<{ data: { invitationUrl: string } }>(`/api/households/${home.id}/portal-invitations`, 'POST', { email, scope: 'payer', delivery: 'print' });
+    await guest.json('/api/portal/invitations/accept', 'POST', { token: new URL(invitation.data.invitationUrl).hash.slice(1), password });
+    await owner.browser(context);
+    await page.goto(gymOrigin + '/admin/staff');
+    await page.getByLabel('Email address', { exact: true }).fill(email);
+    await page.getByRole('button', { name: 'Invite staff', exact: true }).click();
+    await expect(page.getByText("This address already has a login here, so it can't be invited as staff. Use another address.", { exact: true })).toBeVisible();
+    await expect(page.getByLabel('Invitation link', { exact: true })).toHaveCount(0);
+    await info.attach('staff-existing-login-' + width, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   });
 }

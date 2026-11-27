@@ -82,6 +82,16 @@ it('shows and dismisses a printed invitation without persisting it', async () =>
   expect(service.invite).toHaveBeenCalledWith({ email: 'coach@example.test', role: 'coach', delivery: 'print' });
   await user.click(screen.getByRole('button', { name: 'Dismiss link' })); expect(screen.queryByLabelText('Invitation link')).toBeNull();
 });
+it('says why an address that already has a login is refused, and keeps the plain conflict message otherwise', async () => {
+  const service = services(), user = userEvent.setup(); render(<StaffManagement roles={['owner']} passwordEnabled services={service}/>);
+  vi.mocked(service.invite).mockRejectedValueOnce(new StaffRequestError(409, ['existing_login'])).mockRejectedValueOnce(new StaffRequestError(409));
+  await screen.findByRole('button', { name: 'Edit Alex Coach' }); await user.type(screen.getByLabelText('Email address'), 'member@example.test');
+  await user.click(screen.getByRole('button', { name: 'Invite staff' }));
+  await screen.findByText("This address already has a login here, so it can't be invited as staff. Use another address.");
+  await user.click(await screen.findByRole('button', { name: 'Invite staff' }));
+  await screen.findByText('This record changed. Reload staff before saving again.');
+  expect(screen.queryByText(/already has a login/)).toBeNull();
+});
 it('keeps the send generation while retrying an emailed invitation and picks a new one to resend it', async () => {
   const service = services(), user = userEvent.setup(), staffRole = { id: 'new-role', userId: 'new-user', role: 'coach' as const, revision: 1, createdAt: profile.createdAt };
   vi.mocked(service.invite).mockRejectedValueOnce(new Error('Network')).mockResolvedValue({ delivery: 'email', staffRole });

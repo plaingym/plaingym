@@ -31,6 +31,13 @@ it('reports generated-client errors without exposing server details', async () =
   const client = createStaffClient(async () => Response.json({ error: 'private SQL details' }, { status: 409 }));
   await expect(client.invite({ email: 'coach@example.test', role: 'coach', delivery: 'print' })).rejects.toEqual(new StaffRequestError(409));
 });
+it('keeps the reasons of a refused invitation', async () => {
+  browserRequests();
+  const client = createStaffClient(async () => Response.json({ error: { code: 'conflict', message: 'x', details: { reason: ['existing_login'] } } }, { status: 409 }));
+  const refused = await client.invite({ email: 'member@example.test', role: 'coach', delivery: 'print' }).catch((e: unknown) => e);
+  expect(refused).toBeInstanceOf(StaffRequestError);
+  expect(refused).toMatchObject({ status: 409, reason: ['existing_login'] });
+});
 it('searches gym accounts with staff-only filters and resolves a selected account by ID', async () => {
   browserRequests();
   const requests: URL[] = [], person = { id: profile.id, displayName: 'Alex Coach', email: 'alex@example.test' };
