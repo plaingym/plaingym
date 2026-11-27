@@ -22,6 +22,7 @@ import { emailServiceFailure } from '../email/failure.js';
 import { logWarn } from '../../core/log.js';
 import { accountLimitedPaths, reserveAccountAttempt, releaseAccountAttempt, gymAddressStorage, signInLimits, loginLinkCeiling, reserveLoginLinkCeiling,
   type AccountReservation, type SignInRule } from './account-limit.js';
+import { authLibraryLogger } from './library-log.js';
 
 export interface ResolvedAuthGym {
   readonly gymId: string;
@@ -232,6 +233,7 @@ export function createAuthService(options: AuthServiceOptions) {
       // One instance serves every call but Google's, which builds its own with the gym's current provider.
       const build = (google: { clientId: string; clientSecret: string } | null) => betterAuth({
         secret: config.secret, baseURL: origin.origin, basePath: '/api/auth', trustedOrigins: [origin.origin],
+        logger: authLibraryLogger,
         database: drizzleAdapter(database(), { provider: 'pg', schema: {
           user: authUser, session: authSession, account: authAccount, verification: authVerification, rateLimit: authRateLimit,
         }, transaction: true }),

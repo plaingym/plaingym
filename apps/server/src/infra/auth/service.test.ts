@@ -4,6 +4,9 @@ import { betterAuth } from 'better-auth';
 import { magicLink } from 'better-auth/plugins';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- The test raises Drizzle's query error; it builds no SQL and names no table.
+import { DrizzleQueryError } from 'drizzle-orm/errors';
+import { setLogSink } from '../../core/log.js';
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { authAccount, authSession, authVerification, authRateLimit, staffRoles, auditEvents, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -304,6 +307,25 @@ describe('Better Auth HTTP containment', () => {
     expect((await make().handler(f.request('/sign-in/email', { email: f.user.email, password }))).status).toBe(429);
     const limits = await database.system.db.select().from(authRateLimit);
     expect(limits.some((row) => row.key.includes(f.clientIp) && row.key.includes('/sign-in/email'))).toBe(true);
+  });
+  it('sends a query error the library logs to the application log, without its address, and nothing to the console', async () => {
+    const f = await fixture();
+    const signedIn = await f.signIn(); expect(signedIn.status).toBe(200);
+    const query = 'select "id" from "auth_session" where "token" = $1';
+    const lines: string[] = [], previous = setLogSink((line) => { lines.push(line); });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    // The session lookup fails as a Drizzle query does, with its bound parameters in the message.
+    const select = vi.spyOn(database.system.db, 'select').mockImplementation(() => { throw new DrizzleQueryError(query, [f.user.email]); });
+    try {
+      await expect(f.a.handler(f.request('/get-session', undefined, cookies(signedIn)))).rejects.toThrow();
+      expect(consoleError).not.toHaveBeenCalled();
+      expect(consoleWarn).not.toHaveBeenCalled();
+      const logged = lines.filter((line) => line.includes('"auth.library_error"'));
+      expect(logged).toHaveLength(1);
+      expect(JSON.parse(logged[0]!)).toMatchObject({ level: 'error', message: 'INTERNAL_SERVER_ERROR', error: { query } });
+      expect(lines.join('\n').toLowerCase()).not.toContain(f.user.email.toLowerCase());
+    } finally { select.mockRestore(); consoleError.mockRestore(); consoleWarn.mockRestore(); setLogSink(previous); }
   });
   it('rejects auth calls inside a transaction', async () => {
     const f = await fixture();
