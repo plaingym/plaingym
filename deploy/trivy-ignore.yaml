@@ -1,9 +1,125 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Reviewed exceptions for the image scan (.github/workflows/image-scan.yml). The scan fails
 # on a high or critical advisory that has a fixed version; add an entry here only after review,
-# with the reason it does not apply or cannot be fixed yet, and a date to look at it again:
+# with the reason it does not apply or cannot be fixed yet, and a date to look at it again.
+# Limit each entry to the package it was reviewed for: `purls` names an operating-system
+# package at its installed version, `paths` a binary inside the image:
 #
 #   - id: CVE-YYYY-NNNNN
-#     statement: Why it does not affect the image, and who reviewed it.
+#     purls: [pkg:deb/debian/<name>@<version>]   # or paths: [usr/bin/<binary>]
+#     statement: Why it does not affect the image, or why it cannot be fixed yet.
 #     expired_at: YYYY-MM-DD
-vulnerabilities: []
+#
+# Critical advisories get no entry here.
+vulnerabilities:
+  # postgres:18 (Debian packages)
+  - id: CVE-2026-124851
+    purls: ['pkg:deb/debian/libzstd1@1.5.7+dfsg-1', 'pkg:deb/debian/zstd@1.5.7+dfsg-1']
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  # postgres:18 (Go standard library in gosu)
+  - id: CVE-2025-61726
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2025-61729
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-111943
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-25679
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-27145
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-32280
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-32281
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-32283
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-33811
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-33814
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-33818
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-39820
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-39821
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-39822
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-39836
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-42499
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-42504
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-56853
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-56858
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-56859
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-56860
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-56862
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-78667
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-78669
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  - id: CVE-2026-97031
+    paths: [usr/local/bin/gosu]
+    statement: No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27
+  # caddy:2.11.9-alpine (Go module in the caddy binary)
+  - id: CVE-2026-78661
+    paths: [usr/bin/caddy]
+    statement: No official caddy image includes the fix yet (checked sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0 on 2026-11-27).
+    expired_at: 2026-12-27

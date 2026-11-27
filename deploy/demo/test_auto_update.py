@@ -58,7 +58,7 @@ class UpdateFixture(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(DEPLOY / source, path)
         self.initial = ("DEMO_INSTALL=1\nDEMO_LOCAL_TEST=true\nAPP_IMAGE=" + IMAGE + ":v1.2.3\n"
-                        "CADDY_IMAGE=plaingym-caddy:v2.11.7-cf0.2.4\nAUTH_SECRET=preserved\nDEMO_RELEASE_CHANNEL=stable\n")
+                        "CADDY_IMAGE=plaingym-caddy:v2.11.9-cf0.2.4\nAUTH_SECRET=preserved\nDEMO_RELEASE_CHANNEL=stable\n")
         (self.root / ".env").write_text(self.initial)
         (self.base / "running").write_text("yes")
         self.make_tools()
@@ -203,7 +203,7 @@ class AutoUpdateTests(UpdateFixture):
         result = self.run_update()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"APP_IMAGE={IMAGE}:v1.3.0@{DIGEST}", (self.root / ".env").read_text())
-        for line in ("AUTH_SECRET=preserved", "CADDY_IMAGE=plaingym-caddy:v2.11.7-cf0.2.4"):
+        for line in ("AUTH_SECRET=preserved", "CADDY_IMAGE=plaingym-caddy:v2.11.9-cf0.2.4"):
             self.assertIn(line, (self.root / ".env").read_text())
         self.assertEqual((self.root / "release-signing.pem").read_bytes(), key)
         self.assertIn("verified release refresh", (self.root / "demo.compose.yaml").read_text())

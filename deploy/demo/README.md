@@ -145,7 +145,7 @@ local install to public TLS. Default directory: `/opt/plaingym-demo`.
 
 Caddy manages only the demo hostname and its wildcard, using the Cloudflare DNS
 challenge. Sandbox creation requests no certificates. The stock image cannot
-do this; the included proxy pins Caddy **2.11.7** and Cloudflare module **0.2.4**
+do this; the included proxy pins Caddy **2.11.9** and Cloudflare module **0.2.4**
 (commit `a8737d095ad5a48ca031cea6ab704057dbc2d250`), with digest-pinned build and
 runtime bases. Its upstream [module documentation](https://github.com/caddy-dns/cloudflare)
 describes token permissions. `ACME_CA` can select the Let's Encrypt staging

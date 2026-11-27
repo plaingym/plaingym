@@ -66,7 +66,7 @@ class TerminalPromptTests(unittest.TestCase):
 
 def inputs():
     return dict(GYM_HOSTNAME="demo.plaingym.app", ACME_EMAIL="test@example.invalid",
-                APP_IMAGE="plaingym:v0.0.0-local", CADDY_IMAGE="plaingym-caddy:v2.11.7-cf0.2.4",
+                APP_IMAGE="plaingym:v0.0.0-local", CADDY_IMAGE="plaingym-caddy:v2.11.9-cf0.2.4",
                 CLOUDFLARE_API_TOKEN="private-token", UPLOADS_S3_ENDPOINT="https://s3.example.test",
                 UPLOADS_S3_BUCKET="demo-test", UPLOADS_S3_REGION="auto", UPLOADS_S3_ACCESS_KEY_ID="test-access",
                 UPLOADS_S3_SECRET_ACCESS_KEY="private-secret", DEMO_LOCAL_TEST="false",

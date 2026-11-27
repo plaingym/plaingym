@@ -31,7 +31,7 @@ const downloadUrl = 'https://gym.example.test/uploads';
 export const dockerTools: ToolRunner = (tool, { env }) => ({
   command: 'docker', args: ['run', '--rm', '-i', ...(process.platform === 'linux' ? ['--network', 'host'] : []), '-e', 'PGHOST', '-e', 'PGPORT',
     '-e', 'PGDATABASE', '-e', 'PGUSER', '-e', 'PGPASSWORD', '-e', 'PGCONNECT_TIMEOUT', '-e', 'PGOPTIONS',
-    'postgres:18@sha256:1267c7e692de235fda2a50dbcdbcbca4672ea6a0298576a6bd9d07cafc319b32', tool],
+    'postgres:18@sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328', tool],
   env: { ...env, PGHOST: process.platform === 'linux' ? '127.0.0.1' : 'host.docker.internal' },
 });
 

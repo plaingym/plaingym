@@ -12,7 +12,7 @@ $bundleOutput = Join-Path $PSScriptRoot 'dist'
 $staging = Join-Path $bundleOutput 'staging'
 $appArchitecture = docker image inspect $Image --format '{{.Architecture}}'
 if ($LASTEXITCODE -ne 0 -or $appArchitecture -ne $Architecture) { throw 'Build and test the matching app image first.' }
-$caddyImage = 'plaingym-caddy:v2.11.7-cf0.2.4'
+$caddyImage = 'plaingym-caddy:v2.11.9-cf0.2.4'
 docker build --platform "linux/$Architecture" -t $caddyImage -f (Join-Path $PSScriptRoot 'Dockerfile') $PSScriptRoot
 if ($LASTEXITCODE -ne 0) { throw 'Prebuilt Caddy image failed.' }
 New-Item -ItemType Directory -Force -Path (Join-Path $staging 'deploy/demo/images'), (Join-Path $staging 'deploy/postgres') | Out-Null

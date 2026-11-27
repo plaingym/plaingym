@@ -215,8 +215,10 @@ the run. Its `infrastructure` job scans the PostgreSQL and Caddy images
 `compose.yaml` pins, by reference, the same way; it fails on a fixable advisory only
 on the weekly and manual runs (a task branch or pull request only lists them), and
 moving a pin to a fixed image reaches installs with the next release. `deploy/trivy-ignore.yaml` holds the reviewed exceptions: each entry
-names the advisory, why it doesn't apply or can't be fixed yet, and an
-`expired_at` date after which the scan fails on it again. JavaScript dependencies
+names the advisory, the package or binary it covers, why it doesn't apply or can't
+be fixed yet, and an `expired_at` date after which the scan fails on it again.
+Until then the run log leaves it out. A critical advisory gets no exception.
+JavaScript dependencies
 are checked separately by the **Dependency advisories** workflow (`pnpm audit`).
 
 ## Install
@@ -922,7 +924,7 @@ host.release-signing.pem=sha256:<64 hex digits>
 host.systemd/plaingym-update.service=sha256:<64 hex digits>
 host.systemd/plaingym-update.timer=sha256:<64 hex digits>
 postgres_image=postgres:18@sha256:<64 hex digits>
-caddy_image=caddy:2.11.7-alpine@sha256:<64 hex digits>
+caddy_image=caddy:2.11.9-alpine@sha256:<64 hex digits>
 revision=<40 hex digits>
 migrations=sha256:<64 hex digits>
 released=2026-11-03T12:00:00Z

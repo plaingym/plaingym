@@ -5,7 +5,7 @@ x-logging: &logging
   options: {max-size: "10m", max-file: "3"}
 services:
   postgres:
-    image: postgres:18@sha256:1267c7e692de235fda2a50dbcdbcbca4672ea6a0298576a6bd9d07cafc319b32
+    image: postgres:18@sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328
     restart: unless-stopped
     mem_limit: ${POSTGRES_MEMORY_LIMIT:-384m}
     shm_size: 128mb
@@ -115,7 +115,7 @@ services:
     logging: *logging
     networks: [database, web]
   caddy:
-    image: caddy:2.11.7-alpine@sha256:3095ad245c353e3bdb27a38f22a095c1cfa9e295ab21c0214c3e72b0e2960525
+    image: caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
     restart: unless-stopped
     mem_limit: ${CADDY_MEMORY_LIMIT:-128m}
     # Bound downstream send and upstream receive queues within Caddy's 128 MiB limit (deploy/README.md).

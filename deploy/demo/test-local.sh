@@ -14,7 +14,7 @@ test_id=$(python3 -c 'import secrets; print(secrets.token_hex(5))')
 export COMPOSE_PROJECT_NAME="plaingym-demo-test-$test_id"
 export HTTP_PORT=127.0.0.1:0 HTTPS_PORT=127.0.0.1:0
 export APP_IMAGE="${DEMO_TEST_APP_IMAGE:-plaingym:e2e}"
-export CADDY_IMAGE="${DEMO_TEST_CADDY_IMAGE:-plaingym-caddy:v2.11.7-cf0.2.4}"
+export CADDY_IMAGE="${DEMO_TEST_CADDY_IMAGE:-plaingym-caddy:v2.11.9-cf0.2.4}"
 # Linux filesystem permissions must be real even when the checkout is on NTFS.
 ROOT=$(mktemp -d "/tmp/$COMPOSE_PROJECT_NAME.XXXXXXXX")
 export SYSTEMD_UNIT_DIR="$ROOT/units"
@@ -37,7 +37,7 @@ cleanup() {
   for version in 0.0.0 0.0.99 0.0.1 0.0.2 0.0.3; do
     timeout -k 5 120 docker image rm "plaingym:v$version-demo-$test_id" >/dev/null 2>&1 || echo "WARNING: could not remove plaingym:v$version-demo-$test_id" >&2
   done
-  timeout -k 5 120 docker image rm "plaingym-caddy:v2.11.7-refresh-$test_id" >/dev/null 2>&1 || echo "WARNING: could not remove plaingym-caddy:v2.11.7-refresh-$test_id" >&2
+  timeout -k 5 120 docker image rm "plaingym-caddy:v2.11.9-refresh-$test_id" >/dev/null 2>&1 || echo "WARNING: could not remove plaingym-caddy:v2.11.9-refresh-$test_id" >&2
   # Keep the install directory and container logs when the run fails.
   if [ "$result" -eq 0 ]; then
     rm -rf -- "$ROOT"
@@ -100,7 +100,7 @@ compose cp caddy:/data/caddy/pki/authorities/local/root.crt "$DEMO_TEST_CA" >/de
 python3 "$SOURCE/test-client.py"
 # Refresh through a trusted HTTPS bundle, then prove the same sessions still work.
 new_app="plaingym:v0.0.99-demo-$test_id"
-new_caddy="plaingym-caddy:v2.11.7-refresh-$test_id"
+new_caddy="plaingym-caddy:v2.11.9-refresh-$test_id"
 docker tag "$APP_IMAGE" "$new_app"
 docker tag "$CADDY_IMAGE" "$new_caddy"
 python3 "$SOURCE/test-refresh.py" "$ROOT" "$new_app" "$new_caddy"
