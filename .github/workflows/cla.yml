@@ -11,9 +11,10 @@ jobs:
     if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # The Actions token can comment on a pull request only with pull-requests write.
     permissions:
       contents: write
-      pull-requests: read
+      pull-requests: write
       issues: write
       statuses: write
     steps:
