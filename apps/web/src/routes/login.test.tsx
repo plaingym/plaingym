@@ -34,7 +34,8 @@ const start = (path = '/login') => render(<App services={services()} router={cre
 let assign: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   vi.stubGlobal('scrollTo', vi.fn());
-  assign = vi.fn(); vi.stubGlobal('location', { ...window.location, assign });
+  // The app reloads a page restored from the back-forward cache, which a test below dispatches.
+  assign = vi.fn(); vi.stubGlobal('location', { ...window.location, assign, reload: vi.fn() });
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.stubGlobal('fetch', fetcher); fetcher.mockClear(); discovery.mode = 'disabled';
   discovery.link = () => Response.json({}, { status: 404 }); discovery.respond = undefined; });

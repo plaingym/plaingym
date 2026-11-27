@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
 import type { KioskCheckinResult, KioskMemberIdentity } from '@plaingym/shared/contracts';
+import { useQueryClient } from '@tanstack/react-query';
 import { useGymTime } from '../../lib/instant.js';
-import { useBootstrap } from '../../app/context.js';
+import { useBootstrap, useShellServices } from '../../app/context.js';
 import { isStaleVersion, subscribeToStaleVersion } from '../../app/version.js';
 import { t } from '../../lib/i18n.js';
 import { Alert } from '../../components/ui/alert.js';
@@ -12,7 +13,7 @@ import { Label } from '../../components/ui/label.js';
 import { forgetToken, kioskApi, KioskAuthError, readToken, saveToken, tokenKey } from './api.js';
 import { QrCheckin } from './qr.js';
 import { playTone } from './feedback.js';
-import { DemoKioskHint } from '../demo/notice.js';
+import { DemoKioskHint, useDemoDiscoveryStatus, useDemoMode } from '../demo/notice.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('kiosk/kiosk:' + key, values);
 /** Results stay on screen briefly; an unfinished selection resets after inactivity so the next member starts clean. */
@@ -55,6 +56,15 @@ export function KioskApp() {
       window.removeEventListener('storage', syncToken);
     };
   }, []);
+  // A staff or member sign-in left in this browser would open the admin or portal to anyone at the kiosk. A demo visitor
+  // is signed in by design, and until a demo answer is read the kiosk stays as it is.
+  const session = useBootstrap().data?.session;
+  const demo = useDemoMode(), demoStatus = useDemoDiscoveryStatus();
+  // The demo answer is read again from time to time, and a failed read has none: the last one read still applies.
+  const [notDemo, setNotDemo] = useState(false);
+  const answersNotDemo = demo === undefined || demo === 'disabled';
+  if (demoStatus === 'ready' && notDemo !== answersNotDemo) setNotDemo(answersNotDemo);
+  if (session && notDemo) return <SignedInNotice/>;
   if (!token) return <DeviceSetup saveFailed={saveFailed} onSaved={(value) => {
     const saved = saveToken(value);
     setDevice({ token: saved ? value : null, saveFailed: !saved });
@@ -71,6 +81,25 @@ function DeviceSetup({ saveFailed, onSaved }: { saveFailed: boolean; onSaved: (t
       <Label className="grid gap-2 text-lg">{text('token')}<Input type="password" value={value} onChange={(event) => setValue(event.target.value)} autoComplete="new-password" required/></Label>
       <Button type="submit" className={big + ' w-full'}>{text('saveToken')}</Button>
     </form>
+  </main>;
+}
+
+function SignedInNotice() {
+  const services = useShellServices(), cache = useQueryClient();
+  const [state, setState] = useState<'idle' | 'sending' | 'failed'>('idle');
+  async function signOut() {
+    setState('sending');
+    try {
+      await services.signOut();
+      await cache.cancelQueries();
+      cache.clear();
+      window.location.assign('/kiosk');
+    } catch { setState('failed'); }
+  }
+  return <main id="main-content" className="mx-auto flex w-full max-w-xl flex-1 flex-col justify-center gap-4 p-4 sm:gap-6 sm:p-6">
+    <h1 className="text-2xl font-semibold sm:text-3xl">{text('signedInTitle')}</h1><p className="text-base sm:text-lg">{text('signedInHelp')}</p>
+    {state === 'failed' && <Alert variant="error" focusOnReveal>{text('signOutFailed')}</Alert>}
+    <Button className={big + ' w-full'} disabled={state === 'sending'} onClick={() => void signOut()}>{text('signOut')}</Button>
   </main>;
 }
 

@@ -121,7 +121,56 @@ it.each([
   expect(alert.textContent).not.toContain('Could not save. Reload the invoice and check for a pending payment before trying again.');
 });
 
-const processing: InvoiceDetail = { ...detail, invoice: { ...invoice, status: 'processing' } };
+const paid: InvoiceDetail = { ...detail, invoice: { ...invoice, status: 'paid', paidAt: createdAt },
+  payments: [{ id: id(4), createdAt, invoiceId: invoice.id, amountCents: 2500, currency: 'USD', method: 'card', reference: null, paidAt: createdAt }] };
+function startRefund(answer: () => Response) {
+  const refundClient = createInvoiceClient(async (path, init) => {
+    const url = new URL(String(path), 'http://gym.test');
+    if (url.pathname === '/api/billing/invoices/' + invoice.id) return Response.json({ data: paid });
+    if (url.pathname === `/api/billing/payments/${id(4)}/refunds` && init?.method === 'POST') return answer();
+    return fetcher(path);
+  });
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}>
+    <ShellServicesContext.Provider value={createShellServices(async () => bootstrap)}>
+      <InvoiceDetails gymId={gymId} invoiceId={invoice.id} client={refundClient} access={{ record: true, refund: true, links: true }}/>
+    </ShellServicesContext.Provider></QueryClientProvider>);
+}
+const failedText = "The refund didn't go through. Nothing was returned to the member.";
+const pendingText = 'The refund is processing. It shows here once Stripe confirms it.';
+
+it.each([
+  ['failed', failedText, 'alert'],
+  ['canceled', failedText, 'alert'],
+  ['pending', pendingText, 'status'],
+  ['succeeded', null, null],
+] as const)('says what a %s refund came to once its dialog closes', async (status, expected, role) => {
+  startRefund(() => Response.json({ data: { id: id(6), createdAt, paymentId: id(4), amountCents: 2500, currency: 'USD', status, reason: null,
+    resolvedAt: status === 'pending' ? null : createdAt } }));
+  const refund = await screen.findByRole('button', { name: 'Refund' });
+  refund.focus(); fireEvent.click(refund);
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Back to invoice' })).toBeNull());
+  if (expected) {
+    const shown = screen.getByText(expected).closest(`[role="${role}"]`);
+    expect(shown?.getAttribute('data-variant')).toBe(role === 'alert' ? 'error' : 'info');
+    // The focus doesn't return to the refund button, which would scroll a phone past the message.
+    expect(document.activeElement).not.toBe(screen.getByRole('button', { name: 'Refund' }));
+    if (role === 'alert') expect(document.activeElement).toBe(shown);
+  } else expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Refund' }));
+  for (const other of [failedText, pendingText]) if (other !== expected) expect(screen.queryByText(other)).toBeNull();
+});
+
+it('keeps the refund dialog open with the refusal when a refund is already pending', async () => {
+  startRefund(() => Response.json({ error: { code: 'conflict', message: 'Refund pending', details: { reason: ['pending_refund'] } } }, { status: 409 }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Refund' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+  const alert = await screen.findByRole('alert');
+  expect(alert.textContent).toContain('This payment has a pending refund. Resolve it before requesting another');
+  expect(screen.getByRole('button', { name: 'Back to invoice' })).toBeDefined();
+  expect(screen.queryByText(failedText)).toBeNull();
+});
+
+const processing: InvoiceDetail ={ ...detail, invoice: { ...invoice, status: 'processing' } };
 function startProcessing(refund: boolean, release?: () => Response) {
   const calls: string[] = [];
   const processingClient = createInvoiceClient(async (path, init) => {

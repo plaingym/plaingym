@@ -33,7 +33,9 @@ const client = {context:async()=>own({householdId:'${id}',memberId:'${id}',role:
 const path = location.pathname;
 const view = path === '/kiosk' ? <KioskApp/> : path === '/portal' ? <main><PortalCheckinPage client={client}/></main> :
   <main className="mx-auto w-full max-w-3xl min-w-0 p-4"><h1 className="mb-4 text-2xl">{path === '/devices' ? 'Settings' : 'Dana Example'}</h1>{path === '/devices' ? <KioskDevicesSettings/> : <CheckinCodePanel gymId="${id}" memberId="${id}"/>}</main>;
-createRoot(document.getElementById('root')).render(<QueryClientProvider client={cache}><ShellServicesContext.Provider value={{loadBootstrap:async()=>(${JSON.stringify(bootstrap)})}}>{view}</ShellServicesContext.Provider></QueryClientProvider>);
+// The kiosk runs signed out: a session left in its browser would show the sign-out notice instead of check-in.
+const shown = {...${JSON.stringify(bootstrap)}, ...(path === '/kiosk' ? {session: null} : {})};
+createRoot(document.getElementById('root')).render(<QueryClientProvider client={cache}><ShellServicesContext.Provider value={{loadBootstrap:async()=>shown}}>{view}</ShellServicesContext.Provider></QueryClientProvider>);
 `, resolveDir: resolve('apps/web'), sourcefile: 'kiosk-browser.tsx', loader: 'tsx' }, bundle: true, write: false,
   format: 'esm', platform: 'browser', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"production"' } });
 const css = (await readdir(resolve(dist, 'assets'))).find(name => name.endsWith('.css'));

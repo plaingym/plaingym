@@ -2,6 +2,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { KioskCheckinResult } from '@plaingym/shared/contracts';
 import { forgetToken, kioskApi, KioskAuthError, readToken, saveToken } from './api.js';
 import { playTone } from './feedback.js';
@@ -12,8 +13,18 @@ import { breaksAnywhere } from '../../components/ui/wrap.test-helper.js';
 import { isStaleVersion } from '../../app/version.js';
 
 vi.mock('../../app/version.js', async original => ({ ...await original<typeof import('../../app/version.js')>(), isStaleVersion: vi.fn(() => false) }));
-const bootstrap = vi.hoisted(() => ({ calls: 0 }));
-vi.mock('../../app/context.js', () => ({ useBootstrap: () => { bootstrap.calls += 1; return { data: { gym: { timezone: 'America/Los_Angeles' } } }; } }));
+const bootstrap = vi.hoisted(() => ({ calls: 0, pending: false, session: null as null | { displayName: string } }));
+const shell = vi.hoisted(() => ({ signOut: vi.fn<() => Promise<void>>() }));
+const demo = vi.hoisted(() => ({ mode: undefined as undefined | string, status: 'ready' }));
+vi.mock('../../app/context.js', () => ({
+  useBootstrap: () => {
+    bootstrap.calls += 1;
+    return { data: bootstrap.pending ? undefined : { gym: { timezone: 'America/Los_Angeles' }, session: bootstrap.session } };
+  },
+  useShellServices: () => shell,
+}));
+vi.mock('../demo/notice.js', async (original) => ({ ...await original<typeof import('../demo/notice.js')>(),
+  useDemoMode: () => demo.mode, useDemoDiscoveryStatus: () => demo.status }));
 vi.mock('./api.js', async (original) => ({ ...await original<typeof import('./api.js')>(),
   kioskApi: { lookup: vi.fn(), checkin: vi.fn() }, readToken: vi.fn(), saveToken: vi.fn(), forgetToken: vi.fn() }));
 vi.mock('./qr.api.js', () => ({ qrCheckin: vi.fn() }));
@@ -25,6 +36,8 @@ const session = { id: '00000000-0000-7000-8000-000000000003', name: 'Fundamental
 const credentials = { name: 'Rivera', pin: '0042' };
 const setCamera = (value: unknown) => Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value });
 beforeEach(() => {
+  Object.assign(bootstrap, { pending: false, session: null });
+  Object.assign(demo, { mode: undefined, status: 'ready' });
   vi.mocked(isStaleVersion).mockReturnValue(false);
   setCamera({ getUserMedia: vi.fn(), enumerateDevices: vi.fn().mockResolvedValue([{ kind: 'videoinput' }]) });
   vi.mocked(readToken).mockReturnValue('device-token');
@@ -712,5 +725,80 @@ describe('kiosk check-in screen', () => {
     choosePin();
     await waitFor(() => expect(fullscreen).toHaveBeenCalledOnce());
     expect(screen.getByRole('button', { name: '1' }).className).toContain('min-h-16');
+  });
+});
+
+describe('kiosk in a signed-in browser', () => {
+  const heading = "You're signed in on this device";
+  const signedIn = () => { bootstrap.session = { displayName: 'Owner' }; };
+  const open = (client = new QueryClient()) => render(<QueryClientProvider client={client}><KioskApp/></QueryClientProvider>);
+  function stubAssign() {
+    const assign = vi.fn();
+    vi.stubGlobal('location', { ...window.location, assign });
+    return assign;
+  }
+  it.each(['device-token', null])('blocks setup and check-in until sign-out, with the token %s', token => {
+    signedIn(); vi.mocked(readToken).mockReturnValue(token);
+    open();
+    expect(screen.getByRole('heading', { name: heading })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Sign out' })).toBeDefined();
+    expect(screen.queryByText('How would you like to check in?')).toBeNull();
+    expect(screen.queryByLabelText('Device token')).toBeNull();
+    expect(shell.signOut).not.toHaveBeenCalled();
+    expect(readToken).toHaveBeenCalled();
+  });
+  it('signs out once, clears cached reads and loads the kiosk again', async () => {
+    signedIn(); const assign = stubAssign();
+    let done!: () => void;
+    shell.signOut.mockReturnValue(new Promise<void>(resolve => { done = resolve; }));
+    const client = new QueryClient(); client.setQueryData(['members'], ['Dana']);
+    open(client);
+    const button = screen.getByRole('button', { name: 'Sign out' }) as HTMLButtonElement;
+    fireEvent.click(button);
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(assign).not.toHaveBeenCalled();
+    await act(async () => { done(); });
+    await waitFor(() => expect(assign).toHaveBeenCalledWith('/kiosk'));
+    expect(shell.signOut).toHaveBeenCalledOnce();
+    expect(client.getQueryData(['members'])).toBeUndefined();
+  });
+  it('keeps the notice when sign-out fails, and sends it again on the next press', async () => {
+    signedIn(); const assign = stubAssign();
+    shell.signOut.mockRejectedValue(new Error('offline'));
+    open();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Sign out' })); });
+    expect(screen.getByRole('alert').textContent).toContain("Couldn't sign out. Check the connection and try again.");
+    expect(screen.getByRole('heading', { name: heading })).toBeDefined();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Sign out' })); });
+    expect(shell.signOut).toHaveBeenCalledTimes(2);
+    expect(assign).not.toHaveBeenCalled();
+  });
+  it('shows the notice on an install that answers that it is no demo', () => {
+    signedIn(); demo.mode = 'disabled'; open();
+    expect(screen.getByRole('heading', { name: heading })).toBeDefined();
+  });
+  it.each(['sandbox', 'showcase', 'entry'])('leaves check-in open to a signed-in %s demo visitor', mode => {
+    signedIn(); demo.mode = mode; open();
+    expect(screen.getByText('How would you like to check in?')).toBeDefined();
+    expect(screen.queryByRole('heading', { name: heading })).toBeNull();
+  });
+  it.each(['pending', 'error'])('shows check-in while the demo answer is %s', status => {
+    signedIn(); demo.status = status; open();
+    expect(screen.getByText('How would you like to check in?')).toBeDefined();
+  });
+  it('keeps the notice when a later demo read fails', () => {
+    signedIn(); demo.mode = 'disabled';
+    const client = new QueryClient();
+    const view = open(client);
+    Object.assign(demo, { mode: undefined, status: 'error' });
+    view.rerender(<QueryClientProvider client={client}><KioskApp/></QueryClientProvider>);
+    expect(screen.getByRole('heading', { name: heading })).toBeDefined();
+    expect(screen.queryByText('How would you like to check in?')).toBeNull();
+  });
+  it('shows check-in while the bootstrap read is pending', () => {
+    signedIn(); bootstrap.pending = true; open();
+    expect(screen.getByText('How would you like to check in?')).toBeDefined();
+    expect(screen.queryByRole('heading', { name: heading })).toBeNull();
   });
 });

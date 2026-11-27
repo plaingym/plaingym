@@ -162,7 +162,9 @@ an eligible bank account when the gym has enabled bank payments.
    there by name and PIN. Register the kiosk device under **Settings → Kiosk devices**,
    then scan the setup code it shows, or open the setup link, on that device. They are
    shown once, and replace the device token stored in that browser. To update an
-   already-open kiosk tab, paste the setup link into that tab's address bar.
+   already-open kiosk tab, paste the setup link into that tab's address bar. If
+   that browser is still signed in as staff or a member, the kiosk asks you to
+   sign out before it shows check-in.
    If the device has no camera, use name and PIN. Scanning a code or receiving a
    response restarts the idle period; unfinished QR selections reset after 60
    seconds without pointer or keyboard activity anywhere on the kiosk page.

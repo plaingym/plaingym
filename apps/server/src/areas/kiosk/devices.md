@@ -3,6 +3,8 @@
 
 The settings section registers devices, displays a random 256-bit bearer once, and revokes access. Only lowercase SHA-256 hashes enter the database. List/revoke responses and audits contain public device metadata only. Authentication checks revocation in a short gym-scoped transaction on every request; there is no token cache.
 
+Register a device from another computer, or sign out on the tablet afterwards. While its browser holds a staff or member session, the kiosk page refuses to show check-in (outside a demo) and offers **Sign out** instead.
+
 Integration: export `createKioskAuthMiddleware` from `devices.auth.ts`. After gym resolution, wrap the existing session middleware with `createKioskAuthMiddleware({ session, ...clientIpOptions })` as the app's session middleware. Alternatively dispatch this wrapper for `/api/kiosk/*` and the existing session middleware elsewhere. Do not run session middleware again after the wrapper: it replaces the principal. Preserve the app's CSRF, flood limiter, and route authorization middleware.
 
 Only the exact POST contracts `lookup`, `checkinNamePin`, and `checkinQr` accept bearer authentication. Any other request with an Authorization header returns 404 when passed through this wrapper. Requests without that header delegate to the supplied session middleware, so staff can manage devices normally.

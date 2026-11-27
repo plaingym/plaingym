@@ -72,6 +72,11 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
           { anyMinorUnit: action.payment.method !== 'card' }),
           currency: action.payment.currency, reason: form.get('reason') || null }, { paymentId: action.payment.id });
         creditChanged = result.data.status === 'succeeded';
+        if (result.data.status !== 'succeeded') {
+          setMessage(text(result.data.status === 'pending' ? 'refundPending' : 'refundFailed'));
+          // Focus returning to the refund button would scroll a phone past the message above the invoice.
+          trigger.current = null;
+        }
       }
       if (action.kind === 'receipt') { await client.call('resendReceipt', {}, { invoiceId }); setMessage(text('receiptQueued')); }
       if (action.kind === 'link') {
@@ -102,7 +107,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
   if (detail.isError) return <ErrorState onRetry={() => void detail.refetch()}/>;
   const data = detail.data, invoice = data.invoice, collectible = ['open', 'past_due'].includes(invoice.status);
   return <div className="min-w-0 space-y-6">
-    {message && <Alert variant={message === text('chargeFailed') ? 'error' : 'info'} focusOnReveal>{message}</Alert>}
+    {message && <Alert variant={message === text('chargeFailed') || message === text('refundFailed') ? 'error' : 'info'} focusOnReveal>{message}</Alert>}
     <div hidden={!!action} className="space-y-6">
     {/* A card confirmation replaces the details, as an invoice action does: no invoice action opens beside it. */}
     <div hidden={cardOpen} className="space-y-6">

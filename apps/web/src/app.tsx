@@ -24,10 +24,16 @@ export function createShellQueryClient() {
   // A write never waits for a connection: it is sent at once and shows its screen's error if it can't be.
   return new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 }, mutations: { retry: false, networkMode: 'always' } } });
 }
+/** A page restored from the back-forward cache may show the last account's screen after a sign-out, so it is loaded again. */
+export const reloadRestoredPage = (event: PageTransitionEvent) => { if (event.persisted) window.location.reload(); };
 export function App({ services = defaultShellServices, router: suppliedRouter }:
   { services?: ShellServices; router?: ReturnType<typeof createAppRouter> }) {
   const [queryClient] = useState(createShellQueryClient);
   const [router] = useState(() => suppliedRouter ?? createAppRouter());
+  useEffect(() => {
+    window.addEventListener('pageshow', reloadRestoredPage);
+    return () => window.removeEventListener('pageshow', reloadRestoredPage);
+  }, []);
   // One tab can move between the portal and other pages, so each navigation answers again before its page loads, and
   // once more when it has: the portal stays up while the next page loads, and still answers for itself until it goes.
   useEffect(() => {

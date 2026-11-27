@@ -102,6 +102,8 @@
   "chargeFailed": "The charge failed. The invoice stays open; choose another payment method.",
   "requiresAction": "The card needs the payer’s authentication. Send a pay link.",
   "pendingCharge": "The payment is still being resolved. A card payment usually settles within minutes; a bank debit can take a few business days.",
+  "refundFailed": "The refund didn't go through. Nothing was returned to the member.",
+  "refundPending": "The refund is processing. It shows here once Stripe confirms it.",
   "releaseHold": "Release review hold",
   "releaseHoldHelp": "Confirm collection of this overdue invoice. The next billing run will charge the saved payment method unless you charge it now or record a payment first.",
   "holdReleased": "Review hold released. The next billing run will charge the saved payment method unless you charge it now or record a payment first.",

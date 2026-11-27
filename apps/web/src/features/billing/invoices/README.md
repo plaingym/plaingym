@@ -67,7 +67,10 @@ unreachable or with no record of the debit, no Stripe key saved, or a key that
 can't read it) shows its reason in the form; a debit Stripe has no record of
 can't be released here. Server routes enforce the same permissions. A
 failed charge reports that the invoice remains open; unresolved outcomes tell
-staff to check the invoice before collecting another payment. Save errors stay in
+staff to check the invoice before collecting another payment. A refund that
+comes back failed or canceled shows an error above the invoice saying nothing was
+returned to the member, and a pending one says it is processing; a successful
+refund shows no message. Save errors stay in
 the open dialog, preserving the staff member's draft.
 The error envelope's `details.reason` selects a translated payment message.
 Pending attempts tell staff that the payment is still being resolved and to

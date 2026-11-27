@@ -144,6 +144,11 @@ pages.
   which the browser never sends to the server, and the page stores it and removes
   it from the address, including when a setup link is pasted into an already-open
   kiosk tab. Replacing the token clears the current check-in screen.
+  Register the device from another computer, or sign out on the tablet afterwards:
+  while the browser holds a staff or member session, the kiosk page shows a notice
+  with **Sign out** in place of check-in, since anyone there could open the admin or
+  portal with that sign-in. A demo skips the notice, and the page shows check-in
+  until it has read both the session and whether it is a demo.
   Name-and-PIN check-in is limited to
   10 wrong PINs per minute per device and per client address, and a used-up
   budget is audited and shown on the dashboard. Five wrong PINs in a row on one
