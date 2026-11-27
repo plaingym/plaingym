@@ -221,9 +221,14 @@ are checked separately by the **Dependency advisories** workflow (`pnpm audit`).
 A release installs with its own `bootstrap.sh` (`docs/install-reference.md`, "What the one-command install checks"):
 
 ```sh
-curl -fsSL https://github.com/plaingym/plaingym/releases/download/vX.Y.Z/bootstrap.sh \
+curl -fsSL https://github.com/plaingym/plaingym/releases/latest/download/bootstrap.sh \
   | sudo sh -s -- --hostname gym.example.org --email owner@example.org
 ```
+
+GitHub's `releases/latest` address serves the release marked latest, which the release
+workflow sets only on the newest stable version (`scripts/release/latest.mjs`);
+prereleases are never marked latest and publish no `bootstrap.sh`. Use
+`releases/download/vX.Y.Z/bootstrap.sh` to install a particular release.
 
 The release workflow fills in the copy it publishes with the release's version,
 repository and the public key of `release-signing.pem` (**Releases**, below). It

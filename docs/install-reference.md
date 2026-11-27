@@ -33,8 +33,8 @@ files behind either way. The installer copies the archive's `release-signing.pem
 
 Trust starts with the HTTPS download of `bootstrap.sh` from `github.com`: whoever can
 change that file can change what it checks. To read it before running it, download it
-first (`curl -fsSLO https://github.com/plaingym/plaingym/releases/download/vX.Y.Z/bootstrap.sh`),
-check that its `release_key=` line matches the body of `deploy/release-signing.pem` in the
+first (`curl -fsSLO https://github.com/plaingym/plaingym/releases/latest/download/bootstrap.sh`,
+or `releases/download/vX.Y.Z/bootstrap.sh` for a particular release), check that its `release_key=` line matches the body of `deploy/release-signing.pem` in the
 repository, then run `sudo sh bootstrap.sh --hostname … --email …`.
 
 ### From the deployment files

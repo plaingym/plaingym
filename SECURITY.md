@@ -21,7 +21,7 @@ Report privately through GitHub: open the repository's **Security** tab and choo
 
 ## Supported Versions
 
-Until 1.0, only the latest release receives security fixes. After 1.0, the latest minor release is supported. Self-hosters should stay current using the documented update process.
+The newest minor release receives security fixes, published as patch releases (for example, 1.0.Z for 1.0). Installs apply patch releases each night; to move to a new minor release, follow the documented update process.
 
 ## Scope
 

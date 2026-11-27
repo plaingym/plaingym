@@ -38,13 +38,16 @@ For building images and the installer's internals, see
 
 ## Install
 
-On the server, run the release's `bootstrap.sh`, with the version you install in
-place of `vX.Y.Z`:
+On the server, run the newest release's `bootstrap.sh`:
 
 ```sh
-curl -fsSL https://github.com/plaingym/plaingym/releases/download/vX.Y.Z/bootstrap.sh \
+curl -fsSL https://github.com/plaingym/plaingym/releases/latest/download/bootstrap.sh \
   | sudo sh -s -- --hostname gym.example.org --email owner@example.org
 ```
+
+To install a particular release instead, use
+`https://github.com/plaingym/plaingym/releases/download/vX.Y.Z/bootstrap.sh` with its
+version in place of `vX.Y.Z`. Either way the install is pinned to that release's version.
 
 `--email` is where the certificate authority sends notices about your certificate. The
 bootstrap checks the release's signed manifest and deployment files before it installs

@@ -72,12 +72,11 @@ Enter.
 
 ## 4. Run the installer
 
-Open the [releases page](https://github.com/plaingym/plaingym/releases) and note the
-newest version, for example `v1.2.3`. On the server, paste this command with that version in
-the address (it appears twice) and your own name and email:
+On the server, paste this command with your own name and email. It installs the newest
+release from the [releases page](https://github.com/plaingym/plaingym/releases):
 
 ```sh
-curl -fsSL https://github.com/plaingym/plaingym/releases/download/vX.Y.Z/bootstrap.sh \
+curl -fsSL https://github.com/plaingym/plaingym/releases/latest/download/bootstrap.sh \
   | sudo sh -s -- --hostname gym.example.org --email owner@example.org
 ```
 

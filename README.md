@@ -8,8 +8,7 @@ Run your gym on your terms, with your data on your own server.</p>
 
 <p>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square" alt="License: AGPL-3.0"></a>
-<a href="https://github.com/plaingym/plaingym/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/plaingym/plaingym/ci.yml?branch=main&label=CI&style=flat-square" alt="CI"></a>
-<a href="https://github.com/plaingym/plaingym/releases"><img src="https://img.shields.io/github/v/release/plaingym/plaingym?include_prereleases&label=release&style=flat-square" alt="Latest release"></a>
+<a href="https://github.com/plaingym/plaingym/actions/workflows/ci.yml"><img src="https://github.com/plaingym/plaingym/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
 </p>
 
 [Install](docs/install.md) · [Try the demo](docs/demo.md) · [Documentation](docs/README.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
@@ -201,7 +200,7 @@ minutes. The [install guide](docs/install.md) assumes you have never run a serve
 | 4. Go live | Turn on billing and member emails. | [Going live](docs/going-live.md) |
 
 ```sh
-curl -fsSL https://github.com/plaingym/plaingym/releases/download/vX.Y.Z/bootstrap.sh \
+curl -fsSL https://github.com/plaingym/plaingym/releases/latest/download/bootstrap.sh \
   | sudo sh -s -- --hostname gym.example.org --email owner@example.org
 ```
 
