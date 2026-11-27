@@ -171,6 +171,9 @@ stay off after setup.
   checklist ([going-live.md](going-live.md)).
 * Uploaded CSV files are kept for 24 hours and their run records for 30 days, then
   removed automatically.
+* Signed waivers aren't imported: every member signs the current waivers again in
+  PlainGym. Send them a **Sign waivers** campaign before they start checking in
+  ([Re-signing waivers after a switch](card-recollection.md#re-signing-waivers-after-a-switch)).
 
 ## Exporting your data
 

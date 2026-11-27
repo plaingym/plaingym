@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it, vi } from 'vitest';
 import type { Household } from '@plaingym/shared/contracts';
-import { campaignClient, householdsNeedingCard } from './api.js';
+import { campaignClient, householdsNeedingCard, membersNeedingWaiver } from './api.js';
 import { api, ApiError } from '../../lib/api.js';
 
 const households: Household[] = ['empty', 'active', 'revoked-only'].map(id => ({ id, name: id, email: null,
@@ -31,6 +31,22 @@ it('does not classify households as missing a card after an incomplete or failed
   await expect(householdsNeedingCard(households, async () => ({ data: [], pagination: { limit: 100, nextAfter: 'next' } })))
     .rejects.toThrow('Incomplete household list');
   await expect(householdsNeedingCard(households, async () => { throw new Error('Unavailable'); })).rejects.toThrow('Unavailable');
+});
+
+it('loads every page of members needing a waiver and refuses a page that does not advance', async () => {
+  const id = (n: number) => `01900000-0000-7000-8000-00000000000${n}`;
+  const row = (n: number) => ({ memberId: id(n), householdId: id(9), firstName: 'A', lastName: String(n), householdName: 'H', householdEmail: null });
+  const get = vi.spyOn(api, 'GET')
+    .mockResolvedValueOnce({ response: new Response('{}'), data: { data: [row(1)], pagination: { limit: 100, nextAfter: id(1) } } })
+    .mockResolvedValueOnce({ response: new Response('{}'), data: { data: [row(2)], pagination: { limit: 100, nextAfter: null } } });
+  try {
+    expect((await campaignClient.needsWaiver()).map(member => member.memberId)).toEqual([id(1), id(2)]);
+    expect(get.mock.calls).toEqual([['/api/link-campaign-members/needing-waiver', { params: { query: { limit: 100 } } }],
+      ['/api/link-campaign-members/needing-waiver', { params: { query: { limit: 100, after: id(1) } } }]]);
+  } finally { get.mockRestore(); }
+  await expect(membersNeedingWaiver(async () => ({ data: [], pagination: { limit: 100, nextAfter: id(1) } }))).rejects.toThrow('Incomplete member list');
+  await expect(membersNeedingWaiver(async after => ({ data: [row(1)], pagination: { limit: 100, nextAfter: after ?? id(1) } })))
+    .rejects.toThrow('Incomplete member list');
 });
 
 it('preserves only the safe invalid-request code for campaign limit feedback', async () => {

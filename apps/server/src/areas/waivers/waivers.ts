@@ -26,16 +26,20 @@ export interface WaiverOptions {
   preflight?: typeof preflightWaiver;
   documentDelivery?: WaiverDocumentDelivery;
 }
+/** IDs of the current waivers: the latest version of each template name, leaving out retired ones. */
+export async function currentWaiverTemplateIds(tx: Transaction): Promise<string[]> {
+  // Select the latest version before excluding retired families; never revive an older version.
+  const templates = await tx.selectDistinctOn([waiverTemplates.name], { id: waiverTemplates.id, retiredAt: waiverTemplates.retiredAt })
+    .from(waiverTemplates).orderBy(waiverTemplates.name, desc(waiverTemplates.version));
+  return templates.filter(t => !t.retiredAt).map(t => t.id);
+}
 /** Shared signed-link completion rule, matching the household current-template projection. */
 export async function signedLinkWaiversComplete(tx: Transaction, memberIds: string[]): Promise<boolean> {
   if (!memberIds.length) return true;
-  // Select the latest version before excluding retired families; never revive an older version.
-  const templates = await tx.selectDistinctOn([waiverTemplates.name]).from(waiverTemplates)
-    .orderBy(waiverTemplates.name, desc(waiverTemplates.version));
+  const templateIds = await currentWaiverTemplateIds(tx);
   const signatures = await tx.select({ memberId: waiverSignatures.memberId, templateId: waiverSignatures.templateId })
     .from(waiverSignatures).where(inArray(waiverSignatures.memberId, memberIds));
-  return memberIds.every(id => templates.filter(t => !t.retiredAt)
-    .every(t => signatures.some(s => s.memberId === id && s.templateId === t.id)));
+  return memberIds.every(id => templateIds.every(templateId => signatures.some(s => s.memberId === id && s.templateId === templateId)));
 }
 export const templateDocument = (r: Pick<typeof waiverTemplates.$inferSelect, 'documentKey' | 'documentHash' | 'documentPages' | 'documentBytes'>) =>
   r.documentKey ? { document: c.waiverDocumentSchema.parse({ key: r.documentKey, hash: r.documentHash, pages: r.documentPages, bytes: r.documentBytes }) } : {};

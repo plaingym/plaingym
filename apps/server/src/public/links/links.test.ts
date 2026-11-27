@@ -487,6 +487,34 @@ describe('signed-link pages through production registrations', () => {
     }
     expect(await f.checkout.complete(f.gymId, f.link.link.id, session.session.id)).toBe(true);
   });
+  it('offers an onboarding household its own saved default card and completes on keepCard once every document is signed', async () => {
+    const f = await fixture('onboarding');
+    // Another household's default card is never offered on this link.
+    await factory('paymentMethods', f.gymId, { householdId: f.other.householdId, isDefault: true, last4: '1111' });
+    const before = await (await f.app().request('/l/' + f.link.token)).text();
+    expect(before).not.toContain('data-keep-card'); expect(before).not.toContain('1111');
+    expect(before).toContain('Add or update card securely');
+    await factory('paymentMethods', f.gymId, { householdId: f.household.id, isDefault: true, last4: '4242' });
+    const page = await (await f.app().request('/l/' + f.link.token)).text();
+    expect(page).toContain('data-keep-card'); expect(page).toContain('Keep this card'); expect(page).toContain('Use a different card');
+    expect(page).toContain('Card ending in 4242'); expect(page).not.toContain('1111');
+    // Signing alone never uses the link up, and keeping waits for the last document.
+    expect(await (await f.request(f.path + '/complete', 'POST', { keepCard: true })).json()).toEqual({ data: { completed: false } });
+    for (const m of [f.member, f.sibling]) await factory('waiverSignatures', f.gymId, { memberId: m.id, templateId: f.template.id });
+    expect(await (await f.request(f.path + '/complete', 'POST', {})).json()).toEqual({ data: { completed: false } });
+    expect((await f.request(f.path + '/complete', 'POST', { keepCard: false })).status).toBe(400);
+    expect((await f.links.resolve(f.gymId, f.link.token)).status).toBe('active');
+    expect(await (await f.request(f.path + '/complete', 'POST', { keepCard: true })).json()).toEqual({ data: { completed: true } });
+    expect((await f.links.resolve(f.gymId, f.link.token)).status).toBe('used');
+  });
+  it('refuses keepCard on the update-card and pay-invoice complete routes', async () => {
+    for (const purpose of ['update_card', 'pay_invoice'] as const) {
+      const f = await fixture(purpose);
+      await factory('paymentMethods', f.gymId, { householdId: f.household.id, isDefault: true });
+      expect((await f.request(f.path + '/complete', 'POST', { keepCard: true })).status, purpose).toBe(400);
+      expect(await (await f.app().request('/l/' + f.link.token)).text(), purpose).not.toContain('data-keep-card');
+    }
+  });
   it('production composition follows Checkout return cookies and confirms completion without trusting the browser', async () => {
     const f = await fixture('update_card');
     const response = await f.request(f.path + '/checkout', 'POST'); expect(response.status).toBe(200);

@@ -154,7 +154,7 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
         const data = await config.service.read(verified);
         if (data.purpose === 'sign_waiver' && await config.service.completeWaiverOnOpen(verified))
           return html(c, { ...common, state: 'alreadyDone' });
-        return html(c, { ...common, data });
+        return html(c, { ...common, data, keepCard: await config.service.keepableCard(verified) });
       } catch (error) {
         if (error instanceof AppError && error.code === 'not_found') return html(c, { ...common, state: 'unavailable' }, 404);
         throw error;
@@ -239,11 +239,14 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
   }
   for (const name of ['completeInvoice', 'completeCard', 'completeOnboarding'] as const) {
     const contract = actions[name];
-    result.push(protect(route({ ...contract, request: { query: empty, body: { content: { 'application/json': { schema: empty } }, required: true } }, responses: json(contract.response) }, async c => {
+    // Only onboarding takes a body: `keepCard` keeps the household's saved default method instead of card setup.
+    const body = name === 'completeOnboarding' ? actions.completeOnboarding.body : empty;
+    result.push(protect(route({ ...contract, request: { query: empty, body: { content: { 'application/json': { schema: body } }, required: true } }, responses: json(contract.response) }, async c => {
       const ctx = c.get('context'), p = linkPrincipal(ctx), config = options();
       const receipt = config.receipts.open(readAppCookie(c, receiptCookie), ctx.clock.now(), { gymId: p.gymId, linkId: p.linkId });
       const sessionId = receipt?.gymId === p.gymId && receipt.linkId === p.linkId ? receipt.sessionId : null;
-      const completed = await config.service.complete(ctx, sessionId);
+      const input: { keepCard?: true } = c.req.valid('json');
+      const completed = await config.service.complete(ctx, sessionId, input.keepCard === true);
       if (completed && receipt && p.link.purpose === 'pay_invoice') {
         const resolution = await config.links.resolve(p.gymId, receipt.token, receipt);
         if (resolution.status === 'used' && resolution.processing) {

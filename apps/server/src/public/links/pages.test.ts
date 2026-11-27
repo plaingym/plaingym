@@ -31,6 +31,35 @@ describe('signed-link presentation and return receipts', () => {
       type: 'acss_debit', bankName, last4: '6789', brand: null, expiryMonth: null, expiryYear: null, isDefault: true }] } });
     expect(page).toContain(label);
   });
+  it('offers to keep a saved default card on onboarding, primary once every waiver is signed', () => {
+    const template = { id: 'one', name: 'Terms', kind: 'waiver' as const, version: 1, body: 'Terms', retiredAt: null, createdAt: now.toISOString() };
+    const member = { id: 'member', firstName: 'Alex', lastName: 'Example', dateOfBirth: '2000-01-01', revision: 1 };
+    const paymentMethods = [{ id: 'method', type: 'card' as const, bankName: null, last4: '4242', brand: 'visa', expiryMonth: 12, expiryYear: 2030, isDefault: true }];
+    const page = (signed: boolean, keepCard: { type: string; bankName: null; last4: string } | null) => linkPage({ now, timezone: 'UTC', t, keepCard,
+      data: { purpose: 'onboarding', paymentMethods, members: [member], templates: [template],
+        signatures: signed ? [{ id: 'signature', memberId: 'member', templateId: 'one', signedAt: now.toISOString() } as never] : [] } });
+    const unsigned = page(false, { type: 'card', bankName: null, last4: '4242' });
+    expect(unsigned).toContain('Keep this card'); expect(unsigned).toContain('Use a different card');
+    expect(unsigned).toContain('Keep the saved payment method for future gym payments');
+    expect(unsigned).not.toContain('Add or update card securely');
+    expect(unsigned).toMatch(/data-keep-card[^>]*>[\s\S]*Card ending in 4242/);
+    expect(unsigned).toMatch(/class="[^"]*bg-background[^"]*" data-keep-card/);
+    expect(unsigned).toMatch(/class="[^"]*bg-background[^"]*" data-checkout/);
+    const signed = page(true, { type: 'card', bankName: null, last4: '4242' });
+    expect(signed).toMatch(/class="[^"]*bg-primary[^"]*" data-keep-card/);
+    const controls = [...signed.split('</main>')[0]!.matchAll(/<(?:a|button)\b[^>]*\bclass="([^"]*)"/g)];
+    expect(controls.filter(([, classes]) => classes?.split(' ').includes('bg-primary'))).toHaveLength(1);
+    // Without a usable default, the page is as before.
+    for (const without of [page(true, null), linkPage({ now, timezone: 'UTC', t, data: { purpose: 'onboarding', paymentMethods, members: [member],
+      templates: [template], signatures: [] } })]) {
+      expect(without).not.toContain('data-keep-card'); expect(without).not.toContain('Use a different card');
+      expect(without).toContain('Add or update card securely');
+      expect(without).toContain('Enter your card on Stripe');
+    }
+    // Only an onboarding page offers it.
+    expect(linkPage({ now, timezone: 'UTC', t, keepCard: { type: 'card', bankName: null, last4: '4242' },
+      data: { purpose: 'update_card', paymentMethods } })).not.toContain('data-keep-card');
+  });
   it('gives onboarding one primary action when login, card and several signatures are offered', () => {
     const page = linkPage({ now, timezone: 'UTC', t, portalClaim: { password: true }, data: { purpose: 'onboarding', paymentMethods: [], signatures: [],
       members: [{ id: 'member', firstName: 'Alex', lastName: 'Example', dateOfBirth: '2000-01-01', revision: 1 }],

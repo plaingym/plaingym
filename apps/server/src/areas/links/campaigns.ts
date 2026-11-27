@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, count, desc, eq, gt, inArray, isNull, ne, notExists } from 'drizzle-orm';
-import { auditEvents, forGym, households, linkCampaigns, paymentMethods, signedLinks, writeAudit } from '@plaingym/db';
+import { and, asc, count, desc, eq, gt, inArray, isNull, ne, notExists, or } from 'drizzle-orm';
+import { auditEvents, forGym, households, linkCampaigns, members, paymentMethods, signedLinks, waiverSignatures, writeAudit } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import { campaignRecipientListQuerySchema, createLinkCampaignRequestSchema, householdsNeedingCardQuerySchema, linkCampaignListQuerySchema,
-  type CreateLinkCampaignRequest, type CreateSignedLinkRequest } from '@plaingym/shared/contracts';
+  membersNeedingWaiverQuerySchema, type CreateLinkCampaignRequest, type CreateSignedLinkRequest } from '@plaingym/shared/contracts';
 import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
@@ -17,6 +17,10 @@ import { campaignDetail, campaignRecipient, campaignTallies, recipientState } fr
 import { completeClosedCampaignInvoice, deliverCampaignLink } from './campaigns.delivery.js';
 import { campaignCustomerHolds, matchCampaignCustomer } from './campaigns.customers.js';
 import { checkoutInProgress, deliveryBlocked, deliveryHistory } from './campaigns.attempts.js';
+import { currentWaiverTemplateIds } from '../waivers/waivers.js';
+
+/** Member statuses the Sign waivers picker lists; prospects and cancelled members don't check in. */
+const waiverCampaignStatuses = ['active', 'trial', 'visitor', 'frozen'];
 
 export const campaignSendJob = 'links.campaigns.send';
 export const campaignPublishJob = 'links.campaigns.publish';
@@ -203,6 +207,27 @@ export function createCampaignsService(options: CampaignsOptions) {
           .orderBy(asc(households.id)).limit(query.limit + 1);
         const data = rows.slice(0, query.limit);
         return { data, pagination: { limit: query.limit, nextAfter: rows.length > query.limit ? data.at(-1)!.householdId : null } };
+      });
+    },
+    /**
+     * The Sign waivers picker: members who count for check-in (active, trial, visitor or frozen) and miss a signature on
+     * a current waiver, by the rule signed-link completion uses. Names and the household email only.
+     */
+    async membersNeedingWaiver(gymId: string, input: z.input<typeof membersNeedingWaiverQuerySchema> = {}) {
+      const query = membersNeedingWaiverQuerySchema.parse(input);
+      return scope(gymId, async tx => {
+        const templateIds = await currentWaiverTemplateIds(tx);
+        if (!templateIds.length) return { data: [], pagination: { limit: query.limit, nextAfter: null } };
+        const unsigned = templateIds.map(templateId => notExists(tx.select({ id: waiverSignatures.id }).from(waiverSignatures)
+          .where(and(eq(waiverSignatures.gymId, gymId), eq(waiverSignatures.memberId, members.id), eq(waiverSignatures.templateId, templateId)))));
+        const rows = await tx.select({ memberId: members.id, householdId: members.householdId, firstName: members.firstName,
+          lastName: members.lastName, householdName: households.name, householdEmail: households.email })
+          .from(members).innerJoin(households, and(eq(households.gymId, members.gymId), eq(households.id, members.householdId)))
+          .where(and(eq(members.gymId, gymId), isNull(members.anonymizedAt), inArray(members.status, waiverCampaignStatuses),
+            query.after ? gt(members.id, query.after) : undefined, or(...unsigned)))
+          .orderBy(asc(members.id)).limit(query.limit + 1);
+        const data = rows.slice(0, query.limit);
+        return { data, pagination: { limit: query.limit, nextAfter: rows.length > query.limit ? data.at(-1)!.memberId : null } };
       });
     },
     async remindCampaign(context: MutationContext, campaignId: string) {

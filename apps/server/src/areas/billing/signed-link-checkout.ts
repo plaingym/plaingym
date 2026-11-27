@@ -14,12 +14,33 @@ import { isAssignmentInvoice } from './assignment-invoices.js';
 import { readGymSettings } from '../settings/settings.js';
 import { createCardHandlers } from './webhooks/handlers/methods.js';
 import { completeCampaignIn } from '../links/campaigns.model.js';
+import { bankAccountType } from './customer-card-import.js';
+import { localDate } from '@plaingym/shared/time';
 
 const t = createTranslator(locales.en ?? {});
 function bankDebitFor(gym: { bankDebitsEnabled: boolean; currency: string }): CheckoutRequest['bankDebit'] {
   if (gym.bankDebitsEnabled && gym.currency === 'USD') return { type: 'us_bank_account' };
   if (gym.bankDebitsEnabled && gym.currency === 'CAD') return { type: 'acss_debit', intervalDescription: t('billing/payments:padInterval') };
   return undefined;
+}
+/**
+ * The household's default payment method, share-locked, when it can still be charged: a card not expired in the gym's
+ * time zone (or with no expiry on record), or a bank debit of the gym currency's kind (a Canadian PAD only with a mandate).
+ */
+async function usableDefaultMethod(tx: Transaction, gymId: string, householdId: string, now: Date) {
+  const [method] = await tx.select().from(paymentMethods).where(and(eq(paymentMethods.gymId, gymId),
+    eq(paymentMethods.householdId, householdId), eq(paymentMethods.isDefault, true), isNull(paymentMethods.revokedAt))).for('share');
+  if (!method) return null;
+  const gym = await readGymSettings(tx, gymId);
+  if (method.type === 'card') {
+    if (method.expiryYear === null || method.expiryMonth === null) return method;
+    const expiry = `${String(method.expiryYear).padStart(4, '0')}-${String(method.expiryMonth).padStart(2, '0')}`;
+    return expiry >= localDate(now, gym.timezone).slice(0, 7) ? method : null;
+  }
+  const bank = bankAccountType(gym.currency);
+  if (method.type === 'us_bank_account') return bank === 'us_bank_account' ? method : null;
+  if (method.type === 'acss_debit') return bank === 'acss_debit' && method.mandateId ? method : null;
+  return null;
 }
 function missing(): never { throw new AppError('not_found', 'Signed link or resource not found'); }
 function unavailable(): never { throw new AppError('unavailable', 'Checkout is not available'); }
@@ -347,10 +368,33 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     return { session, expiresAt: new Date(Math.min(prepared.link.expiresAt.getTime(),
       prepared.invoice?.checkoutExpiresAt?.getTime() ?? clock.now().getTime() + 23 * 60 * 60 * 1000)).toISOString() };
   }
-  /** Called by an authenticated browser receipt or the webhook's persisted link/session association. */
-  async function complete(gymId: string, linkId: string, sessionId: string | null) {
+  /**
+   * The one rule the page's offer and the completion share: the usable default with its last four digits on record, for a
+   * household still linked to its Stripe customer (the charge runner charges no household without one).
+   */
+  async function keptMethod(tx: Transaction, gymId: string, household: Household) {
+    if (!household.stripeCustomerId) return null;
+    const method = await usableDefaultMethod(tx, gymId, household.id, clock.now());
+    return method?.last4 ? method : null;
+  }
+  /** The saved default method an onboarding link may keep instead of card setup, masked; null for other purposes. */
+  async function keepableCard(gymId: string, linkId: string) {
+    return scope(gymId, async tx => {
+      const { link, household } = await locked(tx, gymId, linkId);
+      if (link.purpose !== 'onboarding') return null;
+      const method = await keptMethod(tx, gymId, household);
+      return method ? { type: method.type, bankName: method.bankName, last4: method.last4! } : null;
+    });
+  }
+  /**
+   * Called by an authenticated browser receipt or the webhook's persisted link/session association. `keepCard` (an onboarding
+   * link's own page only) completes without card setup when the household's default method is still usable, rechecked here
+   * under the link lock, and every waiver is signed. It calls no provider and changes no payment method.
+   */
+  async function complete(gymId: string, linkId: string, sessionId: string | null, keepCard = false) {
     let session: CheckoutSession | null = null;
-    if (sessionId) {
+    // Keeping a card never reads the provider, even with an earlier Checkout's receipt; that one completes by its webhook.
+    if (sessionId && !keepCard) {
       const provider = await options.paymentsFor(gymId);
       const found = await provider.readPaymentObject({ kind: 'checkout', id: sessionId });
       if (found.status === 'found' && found.value.kind === 'checkout') session = found.value.object;
@@ -360,6 +404,19 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     return scope(gymId, async tx => {
       const { link, household } = await locked(tx, gymId, linkId, true);
       if (link.usedAt) return true;
+      if (keepCard && link.purpose === 'onboarding') {
+        const kept = await keptMethod(tx, gymId, household);
+        const people = kept ? await tx.select({ id: members.id }).from(members)
+          .where(and(eq(members.householdId, link.householdId), isNull(members.anonymizedAt))) : [];
+        if (kept && await signedLinkWaiversComplete(tx, people.map(m => m.id))) {
+          await tx.update(signedLinks).set({ usedAt: clock.now() }).where(eq(signedLinks.id, linkId));
+          await writeAudit(tx, { gymId, actorKind: 'system', action: 'signed_link.card_kept', targetType: 'signed_link', targetId: linkId,
+            before: null, after: { paymentMethodId: kept.id }, occurredAt: clock.now() });
+          await audit(tx, gymId, 'signed_link.used', linkId);
+          await completeCampaignIn(tx, gymId, link.campaignId, clock.now());
+          return true;
+        }
+      }
       if (!session) return false;
       const tagged = session.metadata.linkId !== undefined;
       if (tagged) {
@@ -395,5 +452,5 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
       return true;
     });
   }
-  return { start, complete };
+  return { start, complete, keepableCard };
 }

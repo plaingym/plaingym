@@ -160,6 +160,25 @@ export const householdsNeedingCardResponseSchema = z.strictObject({
   data: z.array(z.strictObject({ householdId: idSchema })),
   pagination: z.strictObject({ limit: z.int().positive(), nextAfter: idSchema.nullable() }),
 });
+/**
+ * Members of the gym (active, trial, visitor or frozen) missing a signature on a current waiver, in member ID order:
+ * the campaign editor's Sign waivers picker. Names and the household email only; never a signature or birth date.
+ */
+export const membersNeedingWaiverQuerySchema = z.strictObject({
+  limit: paginationSchema.shape.limit,
+  after: idSchema.optional(),
+});
+export const membersNeedingWaiverResponseSchema = z.strictObject({
+  data: z.array(z.strictObject({
+    memberId: idSchema,
+    householdId: idSchema,
+    firstName: z.string(),
+    lastName: z.string(),
+    householdName: z.string(),
+    householdEmail: z.string().nullable(),
+  })),
+  pagination: z.strictObject({ limit: z.int().positive(), nextAfter: idSchema.nullable() }),
+});
 
 /**
  * API declarations only. Creation and sending mint a fresh single-use link; later metadata
@@ -193,6 +212,9 @@ export const linksContracts = {
   listHouseholdsNeedingCard: { method: 'get', path: '/api/link-campaign-households/needing-card',
     permission: { kind: 'staff', capability: 'links.send' }, additionalPermissions: [{ kind: 'staff', capability: 'billing.read' }],
     query: householdsNeedingCardQuerySchema, response: householdsNeedingCardResponseSchema },
+  listMembersNeedingWaiver: { method: 'get', path: '/api/link-campaign-members/needing-waiver',
+    permission: { kind: 'staff', capability: 'links.send' }, additionalPermissions: [{ kind: 'staff', capability: 'members.read' }],
+    query: membersNeedingWaiverQuerySchema, response: membersNeedingWaiverResponseSchema },
 } as const satisfies Record<string, EndpointContract>;
 
 /** Purposes accepted by staff creation, sending and campaign commands. */
@@ -215,3 +237,5 @@ export type LinkCampaignResponse = z.infer<typeof linkCampaignResponseSchema>;
 export type LinkCampaignListResponse = z.infer<typeof linkCampaignListResponseSchema>;
 export type CampaignRecipientListResponse = z.infer<typeof campaignRecipientListResponseSchema>;
 export type HouseholdsNeedingCardResponse = z.infer<typeof householdsNeedingCardResponseSchema>;
+export type MembersNeedingWaiverQuery = z.infer<typeof membersNeedingWaiverQuerySchema>;
+export type MembersNeedingWaiverResponse = z.infer<typeof membersNeedingWaiverResponseSchema>;

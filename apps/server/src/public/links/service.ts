@@ -95,10 +95,16 @@ export function createLinkPageService(options: LinkPageOptions) {
       if (data.purpose === 'sign_waiver' || data.purpose === 'unsubscribe') throw new AppError('not_found', 'Link not found');
       return options.checkout.start(p.gymId, p.linkId);
     },
-    async complete(context: RequestContext, sessionId: string | null) {
+    async complete(context: RequestContext, sessionId: string | null, keepCard = false) {
       const data = await load(context, false), p = linkPrincipal(context);
       if (data.purpose === 'sign_waiver' || data.purpose === 'unsubscribe') throw new AppError('not_found', 'Link not found');
-      return options.checkout.complete(p.gymId, p.linkId, sessionId);
+      return options.checkout.complete(p.gymId, p.linkId, sessionId, keepCard && data.purpose === 'onboarding');
+    },
+    /** The saved default method an onboarding link offers to keep, masked; null for every other link. */
+    async keepableCard(context: RequestContext) {
+      const p = linkPrincipal(context);
+      if (p.link.purpose !== 'onboarding') return null;
+      return options.checkout.keepableCard(p.gymId, p.linkId);
     },
   };
 }

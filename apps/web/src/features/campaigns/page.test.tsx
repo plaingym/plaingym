@@ -20,6 +20,7 @@ const household: Household = { id: householdId, name: 'Chen household', email: '
 function client(): CampaignClient {
   return {
     needsCard: vi.fn(async () => [householdId]),
+    needsWaiver: vi.fn(async () => []),
     list: vi.fn(async () => ({ data: [detail], pagination: { total: 1, limit: 20, offset: 0 } })),
     get: vi.fn(async () => detail),
     recipients: vi.fn(async () => ({ data: [{ state: 'pending' as const, link: { id, householdId, campaignId: id, purpose: 'onboarding' as const,
@@ -161,5 +162,56 @@ describe('campaign admin screens', () => {
     expect(loadNeedsCard).toHaveBeenCalledWith(homes);
     await user.click(screen.getByRole('button', { name: 'Create and send' }));
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ recipients: [{ householdId }, { householdId: id }] }));
+  });
+  const memberA = '01900000-0000-7000-8000-00000000000a', memberB = '01900000-0000-7000-8000-00000000000b';
+  const otherHousehold = '01900000-0000-7000-8000-00000000000c';
+  const needing = [
+    { memberId: memberA, householdId, firstName: 'Ana', lastName: 'Chen', householdName: 'Chen household', householdEmail: 'payer@example.test' },
+    { memberId: memberB, householdId: otherHousehold, firstName: 'Ben', lastName: 'Ortiz', householdName: 'Ortiz household', householdEmail: null },
+  ];
+  it('sends a Sign waivers campaign to the members who need one', async () => {
+    const save = vi.fn(async () => {}), loadNeedsWaiver = vi.fn(async () => needing), user = userEvent.setup();
+    render(<CampaignEditor households={[household]} timezone="UTC" save={save} close={() => {}} loadNeedsWaiver={loadNeedsWaiver} />);
+    await user.type(screen.getByLabelText('Campaign name'), 'Waivers'); await user.type(screen.getByLabelText('Links expire'), '2026-11-26');
+    await user.click(screen.getByRole('checkbox', { name: /Chen household/ }));
+    await user.selectOptions(screen.getByLabelText('Purpose'), 'sign_waiver');
+    expect(await screen.findByRole('checkbox', { name: /Ana Chen, Chen household/ })).toBeDefined();
+    expect(screen.getByText('Members (0)')).toBeDefined();
+    expect(screen.queryByRole('checkbox', { name: 'Needs a card' })).toBeNull();
+    expect((screen.getByRole('checkbox', { name: /Ben Ortiz, Ortiz household/ }) as HTMLInputElement).disabled).toBe(true);
+    expect(screen.getAllByText('No household email')).toHaveLength(1);
+    const search = screen.getByLabelText('Find members');
+    await user.type(search, 'ortiz');
+    expect(screen.queryByRole('checkbox', { name: /Ana Chen/ })).toBeNull();
+    await user.clear(search); await user.type(search, 'payer@');
+    await user.click(screen.getByRole('button', { name: 'Select matching members' }));
+    await user.clear(search);
+    expect(screen.getByText('Members (1)')).toBeDefined();
+    await user.click(screen.getByRole('button', { name: 'Create and send' }));
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ purpose: 'sign_waiver', recipients: [{ householdId, memberId: memberA }] }));
+    expect(loadNeedsWaiver).toHaveBeenCalledTimes(1);
+  });
+  it('clears the selection and search when the purpose changes', async () => {
+    const user = userEvent.setup();
+    render(<CampaignEditor households={[household]} timezone="UTC" save={vi.fn(async () => {})} close={() => {}} loadNeedsWaiver={async () => needing} />);
+    await user.selectOptions(screen.getByLabelText('Purpose'), 'sign_waiver');
+    await user.click(await screen.findByRole('checkbox', { name: /Ana Chen/ }));
+    await user.type(screen.getByLabelText('Find members'), 'ana');
+    expect(screen.getByText('Members (1)')).toBeDefined();
+    await user.selectOptions(screen.getByLabelText('Purpose'), 'onboarding');
+    expect(screen.getByText('Households (0)')).toBeDefined();
+    expect((screen.getByLabelText('Find households') as HTMLInputElement).value).toBe('');
+    expect((screen.getByRole('checkbox', { name: /Chen household/ }) as HTMLInputElement).checked).toBe(false);
+  });
+  it('shows the empty and failed member loads', async () => {
+    const user = userEvent.setup();
+    const loadNeedsWaiver = vi.fn<() => Promise<typeof needing>>().mockRejectedValueOnce(new Error('private detail')).mockResolvedValueOnce([]);
+    render(<CampaignEditor households={[household]} timezone="UTC" save={vi.fn(async () => {})} close={() => {}} loadNeedsWaiver={loadNeedsWaiver} />);
+    await user.selectOptions(screen.getByLabelText('Purpose'), 'sign_waiver');
+    const failed = await screen.findByRole('alert');
+    expect(failed.textContent).toContain('Could not check signed waivers'); expect(failed.textContent).not.toContain('private');
+    await user.click(within(failed).getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('Every member has signed the current waivers.')).toBeDefined();
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 });

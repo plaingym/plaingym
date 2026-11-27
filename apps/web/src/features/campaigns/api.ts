@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { parseResponse } from '../../lib/response.js';
 import { linksContracts, membersContracts, type CampaignRecipientState, type CreateLinkCampaignRequest, type Household,
-  type HouseholdsNeedingCardResponse } from '@plaingym/shared/contracts';
+  type HouseholdsNeedingCardResponse, type MembersNeedingWaiverResponse } from '@plaingym/shared/contracts';
 import { api, checked as checkedResult } from '../../lib/api.js';
 
 function checked<T>(result: { response: Response; data?: T; error?: unknown }): T {
@@ -11,6 +11,10 @@ export const campaignClient = {
   async needsCard(households: Household[]) {
     return householdsNeedingCard(households, async after => parseResponse(linksContracts.listHouseholdsNeedingCard.response,
       checked(await api.GET('/api/link-campaign-households/needing-card', { params: { query: { limit: 100, ...(after ? { after } : {}) } } }))));
+  },
+  async needsWaiver() {
+    return membersNeedingWaiver(async after => parseResponse(linksContracts.listMembersNeedingWaiver.response,
+      checked(await api.GET('/api/link-campaign-members/needing-waiver', { params: { query: { limit: 100, ...(after ? { after } : {}) } } }))));
   },
   async list(offset = 0) {
     return parseResponse(linksContracts.listCampaigns.response, checked(await api.GET('/api/link-campaigns', { params: { query: { limit: 20, offset } } })));
@@ -55,4 +59,16 @@ export async function householdsNeedingCard(households: Household[], load: (afte
     after = page.pagination.nextAfter;
   }
   return households.filter(h => missing.has(h.id)).map(h => h.id);
+}
+export type MemberNeedingWaiver = MembersNeedingWaiverResponse['data'][number];
+/** Every member missing a current waiver, a page of 100 at a time in member ID order, for the Sign waivers picker. */
+export async function membersNeedingWaiver(load: (after?: string) => Promise<MembersNeedingWaiverResponse>) {
+  const result: MemberNeedingWaiver[] = [];
+  for (let after: string | undefined; ; ) {
+    const page = await load(after);
+    result.push(...page.data);
+    if (page.pagination.nextAfter === null) return result;
+    if (!page.data.length || (after !== undefined && page.pagination.nextAfter <= after)) throw new Error('Incomplete member list');
+    after = page.pagination.nextAfter;
+  }
 }

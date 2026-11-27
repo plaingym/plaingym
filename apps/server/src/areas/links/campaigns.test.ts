@@ -85,7 +85,8 @@ async function fixture(currency = 'USD') {
 const post = (app: ReturnType<Awaited<ReturnType<typeof fixture>>['server']>, path: string, body?: unknown) => app.request(path, {
   method: 'POST', headers: { 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}),
 });
-const paths = ['createCampaign', 'listCampaigns', 'getCampaign', 'listCampaignRecipients', 'remindCampaign', 'listHouseholdsNeedingCard'] as const;
+const paths = ['createCampaign', 'listCampaigns', 'getCampaign', 'listCampaignRecipients', 'remindCampaign', 'listHouseholdsNeedingCard',
+  'listMembersNeedingWaiver'] as const;
 async function request(f: Awaited<ReturnType<typeof fixture>>, name: typeof paths[number], id: string, principal: Principal) {
   const contract = linksContracts[name], path = contract.path.replace('{campaignId}', id), app = f.server(principal);
   return contract.method === 'get' ? app.request(path) : post(app, path, name === 'createCampaign' ? f.input() : undefined);
@@ -191,6 +192,67 @@ describe('campaign contract, authorization and isolation', () => {
     // Gym B sees only its own household, which has a card; gym A's households never appear.
     expect(await b.service.householdsNeedingCard(b.gymId)).toEqual({ data: [], pagination: { limit: 50, nextAfter: null } });
     expect(f.paymentsFor).not.toHaveBeenCalled();
+  });
+  it('lists the members missing a current waiver, by the signed-link rule, in pages and only for this gym', async () => {
+    const f = await fixture(), b = await fixture();
+    const needing = () => f.service.membersNeedingWaiver(f.gymId).then(page => page.data.map(row => row.memberId).sort());
+    // With no current waiver nobody needs one, even with members of every status.
+    const person = (status: string, extra: Record<string, unknown> = {}) => factory('members', f.gymId, { householdId: f.household.id, status, ...extra });
+    const [one, older, both, retiredOnly, frozen, prospect, cancelled, erased] = [
+      await person('active'), await person('trial'), await person('visitor'), await person('active'), await person('frozen'),
+      await person('prospect'), await person('cancelled'), await person('active', { anonymizedAt: f.clock.now() })];
+    expect(await f.service.membersNeedingWaiver(f.gymId)).toEqual({ data: [], pagination: { limit: 50, nextAfter: null } });
+    const first = await factory('waiverTemplates', f.gymId, { name: 'Release' });
+    const second = await factory('waiverTemplates', f.gymId, { name: 'Rules' });
+    const secondNext = await factory('waiverTemplates', f.gymId, { name: 'Rules', version: 2 });
+    await factory('waiverTemplates', f.gymId, { name: 'Old', retiredAt: f.clock.now() });
+    const sign = (memberId: string, templateId: string) => factory('waiverSignatures', f.gymId, { memberId, templateId });
+    await sign(one!.id, first.id);
+    await sign(older!.id, first.id); await sign(older!.id, second.id);
+    await sign(both!.id, first.id); await sign(both!.id, secondNext.id);
+    await sign(retiredOnly!.id, first.id); await sign(retiredOnly!.id, secondNext.id);
+    // Left out: a member who signed both current waivers, one whose only unsigned waiver is retired, the fixture's own
+    // member (a prospect), and the prospect, cancelled and erased members.
+    expect(await needing()).toEqual([one!.id, older!.id, frozen!.id].sort());
+    for (const left of [both!, retiredOnly!, prospect!, cancelled!, erased!, f.member]) expect(await needing()).not.toContain(left.id);
+    const response = await f.server().request('/api/link-campaign-members/needing-waiver');
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    const body = linksContracts.listMembersNeedingWaiver.response.parse(await response.json());
+    expect(body.data.find(row => row.memberId === one!.id)).toEqual({ memberId: one!.id, householdId: f.household.id,
+      firstName: one!.firstName, lastName: one!.lastName, householdName: f.household.name, householdEmail: 'payer@example.test' });
+    expect(JSON.stringify(body)).not.toMatch(/dateOfBirth|signature|medical|snapshot/i);
+    // Signing between pages can't shift a member past an OFFSET.
+    await sign(frozen!.id, first.id); await sign(frozen!.id, secondNext.id);
+    const pageOne = await f.service.membersNeedingWaiver(f.gymId, { limit: 1 });
+    const pageTwo = await f.service.membersNeedingWaiver(f.gymId, { limit: 1, after: pageOne.pagination.nextAfter! });
+    expect([...pageOne.data, ...pageTwo.data].map(row => row.memberId)).toEqual([one!.id, older!.id].sort());
+    expect(pageOne.pagination.nextAfter).toBe(pageOne.data[0]!.memberId);
+    expect(pageTwo.pagination.nextAfter).toBeNull();
+    // Gym B has a current waiver and an unsigned active member of its own; neither gym sees the other's members.
+    await factory('waiverTemplates', b.gymId, { name: 'Release' });
+    const bMember = await factory('members', b.gymId, { householdId: b.household.id, status: 'active' });
+    expect((await b.service.membersNeedingWaiver(b.gymId)).data.map(row => row.memberId)).toEqual([bMember.id]);
+    expect(await needing()).not.toContain(bMember.id);
+    expect((await f.server(f.staff(), b.gymId).request('/api/link-campaign-members/needing-waiver')).status).toBe(403);
+    expect(f.paymentsFor).not.toHaveBeenCalled();
+  });
+  it('creates one waiver link per member and refuses another gym member without storing anything', async () => {
+    const f = await fixture(), b = await fixture();
+    const [first, second] = [await factory('members', f.gymId, { householdId: f.household.id, status: 'active' }),
+      await factory('members', f.gymId, { householdId: f.household.id, status: 'active' })];
+    const created = await f.service.create(f.context, { name: 'Waivers', purpose: 'sign_waiver', expiresAt: '2026-11-26T12:00:00Z',
+      reminderSchedule: [], recipients: [{ householdId: f.household.id, memberId: first!.id }, { householdId: f.household.id, memberId: second!.id }] });
+    const links = (await f.service.recipients(f.gymId, created.campaign.id)).data.map(row => row.link);
+    expect(links.map(link => [link.purpose, link.householdId, link.memberId])).toEqual(expect.arrayContaining([
+      ['sign_waiver', f.household.id, first!.id], ['sign_waiver', f.household.id, second!.id]]));
+    expect(links).toHaveLength(2);
+    const foreign = await factory('members', b.gymId, { householdId: b.household.id, status: 'active' });
+    const before = await db.forGym(f.gymId, tx => tx.select().from(signedLinks));
+    const response = await post(f.server(), '/api/link-campaigns', { name: 'Waivers', purpose: 'sign_waiver', expiresAt: '2026-11-26T12:00:00Z',
+      reminderSchedule: [], recipients: [{ householdId: f.household.id, memberId: first!.id }, { householdId: b.household.id, memberId: foreign.id }] });
+    expect(response.status).toBe(404);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(signedLinks))).toEqual(before);
+    expect((await f.service.list(f.gymId)).data).toHaveLength(1);
   });
 });
 

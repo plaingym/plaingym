@@ -35,6 +35,10 @@ available, and the last four digits. Cards remain available if Stripe refuses ba
 2. Name it, and choose the **Purpose**:
    * **Update card** asks the household to save a payment method.
    * **Onboarding** asks the household to sign the current waivers and save a payment method.
+     A household that already has a usable default payment method (for example a card
+     imported from your Stripe account, below) can keep it instead of entering one again.
+   * **Sign waivers** asks members to sign the current waivers, with no payment step
+     ([Re-signing waivers after a switch](#re-signing-waivers-after-a-switch)).
 3. Set **Links expire** (a date within 90 days; links end at the close of that day in
    your gym's timezone) and, optionally, **Reminder days**: up to ten increasing days
    after creation, separated by commas (for example `3, 7`). Reminders go out within the
@@ -43,12 +47,21 @@ available, and the last four digits. Cards remain available if Stripe refuses ba
 4. Pick the **Households**. **Find households** searches by name. The **Needs a card**
    filter keeps households with no active saved payment method. **Select matching households**
    adds everyone visible. Selections survive changing the filter. A campaign takes
-   up to 2,000 households.
+   up to 2,000 households. With **Sign waivers**, you pick **Members** instead: the
+   list holds only active, trial, visitor and frozen members still missing a signature
+   on a current waiver, shown as "First Last, Household" with the household email that
+   the link goes to. **Find members** searches member name, household name and email.
+   Changing the purpose clears the selection.
 5. Choose **Create and send**. The first emails are queued straight away.
 
 Each household gets one private link, good for one household only. Opening it
 leads to Stripe's page to save a payment method. A household that is new to Stripe gets a
-Stripe customer then.
+Stripe customer then. On an **Onboarding** link, a household whose default payment method
+is still usable (a card not expired, or a bank account your currency can charge, a Canadian
+PAD only with a mandate) sees **Keep this card** beside **Use a different card**. Keeping it
+completes the link once every waiver is signed, without visiting Stripe; signing alone
+never completes it. A **Sign waivers** link goes to one member and completes when that
+member has signed every current waiver.
 
 ## Follow up
 
@@ -86,6 +99,18 @@ you may be able to reuse its saved cards and compatible bank accounts:
   email, even when the address is identical, and their payment methods aren't reused. Only
   customers PlainGym itself tagged for your gym are matched. Opening a link then
   creates a new customer.
+
+With imported default cards, an **Onboarding** campaign lets those households keep
+their card and only sign, and a **Sign waivers** campaign asks for signatures alone.
+
+## Re-signing waivers after a switch
+
+Signed waivers from your old system aren't imported, so every member signs again in
+PlainGym. Once a waiver is published, the kiosk sends each member who hasn't signed it
+to the front desk at check-in. Publish the waivers and send a **Sign waivers** (or
+**Onboarding**) campaign before members start checking in, or expect those front-desk
+check-ins until they have signed. Keep the old system's signed copies in your gym's own
+records; PlainGym doesn't store them.
 
 ## Afterwards
 

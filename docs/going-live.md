@@ -55,7 +55,7 @@ Work down the **Readiness checklist** on **Settings → Go live**. Each line say
 | Schedule | Your classes are added. |
 | Payments | A Stripe key is configured. A test key counts too, so check that it is your **live** key (step 1 below). If it says Stripe could not be checked, the saved keys can't be read: check them in **Settings → Integrations → Payments**. Until then billing can't be switched on and Online joining stays *Needs attention*. |
 | Saved cards | Every household with a paid membership has a usable default payment method ([card-recollection.md](card-recollection.md)). |
-| Waivers | Active members have signed every current waiver. |
+| Waivers | Active members have signed every current waiver. After a switch, send a **Sign waivers** campaign ([card-recollection.md](card-recollection.md#re-signing-waivers-after-a-switch)). |
 | Online joining | Billing is on, Stripe is connected, one to eight waivers or agreements are current, and at least one active plan is priced in the gym's currency, so /join can take members. It stays *Needs attention* while billing is off, so it clears only when you switch billing on in §3. |
 | Email delivery | Email is set up and a test message arrived. |
 | Backups | Backups are set up and the key is stored safely. |

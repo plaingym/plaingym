@@ -78,7 +78,7 @@ export function CampaignWorkspace({ gymId, timezone, client = campaignClient }: 
         </li>)}</ul><Pager offset={recipientOffset} total={recipients.data.pagination.total} onChange={setRecipientOffset} label={text('pages')} />
       </>}
     </>}
-    {editing && households.data && <CampaignEditor households={households.data} timezone={timezone} loadNeedsCard={client.needsCard} close={() => setEditing(false)} save={async input => {
+    {editing && households.data && <CampaignEditor households={households.data} timezone={timezone} loadNeedsCard={client.needsCard} loadNeedsWaiver={client.needsWaiver} close={() => setEditing(false)} save={async input => {
       const created = await client.create(input); setEditing(false); setSelected(created.campaign.id); setRecipientOffset(0); setMessage(text('created'));
       await cache.invalidateQueries({ queryKey: key });
     }} />}

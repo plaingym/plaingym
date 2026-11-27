@@ -220,6 +220,19 @@ to check the same results and can finish onboarding after signing. A lost browse
 receipt can be recovered by starting Checkout again; provider idempotency
 preserves an existing setup within its retention window.
 
+**Keeping a saved card.** When an onboarding link's household already has a
+usable default payment method (`keepableCard`: a card not expired in the gym's
+time zone, a bank account of the gym currency's kind, a Canadian PAD only with
+a mandate; its last four digits on record, and the household still linked to
+its Stripe customer), the page shows **Keep this card** (`data-keep-card`, with the
+method's masked text) beside **Use a different card**, which opens Checkout as
+before; without one the page is unchanged. The keep button posts
+`{ "keepCard": true }` to `/api/links/onboarding/complete`, the only complete
+route that takes a body field (the other two refuse one with 400). The link
+completes only once every waiver is signed, and the method is checked again
+under the link lock, with no provider call; otherwise the page shows its
+`incomplete` message and the link stays open (`areas/links/campaigns.README.md`).
+
 ## Composition
 
 The public-area barrel includes these routes. The runtime calls

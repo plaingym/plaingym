@@ -254,7 +254,8 @@ export const signedLinkActionContracts = {
   uploadOnboarding: { method: 'post', path: '/api/links/onboarding/signature-images', permission: { kind: 'signed_link', purpose: 'onboarding' }, body: waiverUploadRequestSchema, response: waiverUploadResponseSchema },
   completeInvoice: { method: 'post', path: '/api/links/pay-invoice/complete', permission: { kind: 'signed_link', purpose: 'pay_invoice' }, response: z.strictObject({ data: z.strictObject({ completed: z.boolean() }) }) },
   completeCard: { method: 'post', path: '/api/links/update-card/complete', permission: { kind: 'signed_link', purpose: 'update_card' }, response: z.strictObject({ data: z.strictObject({ completed: z.boolean() }) }) },
-  completeOnboarding: { method: 'post', path: '/api/links/onboarding/complete', permission: { kind: 'signed_link', purpose: 'onboarding' }, response: z.strictObject({ data: z.strictObject({ completed: z.boolean() }) }) },
+  /** `keepCard` completes with the household's saved default payment method once every waiver is signed. */
+  completeOnboarding: { method: 'post', path: '/api/links/onboarding/complete', permission: { kind: 'signed_link', purpose: 'onboarding' }, body: z.strictObject({ keepCard: z.literal(true).optional() }), response: z.strictObject({ data: z.strictObject({ completed: z.boolean() }) }) },
 } as const satisfies Record<string, EndpointContract>;
 
 export type PortalContext = z.infer<typeof portalContextSchema>;

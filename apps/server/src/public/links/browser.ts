@@ -75,7 +75,8 @@ export function linkBrowser() {
     if (!response.ok) throw new Error('request failed');
     const updated = new DOMParser().parseFromString(await response.text(), 'text/html');
     if (!activePage) return;
-    const card = document.querySelector('[data-card-panel]'), button = card?.querySelector('[data-checkout]');
+    const card = document.querySelector('[data-card-panel]');
+    const button = card?.querySelector('[data-card-actions]') ?? card?.querySelector('[data-checkout]');
     const rows = [...updated.querySelectorAll('[data-card-panel] [data-card-status]')];
     if (card && button && rows.length) {
       card.querySelectorAll('[data-card-status]').forEach(row => row.remove());
@@ -87,6 +88,13 @@ export function linkBrowser() {
     void busy(button, async () => { const result = await call('/checkout');
       if (tablet) location.replace(String(result.data.url)); else location.assign(String(result.data.url)); });
   }));
+  // Keeping the saved default method completes an onboarding link once every waiver is signed; otherwise it stays open.
+  const keep = document.querySelector<HTMLButtonElement>('[data-keep-card]');
+  keep?.addEventListener('click', () => { void busy(keep, async () => {
+    const result = await call('/complete', { keepCard: true });
+    if (result.data.completed) done();
+    else say('incomplete');
+  }); });
   const complete = document.querySelector<HTMLButtonElement>('[data-complete]');
   complete?.addEventListener('click', () => { void busy(complete, async () => {
     const result = await call('/complete');

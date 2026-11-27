@@ -21,6 +21,8 @@ export interface PageInput {
   /** `paid`: a payer back from the Checkout session that paid this link. */
   state?: 'alreadyDone' | 'unavailable' | 'replaced' | 'cleared' | 'paid';
   processing?: boolean;
+  /** An onboarding link's saved default method it may keep instead of card setup, masked. */
+  keepCard?: { type: string; bankName: string | null; last4: string } | null;
   tablet?: boolean;
   now: Date;
   timezone: string;
@@ -28,7 +30,7 @@ export interface PageInput {
   t: Translator;
 }
 /** Server-rendered Hono JSX; dynamic terms and names are escaped as text. */
-export function linkPage({ data, state, portalClaim, processing = false, tablet = false, now, timezone, locale = 'en', t, documentBase, gymName, logoKey }: PageInput) {
+export function linkPage({ data, state, portalClaim, keepCard, processing = false, tablet = false, now, timezone, locale = 'en', t, documentBase, gymName, logoKey }: PageInput) {
   const text = (key: string, values?: Record<string, string | number>) => t('public/links:' + key, values);
   const unsigned = data && (data.purpose === 'onboarding' || data.purpose === 'sign_waiver')
     && (data.purpose === 'onboarding' ? data.members : [data.member]).some(member => data.templates.some(template =>
@@ -36,9 +38,15 @@ export function linkPage({ data, state, portalClaim, processing = false, tablet 
   // The pay button shows only for an open, card-payable invoice; otherwise checking completion is what is left to do.
   const payable = data?.purpose === 'pay_invoice' && ['open', 'past_due'].includes(data.invoice.invoice.status) && data.invoice.invoice.amountCents !== 0
     && !cardChargeIssue(data.invoice.invoice.amountCents, data.invoice.invoice.currency);
+  const kept = data?.purpose === 'onboarding' ? keepCard ?? null : null;
   const primaryAction = data?.purpose === 'onboarding'
-    ? portalClaim ? 'portal' : !data.paymentMethods.some(method => method.last4) ? 'card' : unsigned ? 'waiver' : 'complete'
+    ? portalClaim ? 'portal' : kept ? unsigned ? 'waiver' : 'keep'
+      : !data.paymentMethods.some(method => method.last4) ? 'card' : unsigned ? 'waiver' : 'complete'
     : data?.purpose === 'update_card' ? 'card' : data?.purpose === 'sign_waiver' ? 'waiver' : payable ? 'invoice' : 'complete';
+  const methodText = (method: { type: string; bankName: string | null; last4: string }) =>
+    method.type === 'us_bank_account' || method.type === 'acss_debit'
+      ? text(method.bankName ? 'savedBank' : 'unnamedBank', { bank: method.bankName ?? '', last4: method.last4 })
+      : text('savedCard', { last4: method.last4 });
   const announcementText = (key: string, values?: Record<string, string | number>) => t('links/unsubscribe:' + key, values);
   const title = !state && data?.purpose === 'unsubscribe' ? announcementText('title')
     : state === 'paid' ? text('completedTitle') : text(state ?? data?.purpose ?? 'unavailable');
@@ -53,13 +61,15 @@ export function linkPage({ data, state, portalClaim, processing = false, tablet 
     : state ? h('section', { class: panel }, h('h1', { class: 'text-2xl font-bold' }, title), h('p', null, text(settling ? 'bankProcessing' : state + 'Body'))) : null;
   const card = data && (data.purpose === 'update_card' || data.purpose === 'onboarding')
     ? h('section', { class: panel, 'data-card-panel': true }, h('h2', { class: 'text-xl font-semibold' }, text('card')),
-      h('p', null, text('cardHelp')),
+      h('p', null, text(kept ? 'keepCardHelp' : 'cardHelp')),
       data.paymentMethods.length === 0 ? h('p', { 'data-card-status': true }, text('noCard')) : null,
       ...data.paymentMethods.map(method => h('p', { 'data-card-status': true }, !method.last4 ? text('noCard')
-        : method.type === 'us_bank_account' || method.type === 'acss_debit'
-          ? text(method.bankName ? 'savedBank' : 'unnamedBank', { bank: method.bankName ?? '', last4: method.last4 })
-          : text('savedCard', { last4: method.last4 }))),
-      h('button', { type: 'button', class: primaryAction === 'card' ? button : secondaryButton, 'data-checkout': true }, text('setupCard'))) : null;
+        : methodText({ type: method.type, bankName: method.bankName ?? null, last4: method.last4 }))),
+      kept ? h('div', { class: 'flex flex-col gap-3 sm:flex-row sm:flex-wrap', 'data-card-actions': true },
+        h('button', { type: 'button', class: (primaryAction === 'keep' ? button : secondaryButton) + ' flex-col', 'data-keep-card': true },
+          h('span', null, text('keepCard')), h('span', { class: 'text-sm font-normal' }, methodText(kept))),
+        h('button', { type: 'button', class: secondaryButton, 'data-checkout': true }, text('differentCard')))
+        : h('button', { type: 'button', class: primaryAction === 'card' ? button : secondaryButton, 'data-checkout': true }, text('setupCard'))) : null;
   const invoice = data?.purpose === 'pay_invoice' ? h('section', { class: panel },
     h('h2', { class: 'text-xl font-semibold' }, text('invoice', { number: data.invoice.invoice.number })),
     h('p', null, text('due', { date: date(data.invoice.invoice.dueOn) })),

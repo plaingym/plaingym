@@ -88,9 +88,10 @@ it('replays short card setup with a persisted expiry after a lost response, and 
   expect(spy.mock.calls.at(-1)![0].idempotencyKey).not.toBe(firstKey);
 });
 const origin = 'https://gym.example.test', secret = 'synthetic-signing-secret';
-async function fixture(purpose: 'pay_invoice' | 'update_card' | 'onboarding' = 'update_card', stripe = false, currency = 'USD', bankDebitsEnabled = false) {
+async function fixture(purpose: 'pay_invoice' | 'update_card' | 'onboarding' = 'update_card', stripe = false, currency = 'USD', bankDebitsEnabled = false,
+  timezone = 'UTC') {
   const gymId = uuidv7(), clock = new TestClock('2026-10-27T12:00:00Z');
-  await factory('gyms', gymId, { currency, billingEnabled: true, memberEmailsEnabled: true, bankDebitsEnabled });
+  await factory('gyms', gymId, { currency, billingEnabled: true, memberEmailsEnabled: true, bankDebitsEnabled, timezone });
   const household = await factory('households', gymId, { stripeCustomerId: 'cus_fixture', email: 'payer@example.test' });
   const member = await factory('members', gymId, { householdId: household.id });
   const invoice = await factory('invoices', gymId, { householdId: household.id, number: 1, status: 'open', amountCents: 100, kind: 'one_off' });
@@ -922,5 +923,107 @@ describe('fixed return flows with real PostgreSQL', () => {
     const taggedAudits = await db.forGym(tagged.gymId, tx => tx.select().from(auditEvents)
       .where(eq(auditEvents.action, 'billing.customer.adopted')));
     expect(taggedAudits).toHaveLength(0);
+  });
+});
+
+describe('an onboarding link keeping a card already on file', () => {
+  type Method = { type?: 'card' | 'us_bank_account' | 'acss_debit'; expiryMonth?: number | null; expiryYear?: number | null;
+    isDefault?: boolean; revokedAt?: Date | null; mandateId?: string | null; bankName?: string | null };
+  /** An onboarding link whose household has one saved method and one current waiver, signed unless `unsigned`. */
+  async function kept(method: Method = {}, options: { currency?: string; timezone?: string; unsigned?: boolean; purpose?: 'onboarding' | 'update_card' | 'pay_invoice' } = {}) {
+    const f = await fixture(options.purpose ?? 'onboarding', false, options.currency ?? 'USD', false, options.timezone ?? 'UTC');
+    const template = await factory('waiverTemplates', f.gymId);
+    if (!options.unsigned) await factory('waiverSignatures', f.gymId, { memberId: f.member.id, templateId: template.id });
+    const type = method.type ?? 'card';
+    const saved = await factory('paymentMethods', f.gymId, { householdId: f.household.id, type, isDefault: method.isDefault ?? true,
+      revokedAt: method.revokedAt ?? null, mandateId: method.mandateId ?? null, bankName: method.bankName ?? null,
+      ...(type === 'card' ? { expiryMonth: method.expiryMonth === undefined ? 12 : method.expiryMonth,
+        expiryYear: method.expiryYear === undefined ? 2030 : method.expiryYear } : { brand: null }) });
+    const checkouts = vi.spyOn(f.fake, 'createCheckout'), reads = vi.spyOn(f.fake, 'readPaymentObject');
+    const keep = () => f.checkout.complete(f.gymId, f.linkId, null, true);
+    const usedAt = async () => (await f.links.get(f.gymId, f.linkId)).usedAt;
+    return { ...f, template, saved, checkouts, reads, keep, usedAt };
+  }
+  it('completes with a usable default card and every waiver signed, with no provider call', async () => {
+    const f = await kept();
+    expect(await f.checkout.keepableCard(f.gymId, f.linkId)).toEqual({ type: 'card', bankName: null, last4: '4242' });
+    expect(await f.keep()).toBe(true);
+    expect(await f.usedAt()).not.toBeNull();
+    expect(await f.used()).toHaveLength(1);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(and(eq(auditEvents.action, 'signed_link.card_kept'), eq(auditEvents.targetId, f.linkId))));
+    expect(audits.map(row => row.after)).toEqual([{ paymentMethodId: f.saved.id }]);
+    expect(f.checkouts).not.toHaveBeenCalled(); expect(f.reads).not.toHaveBeenCalled();
+    // The saved method is unchanged, and the campaign its link belongs to is complete.
+    const [method] = await db.forGym(f.gymId, tx => tx.select().from(paymentMethods).where(eq(paymentMethods.id, f.saved.id)));
+    expect(method).toEqual(f.saved);
+    expect((await f.campaigns.get(f.gymId, f.campaign.id)).campaign.completedAt).not.toBeNull();
+  });
+  it('without keepCard, or with a waiver unsigned, leaves the link open', async () => {
+    const f = await kept();
+    expect(await f.checkout.complete(f.gymId, f.linkId, null)).toBe(false);
+    expect(await f.usedAt()).toBeNull();
+    const unsigned = await kept({}, { unsigned: true });
+    expect(await unsigned.keep()).toBe(false);
+    expect(await unsigned.usedAt()).toBeNull();
+    expect(await unsigned.used()).toHaveLength(0);
+  });
+  it('decides card expiry by the gym-local month', async () => {
+    // 2026-10-27: a card expiring 2026-09 is expired; 2026-10 and no expiry are usable.
+    for (const [method, expected] of [[{ expiryYear: 2026, expiryMonth: 9 }, false], [{ expiryYear: 2026, expiryMonth: 10 }, true],
+      [{ expiryYear: null, expiryMonth: null }, true]] as const) {
+      const f = await kept(method);
+      expect(await f.checkout.keepableCard(f.gymId, f.linkId), JSON.stringify(method)).toEqual(expected ? expect.objectContaining({ last4: '4242' }) : null);
+      expect(await f.keep(), JSON.stringify(method)).toBe(expected);
+    }
+    // 03:00 UTC on 1 November is still 31 October in Los Angeles, so an October card is current there but not in UTC.
+    for (const [timezone, expected] of [['America/Los_Angeles', true], ['UTC', false]] as const) {
+      const f = await kept({ expiryYear: 2026, expiryMonth: 10 }, { timezone });
+      f.clock.set(new Date('2026-11-01T03:00:00Z'));
+      expect(await f.keep(), timezone).toBe(expected);
+    }
+  });
+  it('never keeps a missing default, a revoked method or one of another currency', async () => {
+    const cases: [Method, { currency?: string }, boolean][] = [
+      [{ isDefault: false }, {}, false],
+      [{ isDefault: false, revokedAt: new Date('2026-10-01Z') }, {}, false],
+      [{ type: 'us_bank_account', bankName: 'Test Bank' }, { currency: 'USD' }, true],
+      [{ type: 'us_bank_account', bankName: 'Test Bank' }, { currency: 'CAD' }, false],
+      [{ type: 'acss_debit', mandateId: 'mandate_test' }, { currency: 'CAD' }, true],
+      [{ type: 'acss_debit' }, { currency: 'CAD' }, false],
+    ];
+    for (const [method, options, expected] of cases) {
+      const f = await kept(method, options), label = JSON.stringify([method, options]);
+      expect(await f.keep(), label).toBe(expected);
+      expect(await f.usedAt() !== null, label).toBe(expected);
+      expect(f.checkouts, label).not.toHaveBeenCalled();
+    }
+  });
+  it('neither offers nor keeps a method the charge runner could not charge or the page could not name', async () => {
+    const unlinked = await kept();
+    await db.forGym(unlinked.gymId, tx => tx.update(households).set({ stripeCustomerId: null }).where(eq(households.id, unlinked.household.id)));
+    const unnamed = await kept();
+    await db.forGym(unnamed.gymId, tx => tx.update(paymentMethods).set({ last4: null }).where(eq(paymentMethods.id, unnamed.saved.id)));
+    for (const [label, f] of [['no customer', unlinked], ['no last four', unnamed]] as const) {
+      expect(await f.checkout.keepableCard(f.gymId, f.linkId), label).toBeNull();
+      expect(await f.keep(), label).toBe(false);
+      expect(await f.usedAt(), label).toBeNull();
+    }
+  });
+  it('uses the link once under concurrent keeps, and rechecks a method revoked after the page offered it', async () => {
+    const f = await kept();
+    expect(await Promise.all([f.keep(), f.keep()])).toEqual([true, true]);
+    expect(await f.used()).toHaveLength(1);
+    const revoked = await kept();
+    expect(await revoked.checkout.keepableCard(revoked.gymId, revoked.linkId)).not.toBeNull();
+    await db.forGym(revoked.gymId, tx => tx.update(paymentMethods).set({ isDefault: false, revokedAt: revoked.clock.now() })
+      .where(eq(paymentMethods.id, revoked.saved.id)));
+    expect(await revoked.keep()).toBe(false);
+    expect(await revoked.usedAt()).toBeNull();
+  });
+  it.each(['update_card', 'pay_invoice'] as const)('ignores keepCard on a %s link', async purpose => {
+    const f = await kept({}, { purpose });
+    expect(await f.checkout.keepableCard(f.gymId, f.linkId)).toBeNull();
+    expect(await f.keep()).toBe(false);
+    expect(await f.usedAt()).toBeNull();
   });
 });

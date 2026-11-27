@@ -20,8 +20,13 @@ try {
     await page.route('**/api/**', async route => {
       const request = route.request(), url = new URL(request.url()), list = data => ({ data, pagination: { limit: 20, offset: 0, total: data.length } });
       if (url.pathname === '/api/households') return route.fulfill({ json: list([{ id: householdId, name: 'Chen household with a long descriptive name',
-        email: 'payer.with.a.long.address@example.test', phone: null, address: {}, revision: 1, createdAt }]) });
+        email: 'payer.with.a.long.address@example.test', phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: {}, pinSet: false,
+        revision: 1, createdAt }]) });
       if (url.pathname === '/api/link-campaign-households/needing-card') return route.fulfill({ json: { data: [{ householdId }], pagination: { limit: 100, nextAfter: null } } });
+      if (url.pathname === '/api/link-campaign-members/needing-waiver') return route.fulfill({ json: { data: [
+        { memberId: id, householdId, firstName: 'Alexandria', lastName: 'Chen-Montgomery', householdName: 'Chen household with a long descriptive name', householdEmail: 'payer.with.a.long.address@example.test' },
+        { memberId: householdId, householdId: id, firstName: 'Ben', lastName: 'Ortiz', householdName: 'Ortiz household', householdEmail: null },
+      ], pagination: { limit: 100, nextAfter: null } } });
       if (request.method() === 'POST') {
         if (fail) return route.fulfill({ status: 503, json: { error: { code: 'unavailable' } } });
         if (url.pathname.endsWith('/remind')) return route.fulfill({ json: { data: { queued: 1 } } });
@@ -46,7 +51,15 @@ try {
     await page.goto((process.argv[2] ?? 'http://127.0.0.1:5197') + '/src/features/campaigns/browser-fixture.html');
     await page.getByRole('button', { name: 'View October onboarding' }).waitFor(); await check('list');
     await page.getByRole('button', { name: 'New campaign' }).click();
-    await page.getByLabel('Campaign name').fill('Card collection'); await page.getByLabel('Purpose').selectOption('update_card');
+    await page.getByLabel('Campaign name').fill('Card collection');
+    // Sign waivers lists members, with no card filter, in light and dark.
+    await page.getByLabel('Purpose').selectOption('sign_waiver');
+    await page.getByRole('checkbox', { name: /Alexandria Chen-Montgomery/ }).check();
+    await expect(page.getByRole('checkbox', { name: /Ben Ortiz/ })).toBeDisabled();
+    await expect(page.getByRole('checkbox', { name: 'Needs a card' })).toHaveCount(0); await check('waivers');
+    await page.evaluate(() => document.documentElement.classList.add('dark')); await check('waivers-dark');
+    await page.evaluate(() => document.documentElement.classList.remove('dark'));
+    await page.getByLabel('Purpose').selectOption('update_card');
     await page.getByLabel('Links expire', { exact: true }).fill('2026-11-26');
     await page.getByRole('checkbox', { name: 'Needs a card' }).check();
     await page.getByRole('checkbox', { name: /Chen household/ }).check(); await check('editor');
