@@ -32,7 +32,7 @@
   "memberSelectionHelp": "Listed: active, trial, visitor and frozen members missing a signature on a current waiver. Each selected member gets a link sent to their household email. Choose up to {recipients} members.",
   "selectVisibleMembers": "Select matching members",
   "memberLimit": "Select no more than {recipients} members.",
-  "sendHelp": "Initial sends are queued immediately while member emails are enabled. Email preferences still apply. Automatic Stripe matching uses only customers already tagged for this gym; untagged customers are not matched. Unmatched households get a customer when their link opens.",
+  "sendHelp": "Initial sends are queued immediately while member emails are enabled. Email preferences still apply. Automatic Stripe matching links only a customer PlainGym created for that household; link another customer by its ID through the people import. Unmatched households get a customer when their link opens.",
   "send": "Create and send",
   "saving": "Saving…",
   "close": "Close",

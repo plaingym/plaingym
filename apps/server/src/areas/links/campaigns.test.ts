@@ -674,10 +674,10 @@ describe('campaign customer matching', () => {
     expect(audits[0]!.after).toEqual({ campaignId: c.campaign.id, occurrence: 'initial' });
     expect(JSON.stringify(audits)).not.toMatch(/payer@example|cus_private/);
   });
-  it('uses only gym-tagged exact email matches and retains the household revision', async () => {
+  it('uses only gym-tagged exact email matches naming the household and retains the household revision', async () => {
     const f = await fixture(), c = await f.campaign();
-    f.provider.seedCustomer({ id: 'cus_ours', email: 'PAYER@example.test' });
-    f.provider.seedCustomer({ id: 'cus_foreign', email: 'payer@example.test', gymId: uuidv7() });
+    f.provider.seedCustomer({ id: 'cus_ours', email: 'PAYER@example.test', householdId: f.household.id });
+    f.provider.seedCustomer({ id: 'cus_foreign', email: 'payer@example.test', gymId: uuidv7(), householdId: f.household.id });
     const lookup = vi.spyOn(f.provider, 'findCustomerByEmail'), create = vi.spyOn(f.provider, 'createCustomer');
     await f.service.scan(f.gymId); await f.drain();
     const [household] = await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, f.household.id)));
@@ -687,8 +687,8 @@ describe('campaign customer matching', () => {
   });
   it.each(['existing', 'ambiguous', 'claimed', 'none', 'reserved'] as const)('leaves %s customer associations alone', async kind => {
     const f = await fixture();
-    if (kind !== 'none') f.provider.seedCustomer({ id: 'cus_match', email: 'payer@example.test' });
-    if (kind === 'ambiguous') f.provider.seedCustomer({ id: 'cus_two', email: 'payer@example.test' });
+    if (kind !== 'none') f.provider.seedCustomer({ id: 'cus_match', email: 'payer@example.test', householdId: f.household.id });
+    if (kind === 'ambiguous') f.provider.seedCustomer({ id: 'cus_two', email: 'payer@example.test', householdId: f.household.id });
     if (kind === 'existing') await db.forGym(f.gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_keep' }).where(eq(households.id, f.household.id)));
     if (kind === 'claimed') await factory('households', f.gymId, { stripeCustomerId: 'cus_match' });
     if (kind === 'reserved') await db.forGym(f.gymId, tx => writeAudit(tx, { gymId: f.gymId, actorKind: 'system',
@@ -713,17 +713,18 @@ describe('campaign customer matching', () => {
     const other = await factory('households', f.gymId, { email: 'payer@example.test' });
     vi.spyOn(f.provider, 'findCustomerByEmail').mockImplementationOnce(async () => {
       await db.forGym(f.gymId, tx => tx.update(households).set({ email: 'changed@example.test' }).where(eq(households.id, other.id)));
-      return [{ id: 'cus_match', email: 'payer@example.test' }];
+      return [{ id: 'cus_other_match', email: 'payer@example.test', householdId: other.id }];
     });
     await matchCampaignCustomer({ scope: db.forGym, clock: f.clock, paymentsFor: f.paymentsFor }, f.gymId, other.id);
     expect((await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, other.id))))[0]!.stripeCustomerId).toBeNull();
   });
   it('serializes two households matching the same customer without sharing it', async () => {
     const f = await fixture(), other = await factory('households', f.gymId, { email: 'payer@example.test' });
-    f.provider.seedCustomer({ id: 'cus_unique', email: 'payer@example.test' });
-    await Promise.all([f.household.id, other.id].map(id => matchCampaignCustomer({ scope: db.forGym, clock: f.clock, paymentsFor: f.paymentsFor }, f.gymId, id)));
+    f.provider.seedCustomer({ id: 'cus_unique', email: 'payer@example.test', householdId: f.household.id });
+    await Promise.all([f.household.id, other.id, f.household.id].map(id => matchCampaignCustomer({ scope: db.forGym, clock: f.clock, paymentsFor: f.paymentsFor }, f.gymId, id)));
     const matches = await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.stripeCustomerId, 'cus_unique')));
-    expect(matches).toHaveLength(1);
+    expect(matches.map(row => row.id)).toEqual([f.household.id]);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'link_campaign.customer_matched')))).toHaveLength(1);
   });
   it('never links a customer whose metadata names another household, and prefers one naming this household', async () => {
     const f = await fixture(), other = await factory('households', f.gymId, { email: 'payer@example.test' });
@@ -732,8 +733,9 @@ describe('campaign customer matching', () => {
     // The only customer with this email is household B's own, so household A stays unlinked.
     f.provider.seedCustomer({ id: 'cus_other_household', email: 'payer@example.test', householdId: other.id });
     await match(); expect(await linked()).toBeNull();
-    // B's customer doesn't make an untagged one ambiguous: the untagged one is A's only candidate.
+    // A customer naming no household is never linked by email, so A stays unlinked with it too.
     f.provider.seedCustomer({ id: 'cus_untagged', email: 'payer@example.test' });
+    await match(); expect(await linked()).toBeNull();
     f.provider.seedCustomer({ id: 'cus_own', email: 'payer@example.test', householdId: f.household.id });
     await match(); expect(await linked()).toBe('cus_own');
     const audit = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'link_campaign.customer_matched')));
@@ -742,12 +744,13 @@ describe('campaign customer matching', () => {
     await matchCampaignCustomer({ scope: db.forGym, clock: f.clock, paymentsFor: f.paymentsFor }, f.gymId, other.id);
     expect((await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, other.id))))[0]!.stripeCustomerId).toBe('cus_other_household');
   });
-  it('links the untagged match when the other household customers are excluded', async () => {
+  it('links no untagged match, even when the other household customers are excluded', async () => {
     const f = await fixture(), other = await factory('households', f.gymId, { email: 'payer@example.test' });
     f.provider.seedCustomer({ id: 'cus_other_household', email: 'payer@example.test', householdId: other.id });
     f.provider.seedCustomer({ id: 'cus_untagged', email: 'payer@example.test' });
     await matchCampaignCustomer({ scope: db.forGym, clock: f.clock, paymentsFor: f.paymentsFor }, f.gymId, f.household.id);
-    expect((await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, f.household.id))))[0]!.stripeCustomerId).toBe('cus_untagged');
+    expect((await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, f.household.id))))[0]!.stripeCustomerId).toBeNull();
+    expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'link_campaign.customer_matched')))).toEqual([]);
   });
 });
 
@@ -847,12 +850,12 @@ describe('campaign matching after a customer creation reservation', () => {
     await db.forGym(f.gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_reconciled' }).where(eq(households.id, f.household.id)));
     expect((await f.service.recipients(f.gymId, c.campaign.id)).data[0]!.customerMatchHeld).toBe(false);
   });
-  it('releases a failed creation reservation once the lease ends and links the email match', async () => {
+  it('releases a failed creation reservation once the lease ends and links no email-only match', async () => {
     const f = await reserved('failed');
     f.provider.seedCustomer({ id: 'cus_dashboard', email: 'payer@example.test' });
-    f.clock.advance(minutes(15)); await f.match();
-    expect(await f.read()).toEqual({ customer: 'cus_dashboard',
-      audits: ['billing.customer.creation_released', 'billing.customer.creation_reserved', 'link_campaign.customer_matched'] });
+    f.clock.advance(minutes(15)); await f.match(); await f.match();
+    expect(await f.read()).toEqual({ customer: null,
+      audits: ['billing.customer.creation_released', 'billing.customer.creation_reserved'] });
   });
   it('releases once with no match, and a retried creation renews the lease', async () => {
     const f = await reserved('failed');
@@ -861,16 +864,16 @@ describe('campaign matching after a customer creation reservation', () => {
     // The creation replays its reservation (and fails again): matching waits another lease from that retry.
     vi.spyOn(f.provider, 'createCustomer').mockRejectedValueOnce(new Error('Stripe unavailable'));
     await expect(f.customers.ensureCustomer(f.gymId, f.household.id)).rejects.toThrow();
-    f.provider.seedCustomer({ id: 'cus_dashboard', email: 'payer@example.test' });
+    f.provider.seedCustomer({ id: 'cus_own', email: 'payer@example.test', householdId: f.household.id });
     f.clock.advance(minutes(14)); await f.match();
     expect((await f.read()).customer).toBeNull();
     f.clock.advance(minutes(1)); await f.match();
-    expect(await f.read()).toEqual({ customer: 'cus_dashboard', audits: ['billing.customer.creation_released', 'billing.customer.creation_released',
+    expect(await f.read()).toEqual({ customer: 'cus_own', audits: ['billing.customer.creation_released',
       'billing.customer.creation_reserved', 'billing.customer.creation_retried', 'link_campaign.customer_matched'] });
   });
   it('does not act when a creation retries between the lookup and the link', async () => {
     const f = await reserved('failed');
-    f.provider.seedCustomer({ id: 'cus_dashboard', email: 'payer@example.test' });
+    f.provider.seedCustomer({ id: 'cus_own', email: 'payer@example.test', householdId: f.household.id });
     f.clock.advance(minutes(16));
     const original = f.provider.findCustomerByEmail.bind(f.provider);
     vi.spyOn(f.provider, 'findCustomerByEmail').mockImplementationOnce(async email => {

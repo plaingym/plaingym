@@ -96,8 +96,9 @@ you may be able to reuse its saved cards and compatible bank accounts:
   import. A usable imported default counts toward the *Saved cards* check.
   The [import guide](importing.md) explains the currency and mandate checks for bank accounts.
 * Without those columns, customers created by another system are **not** matched by
-  email, even when the address is identical, and their payment methods aren't reused. Only
-  customers PlainGym itself tagged for your gym are matched. Opening a link then
+  email, even when the address is identical, and their payment methods aren't reused. A
+  campaign matches a household only to a customer PlainGym created for that same
+  household; any other customer with its email is left alone. Opening a link then
   creates a new customer.
 
 With imported default cards, an **Onboarding** campaign lets those households keep
