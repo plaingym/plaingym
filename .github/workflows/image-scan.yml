@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 name: Image scan
 # Pinned packages don't notice advisories published after a release. This builds the runtime image
-# and scans it with Trivy (run from its image, pinned by digest). It fails on a high or critical
-# advisory that has a fixed version, unless deploy/trivy-ignore.yaml lists it; every high and
-# critical finding, fixed or not, is listed in the run log for review. The infrastructure job scans
-# the PostgreSQL and Caddy images deploy/compose.yaml pins the same way, failing only on the weekly
-# and manual runs.
+# and scans it with Trivy (run from its image, pinned by digest). Every high and critical finding,
+# fixed or not, excepted or not, is listed in the run log for review. A high advisory that has a
+# fixed version fails the run unless deploy/trivy-ignore.yaml lists it; a critical one with a fixed
+# version fails it unless deploy/trivy-ignore-critical.yaml lists it. The infrastructure job scans
+# both platforms (amd64 and arm64) of the PostgreSQL and Caddy images deploy/compose.yaml pins the
+# same way, failing on advisories only on the weekly and manual runs.
 on:
   schedule:
     - cron: '17 6 * * 1'
@@ -16,6 +17,7 @@ on:
       - 'deploy/apt-runtime*'
       - 'deploy/compose.yaml'
       - 'deploy/trivy-ignore.yaml'
+      - 'deploy/trivy-ignore-critical.yaml'
       - '.github/workflows/image-scan.yml'
   pull_request:
     paths:
@@ -23,6 +25,7 @@ on:
       - 'deploy/apt-runtime*'
       - 'deploy/compose.yaml'
       - 'deploy/trivy-ignore.yaml'
+      - 'deploy/trivy-ignore-critical.yaml'
       - '.github/workflows/image-scan.yml'
   workflow_dispatch:
 permissions:
@@ -90,13 +93,19 @@ jobs:
         run: docker save "$IMAGE" -o "$RUNNER_TEMP/image.tar"
       - name: List every high and critical advisory
         run: |
-          docker run --rm -v "$RUNNER_TEMP:/scan" -v "$PWD/deploy:/policy:ro" "$TRIVY_IMAGE" image --input /scan/image.tar \
-            --cache-dir /scan/trivy-cache --scanners vuln --severity HIGH,CRITICAL --ignorefile /policy/trivy-ignore.yaml \
+          docker run --rm -v "$RUNNER_TEMP:/scan" "$TRIVY_IMAGE" image --input /scan/image.tar \
+            --cache-dir /scan/trivy-cache --scanners vuln --severity HIGH,CRITICAL \
             --no-progress --skip-version-check
-      - name: Fail on fixable advisories
+      - name: Fail on fixable high advisories
         run: |
           docker run --rm -v "$RUNNER_TEMP:/scan" -v "$PWD/deploy:/policy:ro" "$TRIVY_IMAGE" image --input /scan/image.tar \
-            --cache-dir /scan/trivy-cache --scanners vuln --severity HIGH,CRITICAL --ignorefile /policy/trivy-ignore.yaml \
+            --cache-dir /scan/trivy-cache --scanners vuln --severity HIGH --ignorefile /policy/trivy-ignore.yaml \
+            --ignore-unfixed --exit-code 1 --skip-db-update --no-progress --skip-version-check
+      - name: Fail on fixable critical advisories
+        if: ${{ !cancelled() }}
+        run: |
+          docker run --rm -v "$RUNNER_TEMP:/scan" -v "$PWD/deploy:/policy:ro" "$TRIVY_IMAGE" image --input /scan/image.tar \
+            --cache-dir /scan/trivy-cache --scanners vuln --severity CRITICAL --ignorefile /policy/trivy-ignore-critical.yaml \
             --ignore-unfixed --exit-code 1 --skip-db-update --no-progress --skip-version-check
   # The PostgreSQL and Caddy images installs run, which update.sh moves to with each release (docs/update-reference.md).
   # Trivy reads each from its registry by the pinned reference. A task branch or pull request only lists advisories.
@@ -118,18 +127,36 @@ jobs:
       - name: List every high and critical advisory
         run: |
           for image in "$POSTGRES_IMAGE" "$CADDY_IMAGE"; do
-            echo "Scanning $image"
-            docker run --rm -v "$RUNNER_TEMP:/scan" -v "$PWD/deploy:/policy:ro" "$TRIVY_IMAGE" image "$image" \
-              --cache-dir /scan/trivy-cache --scanners vuln --severity HIGH,CRITICAL --ignorefile /policy/trivy-ignore.yaml \
-              --no-progress --skip-version-check
+            for platform in linux/amd64 linux/arm64; do
+              echo "Scanning $image ($platform)"
+              docker run --rm -v "$RUNNER_TEMP:/scan" "$TRIVY_IMAGE" image "$image" --platform "$platform" \
+                --cache-dir /scan/trivy-cache --scanners vuln --severity HIGH,CRITICAL \
+                --no-progress --skip-version-check
+            done
           done
-      - name: Fail on fixable advisories
+      - name: Fail on fixable high advisories
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
           status=0
           for image in "$POSTGRES_IMAGE" "$CADDY_IMAGE"; do
-            docker run --rm -v "$RUNNER_TEMP:/scan" -v "$PWD/deploy:/policy:ro" "$TRIVY_IMAGE" image "$image" \
-              --cache-dir /scan/trivy-cache --scanners vuln --severity HIGH,CRITICAL --ignorefile /policy/trivy-ignore.yaml \
-              --ignore-unfixed --exit-code 1 --skip-db-update --no-progress --skip-version-check || status=1
+            for platform in linux/amd64 linux/arm64; do
+              echo "Scanning $image ($platform)"
+              docker run --rm -v "$RUNNER_TEMP:/scan" -v "$PWD/deploy:/policy:ro" "$TRIVY_IMAGE" image "$image" --platform "$platform" \
+                --cache-dir /scan/trivy-cache --scanners vuln --severity HIGH --ignorefile /policy/trivy-ignore.yaml \
+                --ignore-unfixed --exit-code 1 --skip-db-update --no-progress --skip-version-check || status=1
+            done
+          done
+          exit "$status"
+      - name: Fail on fixable critical advisories
+        if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+        run: |
+          status=0
+          for image in "$POSTGRES_IMAGE" "$CADDY_IMAGE"; do
+            for platform in linux/amd64 linux/arm64; do
+              echo "Scanning $image ($platform)"
+              docker run --rm -v "$RUNNER_TEMP:/scan" -v "$PWD/deploy:/policy:ro" "$TRIVY_IMAGE" image "$image" --platform "$platform" \
+                --cache-dir /scan/trivy-cache --scanners vuln --severity CRITICAL --ignorefile /policy/trivy-ignore-critical.yaml \
+                --ignore-unfixed --exit-code 1 --skip-db-update --no-progress --skip-version-check || status=1
+            done
           done
           exit "$status"

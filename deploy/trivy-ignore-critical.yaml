@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Exceptions for critical advisories in the image scan (.github/workflows/image-scan.yml). The
+# rule is none: each entry here is a single reviewed exception, with its reason and date. Only the
+# workflow's critical steps read this file. A `paths` entry isn't tied to a version, so its
+# statement names the version it was reviewed for; when a pin in deploy/compose.yaml moves, check
+# the entry against the new image and update or remove it.
+vulnerabilities:
+  # postgres:18 (Go standard library in gosu)
+  - id: CVE-2025-68121
+    paths: [usr/local/bin/gosu]
+    statement: Critical, excepted for this advisory only. gosu (Go standard library v1.24.6) only drops privileges when the container starts and opens no TLS connection, so the crypto/tls session-resumption check can't be reached. No official postgres image includes the fix yet (checked sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328 on 2026-11-27).
+    expired_at: 2026-12-27

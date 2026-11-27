@@ -207,19 +207,33 @@ such a refresh.
 
 The **Image scan** workflow builds the runtime image every Monday, on demand, and
 for `task/**` pushes and pull requests that change the Dockerfile, the runtime
-package script or pins, `compose.yaml`, the exceptions, or the scan workflow itself, and
-scans it with Trivy (run from its image, pinned by digest). It lists every high
-and critical advisory and fails when one has a fixed version, which a pin refresh
-usually resolves. Advisories without a fix are listed for review but don't fail
-the run. Its `infrastructure` job scans the PostgreSQL and Caddy images
-`compose.yaml` pins, by reference, the same way; it fails on a fixable advisory only
-on the weekly and manual runs (a task branch or pull request only lists them), and
-moving a pin to a fixed image reaches installs with the next release. `deploy/trivy-ignore.yaml` holds the reviewed exceptions: each entry
-names the advisory, the package or binary it covers, why it doesn't apply or can't
-be fixed yet, and an `expired_at` date after which the scan fails on it again.
-Until then the run log leaves it out. A critical advisory gets no exception.
-JavaScript dependencies
-are checked separately by the **Dependency advisories** workflow (`pnpm audit`).
+package script or pins, `compose.yaml`, either exceptions file, or the scan
+workflow itself, and scans it with Trivy (run from its image, pinned by digest).
+The run lists every high and critical advisory, excepted ones too. A high
+advisory with a fixed version fails it unless `deploy/trivy-ignore.yaml` excepts
+it, and a critical one with a fixed version fails in a step of its own whatever
+that file says. A pin refresh usually resolves a failure. Advisories without a
+fix are listed for review but don't fail the run.
+
+Its `infrastructure` job scans the `linux/amd64` and `linux/arm64` variants of
+the PostgreSQL and Caddy images `compose.yaml` pins, by reference, the same way;
+it fails on a fixable advisory only on the weekly and manual runs (a task branch
+or pull request only lists them), and moving a pin to a fixed image reaches
+installs with the next release.
+
+`deploy/trivy-ignore.yaml` holds the reviewed exceptions: each entry names the
+advisory, the package or binary it covers, why it doesn't apply or can't be
+fixed yet, and an `expired_at` date after which the scan fails on it again. A
+binary's path isn't tied to a version, so the entry's `statement` names the
+version it was reviewed for; when a pin in `compose.yaml` moves, check each such
+entry against the new image and update or remove it. A critical advisory gets no
+exception, with one reviewed exception in `deploy/trivy-ignore-critical.yaml`:
+CVE-2025-68121 in the PostgreSQL image's `gosu`, which only drops privileges
+when the container starts and opens no TLS connection; it ends on 2026-12-27,
+when the scan fails on it again unless an official image has rebuilt `gosu`.
+
+JavaScript dependencies are checked separately by the **Dependency advisories**
+workflow (`pnpm audit`).
 
 ## Install
 
