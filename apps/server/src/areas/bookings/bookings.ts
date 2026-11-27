@@ -16,6 +16,9 @@ import { activeBookings, assertBookable, assertCancellable, bookablePlaces, book
   type BookingRow } from './bookings.rules.js';
 import { readRosterPage } from './bookings.roster.query.js';
 
+/** The statuses the kiosk lets check in; only these may take a new place or waitlist entry through the portal. */
+const portalBookableStatuses = new Set(['active', 'trial', 'visitor']);
+
 export interface BookingOptions { scope?: typeof forGym; clock?: Clock; settings?: GymSettingsAccessor; }
 export type BookingNoticeChannel = 'email' | 'sms';
 /** A staff cancellation's notice to the member, queued in the cancelling transaction so it commits or rolls back with it. */
@@ -75,7 +78,7 @@ export function createBookingService(options: BookingOptions = {}) {
       const value = createBookingRequestSchema.parse(input), gym = await settings.get(context.gymId);
       return scope(context.gymId, async tx => {
         // Lock member before session, matching erasure's order, so an erasure cannot leave a new booking behind.
-        await lockMemberForWrite(tx, value.memberId, 'share');
+        const locked = await lockMemberForWrite(tx, value.memberId, 'share');
         const [session] = await tx.select().from(classSessions).where(eq(classSessions.id, value.sessionId)).for('update');
         if (!session) notFound();
         await requireMember(tx, context, value.memberId);
@@ -84,6 +87,7 @@ export function createBookingService(options: BookingOptions = {}) {
         if (existing) return { booking: await bookingView(tx, existing), promoted: [] };
         const now = clock.now(), rules = await readBookingRules(tx, context.gymId);
         assertBookable(session, { ...gym, ...rules }, now);
+        if (context.portal && !portalBookableStatuses.has(locked.status)) bookingConflict('inactiveMember');
         if (context.portal && await lacksClassEligibility(tx, value.memberId, now)) bookingConflict('noCredits');
         const promoted = await reconcileSessionBookings(tx, session, { gymId: context.gymId, actor: { kind: 'system' } }, now, rules);
         active = await activeBookings(tx, session.id);

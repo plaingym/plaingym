@@ -382,6 +382,25 @@ describe('attendance service with PostgreSQL', () => {
       .rejects.toMatchObject({ code: 'conflict' });
     expect(await snapshot(f.gymId)).toEqual({ rows: [], audits: [] });
   });
+  const minutesFromNow = (minutes: number) => new Date(clock.now().getTime() + minutes * 60_000).toISOString();
+  it('refuses a visit dated more than five minutes ahead without writing data', async () => {
+    const f = await fixture();
+    await expect(service.record(f.context, { ...f.input, occurredAt: minutesFromNow(6) })).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(await snapshot(f.gymId)).toEqual({ rows: [], audits: [] });
+  });
+  it.each([4, 5, -30 * 24 * 60])('records a visit dated %i minutes from now', async minutes => {
+    const f = await fixture(), occurredAt = minutesFromNow(minutes);
+    expect(await service.record(f.context, { ...f.input, occurredAt })).toMatchObject({ occurredAt });
+    expect((await snapshot(f.gymId)).rows).toHaveLength(1);
+  });
+  it('refuses a future visit for open mat, kiosk and import, and over HTTP', async () => {
+    const f = await fixture(), occurredAt = minutesFromNow(6);
+    await expect(service.record(f.context, { ...f.input, sessionId: null, occurredAt })).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(service.record(f.context, { ...f.input, occurredAt }, { source: 'kiosk' })).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(service.record(f.context, { ...f.input, occurredAt }, { source: 'import', sourceKey: 'x' })).rejects.toMatchObject({ code: 'invalid_request' });
+    expect((await post(app(f), { ...f.input, occurredAt })).status).toBe(400);
+    expect(await snapshot(f.gymId)).toEqual({ rows: [], audits: [] });
+  });
   it('audits trusted kiosk check-ins as the device, with no staff identity', async () => {
     const f = await fixture(), device = await factory('kioskDevices', f.gymId);
     await service.record({ gymId: f.gymId, actor: { kind: 'device', deviceId: device.id } }, f.input, { source: 'kiosk' });

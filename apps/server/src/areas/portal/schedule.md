@@ -27,6 +27,8 @@ members' places are never included.
 `GET /api/portal/schedule/members` lists the members this login may book for,
 by ID and display name only: the payer first, then the rest of the household,
 leaving out erased and cancelled members. An adult member gets only themself.
+The list still includes frozen and prospect members, whom the booking engine
+refuses a new booking or waitlist entry with a message saying why.
 
 Booking, waitlisting and cancelling use the booking engine's portal endpoints
 (`bookings.routes.ts`); this part doesn't reimplement capacity, the window or

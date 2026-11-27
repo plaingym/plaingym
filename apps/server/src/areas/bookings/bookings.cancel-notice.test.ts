@@ -32,7 +32,7 @@ async function fixture() {
   const user = await factory('authUser', gymId);
   const home = await factory('households', gymId, { email: 'parent@example.test', phone, phoneE164: phone,
     smsNoticesConsentAt: clock.now(), smsNoticesConsentSource: 'staff' });
-  const child = await factory('members', gymId, { householdId: home.id, firstName: 'Mia', lastName: 'Rivera', email: null });
+  const child = await factory('members', gymId, { householdId: home.id, firstName: 'Mia', lastName: 'Rivera', email: null, status: 'active' });
   const session = await factory('classSessions', gymId, { name: 'Evening practice', capacity: 1,
     startsAt: new Date('2026-11-11T00:30:00Z'), endsAt: new Date('2026-11-11T01:30:00Z') });
   const options = { scope: db.forGym, clock }, service = createBookingService(options), actor = { gymId, actor: { kind: 'user' as const, userId: user.id } };

@@ -36,6 +36,10 @@ screen. A member who has never held credits checks in as before.
 
 Backdated staff visits are corrections made today: membership cover and credit
 usability use the recording clock, even when `occurredAt` is earlier.
+`occurredAt` may be any past time and at most five minutes after the server's
+clock, whatever the visit's source (coach, kiosk or import); a later one is
+refused as `invalid_request`. The attendance file import doesn't record through
+this service and refuses any future date.
 
 A live open-mat visit (no session, from the kiosk, QR or staff) counts once per
 member per gym-local day of its `occurredAt`: under the member lock, a second one

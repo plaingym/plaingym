@@ -24,6 +24,8 @@ import { drawCredits, hasActiveMembership, isPackHolder, lockMemberCredits, retu
 import messages from '../../../../../locales/en/attendance/attendance.json' with { type: 'json' };
 
 const t = createTranslator({ 'attendance/attendance': messages });
+/** How far ahead of the server's clock a visit may be dated, for clock drift between devices; any past time is accepted. */
+const maxFutureMs = 5 * 60_000;
 
 type Row = typeof attendances.$inferSelect;
 type Filter = { readonly [K in keyof AttendanceFilter]?: AttendanceFilter[K] | undefined }
@@ -152,6 +154,8 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
     queries,
     async record(context: AttendanceMutation, input: RecordAttendanceRequest, origin: AttendanceOrigin = { source: 'coach' }) {
       const value = recordAttendanceRequestSchema.parse(input);
+      if (value.occurredAt && new Date(value.occurredAt).getTime() > clock.now().getTime() + maxFutureMs)
+        throw new AppError('invalid_request', 'A visit can\'t be recorded in the future', { occurredAt: ['future'] });
       attendanceSourceSchema.parse(origin.source);
       if (origin.sourceKey !== undefined && (origin.source !== 'import' || !origin.sourceKey.trim()))
         throw new AppError('invalid_request', 'Only imports accept a nonempty source key');

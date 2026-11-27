@@ -38,8 +38,9 @@ const service = createBookingService({ scope: db.forGym, clock });
 async function fixture(gym: { memberEmailsEnabled?: boolean } = {}) {
   const gymId = uuidv7(); await factory('gyms', gymId, { bookingWindowDays: 7, cancellationCutoffMinutes: 60, ...gym });
   const staff = await factory('authUser', gymId), payer = await factory('authUser', gymId), adult = await factory('authUser', gymId);
-  const member = await factory('members', gymId), sibling = await factory('members', gymId, { householdId: member.householdId });
-  const outsider = await factory('members', gymId);
+  // Portal bookings need a bookable status; factory members default to prospect.
+  const member = await factory('members', gymId, { status: 'active' }), sibling = await factory('members', gymId, { householdId: member.householdId, status: 'active' });
+  const outsider = await factory('members', gymId, { status: 'active' });
   const session = await factory('classSessions', gymId, { capacity: 5, startsAt: new Date('2026-10-30T18:00:00Z'), endsAt: new Date('2026-10-30T19:00:00Z') });
   await factory('householdUsers', gymId, { householdId: member.householdId, userId: payer.id, memberId: member.id, scope: 'payer' });
   await factory('householdUsers', gymId, { householdId: member.householdId, userId: adult.id, memberId: sibling.id, scope: 'member' });
@@ -187,6 +188,89 @@ describe('portal class-credit eligibility', () => {
     await factory('classCreditEntries', f.gymId, { memberId: f.member.id, expiresAt: clock.now() });
     expect((await post(app(f, memberPrincipal(f, true)), `/api/portal/members/${f.member.id}/bookings`, { sessionId: f.session.id })).status).toBe(404);
     expect(await db.forGym(f.gymId, tx => tx.select().from(classBookings))).toHaveLength(0);
+  });
+});
+
+describe('portal booking status', () => {
+  const inactiveMessage = 'Only active, trial and visitor members can book or join the waitlist. Please contact the front desk.';
+  const setStatus = (f: Fixture, memberId: string, status: string) =>
+    db.forGym(f.gymId, tx => tx.update(members).set({ status }).where(eq(members.id, memberId)));
+  const memberRows = (f: Fixture, memberId: string) =>
+    db.forGym(f.gymId, tx => tx.select().from(classBookings).where(eq(classBookings.memberId, memberId)));
+  const memberAudits = (f: Fixture) => db.forGym(f.gymId, tx => tx.select().from(auditEvents));
+  const expectInactive = async (response: Response) => {
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: 'conflict', message: inactiveMessage, details: { reason: ['inactiveMember'] } } });
+  };
+
+  it.each(['prospect', 'frozen', 'cancelled'])('refuses a %s member a new portal booking on both paths', async status => {
+    const f = await fixture(), server = app(f, memberPrincipal(f));
+    await setStatus(f, f.member.id, status);
+    await setStatus(f, f.sibling.id, status);
+    await expectInactive(await post(server, '/api/portal/bookings', { sessionId: f.session.id }));
+    await expectInactive(await post(server, `/api/portal/members/${f.sibling.id}/bookings`, { sessionId: f.session.id }));
+    expect(await db.forGym(f.gymId, tx => tx.select().from(classBookings))).toHaveLength(0);
+    expect(await memberAudits(f)).toHaveLength(0);
+  });
+
+  it.each(['active', 'trial', 'visitor'])('books a %s member through the portal', async status => {
+    const f = await fixture(), server = app(f, memberPrincipal(f));
+    await setStatus(f, f.member.id, status);
+    await setStatus(f, f.sibling.id, status);
+    for (const path of ['/api/portal/bookings', `/api/portal/members/${f.sibling.id}/bookings`]) {
+      const response = await post(server, path, { sessionId: f.session.id });
+      expect(response.status).toBe(200);
+      expect((await response.json()).data).toMatchObject({ status: 'booked' });
+    }
+  });
+
+  it('refuses a frozen member a waitlist entry in a full class', async () => {
+    const f = await fixture(), server = app(f, memberPrincipal(f));
+    for (let n = 0; n < 5; n++) await book(f, (await factory('members', f.gymId)).id);
+    await setStatus(f, f.member.id, 'frozen');
+    const before = await memberAudits(f);
+    await expectInactive(await post(server, '/api/portal/bookings', { sessionId: f.session.id, allowWaitlist: true }));
+    expect(await memberRows(f, f.member.id)).toHaveLength(0);
+    expect(await memberAudits(f)).toEqual(before);
+  });
+
+  it.each(['frozen', 'cancelled'])('lets staff book a %s member', async status => {
+    const f = await fixture(), server = app(f, staffPrincipal(f));
+    await setStatus(f, f.member.id, status);
+    const response = await post(server, '/api/bookings', { memberId: f.member.id, sessionId: f.session.id });
+    expect(response.status).toBe(200);
+    expect((await response.json()).data).toMatchObject({ status: 'booked', bookedByKind: 'staff' });
+  });
+
+  it('keeps a held booking for a member cancelled afterwards, who can still replay and cancel it', async () => {
+    const f = await fixture(), server = app(f, memberPrincipal(f));
+    const first = await post(server, '/api/portal/bookings', { sessionId: f.session.id });
+    expect(first.status).toBe(200);
+    const booked = (await first.json()).data;
+    await setStatus(f, f.member.id, 'cancelled');
+    const replay = await post(server, '/api/portal/bookings', { sessionId: f.session.id });
+    expect(replay.status).toBe(200);
+    expect((await replay.json()).data).toMatchObject({ id: booked.id, status: 'booked' });
+    const cancelled = await post(server, `/api/portal/bookings/${booked.id}/cancel`);
+    expect(cancelled.status).toBe(200);
+    expect((await cancelled.json()).data).toMatchObject({ id: booked.id, status: 'cancelled' });
+  });
+
+  it('answers 404, never the status conflict, for a member outside the login or gym', async () => {
+    const f = await fixture(), foreign = await fixture();
+    await setStatus(f, f.member.id, 'frozen');
+    await db.forGym(foreign.gymId, tx => tx.update(members).set({ status: 'frozen' }).where(eq(members.id, foreign.member.id)));
+    const server = app(f, memberPrincipal(f, true));
+    for (const memberId of [f.member.id, foreign.member.id])
+      expect((await post(server, `/api/portal/members/${memberId}/bookings`, { sessionId: f.session.id })).status).toBe(404);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(classBookings))).toHaveLength(0);
+  });
+
+  it('gives a frozen pack holder without credits the status refusal, not the credit one', async () => {
+    const f = await fixture(), server = app(f, memberPrincipal(f));
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, expiresAt: clock.now() });
+    await setStatus(f, f.member.id, 'frozen');
+    await expectInactive(await post(server, '/api/portal/bookings', { sessionId: f.session.id }));
   });
 });
 
