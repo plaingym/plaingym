@@ -10,13 +10,18 @@ import { TestClock } from '../../core/clock.js';
 import { FakeEmail } from '../email/index.js';
 import { assertOwnerRecovery } from '../../areas/staff/auth.reset.js';
 import { reserveAccountAttempt, signInLimits } from './account-limit.js';
+import { configureAccountLimitKey } from './account-limit-key.js';
 import { passwordAdapter } from './password.js';
 import { createEmailChangeService, emailChangeLifetimeMs, maskAddress, type EmailChangeMail, type EmailChangeService } from './email-change.js';
 
 const db = useTestDatabase(), factory = createFactories(db), t = createTranslator(locales.en ?? {});
 const password = 'email-change-password-123';
 let hash: string;
-beforeAll(async () => { hash = await passwordAdapter.hash(password); });
+beforeAll(async () => {
+  // The server and the owner CLI configure the sign-in limit key through `authConfig`; this service is built without it.
+  configureAccountLimitKey('email-change-test-secret-at-least-32-characters');
+  hash = await passwordAdapter.hash(password);
+});
 const service = (tenancy: 'single' | 'multi' = 'single', limit = { window: 3600, max: 100 }) =>
   createEmailChangeService({ config: { tenancy }, database: () => db.system.db, limit });
 function mailer() {

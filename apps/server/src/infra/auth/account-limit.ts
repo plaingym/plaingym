@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { createHash } from 'node:crypto';
 // eslint-disable-next-line database/system-tables -- Isolated atomic rate-limit reservations, releases and rolling address counters.
 import { and, eq, gt, inArray, lt, sql } from 'drizzle-orm';
 import { authRateLimit, uuidv7 } from '@plaingym/db';
 import { systemDatabase, type Database } from '@plaingym/db/client';
-import { normalizeAddress } from '../email/deliveries.js';
+import { accountDigest } from './account-limit-key.js';
 import { describeError, logWarn } from '../../core/log.js';
 
 /** At most `max` attempts in `window` seconds. Account windows are fixed; address windows roll. */
@@ -24,7 +23,7 @@ export const signInLimits = {
 export const accountLimitedPaths: readonly string[] = ['/sign-in/email', '/sign-in/magic-link'];
 
 function accountKey(path: string, email: string, gymId?: string) {
-  const digest = createHash('sha256').update(normalizeAddress(email)).digest('base64url');
+  const digest = accountDigest(email);
   return `account|${gymId ? gymId + '|' : ''}${path}|${digest}`;
 }
 export interface AccountReservation { readonly id: string; readonly key: string; readonly resetAt: number }

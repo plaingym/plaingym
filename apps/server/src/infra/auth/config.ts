@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { configureAccountLimitKey } from './account-limit-key.js';
+
 export interface AuthConfig {
   readonly secret: string;
   readonly tenancy: 'single' | 'multi';
@@ -16,6 +18,7 @@ export function passwordLogin(config: AuthConfig, smtpConfigured: boolean): bool
 export function authConfig(env: NodeJS.ProcessEnv = process.env, smtpConfigured = Boolean(env.SMTP_HOST)): AuthConfig {
   const secret = env.AUTH_SECRET;
   if (!secret || secret.length < 32) throw new Error('AUTH_SECRET must contain at least 32 characters');
+  configureAccountLimitKey(secret);
   const tenancy = env.TENANCY ?? 'single';
   if (tenancy !== 'single' && tenancy !== 'multi') {
     throw new Error(`TENANCY must be single or multi (got "${tenancy.slice(0, 40)}")`);

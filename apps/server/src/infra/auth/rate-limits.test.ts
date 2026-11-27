@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { createHash } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
@@ -8,6 +9,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { createAuthService, type AuthServiceOptions } from './service.js';
 import { clearAccountAttempts, gymAddressStorage, reserveAccountAttempt, releaseAccountAttempt, signInLimits } from './account-limit.js';
+import { accountDigest } from './account-limit-key.js';
 import { authConfig } from './config.js';
 import { sessionMiddleware } from './middleware.js';
 import { passwordAdapter } from './password.js';
@@ -316,6 +318,46 @@ describe('gym isolation of sign-in limits', () => {
     expect(line).not.toContain(shared);
     expect(line).not.toContain('198.51.100.1');
     expect(line).not.toContain(f.user.email);
+  });
+});
+
+describe('stored account window keys', () => {
+  const multi = authConfig({ AUTH_SECRET: secret, NODE_ENV: 'production', TENANCY: 'multi', AUTH_PASSWORD_LOGIN: 'off' }, true);
+  const plainKey = (email: string) => `account|/sign-in/email|${createHash('sha256').update(email.trim().toLowerCase()).digest('base64url')}`;
+  const keyCount = async (key: string) => (await database.system.db.select({ count: authRateLimit.count }).from(authRateLimit)
+    .where(eq(authRateLimit.key, key)))[0]?.count ?? null;
+
+  it('keys a password attempt\'s window by the keyed digest of the address, never a plain hash of it', async () => {
+    const f = await fixture();
+    expect((await f.signIn(address(), f.user.email, 'wrong-password-123')).status).toBe(401);
+    expect(await keyCount(`account|/sign-in/email|${accountDigest(f.user.email)}`)).toBe(1);
+    expect(await keyCount(plainKey(f.user.email))).toBeNull();
+  });
+
+  it('puts the gym in front of the path in multi mode and keeps two gyms\' windows apart', async () => {
+    const a = await fixture({ config: multi }), b = await fixture({ config: multi }), email = a.user.email, now = Date.now();
+    for (const gymId of [a.gymId, a.gymId, b.gymId])
+      expect((await reserveAccountAttempt(database.system.db, '/sign-in/email', email, signInLimits.account, now, gymId)).retryAfter).toBeNull();
+    expect(await keyCount(`account|${a.gymId}|/sign-in/email|${accountDigest(email)}`)).toBe(2);
+    expect(await keyCount(`account|${b.gymId}|/sign-in/email|${accountDigest(email)}`)).toBe(1);
+    expect(await keyCount(`account|${a.gymId}|/sign-in/email|${createHash('sha256').update(email.toLowerCase()).digest('base64url')}`)).toBeNull();
+    expect((await a.askLink(address())).status).toBe(200);
+    expect(await keyCount(`account|${a.gymId}|/sign-in/magic-link|${accountDigest(email)}`)).toBe(1);
+  });
+
+  it('starts a window open under the old plain key again once, and leaves the old row to end', async () => {
+    const f = await fixture(), old = plainKey(f.user.email);
+    await database.system.db.insert(authRateLimit).values({ key: old, count: 10, lastRequest: Date.now() + 300_000 });
+    expect((await f.signIn(address(), f.user.email, 'wrong-password-123')).status).toBe(401);
+    expect(await keyCount(old)).toBe(10);
+  });
+
+  it('clears a locked account from the owner CLI with a differently spelled address', async () => {
+    const f = await fixture(), shared = address();
+    for (let i = 0; i < 10; i++) expect((await f.signIn(shared, f.user.email, 'wrong-password-123')).status).toBe(401);
+    expect((await f.signIn(shared)).status).toBe(429);
+    await clearAccountAttempts(` ${f.user.email.toUpperCase()} `);
+    expect((await f.signIn(shared)).status).toBe(200);
   });
 });
 

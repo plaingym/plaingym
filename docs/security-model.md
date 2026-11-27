@@ -394,7 +394,12 @@ the person's own.
     or visitors behind a carrier's shared address aren't locked out together.
   * **Per account:** 10 failed password attempts in each fixed ten-minute window,
     and separately 10 magic-link requests, keyed by the normalized email whether
-    or not an account has it. Only requests admitted by the address limit count.
+    or not an account has it. The window's row stores a keyed digest (HMAC) of
+    the normalized address under `AUTH_SECRET`, never the address or a plain
+    hash of it, so someone who reads `auth_rate_limit` or a backup can't test
+    guessed addresses against it. Open windows start again once when an install
+    upgrades to this keying or changes `AUTH_SECRET`; the old rows end within
+    ten minutes and are pruned. Only requests admitted by the address limit count.
     Password checks reserve a slot before verification and release it on a 200
     response; concurrent checks therefore count while in flight, and interrupted
     requests keep their slots. Successful sign-ins do not spend the account's

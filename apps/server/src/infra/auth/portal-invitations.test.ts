@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { createHash } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { and, eq, like } from 'drizzle-orm';
@@ -19,7 +18,7 @@ import { errorHandler, respondError } from '../../core/errors.js';
 import { TestClock } from '../../core/clock.js';
 import type { Principal, RequestEnvironment } from '../../core/context.js';
 import { FakeEmail } from '../email/index.js';
-import { normalizeAddress } from '../email/deliveries.js';
+import { accountDigest } from './account-limit-key.js';
 import { authConfig } from './config.js';
 import { createAuthService } from './service.js';
 import { sessionMiddleware } from './middleware.js';
@@ -381,7 +380,7 @@ describe('accepting with an existing login\'s password', () => {
   const pending = (userId: string) => db.system.db.select().from(authVerification).where(like(authVerification.value, `%${userId}%`));
   /** The login's `/sign-in/email` account window count, or null when it has no window. */
   async function windowCount(email: string) {
-    const digest = createHash('sha256').update(normalizeAddress(email)).digest('base64url');
+    const digest = accountDigest(email);
     const [row] = await db.system.db.select({ count: authRateLimit.count }).from(authRateLimit).where(eq(authRateLimit.key, `account|/sign-in/email|${digest}`));
     return row?.count ?? null;
   }

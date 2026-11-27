@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { createHash } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { auditEvents, authAccount, authRateLimit, authSession, authUser, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -9,7 +8,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { authConfig } from './config.js';
 import { createAccountService, removeUnprovenPassword } from './accounts.js';
 import { passwordAdapter } from './password.js';
-import { normalizeAddress } from '../email/deliveries.js';
+import { accountDigest } from './account-limit-key.js';
 import { TestClock } from '../../core/clock.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
@@ -83,7 +82,7 @@ describe('changeOwnPassword', () => {
     .where(inArray(authSession.id, f.sessions.map(row => row.id)))).map(row => row.id).sort();
   const audits = (gymId: string) => db.forGym(gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'auth.password_changed')));
   const windowCount = async (email: string) => {
-    const key = `account|/sign-in/email|${createHash('sha256').update(normalizeAddress(email)).digest('base64url')}`;
+    const key = `account|/sign-in/email|${accountDigest(email)}`;
     return (await db.system.db.select({ count: authRateLimit.count }).from(authRateLimit).where(eq(authRateLimit.key, key)))[0]?.count ?? 0;
   };
   const refusal = (promise: Promise<unknown>) => promise.then(() => { throw new Error('expected a refusal'); }, (error: unknown) => error as AppError);
