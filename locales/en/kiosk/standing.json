@@ -7,6 +7,7 @@
   "reason.inactive": "The member's status doesn't allow check-in (only active, trial and visitor members can check in).",
   "reason.past_due": "The household has a past-due invoice.",
   "reason.no_credits": "The member needs an unexpired class credit or an active or trial membership.",
+  "reason.see_front_desk": "Another check sends this member to the front desk. Front desk staff can see why.",
   "reason.unknown": "Another check needs attention ({code}).",
   "loading": "Checking…",
   "error": "Kiosk standing couldn't be loaded."

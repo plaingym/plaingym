@@ -143,7 +143,11 @@ pages.
   kiosk tab. Replacing the token clears the current check-in screen.
   Name-and-PIN check-in is limited to
   10 wrong PINs per minute per device and per client address, and a used-up
-  budget is audited and shown on the dashboard.
+  budget is audited and shown on the dashboard. Five wrong PINs in a row on one
+  household lock that household's name-and-PIN check-in for 15 minutes, with the
+  usual front-desk answer even for its right PIN (stored, so a restart doesn't
+  reset it); a right PIN or staff setting or clearing the PIN starts the count
+  again, and each lock is audited.
 * **QR check-in codes** are per member, revocable, valid only in their own gym,
   and derived with the gym's own random key; only their hash is stored.
 * **Tests.** Every member-facing route has a cross-household test (household A's

@@ -146,7 +146,8 @@ describe('export schema coverage and secret exclusions', () => {
   });
   it('accounts for every schema column with an explicit safe projection or exclusion', () => {
     const excluded: Partial<Record<keyof typeof exportCatalog, readonly string[]>> = {
-      households: ['pin_hash'],
+      // The kiosk's wrong-PIN count and lock are short-lived check-in security state, not gym data.
+      households: ['pin_hash', 'pin_failed_count', 'pin_locked_until'],
       // The folded lookup values are generated from last_name and email, which are already exported.
       members: ['checkin_code_version', 'checkin_code_hash', 'last_name_folded', 'email_folded', 'email_address'],
       kiosk_devices: ['token_hash'],

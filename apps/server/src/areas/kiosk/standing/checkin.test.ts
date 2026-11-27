@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { attendances, auditEvents, classSessions, households, members, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -14,7 +14,7 @@ import type { Principal, RequestEnvironment } from '../../../core/context.js';
 import { FakeUploads } from '../../../infra/storage/index.js';
 import { authorize } from '../../staff/auth.permissions.js';
 import { hashHouseholdPin } from '../../members/pin.js';
-import { createKioskCheckin, maxCandidateHouseholds } from './checkin.js';
+import { createKioskCheckin, maxCandidateHouseholds, pinLockAfter, pinLockMs } from './checkin.js';
 import { createKioskCheckinRoutes } from './standing.routes.js';
 import { createStandingChecks } from './standing.js';
 import { createApp } from '../../../core/app.js';
@@ -105,7 +105,8 @@ describe('kiosk name and PIN check-in', () => {
     }
     expect(pinLimitReached).not.toHaveBeenCalled();
     // Nine wrong PINs, then the right one still checks in without resetting them; the tenth wrong PIN locks the device out.
-    for (let i = 0; i < 9; i++) await frontDesk('/api/kiosk/lookup', { name: home.name, pin: '9999' });
+    // The nine go to the other households, three each, so none reaches its own wrong-PIN lock.
+    for (let i = 0; i < 9; i++) await frontDesk('/api/kiosk/lookup', { name: homes[1 + (i % maxCandidateHouseholds)]!.name, pin: '9999' });
     expect((await post('/api/kiosk/lookup', { name: home.name, pin: home.pin })).status).toBe(200);
     const checkedIn = await post('/api/kiosk/checkin', { name: home.name, pin: home.pin, checkins });
     expect(await checkedIn.json()).toMatchObject({ data: [{ status: 'checked_in' }] });
@@ -287,9 +288,9 @@ describe('kiosk name and PIN check-in', () => {
     expect(results).toEqual([{ status: 'see_front_desk' }, { status: 'see_front_desk' }, { status: 'see_front_desk' }]);
     expect(JSON.stringify(results)).not.toMatch(/waiver|inactive|frozen|billing/);
     for (const memberId of [home.parent.id, frozen.id, other.parent.id]) expect(await visits(gymC, memberId)).toHaveLength(0);
-    expect(await service.memberStanding(gymC, home.parent.id)).toEqual({ memberId: home.parent.id, status: 'front_desk', reasons: ['missing_waiver'] });
-    expect(await service.memberStanding(gymC, frozen.id)).toMatchObject({ status: 'front_desk', reasons: expect.arrayContaining(['inactive']) });
-    await expect(service.memberStanding(gymB, home.parent.id)).rejects.toMatchObject({ code: 'not_found' });
+    expect(await service.memberStanding(gymC, home.parent.id, true)).toEqual({ memberId: home.parent.id, status: 'front_desk', reasons: ['missing_waiver'] });
+    expect(await service.memberStanding(gymC, frozen.id, true)).toMatchObject({ status: 'front_desk', reasons: expect.arrayContaining(['inactive']) });
+    await expect(service.memberStanding(gymB, home.parent.id, true)).rejects.toMatchObject({ code: 'not_found' });
   });
   it('fails closed without the gym key', async () => {
     const unconfigured = createKioskCheckin({ scope: database.forGym, clock });
@@ -364,6 +365,121 @@ describe('kiosk name and PIN check-in', () => {
   });
 });
 
+describe('a household\'s PIN lock after wrong guesses', () => {
+  const frontDesk = { status: 'see_front_desk' };
+  const lockState = async (id: string) => (await database.forGym(gymA, (tx) => tx.select({ count: households.pinFailedCount,
+    until: households.pinLockedUntil, revision: households.revision }).from(households).where(eq(households.id, id))))[0]!;
+  const lockAudits = (id: string) => database.forGym(gymA, (tx) => tx.select().from(auditEvents)
+    .where(and(eq(auditEvents.targetId, id), eq(auditEvents.action, 'household.pin_locked'))));
+  const wrong = (home: { name: string }, times: number, checkins = service) =>
+    Promise.all(Array.from({ length: times }, () => checkins.lookup(gymA, { name: home.name, pin: '9999' })));
+  /** A service with its own clock, for cases where time must pass. */
+  const timed = () => {
+    const own = new TestClock(clock.now());
+    return { own, checkins: createKioskCheckin({ scope: database.forGym, clock: own, pinSecret: async (gymId) => secrets.get(gymId)!, uploadsFor }) };
+  };
+  it('locks the household after five wrong PINs in a row, even for its right PIN, and audits the lock', async () => {
+    const home = await family();
+    for (let i = 0; i < pinLockAfter; i++) expect(await service.lookup(gymA, { name: home.name, pin: '9999' })).toEqual(frontDesk);
+    expect(await service.lookup(gymA, { name: home.name, pin: home.pin })).toEqual(frontDesk);
+    expect(await lockState(home.id)).toMatchObject({ count: 0, until: new Date(clock.now().getTime() + pinLockMs) });
+    expect(pinLockMs).toBe(15 * 60_000);
+    const audits = await lockAudits(home.id);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ actorKind: 'system', targetType: 'household', occurredAt: clock.now(),
+      after: { lockedUntil: new Date(clock.now().getTime() + pinLockMs).toISOString() } });
+  });
+  it('opens again 15 minutes after the fifth wrong PIN, and not a millisecond before', async () => {
+    const { own, checkins } = timed(), home = await family();
+    await wrong(home, pinLockAfter, checkins);
+    own.advance(pinLockMs - 1);
+    expect(await checkins.lookup(gymA, { name: home.name, pin: home.pin })).toEqual(frontDesk);
+    own.advance(1);
+    expect((await checkins.lookup(gymA, { name: home.name, pin: home.pin })).status).toBe('select_member');
+    expect(await lockState(home.id)).toMatchObject({ count: 0, until: null });
+  });
+  it('starts the count again after a right PIN', async () => {
+    const home = await family();
+    for (let i = 0; i < pinLockAfter - 1; i++) await service.lookup(gymA, { name: home.name, pin: '9999' });
+    expect(await lockState(home.id)).toMatchObject({ count: pinLockAfter - 1 });
+    expect((await service.lookup(gymA, { name: home.name, pin: home.pin })).status).toBe('select_member');
+    expect(await lockState(home.id)).toMatchObject({ count: 0, until: null });
+    for (let i = 0; i < pinLockAfter - 1; i++) await service.lookup(gymA, { name: home.name, pin: '9999' });
+    expect(await lockState(home.id)).toMatchObject({ count: pinLockAfter - 1, until: null });
+    expect((await service.lookup(gymA, { name: home.name, pin: home.pin })).status).toBe('select_member');
+  });
+  it('counts a wrong guess on every household it was compared with, and a found household changes no other count', async () => {
+    const word = 'Lockshare' + uuidv7().slice(-6), homes = [];
+    for (let i = 0; i < maxCandidateHouseholds; i++) homes.push(await family(gymA, `${word} ${i}`, String(5000 + i)));
+    const heard = vi.fn();
+    expect(await service.lookup(gymA, { name: word, pin: '9999' }, heard)).toEqual(frontDesk);
+    expect(heard).toHaveBeenCalledWith('compared');
+    for (const home of homes) expect(await lockState(home.id)).toMatchObject({ count: 1 });
+    expect((await service.lookup(gymA, { name: word, pin: homes[0]!.pin }, heard)).status).toBe('select_member');
+    expect(heard).toHaveBeenLastCalledWith('verified');
+    expect((await Promise.all(homes.map((home) => lockState(home.id)))).map((row) => row.count)).toEqual([0, 1, 1]);
+  });
+  it('never hands a locked household\'s guess to another household sharing its PIN', async () => {
+    const word = 'Lockpair' + uuidv7().slice(-6);
+    const locked = await family(gymA, `${word} 0`, '7100'), other = await family(gymA, `${word} 1`, '7100');
+    await wrong(locked, pinLockAfter);
+    expect(await lockState(locked.id)).toMatchObject({ until: new Date(clock.now().getTime() + pinLockMs) });
+    // Both PINs match, so the guess ties as it would without the lock; the other household is never picked alone.
+    const heard = vi.fn();
+    expect(await service.lookup(gymA, { name: word, pin: '7100' }, heard)).toEqual(frontDesk);
+    expect(heard).toHaveBeenCalledExactlyOnceWith('compared');
+    expect(await service.lookup(gymA, { name: locked.name, pin: '7100' })).toEqual(frontDesk);
+    expect(await lockState(other.id)).toMatchObject({ count: 0, until: null });
+    expect((await service.lookup(gymA, { name: other.name, pin: '7100' })).status).toBe('select_member');
+  });
+  it('changes no count for a guess that wasn\'t compared, over more than three households', async () => {
+    const word = 'Lockcrowd' + uuidv7().slice(-6), homes = [];
+    for (let i = 0; i <= maxCandidateHouseholds; i++) homes.push(await family(gymA, `${word} ${i}`, String(6000 + i)));
+    const heard = vi.fn();
+    expect(await service.lookup(gymA, { name: word, pin: '9999' }, heard)).toEqual(frontDesk);
+    expect(heard).toHaveBeenCalledExactlyOnceWith('skipped');
+    for (const home of homes) expect(await lockState(home.id)).toMatchObject({ count: 0, until: null });
+  });
+  it('counts simultaneous wrong guesses each, and locks once', async () => {
+    const two = await family();
+    await wrong(two, 2);
+    expect(await lockState(two.id)).toMatchObject({ count: 2, until: null });
+    const five = await family();
+    await wrong(five, pinLockAfter);
+    expect(await lockState(five.id)).toMatchObject({ count: 0, until: new Date(clock.now().getTime() + pinLockMs) });
+    expect(await lockAudits(five.id)).toHaveLength(1);
+  });
+  it('counts wrong PINs at check-in, and records no visit for a right PIN on a locked household', async () => {
+    const home = await family(), checkins = [{ memberId: home.parent.id, sessionId: null }];
+    for (let i = 0; i < pinLockAfter; i++) expect(await service.checkin(gymA, deviceA, { name: home.name, pin: '9999', checkins })).toEqual([frontDesk]);
+    expect(await lockState(home.id)).toMatchObject({ count: 0, until: new Date(clock.now().getTime() + pinLockMs) });
+    expect(await service.checkin(gymA, deviceA, { name: home.name, pin: home.pin, checkins })).toEqual([frontDesk]);
+    expect(await visits(gymA, home.parent.id)).toHaveLength(0);
+  });
+  it('spends the device limiter\'s budget on a guess at a locked household, like a wrong PIN', async () => {
+    const devices = createKioskDeviceService({ scope: database.forGym, clock });
+    const issued = await devices.register({ gymId: gymA, actor: { kind: 'system' } }, { name: 'Locked tablet' });
+    const pinLimitReached = vi.fn(async () => {});
+    const app = createApp({ clock, authorize,
+      resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId: gymA, timezone: 'UTC', enabledModules: new Set() } }); await next(); },
+      session: createKioskAuthMiddleware({ service: devices, pinLimitReached }), contributions: { routes: createKioskCheckinRoutes(service) },
+    });
+    const post = (body: unknown) => app.request('/api/kiosk/lookup', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + issued.token }, body: JSON.stringify(body) });
+    const home = await family();
+    for (let i = 0; i < pinLockAfter; i++) expect(await (await post({ name: home.name, pin: '9999' })).json()).toEqual({ data: frontDesk });
+    // Five right PINs at the locked household spend the rest of the device's ten.
+    for (let i = 0; i < pinLockAfter; i++) expect(await (await post({ name: home.name, pin: home.pin })).json()).toEqual({ data: frontDesk });
+    expect(pinLimitReached).toHaveBeenCalledTimes(1);
+    expect((await post({ name: home.name, pin: home.pin })).status).toBe(429);
+  });
+  it('leaves the household\'s revision alone', async () => {
+    const home = await family(), before = (await lockState(home.id)).revision;
+    await wrong(home, pinLockAfter);
+    expect((await lockState(home.id)).revision).toBe(before);
+  });
+});
+
 describe('kiosk check-in routes', () => {
   function server(principal: Principal, gymId = gymA, checkinService = service) {
     const app = new OpenAPIHono<RequestEnvironment>({ defaultHook: (result, ctx) => { if (!result.success) return respondError(ctx, result.error); } });
@@ -399,6 +515,25 @@ describe('kiosk check-in routes', () => {
     for (const path of ['/api/kiosk/lookup', '/api/kiosk/checkin'])
       expect((await post(server({ kind: 'kiosk', gymId: gymB, deviceId: deviceB }), path,
         { name: home.name, pin: home.pin, ...(path.endsWith('checkin') ? { checkins: [{ memberId: home.parent.id }] } : {}) })).status).toBe(403);
+  });
+  it('gives billing standing reasons only to staff who can read billing', async () => {
+    const home = await family(), userId = (await factory('authUser', gymA)).id;
+    let failing = new Set(['past_due', 'no_credits', 'missing_waiver']);
+    const check = (id: string, reasonCode: string) => ({ id, check: async () => failing.has(reasonCode) ? { status: 'front_desk' as const, reasonCode } : { status: 'ok' as const } });
+    const standingService = createKioskCheckin({ scope: database.forGym, clock, pinSecret: async (gymId) => secrets.get(gymId)!,
+      standing: createStandingChecks([check('billing', 'past_due'), check('credits', 'no_credits'), check('waiver', 'missing_waiver')]) });
+    const read = async (role: (typeof staffRoles)[number]) => {
+      const response = await server({ kind: 'staff', gymId: gymA, userId, roles: [role] }, gymA, standingService).request('/api/kiosk/standing/' + home.parent.id);
+      expect(response.status).toBe(200);
+      return (await response.json() as { data: { status: string; reasons: string[] } }).data;
+    };
+    expect(await read('coach')).toEqual({ memberId: home.parent.id, status: 'front_desk', reasons: ['see_front_desk', 'missing_waiver'] });
+    for (const role of ['owner', 'admin', 'front_desk'] as const)
+      expect(await read(role), role).toMatchObject({ status: 'front_desk', reasons: ['past_due', 'no_credits', 'missing_waiver'] });
+    failing = new Set(['missing_waiver']);
+    for (const role of staffRoles) expect(await read(role), role).toMatchObject({ status: 'front_desk', reasons: ['missing_waiver'] });
+    failing = new Set();
+    for (const role of staffRoles) expect(await read(role), role).toMatchObject({ status: 'ok', reasons: [] });
   });
   it('never exposes billing reasons, amounts, or provider errors through kiosk responses', async () => {
     const home = await family();

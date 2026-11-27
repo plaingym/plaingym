@@ -18,6 +18,15 @@ it('explains both billing and credit refusals to staff', async () => {
   expect(screen.getByText('The member needs an unexpired class credit or an active or trial membership.')).toBeDefined();
   expect(screen.queryByText(/Another check needs attention/)).toBeNull();
 });
+it('shows staff without billing access the generic front-desk reason in place of billing reasons', async () => {
+  const memberId = '00000000-0000-7000-8000-000000000001';
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ data: { memberId, status: 'front_desk', reasons: ['see_front_desk', 'missing_waiver'] } })));
+  const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={cache}><KioskStandingTab memberId={memberId}/></QueryClientProvider>);
+  expect(await screen.findByText('Another check sends this member to the front desk. Front desk staff can see why.')).toBeDefined();
+  expect(screen.getByText('A current waiver isn\'t signed.')).toBeDefined();
+  expect(screen.queryByText(/Another check needs attention|past-due/)).toBeNull();
+});
 it('loads only when opened and refreshes after a credit mutation while another tab was open', async () => {
   const memberId = '00000000-0000-7000-8000-000000000001';
   const request = vi.fn()

@@ -361,7 +361,9 @@ gym that has one (one HMAC each, inside the same transaction). It still saves th
 PIN and answers `sharedPin: true`, never naming the other household, so the panel
 can warn that members with similar names may not be able to check in by name and
 PIN (the kiosk refuses a name and PIN that match two households). Clearing a PIN
-answers `sharedPin: false`.
+answers `sharedPin: false`. Setting or clearing a PIN also clears the kiosk's
+wrong-PIN count and lock for the household (`pin_failed_count`, `pin_locked_until`;
+`areas/kiosk/standing/README.md`), which no response carries.
 
 Photos are resized to at most 512 pixels on the client and re-encoded as JPEG
 pixels, dropping source metadata. The server bounds the request, accepts only

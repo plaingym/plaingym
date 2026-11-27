@@ -19,7 +19,22 @@ goes to the front desk, and a first and last name narrows a common surname.
 When the PIN matches several of those households, the one with a member whose
 full name, or a household name, equals the search (ignoring case and spacing)
 is picked; two such exact matches, or none, go to the front desk.
-PIN matches the name can't tell apart, invalid PINs,
+
+Each household also counts its wrong PINs in a row (`households.pin_failed_count`).
+A guess that was compared and picked no household counts as wrong on every one of
+its unlocked candidate households whose PIN it didn't match; a guess that matched no household or more than three
+counts nowhere. The candidate rows are locked in ID order while the guess is
+checked, so simultaneous guesses each count. The fifth wrong PIN in a row
+(`pinLockAfter`) locks that household's name-and-PIN check-in for 15 minutes
+(`pinLockMs`, `households.pin_locked_until`), starts its count again and writes a
+`household.pin_locked` audit event (system actor, `after.lockedUntil`). While it is
+locked even its right PIN gets the front-desk answer, changes no count, and spends
+the device limiter's budget like a wrong PIN. Its PIN is still compared, so it keeps
+its part in the tie rule: another household sharing that PIN is never picked in
+its place. A right PIN clears the count and an ended lock, and staff setting or clearing
+the PIN (`PUT /api/households/{id}/pin`) clears both. These writes never change the
+household's `revision`. Staff aren't shown the lock; QR check-in isn't affected.
+PIN matches the name can't tell apart, invalid PINs, locked households,
 members outside the household, and failed checks receive the same neutral
 front-desk result. Lookup displays only first names, last initials, and optional
 five-minute photo links. Credentials, roster data, and standing reasons are
@@ -36,7 +51,11 @@ Inactive and missing-waiver checks are enabled, along with the billing and
 class-credit checks from the billing area. Each waiver family's latest version is required unless retired;
 membership agreements are excluded. Provider failures fail closed. Only the
 staff standing route exposes reason codes; device responses contain no reason
-text or billing fields.
+text or billing fields. `GET /api/kiosk/standing/{memberId}` gives the billing
+reasons (`past_due`, `no_credits`; `billingStandingReasons` in
+`areas/billing/kiosk-standing.ts`) only to staff with `billing.read`; for others
+they become one `see_front_desk` in the first one's place, and the profile's kiosk
+tab says another check sends the member to the front desk.
 
 Sessions open for check-in one hour before starting and close at their end.
 A single booking is selected automatically; otherwise the member chooses among

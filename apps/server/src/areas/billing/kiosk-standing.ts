@@ -7,6 +7,9 @@ import { createGymSettingsAccessor } from '../settings/settings.js';
 import { overdueInvoiceCondition } from './kiosk-standing.rules.js';
 import { lacksClassEligibility } from './packs/index.js';
 
+/** The standing reasons that come from billing; staff without `billing.read` see `see_front_desk` in their place. */
+export const billingStandingReasons: readonly string[] = ['past_due', 'no_credits'];
+
 /** Household debt affects standing; reasons stay internal to staff. */
 export function createBillingStanding(scope: typeof forGym = forGym): KioskStandingCheck {
   const settings = createGymSettingsAccessor({ scope });

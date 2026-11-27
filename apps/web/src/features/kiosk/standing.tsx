@@ -7,7 +7,7 @@ import { t } from '../../lib/i18n.js';
 import { Alert } from '../../components/ui/alert.js';
 import { useMemberTabActive } from '../members/tab-activity.js';
 
-const known = new Set(['missing_waiver', 'inactive', 'past_due', 'no_credits']);
+const known = new Set(['missing_waiver', 'inactive', 'past_due', 'no_credits', 'see_front_desk']);
 /** Staff see why the kiosk sends a member to the front desk; the kiosk itself never shows a reason. */
 export function KioskStandingTab({ memberId }: ExtensionViewProps) {
   const active = useMemberTabActive();

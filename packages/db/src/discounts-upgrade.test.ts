@@ -28,11 +28,11 @@ it('adds three empty discount tables to a populated database without changing ex
     const after = await connection.sql`select row_to_json(g) as gym, row_to_json(h) as household, row_to_json(m) as member,
       row_to_json(p) as plan, row_to_json(ms) as membership, row_to_json(i) as invoice
       from gyms g, households h, members m, plans p, memberships ms, invoices i`;
-    // Later migrations add nullable scheduling and consent fields and disabled settings defaults.
+    // Later migrations add nullable scheduling and consent fields, disabled settings defaults and an empty kiosk PIN lock.
     const consent = { phone_e164: null, sms_notices_consent_at: null, sms_notices_consent_source: null };
     expect(after).toEqual(before.map(row => ({ ...row,
       gym: { ...row.gym, sms_config_encrypted: null, member_sms_enabled: false, sms_daily_cap: 1000, bank_debits_enabled: false },
-      household: { ...row.household, ...consent },
+      household: { ...row.household, ...consent, pin_failed_count: 0, pin_locked_until: null },
       member: { ...row.member, ...consent, sms_announcements_consent_at: null, sms_announcements_consent_source: null },
       membership: { ...row.membership, scheduled_origin: null },
     })));

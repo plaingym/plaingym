@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { AppError, type Clock } from '@plaingym/shared';
+import { AppError, canStaff, type Clock } from '@plaingym/shared';
 import { kioskContracts, kioskStandingContracts } from '@plaingym/shared/contracts';
 import type { Context } from 'hono';
 import type { RequestEnvironment } from '../../../core/context.js';
@@ -24,7 +24,8 @@ function staff(c: Context<RequestEnvironment>) {
   const { gym, principal } = c.get('context');
   if (principal.kind !== 'staff' || principal.gymId !== gym.gymId) throw new AppError('not_found', 'Gym not found');
   c.header('Cache-Control', 'no-store');
-  return gym.gymId;
+  // Billing reasons go only to staff who can read billing.
+  return { gymId: gym.gymId, billing: canStaff(principal.roles, 'billing.read') };
 }
 /** Tests pass a service; otherwise routes use the runtime composition, and without one PIN check-in fails closed. */
 export function createKioskCheckinRoutes(service?: KioskCheckin): readonly RouteRegistration[] {
@@ -40,7 +41,7 @@ export function createKioskCheckinRoutes(service?: KioskCheckin): readonly Route
     }, async (c) => { const { gymId, deviceId } = device(c); return c.json({ data: await current().checkin(gymId, deviceId, c.req.valid('json'), (check) => markKioskPinChecked(c.req.raw, check)) }, 200); }),
     route({ ...standing, request: { params: standing.params },
       responses: { 200: { description: 'Kiosk standing and its reasons', content: { 'application/json': { schema: standing.response } } } },
-    }, async (c) => c.json({ data: await current().memberStanding(staff(c), c.req.valid('param').memberId) }, 200)),
+    }, async (c) => { const { gymId, billing } = staff(c); return c.json({ data: await current().memberStanding(gymId, c.req.valid('param').memberId, billing) }, 200); }),
   ];
 }
 export const routes = createKioskCheckinRoutes();

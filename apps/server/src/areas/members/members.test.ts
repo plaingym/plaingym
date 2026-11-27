@@ -423,6 +423,20 @@ describe('members and households', () => {
     expect(verifyHouseholdPin(secretA, gymA, home.id, '1234', null)).toBe(false);
     expect(verifyHouseholdPin(secretA, gymA, home.id, 'bad', raw!.pin)).toBe(false);
   });
+  it('clears the kiosk wrong-PIN count and lock when staff set or clear the PIN', async () => {
+    const { home } = await routeFixture(gymA);
+    const lockState = () => database.forGym(gymA, (tx) => tx.select({ count: households.pinFailedCount, until: households.pinLockedUntil })
+      .from(households).where(eq(households.id, home.id)));
+    const lock = () => database.forGym(gymA, (tx) => tx.update(households)
+      .set({ pinFailedCount: 3, pinLockedUntil: new Date(clock.now().getTime() + 600_000) }).where(eq(households.id, home.id)));
+    await lock();
+    const saved = await service.setHouseholdPin(context(), home.id, { revision: 1, pin: '4321' });
+    expect(await lockState()).toEqual([{ count: 0, until: null }]);
+    expect(saved.data).not.toHaveProperty('pinFailedCount'); expect(saved.data).not.toHaveProperty('pinLockedUntil');
+    await lock();
+    await service.setHouseholdPin(context(), home.id, { revision: 2, pin: null });
+    expect(await lockState()).toEqual([{ count: 0, until: null }]);
+  });
   it('says whether a PIN is set, and when another household of the gym shares it, without naming it or returning a hash', async () => {
     // A fresh gym, so other tests' PINs can't count as shared.
     const gymId = uuidv7(); await factory('gyms', gymId);

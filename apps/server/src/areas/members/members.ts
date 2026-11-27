@@ -488,7 +488,7 @@ export function createMembersService(options: MembersOptions = {}) {
         const others = pin && secret ? await tx.select({ id: households.id, pinHash: households.pinHash }).from(households)
           .where(and(ne(households.id, id), isNotNull(households.pinHash))) : [];
         const sharedPin = others.some((other) => verifyHouseholdPin(secret!, context.gymId, other.id, pin!, other.pinHash));
-        const row = assertRevised(await tx.update(households).set({ pinHash, revision: guard.next }).where(and(eq(households.id, id), guard.matches)).returning(householdFields));
+        const row = assertRevised(await tx.update(households).set({ pinHash, pinFailedCount: 0, pinLockedUntil: null, revision: guard.next }).where(and(eq(households.id, id), guard.matches)).returning(householdFields));
         await audit(tx, context, 'household.pin.updated', 'household', id);
         return { data: household(row, await phoneCountry(tx, context.gymId, [row.phone])), sharedPin };
       });

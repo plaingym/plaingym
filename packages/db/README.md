@@ -209,6 +209,11 @@ Migration `0044_jobs_finished_at.sql` adds the nullable `jobs.finished_at`, the 
 succeeded or finally failed; `run_at` keeps the time it was due. Existing rows start without
 one, and the queue reads a finished row's time from `run_at` when it has none.
 
+Migration `0045_household_pin_lockout.sql` adds `households.pin_failed_count` (not null, default
+0, never negative) and the nullable `households.pin_locked_until`: the kiosk's wrong-PIN guesses
+in a row for the household and the end of the lock they set. Existing households start at 0 with
+no lock.
+
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver

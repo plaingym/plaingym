@@ -13,6 +13,8 @@ export const households = pgTable('households', {
   address: jsonb('address').notNull().default({}), billingDay: integer('billing_day').notNull().default(1),
   stripeCustomerId: text('stripe_customer_id'),
   pinHash: text('pin_hash'), familyDiscountBasisPoints: integer('family_discount_basis_points').notNull().default(0),
+  // Kiosk wrong-PIN guesses in a row, and the end of the lock they set; never sent to clients.
+  pinFailedCount: integer('pin_failed_count').notNull().default(0), pinLockedUntil: instant('pin_locked_until'),
   ...revision(),
 }, (t) => [
   ...scoped('households', t), unique('households_gym_stripe_customer_key').on(t.gymId, t.stripeCustomerId),
@@ -22,6 +24,7 @@ export const households = pgTable('households', {
   check('households_sms_notices_consent_check', sql`(${t.smsNoticesConsentAt} is null) = (${t.smsNoticesConsentSource} is null) and (${t.smsNoticesConsentAt} is null or ${t.phoneE164} is not null)`),
   check('households_billing_day_check', sql`${t.billingDay} between 1 and 31`),
   check('households_discount_check', sql`${t.familyDiscountBasisPoints} between 0 and 10000`),
+  check('households_pin_failed_count_check', sql`${t.pinFailedCount} >= 0`),
   revisionCheck('households_revision_check', t.revision),
 ]).enableRLS();
 export const members = pgTable('members', {

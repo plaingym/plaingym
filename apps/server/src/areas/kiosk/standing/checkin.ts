@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // eslint-disable-next-line database/system-tables -- Reviewed exact-name expression over imported gym-owned columns, used inside forGym only.
-import { and, asc, eq, ilike, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
-import { forGym, households, members } from '@plaingym/db';
+import { and, asc, eq, ilike, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { forGym, households, members, writeAudit } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import {
   kioskLookupRequestSchema, kioskNamePinCheckinRequestSchema,
@@ -13,7 +13,7 @@ import type { Uploads } from '../../../infra/storage/index.js';
 import { createKioskCheckinHelpers, type KioskMemberRow } from '../checkin.js';
 import type { KioskPinCheck } from '../pin-check.js';
 import { verifyHouseholdPin, type HouseholdPinSecret } from '../../members/pin.js';
-import { createBillingStanding, createCreditsStanding } from '../../billing/kiosk-standing.js';
+import { billingStandingReasons, createBillingStanding, createCreditsStanding } from '../../billing/kiosk-standing.js';
 import { createStandingChecks, inactiveStanding, waiverStanding, type StandingChecks } from './standing.js';
 
 export { checkinOpensBeforeMs } from '../checkin.js';
@@ -22,6 +22,9 @@ export { checkinOpensBeforeMs } from '../checkin.js';
  * households shares it. A wider match goes to the front desk; a first and last name narrows a common surname.
  */
 export const maxCandidateHouseholds = 3;
+/** Wrong PINs in a row that lock a household's name-and-PIN check-in, and how long the lock lasts. */
+export const pinLockAfter = 5;
+export const pinLockMs = 15 * 60_000;
 /** Hears what one PIN guess came to; the kiosk limiter spends budget only on wrong PINs (`devices.auth.ts`). */
 export type PinChecked = (check: KioskPinCheck) => void;
 
@@ -57,15 +60,51 @@ export function createKioskCheckin(options: KioskCheckinOptions = {}) {
         ilike(households.name, prefix(text)), ilike(households.name, '% ' + prefix(text)),
         rest.length ? and(ilike(members.firstName, prefix(first!)), ilike(members.lastName, prefix(rest.join(' ')))) : undefined,
       ))).groupBy(households.id, households.pinHash).limit(maxCandidateHouseholds + 1));
+    // A guess with no candidate, or too many, compares no PIN and needs no key, so it changes nothing.
     if (!candidates.length || candidates.length > maxCandidateHouseholds) { pinChecked?.('skipped'); return null; }
+    // Resolve the key between the transactions (the resolver may read the gym).
     const secret = await options.pinSecret(gymId);
-    const matches = candidates.filter((row) => verifyHouseholdPin(secret, gymId, row.id, pin, row.pinHash));
-    // An exact name breaks a tie between households whose PIN matches, so "a a" isn't lost to "asd asd" sharing
-    // its PIN; it never removes the only match. Two households still tied can't be told apart: never guess.
-    const exactMatches = matches.filter((row) => row.exact);
-    const found = matches.length === 1 ? matches[0] : exactMatches.length === 1 ? exactMatches[0] : undefined;
-    pinChecked?.(found ? 'verified' : 'compared');
-    return found?.id ?? null;
+    const exactIds = new Set(candidates.filter((row) => row.exact).map((row) => row.id));
+    const { check, householdId } = await scope(gymId, async (tx): Promise<{ check: KioskPinCheck; householdId: string | null }> => {
+      // Lock the candidates in ID order, so concurrent guesses at one household all count and never deadlock. The
+      // PIN and lock are read again under the lock; a household whose PIN was cleared meanwhile isn't compared.
+      const locked = await tx.select({ id: households.id, pinHash: households.pinHash, pinFailedCount: households.pinFailedCount, pinLockedUntil: households.pinLockedUntil })
+        .from(households).where(and(inArray(households.id, candidates.map((row) => row.id)), isNotNull(households.pinHash)))
+        .orderBy(asc(households.id)).for('update');
+      // Every PIN cleared since the candidate query: nothing is compared.
+      if (!locked.length) return { check: 'skipped', householdId: null };
+      const now = clock.now(), open = locked.filter((row) => !row.pinLockedUntil || row.pinLockedUntil.getTime() <= now.getTime());
+      // Locked households are compared too, so they still take part in the tie rule (a locked household never hands
+      // its guess to another household sharing its PIN) and a guess does the same work whether or not one is locked.
+      const matches = locked.filter((row) => verifyHouseholdPin(secret, gymId, row.id, pin, row.pinHash));
+      // An exact name breaks a tie between households whose PIN matches, so "a a" isn't lost to "asd asd" sharing
+      // its PIN; it never removes the only match. Two households still tied can't be told apart: never guess.
+      const exactMatches = matches.filter((row) => exactIds.has(row.id));
+      const found = matches.length === 1 ? matches[0] : exactMatches.length === 1 ? exactMatches[0] : undefined;
+      // A locked household's right PIN gets the front-desk answer, like a wrong PIN, and changes no count.
+      if (found && !open.includes(found)) return { check: 'compared', householdId: null };
+      // These writes leave `revision` alone: a kiosk guess must not make a staff save conflict.
+      if (found) {
+        if (found.pinFailedCount !== 0 || found.pinLockedUntil) {
+          await tx.update(households).set({ pinFailedCount: 0, pinLockedUntil: null }).where(eq(households.id, found.id));
+        }
+        return { check: 'verified', householdId: found.id };
+      }
+      // A wrong guess counts on every open household it was compared with; households whose PIN matched but tied keep theirs.
+      for (const row of open) {
+        if (matches.includes(row)) continue;
+        const count = row.pinFailedCount + 1;
+        if (count < pinLockAfter) { await tx.update(households).set({ pinFailedCount: count }).where(eq(households.id, row.id)); continue; }
+        const lockedUntil = new Date(now.getTime() + pinLockMs);
+        await tx.update(households).set({ pinFailedCount: 0, pinLockedUntil: lockedUntil }).where(eq(households.id, row.id));
+        await writeAudit(tx, { gymId, actorKind: 'system', action: 'household.pin_locked', targetType: 'household', targetId: row.id,
+          occurredAt: now, after: { lockedUntil: lockedUntil.toISOString() } });
+      }
+      // Every candidate locked still spends the device budget, like a wrong PIN.
+      return { check: 'compared', householdId: null };
+    });
+    pinChecked?.(check);
+    return householdId;
   }
   async function householdMembers(gymId: string, householdId: string): Promise<KioskMemberRow[]> {
     return scope(gymId, (tx) => tx.select({ id: members.id, firstName: members.firstName, lastName: members.lastName, photoKey: members.photoKey })
@@ -107,12 +146,17 @@ export function createKioskCheckin(options: KioskCheckinOptions = {}) {
       }
       return results;
     },
-    /** Staff view of why the kiosk would send a member to the front desk. */
-    async memberStanding(gymId: string, memberId: string): Promise<KioskStanding> {
+    /**
+     * Staff view of why the kiosk would send a member to the front desk. Without `billing`, billing reasons become one
+     * `see_front_desk` in the first one's place, so staff who can't read billing don't learn who is behind on payments.
+     */
+    async memberStanding(gymId: string, memberId: string, billing: boolean): Promise<KioskStanding> {
       const [row] = await scope(gymId, (tx) => tx.select({ id: members.id }).from(members).where(eq(members.id, memberId)));
       if (!row) throw new AppError('not_found', 'Resource not found');
       const result = await standing.evaluate({ gymId, memberId, clock });
-      return { memberId, status: result.status, reasons: [...result.reasons] };
+      const reasons = billing ? [...result.reasons] : result.reasons.flatMap((reason, index) => !billingStandingReasons.includes(reason) ? [reason]
+        : result.reasons.findIndex((other) => billingStandingReasons.includes(other)) === index ? ['see_front_desk'] : []);
+      return { memberId, status: result.status, reasons };
     },
   };
 }

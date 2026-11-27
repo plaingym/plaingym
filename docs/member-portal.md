@@ -121,7 +121,8 @@ an eligible bank account when the gym has enabled bank payments.
   Members who have never held credits keep the existing booking rules.
 * At the kiosk, a member who has held credits and has neither a usable credit nor
   an active or trial membership sees the neutral front-desk message. The kiosk
-  shows no credit balance or reason; staff can inspect the standing reason.
+  shows no credit balance or reason; staff who can read billing can inspect the
+  standing reason.
 * Booking a full class puts the member on the **waitlist** at a numbered position.
   A new booking first promotes eligible waiting members, so it never takes a place they can fill.
 * When a place opens (a cancellation, or you raise the capacity), waitlisted members
