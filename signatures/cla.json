@@ -1,14 +1,4 @@
 {
   "schemaVersion": 1,
-  "signatures": [
-    {
-      "userId": 4713913,
-      "login": "probovmh",
-      "commentId": 7229713126,
-      "signedAt": "2026-11-27T22:54:18Z",
-      "claVersion": "1.0",
-      "claSha256": "8100a1950ffa8bce3cdec43a0f87023e4bbb552274eee6bed21bfc436e5e4084",
-      "claBlobSha": "7e4333978b79ef087e15bb9764bec790bad01d02"
-    }
-  ]
+  "signatures": []
 }
