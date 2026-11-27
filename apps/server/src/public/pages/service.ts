@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, inArray } from 'drizzle-orm';
 import { logoVersion } from '../short-hash.js';
+import { hasControlCharacter } from '../../lib/control-characters.js';
 import { isDeepStrictEqual } from 'node:util';
 import { forGym, type Transaction, members, households, auditEvents, waiverSignatures, waiverTemplates, uuidv7, writeAudit } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
@@ -64,7 +65,9 @@ export function createPublicPagesService(options: PublicPagesOptions) {
   function applicant(input: c.PublicTrialRequest, timezone: string) {
     if (input.member.dateOfBirth > localDate(clock.now(), timezone)
       || [input.member.firstName, input.member.lastName, input.contact.name].some(s => s.length > 200)
-      || input.contact.email.length > 254 || (input.contact.phone?.length ?? 0) > 100)
+      || input.contact.email.length > 254 || (input.contact.phone?.length ?? 0) > 100
+      // A line break or other control character would reach the staff notice as its own line.
+      || [input.member.firstName, input.member.lastName, input.contact.name, input.contact.phone ?? ''].some(hasControlCharacter))
       throw new AppError('invalid_request', 'Invalid applicant');
   }
   async function audit(tx: Parameters<Parameters<typeof forGym>[1]>[0], gymId: string, action: string, id: string) {
@@ -162,7 +165,7 @@ export function createPublicPagesService(options: PublicPagesOptions) {
         }
         const [home] = await tx.select().from(households).where(eq(households.id, m.householdId));
         if (!home || home.email !== input.contact.email || home.name !== input.contact.name
-          || home.phone !== (input.contact.phone ?? null) || !isDeepStrictEqual(c.householdAddressReadSchema.parse(home.address), input.contact.address ?? {})
+          || home.phone !== (input.contact.phone ?? null) || !isDeepStrictEqual(c.readHouseholdAddress(home.address), input.contact.address ?? {})
           || m.firstName !== input.member.firstName || m.lastName !== input.member.lastName || m.dateOfBirth !== input.member.dateOfBirth) return missing();
       });
       for (const acceptance of input.waivers) {

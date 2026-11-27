@@ -40,6 +40,11 @@ export const emergencyContactSchema = z.strictObject({
 });
 /** Stored JSON may carry fields added by a newer minor; requests stay strict. */
 export const householdAddressReadSchema = householdAddressSchema.strip();
+/** A stored address that doesn't parse reads as empty, so one row can't fail a list. */
+export const readHouseholdAddress = (value: unknown): HouseholdAddress => {
+  const parsed = householdAddressReadSchema.safeParse(value);
+  return parsed.success ? parsed.data : {};
+};
 export const emergencyContactReadSchema = emergencyContactSchema.strip();
 
 /** Safe for household grants; never add medical notes or check-in credentials. */

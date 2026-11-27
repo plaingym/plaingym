@@ -48,7 +48,7 @@ import { FakeEmail } from '../../infra/email/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { demoSignaturePng } from '../../demo/seed/waivers-image.js';
 import { configureJoin } from './join.routes.js';
-import { joinBodyBytes } from './join.service.js';
+import { joinBodyBytes, joinFieldProblems } from './join.service.js';
 import { joinCookie } from './join.continuation.js';
 import { createJoinCleanup } from './join.cleanup.js';
 import { jobs as joinJobs, joinSignInJob } from './join.jobs.js';
@@ -2408,5 +2408,20 @@ describe('join return page after a membership ends', () => {
     }
     expect(start).not.toHaveBeenCalled();
     expect(create).not.toHaveBeenCalled();
+  });
+});
+
+describe('join field rules', () => {
+  const now = new Date('2026-10-29T12:00:00Z'), timezone = 'America/Vancouver';
+  const contact = { name: 'Alex Contact', email: 'join@example.invalid' };
+  const person = (firstName = 'Ana Sofía') => ({ member: { firstName, lastName: 'O\'Neil-Lefèvre', dateOfBirth: '1990-01-02' },
+    signatures: [{ signer: { kind: 'self' as const, name: 'Ana Sofía O\'Neil-Lefèvre' } }] });
+  it('refuses a name with a line break as one field problem, alone or with a name that is too long', () => {
+    expect(joinFieldProblems(contact, [person()], now, timezone)).toEqual([]);
+    expect(joinFieldProblems({ ...contact, name: 'A\nB' }, [person()], now, timezone)).toEqual([{ path: ['contact', 'name'], kind: 'field' }]);
+    expect(joinFieldProblems(contact, [person('A\nB')], now, timezone)).toEqual([{ path: ['members', 0, 'member', 'firstName'], kind: 'field' }]);
+    expect(joinFieldProblems(contact, [person('a'.repeat(200) + '\nB')], now, timezone))
+      .toEqual([{ path: ['members', 0, 'member', 'firstName'], kind: 'field' }]);
+    expect(joinFieldProblems({ ...contact, phone: '555\t0100' }, [person()], now, timezone)).toEqual([{ path: ['contact', 'phone'], kind: 'field' }]);
   });
 });

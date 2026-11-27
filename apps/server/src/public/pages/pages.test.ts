@@ -292,6 +292,27 @@ describe('core public pages through the production registrations', () => {
     expect((await f.post('/api/public/drop-in', input)).status).toBe(200);
     expect((await f.post('/api/public/drop-in', input)).status).toBe(200);
   });
+  it('refuses an address outside the household shape and names or phones with control characters, storing nothing', async () => {
+    const f = await fixture(), admitted = await f.admit();
+    const counts = async () => { const r = await f.rows(); return { members: r.members.length, homes: r.homes.length, leads: r.leads.length, audits: r.audits.length, signatures: r.signatures.length }; };
+    const before = await counts();
+    const refused = [
+      ...[{ countryCode: 'xx' }, { unit: '4' }, { line1: 'a'.repeat(201) }].map(address => (input: ReturnType<typeof body>) => ({ ...input, contact: { ...input.contact, address } })),
+      (input: ReturnType<typeof body>) => ({ ...input, member: { ...input.member, firstName: 'A\nB' } }),
+      (input: ReturnType<typeof body>) => ({ ...input, member: { ...input.member, lastName: 'A' + String.fromCharCode(0x2028) + 'B' } }),
+      (input: ReturnType<typeof body>) => ({ ...input, contact: { ...input.contact, name: 'A\rB' } }),
+      (input: ReturnType<typeof body>) => ({ ...input, contact: { ...input.contact, phone: '555\t0100' } }),
+    ];
+    for (const change of refused) {
+      f.clock.advance(15 * 60_000); // A fresh submission budget for each pair.
+      expect((await f.post('/api/public/trial', change(body()))).status).toBe(400);
+      expect((await f.post('/api/public/drop-in', { ...change(admitted), waivers: admitted.waivers })).status).toBe(400);
+    }
+    expect(await counts()).toEqual(before); expect(f.notices).toHaveLength(0);
+    const named = body('named@example.invalid');
+    const ordinary = { ...named, contact: { ...named.contact, name: 'Ana O\'Neil-Lefèvre' }, member: { ...named.member, firstName: 'Ana Sofía', lastName: 'O\'Neil-Lefèvre' } };
+    expect((await f.post('/api/public/trial', ordinary)).status).toBe(200);
+  });
 
   it('renders branded pages with the website off, escaped terms, CSP, fee and source link', async () => {
     const f = await fixture();

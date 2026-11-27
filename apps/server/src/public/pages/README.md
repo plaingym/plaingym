@@ -88,6 +88,16 @@ change a membership, or return member/account IDs. A matching email receives the
 same status, body, headers and confirmation page as a new address. Staff reconcile
 duplicate intake records after contacting the visitor.
 
+The trial, drop-in and join JSON routes take an optional contact `address` only in
+the household address shape: `line1`, `line2`, `city` and `region` up to 200
+characters, `postalCode` up to 20, and `countryCode` as two capital letters; any
+other key is refused with 400. The native forms send no address. Applicant and
+contact names and the phone number are refused when they hold a control character
+or a line or paragraph separator, and the staff notice collapses any run of
+whitespace in a stored value to one space, so each value stays on its own line.
+Staff reads show a stored household address that doesn't parse as empty rather
+than failing the list.
+
 Drop-ins first review every current template. `POST /drop-in/signatures` validates
 the applicant, honeypot, template versions and bounded PNGs before creating a
 prospect admission. It uploads each image through the waiver service (including

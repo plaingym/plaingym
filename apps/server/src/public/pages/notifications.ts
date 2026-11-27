@@ -21,9 +21,14 @@ export const storedNoticePayload = z.object(noticePayload.shape);
 type Notice = z.infer<typeof noticePayload>;
 interface Intake { name: string; contact: string; email: string; phone: string | null }
 
+// Each visitor value stays on its own line: a stored line break can't add paragraphs to the notice.
+const line = (value: string) => value.replace(/[\s\p{Cc}]+/gu, ' ').trim();
+
 async function compose(t: Translator, gymName: string, kind: Notice['kind'], intake: Intake) {
   const subject = t('public/pages:staffSubject', { gym: gymName, kind: t('public/pages:' + kind) });
-  const text = t('public/pages:staffBody', { name: intake.name, contact: intake.contact, email: intake.email, phone: intake.phone ?? '' });
+  const text = t('public/pages:staffBody', {
+    name: line(intake.name), contact: line(intake.contact), email: intake.email, phone: line(intake.phone ?? ''),
+  });
   const html = await jsx('p', { style: 'white-space:pre-wrap' }, text).toString();
   return { subject, text, html };
 }

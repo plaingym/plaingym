@@ -68,6 +68,22 @@ describe('core public page contracts', () => {
       expect(contract.path).toMatch(/^\/api\/public\/|^\/(?:drop-in|join)\/signatures$/);
     }
   });
+  it('takes a contact address only in the bounded household shape', () => {
+    const signer = { templateId: id, templateVersion: 1, pngBase64: 'aGVsbG8=', signer: { kind: 'self', name: 'Visitor' } };
+    const inputs = [
+      [publicTrialRequestSchema, trial],
+      [publicDropInRequestSchema, { ...trial, waivers: [waiver] }],
+      [joinAdmissionSchema, { contact, planId: id, honeypot: '', members: [{ member, signatures: [signer] }] }],
+      [publicJoinRequestSchema, { planId: id, contact, members: [{ member, waivers: [waiver] }], honeypot: '' }],
+    ] as const;
+    for (const [schema, input] of inputs) {
+      for (const address of [{ countryCode: 'xx' }, { unit: '4' }, { line1: 'a'.repeat(201) }, { postalCode: '1'.repeat(21) }])
+        expect(schema.safeParse({ ...input, contact: { ...contact, address } }).success, JSON.stringify(address)).toBe(false);
+      const address = { line1: 'a'.repeat(200), city: 'Example', countryCode: 'CA' };
+      expect(schema.parse({ ...input, contact: { ...contact, address } }).contact.address).toEqual(address);
+      expect(schema.parse(input).contact).not.toHaveProperty('address');
+    }
+  });
 });
 
 describe('public response validation', () => {

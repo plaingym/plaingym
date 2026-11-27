@@ -299,6 +299,16 @@ describe('member route access boundaries', () => {
     expect(await database.forGym(gymA, tx => tx.select({ address: households.address }).from(households).where(eq(households.id, home.id))))
       .toEqual([{ address }]);
   });
+  it('reads a stored address that does not parse as empty, so the list and the record still open and save', async () => {
+    const other = await factory('households', gymA, { address: { city: 'Elsewhere' } });
+    const home = await factory('households', gymA, { address: { countryCode: 'xx' } });
+    const page = (await service.listHouseholds(gymA, { limit: 100, offset: 0 })).data;
+    expect(page.find(row => row.id === home.id)?.address).toEqual({});
+    expect(page.find(row => row.id === other.id)?.address).toEqual({ city: 'Elsewhere' });
+    expect((await service.getHousehold(gymA, home.id)).address).toEqual({});
+    await service.updateHousehold(context(), home.id, { revision: 1, address: { city: 'Example' } });
+    expect((await service.getHousehold(gymA, home.id)).address).toEqual({ city: 'Example' });
+  });
   it('reads extended emergency contacts while refusing the same extension on writes', async () => {
     const contact = { name: 'Parent', relationship: null, phone: '555-0100', email: null }, emergencyContacts = [{ ...contact, future: true }];
     const person = await factory('members', gymA, { emergencyContacts });

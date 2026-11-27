@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- The test inspects the queued notice's payload and key in its isolated database.
-import { jobs, members, uuidv7 } from '@plaingym/db';
+import { households, jobs, members, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
@@ -65,6 +65,24 @@ describe('queued public staff notices', () => {
     await f.drain();
     expect(await f.readJobs()).toHaveLength(1);
     expect(f.email.messages).toHaveLength(2);
+  });
+
+  it('puts each stored visitor value on one line, whatever line breaks it holds', async () => {
+    const f = await fixture();
+    await f.pages.trial(f.gymId, visitor(), f.timezone);
+    const [member] = await db.forGym(f.gymId, tx => tx.select().from(members));
+    // Values stored before line breaks were refused on the public forms.
+    await db.forGym(f.gymId, async tx => {
+      await tx.update(members).set({ firstName: 'X\n\n--\nNotice: https://example.invalid' }).where(eq(members.id, member!.id));
+      await tx.update(households).set({ name: 'Private\r\nContact  \t Home' }).where(eq(households.id, member!.householdId));
+    });
+    await f.drain();
+    expect(f.email.messages).toHaveLength(2);
+    for (const message of f.email.messages) {
+      expect(message.subject).toBe('North Gym: Try a class');
+      expect(message.text).toBe('Participant: X -- Notice: https://example.invalid Applicant\nContact: Private Contact Home\n'
+        + 'Email: visitor@example.invalid\nPhone: 555-0100');
+    }
   });
 
   it('skips the notice quietly when the gym has no SMTP', async () => {

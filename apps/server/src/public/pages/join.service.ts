@@ -13,6 +13,7 @@ import { clearSmsOptOut } from '../../areas/members/sms-opt-out.js';
 import { localDate } from '@plaingym/shared/time';
 import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
+import { hasControlCharacter } from '../../lib/control-characters.js';
 import { readPublicBranding } from './service.js';
 import { logError, logInfo, logWarn } from '../../core/log.js';
 import { createGymSettingsAccessor, readGymSettings } from '../../areas/settings/settings.js';
@@ -143,7 +144,7 @@ export function joinFieldProblems(contact: c.PublicContact,
   people: readonly { member: c.PublicApplicant; signatures: readonly { signer: c.WaiverSigner }[] }[], now: Date, timezone: string): JoinFieldProblem[] {
   const problems: JoinFieldProblem[] = [], today = localDate(now, timezone);
   const bound = (value: string | undefined, max: number, path: (string | number)[]) => {
-    if ((value?.trim().length ?? 0) > max) problems.push({ path, kind: 'field' });
+    if ((value?.trim().length ?? 0) > max || hasControlCharacter(value ?? '')) problems.push({ path, kind: 'field' });
   };
   bound(contact.name, 200, ['contact', 'name']); bound(contact.email, 254, ['contact', 'email']); bound(contact.phone, 100, ['contact', 'phone']);
   people.forEach(({ member, signatures }, i) => {
@@ -232,7 +233,7 @@ export function createJoinService(options: JoinOptions) {
       // A leaked staff image key cannot enroll, edit, or sign for an existing member.
       if (!home || !record || record.planId !== input.planId || record.memberIds.length !== ids.length || home.email !== input.contact.email
         || record.smsNoticesConsent !== input.smsNoticesConsent || record.smsAnnouncementsConsent !== input.smsAnnouncementsConsent
-        || home.name !== input.contact.name || home.phone !== (input.contact.phone ?? null) || !isDeepStrictEqual(c.householdAddressReadSchema.parse(home.address), input.contact.address ?? {})) missing();
+        || home.name !== input.contact.name || home.phone !== (input.contact.phone ?? null) || !isDeepStrictEqual(c.readHouseholdAddress(home.address), input.contact.address ?? {})) missing();
       // A submitted join replays even after its memberships were frozen or cancelled.
       const replay = await marked(tx, 'public.join.received', householdId);
       const joined = replay ? await tx.select({ id: memberships.id, status: memberships.status }).from(memberships)

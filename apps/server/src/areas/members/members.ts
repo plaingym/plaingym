@@ -50,7 +50,7 @@ const member = (row: Record<string, unknown>, country?: string | null) => c.memb
 });
 const household = (row: Record<string, unknown>, country?: string | null) => c.householdSchema.parse({ ...withoutSmsColumns(row), createdAt: (row.createdAt as Date).toISOString(),
   sms: smsState(row as Parameters<typeof smsState>[0], row.phone as string | null, country),
-  address: c.householdAddressReadSchema.parse(row.address) });
+  address: c.readHouseholdAddress(row.address) });
 const tag = (row: Record<string, unknown>) => c.memberTagSchema.parse({ ...row, createdAt: (row.createdAt as Date).toISOString() });
 const link = (row: Record<string, unknown>) => c.memberTagLinkSchema.parse({ ...row, createdAt: (row.createdAt as Date).toISOString() });
 function missing<T>(row: T | undefined): T { if (!row) throw new AppError('not_found', 'Resource not found'); return row; }

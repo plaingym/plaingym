@@ -32,9 +32,16 @@ export const publicPageConfigResponseSchema = z.strictObject({ data: z.strictObj
 export const publicApplicantSchema = z.strictObject({
   firstName: z.string().trim().min(1), lastName: z.string().trim().min(1), dateOfBirth: dateSchema,
 });
+// The household address shape with a bound on each field; not trimmed, since a later
+// submission is compared with the stored value.
+const publicAddressSchema = z.strictObject({
+  line1: z.string().max(200).optional(), line2: z.string().max(200).optional(), city: z.string().max(200).optional(),
+  region: z.string().max(200).optional(), postalCode: z.string().max(20).optional(),
+  countryCode: z.string().regex(/^[A-Z]{2}$/).optional(),
+});
 export const publicContactSchema = z.strictObject({
   name: z.string().trim().min(1), email: z.email().toLowerCase(),
-  phone: z.string().trim().min(1).optional(), address: z.record(z.string(), z.string()).optional(),
+  phone: z.string().trim().min(1).optional(), address: publicAddressSchema.optional(),
 });
 // Rate limiting runs before validation. A filled honeypot is invalid; no client
 // timestamp, status, household ID, or existing-member flag is accepted.
