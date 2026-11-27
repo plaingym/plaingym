@@ -60,8 +60,9 @@ export function createImportStep(options: { imports?: ImportRuns; scope?: typeof
         // Recheck under the write lock in case setup changed while reading import storage.
         const { gym, state } = await current(tx, context, input.revision, previous);
         const guard = revisionGuard(gyms.revision, input.revision);
-        // As in a fresh finish, deferring backups clears any destination whose key was never confirmed.
-        const backups = input.skipBackups ? { backupDestination: null, s3Config: null, backupPublicKey: null, backupBlobKey: null } : {};
+        // As in a fresh finish, deferring backups clears the destination, its credentials and public key, and keeps the
+        // blob key: a bucket that already holds snapshots needs it (see `newBlobKey`).
+        const backups = input.skipBackups ? { backupDestination: null, s3Config: null, backupPublicKey: null } : {};
         const after = assertRevised(await tx.update(gyms).set({ ...backups, billingEnabled: false, memberEmailsEnabled: false,
           settings: { ...gym.settings as object, setup: { ...state, completed: true,
             completedSteps: [...new Set([...state.completedSteps, 8])].sort((a, b) => a - b) } },

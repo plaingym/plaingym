@@ -261,9 +261,12 @@ the message reports the lower free figure and the page shows it alongside that
 path's total, using uploads when the free figures tie. Both pick that volume with
 `sharedDiskVolume` (`packages/shared/src/contracts/health.ts`). The status still checks
 each path's own free bytes and free-space percentage.
-`backupStaging` is null when no staging directory is configured, including multi-gym
-mode, which ignores `BACKUP_STAGING_DIR`; `sameFilesystem` is then false and the page
-omits staging rows.
+`backupStaging` is null when no staging directory is configured; `sameFilesystem` is
+then false and the page omits staging rows.
+On a multi-gym install the disk tile is `not_configured` with no details ("Whoever runs
+this install watches its disk space.") and reads no volume: the volumes belong to
+whoever runs the install and are shared by every gym, so no gym's owner or admin sees
+their size or free space.
 A configured directory that is missing or unreadable makes the check unavailable;
 it never substitutes zero or reports a healthy upload volume as the whole check.
 Neither filesystem paths nor job payloads or errors are returned. Disk warning

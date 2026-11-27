@@ -155,6 +155,21 @@ describe('setup step 8: import or start fresh', () => {
     expect(after).toMatchObject({ backupDestination: null, s3Config: null, backupPublicKey: null, backupBlobKey: null, billingEnabled: false, memberEmailsEnabled: false });
     expect((after.settings as { setup: { completed: boolean; completedSteps: number[] } }).setup).toMatchObject({ completed: true, completedSteps: [0, 1, 2, 3, 4, 5, 6, 8] });
   });
+  it('keeps the blob key when an import finishes with backups set up later', async () => {
+    const importId = await importRun(gymA, ownerA);
+    await database.forGym(gymA, (tx) => tx.update(gyms).set({ settings: { setup: {
+      completed: false, completedSteps: [0, 1, 2, 3, 4, 5, 6], ownerId: ownerA } } }).where(eq(gyms.id, gymA)));
+    const wizard = createSetupService({ key: parseEncryptionKey('ab'.repeat(32)), origin: 'http://gym.localhost', env: {}, clock, scope: database.forGym,
+      async checkDestination() { assertNoTransaction('setup backup destination check'); } });
+    const destination = { endpoint: 'https://s3.example.org', region: 'auto', bucket: 'gym-backups', accessKeyId: 'access-key', secretAccessKey: 'private-storage-key' };
+    const keys = await wizard.backups(context(gymA, ownerA), { revision: (await revision(gymA)).revision, destination });
+    await wizard.confirmBackupKey(context(gymA, ownerA), { revision: keys.revision, privateKey: keys.privateKey });
+    const before = await revision(gymA);
+    expect(before.backupBlobKey).toBeTruthy();
+    const response = await finishRequest(server('owner'), { choice: 'import', revision: before.revision, importId, skipBackups: true });
+    expect(response.status).toBe(200);
+    expect(await revision(gymA)).toMatchObject({ backupDestination: null, s3Config: null, backupPublicKey: null, backupBlobKey: before.backupBlobKey });
+  });
   it('checks the revision again after reading import progress outside the transaction', async () => {
     const importId = await importRun(gymA, ownerA), before = await revision(gymA);
     const racing = createImportStep({ scope: database.forGym, clock, imports: { async get(gymId, id) {

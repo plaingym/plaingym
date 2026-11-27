@@ -85,11 +85,14 @@ Backup setup first probes the destination through `settings/backup-destination.t
 (list, write, read and delete under the gym's prefix), refusing with `unreachable`
 without saving a key if any operation fails. It returns a new private identity once, stores only its public recipient,
 and activates the destination only after the owner pastes the matching identity.
+It keeps a blob key the gym already has, whatever the destination, as Settings does,
+and makes one only for a gym without one: a bucket that holds snapshots needs the key
+their reference lists were authenticated with, or pruning stops.
 The saved fields are read directly by `loadBackupConfig`; the default budget is 8 GB.
 Credential values never enter progress or audits.
-**Set up later** explicitly finishes without backups, clears any unconfirmed
-destination, and leaves the health tile at not configured until the owner adds
-them in Settings.
+**Set up later** explicitly finishes without backups, clears any backup destination,
+confirmed or not (with its credentials and public key) but keeps the blob key, and leaves the
+health tile at not configured until the owner adds them in Settings.
 
 Email, Stripe and backups stay changeable after setup through
 `areas/settings/integrations.ts`, which shares these steps' parts rather than

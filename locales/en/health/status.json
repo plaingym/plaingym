@@ -52,6 +52,7 @@
   "smtpLastFailed.authentication_operator": "The last email failed: the service rejected the login. Whoever runs this install manages that login.",
   "smtpLastFailed.sender_refused": "The last email failed: the service refused the sender address.",
   "diskMissing": "The uploads directory must be configured to check free space.",
+  "diskOperator": "Whoever runs this install watches its disk space.",
   "diskFree": "Free space: uploads {uploads} GB; backup staging {staging} GB.",
   "diskFreeShared": "Free space: uploads and backup staging (one volume) {uploads} GB.",
   "diskFreeUploads": "Free space: uploads {uploads} GB.",

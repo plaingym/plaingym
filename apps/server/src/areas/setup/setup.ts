@@ -258,14 +258,16 @@ export function createSetupService(options: {
     /** Step 6 validates the restricted key and registers the webhook outside any transaction. */
     stripe(context: MutationContext, input: SetupStripeRequest) { return stripeStep.configure(context, input); },
     async backups(context: MutationContext, input: SetupBackupRequest) {
-      const { state } = await current(context, input.revision, 7);
+      const { gym: before, state } = await current(context, input.revision, 7);
       await requireBackupDestination(input.destination, context.gymId, options.checkDestination);
       const { privateKey, publicKey } = await backupKeyPair();
       const { destination, s3Config } = backupColumns(options.key, context.gymId, input.destination);
-      // Do not activate backups until the owner proves they saved the matching private key.
+      // Do not activate backups until the owner proves they saved the matching private key. A stored blob key stays, as
+      // in Settings: a bucket that already holds snapshots needs it (see `newBlobKey`); the revision check in `save`
+      // refuses the write if the gym changed since it was read.
       const gym = await save(context, input.revision, 7, {
         backupDestination: destination, s3Config,
-        backupPublicKey: null, backupBlobKey: newBlobKey(options.key, context.gymId),
+        backupPublicKey: null, backupBlobKey: before.backupBlobKey ?? newBlobKey(options.key, context.gymId),
         backupRetentionBytes: 8_000_000_000n,
       }, { completedSteps: state.completedSteps.filter((step) => step !== 7), backupRecipient: publicKey });
       return { privateKey, publicKey, revision: gym.revision };
@@ -280,7 +282,8 @@ export function createSetupService(options: {
     },
     async finish(context: MutationContext, input: SetupFinishRequest) {
       if (input.choice !== 'fresh') throw new AppError('invalid_request', 'Choose a fresh start');
-      const changes = input.skipBackups ? { backupDestination: null, s3Config: null, backupPublicKey: null, backupBlobKey: null } : {};
+      // Deferring backups clears the destination, its credentials and public key but keeps the blob key (see `newBlobKey`).
+      const changes = input.skipBackups ? { backupDestination: null, s3Config: null, backupPublicKey: null } : {};
       const gym = await save(context, input.revision, 8, { ...changes, billingEnabled: false, memberEmailsEnabled: false },
         { completed: true }, { previousStep: input.skipBackups ? 6 : 7 });
       return { completed: true as const, billingEnabled: false as const, memberEmailsEnabled: false as const, revision: gym.revision };

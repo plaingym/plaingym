@@ -6,8 +6,9 @@ import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
 // eslint-disable-next-line no-restricted-imports -- Integration initializes the real app-role pool used by auth and loadBackupConfig; no raw queries.
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
-import { gyms, auditEvents, ranks, programs, staffRoles } from '@plaingym/db';
+import { gyms, auditEvents, ranks, programs, staffRoles, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
+import { createFactories } from '@plaingym/db/testing/factories';
 import { googleCallbackPath, gymAddressSchema, setupContracts, setupStatusResponseSchema } from '@plaingym/shared/contracts';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { createApp } from '../../core/app.js';
@@ -273,5 +274,59 @@ describe('first-boot setup', () => {
     const context = { gymId: '01900000-0000-7000-8000-000000000001', actor: { kind: 'user' as const, userId: '01900000-0000-7000-8000-000000000002' } };
     await expect(createSetupService({ key, origin, env: installEnv }).google(context, { revision: 1, clientId: 'client', clientSecret: 'secret' }))
       .rejects.toMatchObject({ code: 'conflict', details: { google: ['install_configured'] } });
+  });
+  // These gyms sit beside the finished install above and are reached by ID, as the wizard's own calls reach theirs.
+  const factory = createFactories(database);
+  const bucket = (name: string) => ({ endpoint: 'https://s3.example.org', region: 'auto', bucket: name, accessKeyId: 'access-key', secretAccessKey: 'private-storage-key' });
+  const stored = async (gymId: string) => (await database.forGym(gymId, (tx) => tx.select().from(gyms).where(eq(gyms.id, gymId))))[0]!;
+  async function wizardAtBackups() {
+    const gymId = uuidv7();
+    await factory('gyms', gymId);
+    const userId = (await factory('authUser', gymId)).id;
+    await database.forGym(gymId, (tx) => tx.update(gyms).set({
+      settings: { setup: { completedSteps: [0, 1, 2, 3, 4, 5, 6], completed: false, ownerId: userId } } }).where(eq(gyms.id, gymId)));
+    return { gymId, context: { gymId, actor: { kind: 'user' as const, userId } } };
+  }
+  it('keeps the stored blob key when the backup step is submitted again for the same bucket', async () => {
+    const { gymId, context } = await wizardAtBackups();
+    await service.backups(context, { revision: (await stored(gymId)).revision, destination: bucket('gym-backups') });
+    const first = (await stored(gymId)).backupBlobKey;
+    expect(first).toBeTruthy();
+    await service.backups(context, { revision: (await stored(gymId)).revision, destination: bucket('gym-backups') });
+    expect((await stored(gymId)).backupBlobKey).toBe(first);
+  });
+  it('keeps the blob key for another bucket and asks again for the new private key', async () => {
+    const { gymId, context } = await wizardAtBackups();
+    const keys = await service.backups(context, { revision: (await stored(gymId)).revision, destination: bucket('gym-backups') });
+    await service.confirmBackupKey(context, { revision: keys.revision, privateKey: keys.privateKey });
+    const confirmed = await stored(gymId);
+    expect(confirmed.backupPublicKey).toBe(keys.publicKey);
+    const next = await service.backups(context, { revision: confirmed.revision, destination: bucket('other-backups') });
+    const moved = await stored(gymId);
+    expect(moved).toMatchObject({ backupBlobKey: confirmed.backupBlobKey, backupPublicKey: null, backupDestination: { bucket: 'other-backups' } });
+    await service.confirmBackupKey(context, { revision: next.revision, privateKey: next.privateKey });
+    expect(await stored(gymId)).toMatchObject({ backupBlobKey: confirmed.backupBlobKey, backupPublicKey: next.publicKey });
+  });
+  it('makes a blob key for a gym without one', async () => {
+    const { gymId, context } = await wizardAtBackups();
+    expect((await stored(gymId)).backupBlobKey).toBeNull();
+    await service.backups(context, { revision: (await stored(gymId)).revision, destination: bucket('gym-backups') });
+    const blobKey = (await stored(gymId)).backupBlobKey!;
+    expect(decryptSecret(key, { secretClass: 'backup_blob_key', owner: gymId }, blobKey)).toMatch(/^[0-9a-f]{64}$/);
+  });
+  it('keeps the blob key when setup finishes with backups set up later', async () => {
+    const { gymId, context } = await wizardAtBackups();
+    const keys = await service.backups(context, { revision: (await stored(gymId)).revision, destination: bucket('gym-backups') });
+    await service.confirmBackupKey(context, { revision: keys.revision, privateKey: keys.privateKey });
+    const before = await stored(gymId);
+    expect(before.backupBlobKey).toBeTruthy();
+    await service.finish(context, { revision: before.revision, choice: 'fresh', skipBackups: true });
+    expect(await stored(gymId)).toMatchObject({ backupDestination: null, s3Config: null, backupPublicKey: null, backupBlobKey: before.backupBlobKey });
+  });
+  it('leaves no blob key when setup finishes without ever reaching the backup step', async () => {
+    const { gymId, context } = await wizardAtBackups();
+    await service.finish(context, { revision: (await stored(gymId)).revision, choice: 'fresh', skipBackups: true });
+    expect(await stored(gymId)).toMatchObject({ backupDestination: null, backupBlobKey: null });
+    expect(((await stored(gymId)).settings as { setup: { completed: boolean } }).setup.completed).toBe(true);
   });
 });

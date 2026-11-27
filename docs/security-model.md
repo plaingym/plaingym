@@ -81,8 +81,11 @@ Isolation is enforced in the database, not only in application code.
   database/role scope without its value.
   A restore trusts its snapshot: its SQL runs as `maintenance`. These catalog
   checks run before restore activates secrets or uploads and keep a failed restore
-  gated, but they do not sandbox arbitrary SQL. Authentication and integrity checks
-  do not substitute for a trusted backup source; see [restoring](restoring.md).
+  gated, but they do not sandbox arbitrary SQL. A snapshot's authentication and
+  integrity checks detect corruption and mix-ups, not a snapshot built by someone who
+  can write to the backup bucket (see **Backups** under
+  [Secrets and personal data](#secrets-and-personal-data)), so they do not substitute
+  for a trusted backup source; see [restoring](restoring.md).
 * **Tests.** Every gym-owned route has a cross-gym test (gym A's session on gym
   B's resource is a 404).
 
@@ -685,7 +688,13 @@ Old versions and documents referenced by signatures remain retained after retire
 * **Backups** are encrypted with [age](https://age-encryption.org) to a public key
   whose private half the owner keeps; the server can write backups but can't read
   them. Each backup also carries `APP_ENCRYPTION_KEY`, encrypted the same way, so a
-  restore on a new server can decrypt the stored secrets.
+  restore on a new server can decrypt the stored secrets. A snapshot's checksums and
+  its authenticated reference list detect corruption, truncation and a mix-up between
+  snapshots. They don't protect against someone who can write to the backup bucket:
+  the key that authenticates the list is stored in the snapshot itself, so a person
+  with write access can build a snapshot that passes every check a restore makes,
+  and restoring it installs their database and accounts. Treat the bucket's write credentials as being
+  as sensitive as the server.
 * **Erasure.** Staff with `members.anonymize` can erase a member's personal data
   on request: contact details, birth date, emergency contacts, medical notes,
   photo, signed waivers and signature images, lead contacts and lost reasons,

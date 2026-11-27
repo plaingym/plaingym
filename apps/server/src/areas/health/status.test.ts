@@ -451,23 +451,31 @@ describe('built-in providers', () => {
       }, message: 'Free space: uploads and backup staging (one volume) 0.51 GB.',
     });
   });
-  it('checks the uploads volume alone when no restore staging is kept, as in multi-gym mode', async () => {
-    const multi = { ...env, BACKUP_STAGING_DIR: undefined };
+  it('checks the uploads volume alone when no restore staging is kept', async () => {
+    const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off', BACKUP_STAGING_DIR: undefined };
     const check = vi.fn(async (_path: string) => ({ blocks: 20_000_000, bsize: 1024, bavail: 500_000 }));
-    const result = await tile('disk', gymA, { env: multi, disk: check });
+    const result = await tile('disk', gymA, { env: single, disk: check });
     expect(result).toMatchObject({ status: 'warning', details: { uploads: { totalBytes: 20_480_000_000, availableBytes: 512_000_000 }, backupStaging: null, sameFilesystem: false }, message: 'Free space: uploads 0.51 GB.' });
     expect(check.mock.calls.map(([path]) => path)).toEqual(['/uploads']);
     // A nearly full disk still shows its figure rather than rounding to 0 GB.
-    expect(await tile('disk', gymA, { env: multi, disk: async () => ({ blocks: 20_000_000, bsize: 1024, bavail: 4_000 }) }))
+    expect(await tile('disk', gymA, { env: single, disk: async () => ({ blocks: 20_000_000, bsize: 1024, bavail: 4_000 }) }))
       .toMatchObject({ status: 'error', message: 'Free space: uploads 0.0041 GB.' });
-    expect(await tile('disk', gymA, { env: { ...multi, BACKUP_STAGING_DIR: '' } })).toMatchObject({ status: 'healthy' });
-    expect(await tile('disk', gymA, { env: { ...multi, UPLOADS_DIR: '' } })).toMatchObject({ status: 'not_configured' });
-    // The app ignores a staging directory set by hand in multi-gym mode, so the tile does too.
-    const handSet = vi.fn(async (_path: string) => ({ blocks: 20_000_000, bsize: 1024, bavail: 10_000_000 }));
-    await tile('disk', gymA, { env, disk: handSet });
-    expect(handSet.mock.calls.map(([path]) => path)).toEqual(['/uploads']);
-    // A single-gym install without staging reports the uploads volume alone too.
-    expect(await tile('disk', gymA, { env: { ...multi, TENANCY: 'single' } })).toMatchObject({ status: 'healthy', details: { backupStaging: null }, message: 'Free space: uploads 10.24 GB.' });
+    expect(await tile('disk', gymA, { env: { ...single, BACKUP_STAGING_DIR: '' } })).toMatchObject({ status: 'healthy', details: { backupStaging: null }, message: 'Free space: uploads 10.24 GB.' });
+    expect(await tile('disk', gymA, { env: { ...single, UPLOADS_DIR: '' } })).toMatchObject({ status: 'not_configured' });
+  });
+  it('shows no disk figures on a multi-gym install, whose volumes belong to whoever runs it', async () => {
+    const reads = vi.fn(async (_path: string) => ({ blocks: 20_000_000, bsize: 1024, bavail: 10_000_000 }));
+    const devices = vi.fn(async (_path: string) => 1);
+    for (const multi of [env, { ...env, BACKUP_STAGING_DIR: undefined }, { ...env, UPLOADS_DIR: '' }]) {
+      expect(await tile('disk', gymA, { env: multi, disk: reads, device: devices })).toEqual({ id: 'disk', status: 'not_configured',
+        checkedAt: clock.now().toISOString(), details: null, message: 'Whoever runs this install watches its disk space.' });
+    }
+    expect(reads).not.toHaveBeenCalled();
+    expect(devices).not.toHaveBeenCalled();
+    // The version tile stays on both kinds of install.
+    for (const install of [env, { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' }]) {
+      expect(await tile('version', gymA, { env: install })).toMatchObject({ status: 'healthy', details: { version: '0.1.0', sourceUrl: env.SOURCE_URL } });
+    }
   });
   it('never reports healthy or fabricates free space when a configured staging directory is missing', async () => {
     const check = vi.fn(async (path: string) => {
@@ -480,8 +488,9 @@ describe('built-in providers', () => {
     expect(JSON.stringify(result)).not.toContain('/private/staging');
   });
   it('reports missing disk paths and invalid disk statistics safely', async () => {
-    expect(await tile('disk', gymA, { env: { ...env, UPLOADS_DIR: '' } })).toMatchObject({ status: 'not_configured' });
-    await expect(tile('disk', gymA, { disk: async () => ({ blocks: 0, bsize: 1024, bavail: 0 }) })).rejects.toThrow('Invalid disk');
+    const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' };
+    expect(await tile('disk', gymA, { env: { ...single, UPLOADS_DIR: '' } })).toMatchObject({ status: 'not_configured', message: 'The uploads directory must be configured to check free space.' });
+    await expect(tile('disk', gymA, { env: single, disk: async () => ({ blocks: 0, bsize: 1024, bavail: 0 }) })).rejects.toThrow('Invalid disk');
   });
   it('reports the running version and rejects unsafe source URLs', async () => {
     expect(await tile('version')).toMatchObject({ status: 'healthy', details: { version: '0.1.0', sourceUrl: env.SOURCE_URL } });

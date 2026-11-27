@@ -23,8 +23,9 @@ another dry run before committing. Changing the file, mapping, mapper, or duplic
 policy invalidates the previous dry run. Error-list failures can be retried without
 starting another import; setup can finish only with a successful committed run.
 
-Deferring backups (`skipBackups: true`, on either choice) clears any backup destination
-whose key was never confirmed, as a fresh finish does, and records step 8 without step 7.
+Deferring backups (`skipBackups: true`, on either choice) clears any backup destination,
+its credentials and public key, as a fresh finish does, keeps the gym's blob key, and
+records step 8 without step 7.
 
 Composition: the runtime passes its `importPipeline` to `configureImportStep`, and the
 setup finish route calls `importStep().finish(service, context, input)` with its existing

@@ -146,7 +146,10 @@ export function createStatusProviders(options: StatusOptions = {}) {
         message: statusMessage(configured ? resolver.install ? 'googleInstall' : 'googleGym' : 'googleMissing') };
     }),
     healthProvider('disk', async (context) => {
-      // Multi-gym apps hold no restore staging (even if the variable is set by hand), so there the uploads volume alone is checked.
+      // A multi-gym install's volumes are the operator's, shared by every gym, so no gym is shown their size or free space.
+      if (tenancyMode(env.TENANCY ?? 'single') === 'multi') {
+        return { id: 'disk', status: 'not_configured', checkedAt: context.clock.now().toISOString(), details: null, message: statusMessage('diskOperator') };
+      }
       const paths = [env.UPLOADS_DIR, restoreStagingDirectory(env)].filter((path): path is string => !!path);
       if (!env.UPLOADS_DIR) return { id: 'disk', status: 'not_configured', checkedAt: context.clock.now().toISOString(), details: null, message: statusMessage('diskMissing') };
       const readVolumes = () => Promise.all(paths.map(async (path) => {

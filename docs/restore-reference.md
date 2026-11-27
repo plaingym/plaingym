@@ -124,6 +124,15 @@ and logged again if they recur after a successful check.
 Fix what the reason names. If the resume hint appeared, a restore is staged and a new
 `restore` is refused, so finish it as below; otherwise run the command again.
 
+**What these checks cover.** A snapshot's checksums and its authenticated reference list
+detect corruption, truncation and a mix-up between snapshots: the manifest, reference-list
+and checksum errors above. They don't protect against someone who can write to the backup
+bucket: the key that authenticates the list is stored in the snapshot itself, so a person
+with write access can build a snapshot that passes every check a restore makes, and
+restoring it installs their database and accounts (only `snapshot-check` on the install
+that made the backups, which uses that install's stored key, refuses it). Treat the bucket's write credentials as being as sensitive as
+the server, and restore only from a bucket you trust ([restoring](restoring.md)).
+
 ## If a restore is interrupted
 
 A verified restore resumes by itself when the app restarts (`sudo docker compose up -d`): the
