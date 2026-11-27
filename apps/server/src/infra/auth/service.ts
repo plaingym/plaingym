@@ -5,6 +5,7 @@ import { APIError } from 'better-auth/api';
 import { drizzleAdapter } from '@better-auth/drizzle-adapter';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
+import { setTimeout } from 'node:timers/promises';
 import { eq } from 'drizzle-orm';
 import { jsx } from 'hono/jsx/jsx-runtime';
 import { createTranslator, type Translator } from '@plaingym/shared';
@@ -61,9 +62,17 @@ export interface AuthServiceOptions {
   readonly accountRateLimit?: SignInRule;
   /** Login links a gym sends to addresses with no staff role or household login there, per window (default `loginLinkCeiling`). */
   readonly loginLinkCeiling?: SignInRule;
-  /** Epoch milliseconds for the per-account windows (default `Date.now`). */
+  /** Epoch milliseconds for the per-account windows and the remembered send failure (default `Date.now`). */
   readonly now?: () => number;
+  /** Waits before a login link the ceiling dropped answers, so it takes about as long as a sent one (default `setTimeout` from `node:timers/promises`). */
+  readonly pause?: (milliseconds: number) => Promise<void>;
+  /** A monotonic millisecond reading that times the gym's real login-link sends (default `performance.now`). */
+  readonly elapsed?: () => number;
 }
+/** The longest a login link the ceiling dropped waits before it answers. */
+export const loginLinkAnswerWaitMs = 2000;
+/** How long after a gym's latest real login-link send failed a dropped one still answers with the same failure. */
+export const loginLinkFailureMemoryMs = 5 * 60_000;
 /** Per gym, the epoch millisecond its logged login-link ceiling window ends, so a full window logs once per process. */
 const ceilingLogged = new Map<string, number>();
 /** The only post-login destination besides the admin: completing a portal claim the user proved by email. */
@@ -167,6 +176,17 @@ export function createAuthService(options: AuthServiceOptions) {
   const database = options.database ?? systemDatabase, now = options.now ?? Date.now;
   const addressRule = options.rateLimit ?? signInLimits.address, accountRule = options.accountRateLimit ?? signInLimits.account;
   const ceilingRule = options.loginLinkCeiling ?? loginLinkCeiling;
+  const pause = options.pause ?? ((milliseconds: number) => setTimeout(milliseconds).then(() => undefined));
+  const elapsed = options.elapsed ?? (() => performance.now());
+  /** Per gym, its newest real login-link sends' durations and when the latest one failed with the sending service
+   * (epoch milliseconds, or null after a success): durations and times only, never an address or an error's text. */
+  const recentSends = new Map<string, { durations: number[]; failedAt: number | null }>();
+  const recordSend = (gymId: string, duration: number, failedAt: number | null) => {
+    const record = recentSends.get(gymId) ?? { durations: [], failedAt: null };
+    record.durations = [...record.durations, duration].slice(-5);
+    record.failedAt = failedAt;
+    recentSends.set(gymId, record);
+  };
   /** A refusal with the standard `Retry-After` beside Better Auth's own `X-Retry-After`. */
   const tooManyRequests = (seconds: number) => Response.json({ message: 'Too many requests. Please try again later.' }, { status: 429,
     headers: { 'retry-after': String(seconds), 'x-retry-after': String(seconds), 'cache-control': 'no-store' } });
@@ -255,8 +275,9 @@ export function createAuthService(options: AuthServiceOptions) {
             assertNoTransaction('auth.sendMagicLink');
             if (!options.sendMagicLink) throw new Error('Magic-link delivery is not configured');
             // Only the public sign-in request counts toward the gym's ceiling, and only for an address the gym hasn't linked;
-            // the links the app sends itself (`sendLoginLink`) carry no attempt ID. Over the ceiling the request gets the
-            // same answer and nothing is sent.
+            // the links the app sends itself (`sendLoginLink`) carry no attempt ID. Over the ceiling nothing is sent, and
+            // the request imitates the gym's recent real sends: it waits about their median time and answers 503 while the
+            // latest one failed with the sending service, so its answer matches a linked address's.
             const attemptId = (ctx?.request?.headers ?? ctx?.headers)?.get(accountAttemptHeader);
             const publicRequest = attemptId != null && attempts.get(attemptId)?.path === '/sign-in/magic-link';
             if (publicRequest && !await linked(email)) {
@@ -267,17 +288,27 @@ export function createAuthService(options: AuthServiceOptions) {
                   ceilingLogged.set(gym.gymId, at + result.retryAfter * 1000);
                   logWarn('auth.login_link_ceiling', { gymId: gym.gymId, limit: ceilingRule.max });
                 }
+                const record = recentSends.get(gym.gymId);
+                if (!record) return;
+                const sorted = [...record.durations].sort((a, b) => a - b);
+                const wait = Math.min(loginLinkAnswerWaitMs, sorted[Math.floor(sorted.length / 2)] ?? 0);
+                const failing = record.failedAt !== null && now() - record.failedAt < loginLinkFailureMemoryMs;
+                await pause(wait);
+                if (failing) throw new APIError('SERVICE_UNAVAILABLE', { code: emailUnavailableCode, message: 'Email unavailable' });
                 return;
               }
             }
+            const started = elapsed();
             try {
               await options.sendMagicLink({ email: email.toLowerCase(), url, gymId: gym.gymId });
+              recordSend(gym.gymId, elapsed() - started, null);
             } catch (error) {
               // The gym's sending service failed, whoever asked: Better Auth sends for every address, so this answer says
-              // nothing about whether the address has an account, except that a send the ceiling dropped above answered 200.
-              // The original error stays the (unsent) cause.
+              // nothing about whether the address has an account, and a send the ceiling dropped above imitates it while
+              // it is the gym's latest. The original error stays the (unsent) cause.
               const failure = emailServiceFailure(error);
               if (failure === null) throw error;
+              recordSend(gym.gymId, elapsed() - started, now());
               // Better Auth logs an APIError by its message alone; name the class (never the reply or the address) here.
               logWarn('auth.magic_link_email_unavailable', { gymId: gym.gymId, failure });
               throw new APIError('SERVICE_UNAVAILABLE', { code: emailUnavailableCode, message: 'Email unavailable', cause: error });

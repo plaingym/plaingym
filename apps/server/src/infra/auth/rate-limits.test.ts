@@ -14,6 +14,7 @@ import { passwordAdapter } from './password.js';
 import { clientIp, type ClientIpOptions } from '../../core/rate-limit.js';
 import { TestClock } from '../../core/clock.js';
 import { setLogSink } from '../../core/log.js';
+import { SmtpDeliveryError } from '../email/smtp.js';
 // Imported rather than read, so a change to the server's manifest selects this file in verification.
 import serverManifest from '../../../package.json' with { type: 'json' };
 import type { RequestEnvironment } from '../../core/context.js';
@@ -405,6 +406,168 @@ describe('per-gym login-link ceiling', () => {
       for (const email of dropped) expect((await f.askLink(address(), email)).status).toBe(200);
     } finally { setLogSink(previous); }
     expect(f.delivered).toHaveLength(1);
+    const logged = lines.filter(line => line.includes('auth.login_link_ceiling'));
+    expect(logged.map(line => JSON.parse(line) as Record<string, unknown>))
+      .toEqual([expect.objectContaining({ level: 'warn', event: 'auth.login_link_ceiling', gymId: f.gymId, limit: 1 })]);
+    for (const email of dropped) expect(logged[0]).not.toContain(email);
+  });
+
+  /** A sender whose next sends take `took` milliseconds on a fake reading and then throw `error`, if set; `pause` resolves at once. */
+  function scripted() {
+    let reading = 0, took = 0, error: unknown = null;
+    const sent: string[] = [], pauses: number[] = [];
+    const options = {
+      sendMagicLink: async ({ email }: { email: string }) => { sent.push(email); reading += took; if (error !== null) throw error; },
+      pause: async (milliseconds: number) => { pauses.push(milliseconds); },
+      elapsed: () => reading,
+    };
+    return { sent, pauses, options, next(milliseconds: number, failure: unknown = null) { took = milliseconds; error = failure; } };
+  }
+  const limits = { loginLinkCeiling: { window: 3600, max: 1 }, accountRateLimit: { window: 600, max: 1000 }, rateLimit: { window: 60, max: 1000 } };
+  const scriptedCeiling = async () => {
+    const sender = scripted();
+    return { sender, f: await fixture({ ...limits, ...sender.options }) };
+  };
+  const serviceDown = () => new SmtpDeliveryError('not_accepted', 'SMTP authentication failed', { cause: { code: 'EAUTH', responseCode: 535 } });
+  const recipientRefused = () => new SmtpDeliveryError('not_accepted', 'SMTP server refused the message envelope',
+    { cause: { code: 'EENVELOPE', command: 'RCPT TO', responseCode: 550 } });
+  const linkUser = async (f: Awaited<ReturnType<typeof fixture>>) => { await factory('staffRoles', f.gymId, { userId: f.user.id }); return f.user.email; };
+
+  it('makes a dropped link wait about as long as the gym\'s recent sends and answer like a sent one', async () => {
+    const { sender, f } = await scriptedCeiling();
+    sender.next(120);
+    const first = unlinked(f.gymId), second = unlinked(f.gymId);
+    const responses = [await f.askLink(address(), first), await f.askLink(address(), second)];
+    expect(statuses(responses)).toEqual([200, 200]);
+    expect(new Set(await bodies(responses)).size).toBe(1);
+    expect(sender.sent).toEqual([first]);
+    expect(sender.pauses).toEqual([120]);
+  });
+
+  it('answers a dropped link 503 like a linked address while the gym\'s sending service fails', async () => {
+    const { sender, f } = await scriptedCeiling();
+    const email = await linkUser(f);
+    sender.next(200, serviceDown());
+    const first = unlinked(f.gymId);
+    const sent = await f.askLink(address(), first), dropped = await f.askLink(address(), unlinked(f.gymId)), linked = await f.askLink(address(), email);
+    expect(statuses([sent, dropped, linked])).toEqual([503, 503, 503]);
+    const [droppedBody, linkedBody] = [await dropped.text(), await linked.text()];
+    expect(droppedBody).toBe(linkedBody);
+    expect(JSON.parse(droppedBody)).toEqual(expect.objectContaining({ code: 'EMAIL_UNAVAILABLE' }));
+    expect(sender.sent).toEqual([first, email.toLowerCase()]);
+  });
+
+  it('waits the median of the gym\'s newest five sends', async () => {
+    const { sender, f } = await scriptedCeiling();
+    const email = await linkUser(f);
+    sender.next(1);
+    await f.askLink(address(), unlinked(f.gymId));
+    for (const took of [5000, 5000, 10, 40, 20, 50, 30]) { sender.next(took); expect((await f.askLink(address(), email)).status).toBe(200); }
+    expect(sender.pauses).toEqual([]);
+    expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(200);
+    expect(sender.pauses).toEqual([30]);
+  });
+
+  it('waits at most two seconds', async () => {
+    const { sender, f } = await scriptedCeiling();
+    sender.next(10_000);
+    await f.askLink(address(), unlinked(f.gymId));
+    expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(200);
+    expect(sender.pauses).toEqual([2000]);
+  });
+
+  it('answers at once with 200 in a process that has sent nothing for the gym', async () => {
+    const { sender, f } = await scriptedCeiling();
+    sender.next(120);
+    await f.askLink(address(), unlinked(f.gymId));
+    const other = scripted();
+    const second = createAuthService({ config, database: () => database.system.db, ...limits, ...other.options });
+    const response = await second.bind({ gymId: f.gymId, origin: f.origin, clientIp: address() })
+      .handler(f.request('/sign-in/magic-link', { email: unlinked(f.gymId) }));
+    expect(response.status).toBe(200);
+    expect(other.sent).toEqual([]);
+    expect(other.pauses).toEqual([]);
+  });
+
+  it('imitates a failed send for five minutes', async () => {
+    const { sender, f } = await scriptedCeiling();
+    sender.next(50, serviceDown());
+    expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(503);
+    f.advance(299);
+    expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(503);
+    f.advance(1);
+    expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(200);
+    expect(sender.pauses).toEqual([50, 50]);
+  });
+
+  it('answers 200 once a later send succeeds', async () => {
+    const { sender, f } = await scriptedCeiling();
+    const email = await linkUser(f);
+    sender.next(50, serviceDown());
+    expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(503);
+    sender.next(60);
+    expect((await f.askLink(address(), email)).status).toBe(200);
+    expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(200);
+  });
+
+  it('records nothing for a failure that is not the sending service\'s', async () => {
+    const { sender, f } = await scriptedCeiling();
+    const email = await linkUser(f);
+    sender.next(80);
+    expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(200);
+    sender.next(900, recipientRefused());
+    expect((await f.askLink(address(), email)).status).toBe(500);
+    expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(200);
+    expect(sender.pauses).toEqual([80]);
+  });
+
+  it('counts the links the app sends itself as the gym\'s sends', async () => {
+    const { sender, f } = await scriptedCeiling();
+    sender.next(40);
+    await f.askLink(address(), unlinked(f.gymId));
+    const failure = serviceDown();
+    sender.next(70, failure);
+    await expect(f.from(address()).sendLoginLink('stranger@example.test')).rejects.toBe(failure);
+    expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(503);
+  });
+
+  it('keeps each gym\'s sends apart in one service', async () => {
+    const { sender, f } = await scriptedCeiling();
+    const otherGym = uuidv7();
+    await factory('gyms', otherGym);
+    const otherOrigin = `https://${otherGym}.example.test`;
+    const askOther = (email: string) => f.service.bind({ gymId: otherGym, origin: otherOrigin, clientIp: address() })
+      .handler(new Request(new URL('/api/auth/sign-in/magic-link', otherOrigin), {
+        method: 'POST', headers: { origin: otherOrigin, 'content-type': 'application/json' }, body: JSON.stringify({ email }) }));
+    sender.next(50, serviceDown());
+    expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(503);
+    sender.next(50);
+    expect((await askOther(unlinked(otherGym))).status).toBe(200);
+    expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(503);
+    expect((await askOther(unlinked(otherGym))).status).toBe(200);
+    expect(sender.sent).toHaveLength(2);
+  });
+
+  it('never waits on a link to a linked address', async () => {
+    const { sender, f } = await scriptedCeiling();
+    const email = await linkUser(f);
+    sender.next(30);
+    await f.askLink(address(), unlinked(f.gymId));
+    for (const failure of [null, serviceDown(), recipientRefused(), null]) { sender.next(30, failure); await f.askLink(address(), email); }
+    expect(sender.sent.slice(1)).toEqual(Array.from({ length: 4 }, () => email.toLowerCase()));
+    expect(sender.pauses).toEqual([]);
+  });
+
+  it('logs no email failure for a dropped 503, and the ceiling once per window without an address', async () => {
+    const { sender, f } = await scriptedCeiling();
+    const lines: string[] = [], previous = setLogSink(line => { lines.push(line); });
+    const dropped = Array.from({ length: 2 }, () => unlinked(f.gymId));
+    try {
+      sender.next(20, serviceDown());
+      expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(503);
+      for (const email of dropped) expect((await f.askLink(address(), email)).status).toBe(503);
+    } finally { setLogSink(previous); }
+    expect(lines.filter(line => line.includes('auth.magic_link_email_unavailable'))).toHaveLength(1);
     const logged = lines.filter(line => line.includes('auth.login_link_ceiling'));
     expect(logged.map(line => JSON.parse(line) as Record<string, unknown>))
       .toEqual([expect.objectContaining({ level: 'warn', event: 'auth.login_link_ceiling', gymId: f.gymId, limit: 1 })]);

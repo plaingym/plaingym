@@ -406,13 +406,20 @@ password may have been set by someone other than the invitee.
     no household login in the gym, so one client can't turn the gym's mail server
     on strangers. Addresses linked to the gym are never counted or refused, and
     the links the app sends itself (the first owner, a portal claim, a join's
-    sign-in link) aren't counted. Past the ceiling the request gets the same
-    200 body and nothing is sent, and the server logs `auth.login_link_ceiling`
-    with the gym and the limit, never the address, once per window. Each gym
-    counts its own, in either tenancy mode. A dropped request answers sooner
-    than a sent one, and while the gym's mail server is failing it answers 200
-    where a linked address gets 503, so once the hour's ceiling is spent the
-    answer can show whether an address is linked to the gym.
+    sign-in link) aren't counted. Past the ceiling nothing is sent, and the
+    server logs `auth.login_link_ceiling` with the gym and the limit, never the
+    address, once per window. Each gym counts its own, in either tenancy mode.
+    A dropped request answers like a sent one: it waits the median time of the
+    gym's newest five real sends, and answers 503 `EMAIL_UNAVAILABLE` when the
+    latest one failed through the gym's mail server in the last 5 minutes, 200
+    otherwise. The process keeps only those durations and that time, per gym,
+    never an address. What still differs: an app process that has sent nothing
+    for the gym since it started answers a dropped request at once with 200; a
+    failure is imitated only for 5 minutes after it; the wait is capped at
+    2 seconds, so a slower mail server still answers later for a linked
+    address; an unlinked address's request, sent or dropped, also checks the
+    ceiling first, one or two database queries a linked address's doesn't make;
+    and each app process keeps its own record.
 * **Resets.** Staff may reset the password only of users whose roles are all below
   their own (a member who is also staff counts as staff). Only an owner may change
   or revoke an existing admin role, so an admin cannot demote a peer to reset
