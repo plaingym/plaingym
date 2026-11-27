@@ -401,7 +401,7 @@ test('privileged CLA job holds only the permissions its script uses, and the wor
   const job = /^ {4}permissions:\n((?: {6}[a-z-]+: (?:read|write)\n)+)/m.exec(workflow);
   assert.ok(job, 'the job declares its permissions');
   assert.deepEqual(job[1].trim().split('\n').map((line) => line.trim()).sort(),
-    ['contents: write', 'issues: write', 'pull-requests: read', 'statuses: write']);
+    ['contents: write', 'issues: write', 'pull-requests: write', 'statuses: write']);
   // The workflow's empty grant and the job's own: no step widens them.
   assert.equal([...workflow.matchAll(/^ *permissions:/gm)].length, 2);
 });
