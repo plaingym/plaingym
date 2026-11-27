@@ -4,6 +4,7 @@ import { forGym, staffProfiles, staffRoles, householdUsers, writeAudit, revision
 import { AppError, type Clock } from '@plaingym/shared';
 import type { CreateStaffProfileRequest, UpdateStaffProfileRequest, StaffProfileListQuery, GrantStaffRoleRequest, UpdateStaffRoleRequest, Pagination } from '@plaingym/shared/contracts';
 import { lockMemberForWrite, memberWriteScope } from '../members/member-write.js';
+import { removeUnprovenPassword } from '../../infra/auth/accounts.js';
 
 export interface StaffActor { gymId: string; actorUserId: string; clock: Clock; }
 /** Serialize management changes with role revocation, and recheck the caller in the write transaction. */
@@ -23,8 +24,16 @@ function profileRecord(row: typeof staffProfiles.$inferSelect) {
 export async function staffAudit(tx: Transaction, actor: StaffActor, action: string, targetType: string, targetId: string) {
   await writeAudit(tx, { gymId: actor.gymId, actorKind: 'user', actorUserId: actor.actorUserId, action, targetType, targetId, occurredAt: actor.clock.now() });
 }
-export function createStaffProfileService(baseScope = forGym) {
+/** Without these a role grant keeps the login's password, as for the photo service and the demo seed. */
+export type StaffProfileServiceOptions = { readonly removesLeftoverPassword?: undefined } | {
+  /** Whether a role granted now removes the login's password (the gym signs in by login link). */
+  readonly removesLeftoverPassword: (gymId: string) => Promise<boolean>;
+  /** The gym scope on the authentication connection, the only one that sees passwords; such a grant runs in it. */
+  readonly credentialScope: typeof forGym;
+};
+export function createStaffProfileService(baseScope = forGym, options: StaffProfileServiceOptions = {}) {
   const scope = memberWriteScope(baseScope);
+  const credentialScope = options.removesLeftoverPassword ? memberWriteScope(options.credentialScope) : scope;
   async function links(
     tx: Transaction, input: Pick<CreateStaffProfileRequest, 'userId' | 'memberId'>, options?: { allowErased?: boolean },
   ) {
@@ -106,7 +115,10 @@ export function createStaffProfileService(baseScope = forGym) {
         pagination: { ...page, total: await tx.$count(staffRoles) } }));
     },
     async grantRole(actor: StaffActor, input: GrantStaffRoleRequest) {
-      return scope(actor.gymId, async (tx) => {
+      // Read before the transaction: the gym's mode may need its SMTP settings.
+      const removePassword = await options.removesLeftoverPassword?.(actor.gymId) ?? false;
+      // The role, its audit and the password removal commit together, in the scope that can see the password.
+      return (removePassword ? credentialScope : scope)(actor.gymId, async (tx) => {
         await assertStaffManager(tx, actor.actorUserId);
         if (!['admin', 'coach', 'front_desk'].includes(input.role)) throw new AppError('forbidden', 'Owner assignment is not permitted');
         const linked = await tx.select({ id: householdUsers.id }).from(householdUsers).where(eq(householdUsers.userId, input.userId));
@@ -116,6 +128,9 @@ export function createStaffProfileService(baseScope = forGym) {
         const [row] = await tx.insert(staffRoles).values({ ...input, gymId: actor.gymId, createdAt: actor.clock.now() }).onConflictDoNothing().returning();
         if (!row) throw new AppError('conflict', 'Account already has a staff role');
         await staffAudit(tx, actor, 'staff.role_granted', 'staff_role', row.id);
+        // Outside password mode a password nobody proved must never sign in as staff. In password mode the grant
+        // trusts the account's password, as the owner picked the account.
+        if (removePassword) await removeUnprovenPassword(tx, { gymId: actor.gymId, userId: row.userId, actorUserId: actor.actorUserId, clock: actor.clock });
         return { data: staffRoleRecord(row) };
       });
     },

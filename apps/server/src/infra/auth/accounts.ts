@@ -34,11 +34,26 @@ export async function hasCredential(tx: Transaction, userId: string): Promise<bo
     .where(and(eq(authAccount.userId, userId), eq(authAccount.providerId, 'credential'))).limit(1);
   return Boolean(credential);
 }
+/**
+ * Outside password mode nobody proved a login's password, so a staff role never keeps one: removes the login's password
+ * and ends its sessions in the gym, in the caller's transaction. Returns whether there was a password to remove.
+ */
+export async function removeUnprovenPassword(tx: Transaction, input: { gymId: string; userId: string; actorUserId: string; clock: Clock }): Promise<boolean> {
+  const removed = await tx.delete(authAccount).where(and(eq(authAccount.userId, input.userId), eq(authAccount.providerId, 'credential')))
+    .returning({ id: authAccount.id });
+  if (removed.length === 0) return false;
+  await tx.delete(authSession).where(and(eq(authSession.gymId, input.gymId), eq(authSession.userId, input.userId)));
+  await writeAudit(tx, { gymId: input.gymId, actorKind: 'user', actorUserId: input.actorUserId,
+    action: 'auth.password_removed', targetType: 'user', targetId: input.userId, occurredAt: input.clock.now() });
+  return true;
+}
 /** Runs with the identity write in its gym-scoped transaction. No delivery here. */
 export type ProvisionAccount = (tx: Transaction, userId: string) => Promise<void>;
 export function createAccountService(config: AuthConfig, database = systemDatabase) {
   const forGym = <T>(gymId: string, fn: (tx: Transaction) => Promise<T>) => scopedDatabase(database()).forGym(gymId, fn);
   return {
+    /** The gym's transaction on the authentication connection, the one gym scope that also sees logins' passwords. */
+    forGym,
     async findUserByEmail(email: string) {
       assertNoTransaction('auth.findUserByEmail');
       const [user] = await database().select({ id: authUser.id }).from(authUser).where(eq(authUser.email, email.trim().toLowerCase()));

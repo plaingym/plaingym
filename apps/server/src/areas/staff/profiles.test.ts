@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { afterAll, beforeAll, expect, it, onTestFinished, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { eq } from 'drizzle-orm';
-import { staffRoles, staffProfiles, auditEvents, households, members, uuidv7 } from '@plaingym/db';
+import { and, eq } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- Role grant tests verify password and session removal in real PostgreSQL.
+import { authAccount, authSession, staffRoles, staffProfiles, auditEvents, households, members, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 // eslint-disable-next-line no-restricted-imports -- Initialize real database pools for the configured route composition test.
 import { closeDatabase, initializeDatabase } from '@plaingym/db/client';
 import { createStaffDirectory } from '../../infra/auth/staff-directory.js';
+import { createAccountService } from '../../infra/auth/accounts.js';
+import { authConfig } from '../../infra/auth/config.js';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { staffRoles as roleNames, type StaffRole } from '@plaingym/shared';
 import { staffProfileResponseSchema, staffProfileListResponseSchema, staffRoleResponseSchema } from '@plaingym/shared/contracts';
@@ -264,4 +267,58 @@ it('uses the configured tenancy for routes built before configuration, including
   const roles = await app.request('/api/staff/roles?limit=100');
   expect(roles.status).toBe(200);
   expect(await roles.json()).toMatchObject({ data: expect.arrayContaining([expect.objectContaining({ userId: owner.id, displayName: owner.email })]) });
+});
+const credentialScope = createAccountService(authConfig({ AUTH_SECRET: 's'.repeat(32) }, false), () => db.system.db).forGym;
+const credentials = (userId: string) => db.system.db.select().from(authAccount).where(and(eq(authAccount.userId, userId), eq(authAccount.providerId, 'credential')));
+const sessions = (userId: string) => db.system.db.select().from(authSession).where(and(eq(authSession.gymId, gymA), eq(authSession.userId, userId)));
+const removals = (userId: string) => db.forGym(gymA, tx => tx.select().from(auditEvents).where(and(eq(auditEvents.action, 'auth.password_removed'), eq(auditEvents.targetId, userId))));
+/** A household login of gym A with a password and a session there. */
+async function householdLogin(password = true) {
+  const login = await factory('householdUsers', gymA);
+  if (password) await factory('authAccount', gymA, { userId: login.userId, accountId: login.userId, password: 'hash-of-a-leftover-password' });
+  await factory('authSession', gymA, { userId: login.userId });
+  return login.userId;
+}
+it('outside password mode a role grant removes a leftover password and ends the login\'s gym sessions', async () => {
+  const removing = createStaffProfileService(db.forGym, { removesLeftoverPassword: async () => true, credentialScope });
+  const userId = await householdLogin();
+  expect((await removing.grantRole(actor(), { userId, role: 'coach' })).data).toMatchObject({ userId, role: 'coach' });
+  expect(await credentials(userId)).toEqual([]);
+  expect(await sessions(userId)).toEqual([]);
+  expect(await removals(userId)).toMatchObject([{ actorKind: 'user', actorUserId: users.get('owner'), targetType: 'user', before: null, after: null }]);
+  const passwordless = await householdLogin(false);
+  await removing.grantRole(actor(), { userId: passwordless, role: 'front_desk' });
+  expect(await removals(passwordless)).toEqual([]);
+  expect(await sessions(passwordless)).toHaveLength(1);
+  // Already staff: refused, and the password stays.
+  const staff = await factory('staffRoles', gymA, { role: 'coach' });
+  await factory('authAccount', gymA, { userId: staff.userId, accountId: staff.userId, password: 'hash-of-a-staff-password' });
+  await expect(removing.grantRole(actor(), { userId: staff.userId, role: 'coach' })).rejects.toMatchObject({ code: 'conflict' });
+  expect(await credentials(staff.userId)).toHaveLength(1);
+});
+it.each([
+  ['in password mode', createStaffProfileService(db.forGym, { removesLeftoverPassword: async () => false, credentialScope })],
+  ['with no option', createStaffProfileService(db.forGym)],
+])('a role grant %s keeps the login\'s password and sessions', async (_name, keeping) => {
+  const userId = await householdLogin();
+  await keeping.grantRole(actor(), { userId, role: 'coach' });
+  expect(await db.forGym(gymA, tx => tx.select().from(staffRoles).where(eq(staffRoles.userId, userId)))).toHaveLength(1);
+  expect(await credentials(userId)).toHaveLength(1);
+  expect(await sessions(userId)).toHaveLength(1);
+  expect(await removals(userId)).toEqual([]);
+});
+it('the configured grant route removes a leftover password when the gym signs in by login link', async () => {
+  const app = new OpenAPIHono<RequestEnvironment>();
+  app.use('*', async (c, next) => { c.set('context', { gym: { gymId: gymA, timezone: 'UTC', enabledModules: new Set() }, clock, requestId: 'staff-test',
+    principal: { kind: 'staff', userId: users.get('owner')!, gymId: gymA, roles: ['owner'] } }); await next(); });
+  // No service passed: the routes use the composition configureStaffProfiles builds.
+  app.onError(errorHandler); createServerRegistry({ routes: createStaffProfileRoutes(undefined, directory) }).mount(app, authorize, new Set());
+  configureStaffProfiles({ tenancy: 'single', origin: () => 'https://gym.test', uploadsFor: async (gymId) => new FakeUploads(gymId, clock),
+    invitations: createStaffInvitationService({ config: { tenancy: 'single', secret: 's'.repeat(32), production: false, passwordEnabled: true,
+      passwordMode: 'auto', smtpConfigured: true }, smtpConfigured: async () => true, mailer: async () => null, database: () => db.system.db }) });
+  const userId = await householdLogin();
+  expect((await request(app, 'POST', '/api/staff/roles', { userId, role: 'coach' })).status).toBe(200);
+  expect(await credentials(userId)).toEqual([]);
+  expect(await sessions(userId)).toEqual([]);
+  expect(await removals(userId)).toHaveLength(1);
 });

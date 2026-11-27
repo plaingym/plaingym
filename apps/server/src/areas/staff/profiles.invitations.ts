@@ -5,7 +5,7 @@ import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { acceptStaffInvitationRequestSchema, staffRoleSchema, type AcceptStaffInvitationRequest, type InviteStaffRequest, type InviteStaffResponse } from '@plaingym/shared/contracts';
-import { createAccountService, hasCredential } from '../../infra/auth/accounts.js';
+import { createAccountService, hasCredential, removeUnprovenPassword } from '../../infra/auth/accounts.js';
 import { createInvitationStore } from '../../infra/auth/invitations.js';
 import { passwordLogin, type AuthConfig } from '../../infra/auth/config.js';
 import { commandDigest, createEmailDeliveries, recipientDigest, SmtpEmail, type Email, type EmailReservation } from '../../infra/email/index.js';
@@ -35,8 +35,15 @@ export function createStaffInvitationService(options: StaffInvitationOptions) {
   async function passwordRequired(gymId: string) {
     return options.config.tenancy === 'single' && passwordLogin(options.config, await options.smtpConfigured(gymId));
   }
+  /** Whether a role granted now must not keep a password: the gym signs in by login link, so nobody proved one. */
+  async function removesLeftoverPassword(gymId: string) {
+    return options.config.tenancy === 'single' && !(await passwordRequired(gymId));
+  }
   return {
     passwordRequired,
+    removesLeftoverPassword,
+    /** Where a role grant that removes a password runs: the only gym scope that sees logins' passwords. */
+    credentialScope: accounts.forGym,
     async inviteStaff(actor: StaffActor, input: InviteStaffRequest, origin: string): Promise<InviteStaffResponse> {
       assertNoTransaction('staff.inviteStaff');
       if (!['admin', 'coach', 'front_desk'].includes(input.role)) throw new AppError('forbidden', 'Owner assignment is not permitted');
@@ -57,7 +64,8 @@ export function createStaffInvitationService(options: StaffInvitationOptions) {
         if (replayed) return { data: { delivery: 'email', staffRole: staffRoleSchema.parse(replayed.result), ...(replayed.outcome ? { outcome: replayed.outcome } : {}) } };
       }
       let result: { staffRole: InviteStaffResponse['data']['staffRole']; token: string; reservation: EmailReservation | null } | undefined;
-      const passwordMode = await passwordRequired(actor.gymId);
+      // One read of the gym's mode, so the refusal and the removal can't both be skipped if SMTP changes meanwhile.
+      const passwordMode = await passwordRequired(actor.gymId), removePassword = options.config.tenancy === 'single' && !passwordMode;
       await accounts.provisionUser(actor.gymId, email, email, actor.clock, async (tx, userId) => {
         await assertStaffManager(tx, actor.actorUserId);
         const reservation = command && await deliveries.reserve(tx, actor.gymId, command.key, command.digest);
@@ -66,6 +74,8 @@ export function createStaffInvitationService(options: StaffInvitationOptions) {
         // already set a password for at this address could be someone else's. Throwing rolls back the role and identity.
         if (row && passwordMode && await hasCredential(tx, userId))
           throw new AppError('conflict', 'This address already has a login. Use another address.', { reason: ['existing_login'] });
+        // Outside password mode the invitee signs in by login link; a password set earlier must never sign in as staff later.
+        if (row && removePassword) await removeUnprovenPassword(tx, { gymId: actor.gymId, userId, actorUserId: actor.actorUserId, clock: actor.clock });
         const current = row ?? (await tx.select().from(staffRoles).where(eq(staffRoles.userId, userId)))[0];
         if (!current || current.role !== input.role) throw new AppError('conflict', 'Account already has a different staff role');
         const binding = { userId, staffRoleId: current.id, role: input.role, revision: current.revision };

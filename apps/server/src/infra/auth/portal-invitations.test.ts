@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { createHash } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { and, eq } from 'drizzle-orm';
-import { auditEvents, authVerification, authAccount, authSession, authUser, householdUsers, signedLinks, uuidv7 } from '@plaingym/db';
+import { and, eq, like } from 'drizzle-orm';
+import { auditEvents, authVerification, authAccount, authRateLimit, authSession, authUser, householdUsers, signedLinks, uuidv7 } from '@plaingym/db';
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -18,6 +19,7 @@ import { errorHandler, respondError } from '../../core/errors.js';
 import { TestClock } from '../../core/clock.js';
 import type { Principal, RequestEnvironment } from '../../core/context.js';
 import { FakeEmail } from '../email/index.js';
+import { normalizeAddress } from '../email/deliveries.js';
 import { authConfig } from './config.js';
 import { createAuthService } from './service.js';
 import { sessionMiddleware } from './middleware.js';
@@ -364,6 +366,54 @@ describe('portal invitations', () => {
     await service.claimOnboarding(f.gymId, (await onboardingLink(f)).id, { email: existing.email }, clock);
     const second = new URL(delivered.at(-1)!.url); second.searchParams.set('callbackURL', tampered.searchParams.get('callbackURL')!);
     expect((await server.request(second.toString())).headers.get('location')).toBe(f.origin + '/admin');
+  });
+});
+
+describe('accepting with an existing login\'s password', () => {
+  const wrong = 'not-the-password-123';
+  /** An invitation bound to a login that got its password after the invitation was issued. */
+  async function boundToPassword(f: Fixture) {
+    const user = await factory('authUser', f.gymId), issued = await invite(f, invitations, input(user.email));
+    await factory('authAccount', f.gymId, { userId: user.id, accountId: user.id, password: await passwordAdapter.hash(password) });
+    return { ...issued, email: user.email };
+  }
+  const accept = (f: Fixture, token: string, guess: string, at = clock) => invitations.accept(f.gymId, { token, password: guess }, at);
+  const pending = (userId: string) => db.system.db.select().from(authVerification).where(like(authVerification.value, `%${userId}%`));
+  /** The login's `/sign-in/email` account window count, or null when it has no window. */
+  async function windowCount(email: string) {
+    const digest = createHash('sha256').update(normalizeAddress(email)).digest('base64url');
+    const [row] = await db.system.db.select({ count: authRateLimit.count }).from(authRateLimit).where(eq(authRateLimit.key, `account|/sign-in/email|${digest}`));
+    return row?.count ?? null;
+  }
+  it('counts in the password sign-in account budget, so ten wrong guesses lock even the right password out', async () => {
+    const f = await fixture(), issued = await boundToPassword(f);
+    for (let guess = 0; guess < 10; guess++) await expect(accept(f, issued.token, wrong)).rejects.toMatchObject({ code: 'forbidden' });
+    await expect(accept(f, issued.token, password)).rejects.toMatchObject({ code: 'rate_limited' });
+    expect(await pending(issued.userId)).toHaveLength(1);
+    expect(await links(f.gymId, issued.userId)).toEqual([]);
+    expect((await reserveAccountAttempt(db.system.db, '/sign-in/email', issued.email, signInLimits.account, clock.now().getTime())).reservation).toBeNull();
+    const later = new TestClock(new Date(clock.now().getTime() + 600_000));
+    expect(await accept(f, issued.token, password, later)).toEqual({ data: { status: 'claimed' } });
+    expect((await links(f.gymId, issued.userId)).map(row => row.householdId)).toEqual([f.home.id]);
+  });
+  it('a right password gives its slot back only once the acceptance commits; a login with no password reserves nothing', async () => {
+    const f = await fixture(), right = await boundToPassword(f);
+    await expect(accept(f, right.token, wrong)).rejects.toMatchObject({ code: 'forbidden' });
+    expect(await windowCount(right.email)).toBe(1);
+    expect(await accept(f, right.token, password)).toEqual({ data: { status: 'claimed' } });
+    expect(await windowCount(right.email)).toBe(1);
+    // The login became staff after issue, so the consuming transaction refuses it and the slot stays counted.
+    const failing = await boundToPassword(f);
+    await factory('staffRoles', f.gymId, { userId: failing.userId, role: 'coach' });
+    await expect(accept(f, failing.token, password)).rejects.toBeInstanceOf(Error);
+    expect(await windowCount(failing.email)).toBe(1);
+    expect(await pending(failing.userId)).toHaveLength(1);
+    const fresh = await invite(f);
+    expect(await accept(f, fresh.token, password)).toEqual({ data: { status: 'claimed' } });
+    expect(await windowCount(fresh.request.email)).toBeNull();
+    const racing = await boundToPassword(f);
+    const results = await Promise.allSettled([0, 1].map(() => accept(f, racing.token, password)));
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
   });
 });
 

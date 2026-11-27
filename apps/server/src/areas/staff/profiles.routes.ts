@@ -30,7 +30,10 @@ function configuration() {
 }
 /** Runtime supplies per-gym storage, invitation delivery and the canonical hostname origin. */
 export function configureStaffProfiles(options: { invitations: StaffInvitationService; uploadsFor: (gymId: string) => Promise<Uploads>; origin: Origin; tenancy?: TenancyMode }) {
-  configured = { service: createStaffProfileService(), invitations: options.invitations, photos: createStaffPhotoService(options.uploadsFor), origin: options.origin, tenancy: options.tenancy };
+  const service = createStaffProfileService(undefined, {
+    removesLeftoverPassword: gymId => options.invitations.removesLeftoverPassword(gymId), credentialScope: options.invitations.credentialScope,
+  });
+  configured = { service, invitations: options.invitations, photos: createStaffPhotoService(options.uploadsFor), origin: options.origin, tenancy: options.tenancy };
 }
 export function createStaffProfileRoutes(service?: ReturnType<typeof createStaffProfileService>, directory = createStaffDirectory(undefined, () => configured?.tenancy ?? tenancyMode())) {
   const current = () => service ?? configuration().service;

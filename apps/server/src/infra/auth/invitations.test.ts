@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { createHash } from 'node:crypto';
 import { beforeAll, expect, it } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { eq, inArray, like } from 'drizzle-orm';
-import { authVerification, authAccount, staffRoles, staffProfiles, auditEvents, uuidv7 } from '@plaingym/db';
+import { and, eq, inArray, like } from 'drizzle-orm';
+import { authVerification, authAccount, authRateLimit, authSession, staffRoles, staffProfiles, auditEvents, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { staffRoles as roleNames, type StaffRole } from '@plaingym/shared';
@@ -12,7 +13,9 @@ import { createStaffInvitationService, smtpMailer } from '../../areas/staff/prof
 import { authConfig } from './config.js';
 import { createAccountService } from './accounts.js';
 import { passwordAdapter } from './password.js';
+import { reserveAccountAttempt, signInLimits } from './account-limit.js';
 import { createAuthService } from './service.js';
+import { normalizeAddress } from '../email/deliveries.js';
 import { DeliveryError, FakeEmail } from '../email/index.js';
 import { captureSmtp } from '../email/test-smtp.js';
 import { createSmtpResolver, encryptSmtpConfig } from '../../areas/settings/smtp.js';
@@ -136,19 +139,106 @@ async function expectExistingLoginRefused(email: string, userId: string) {
 it('in password mode refuses to invite an address whose login already has a password, leaving no role, audit or token', async () => {
   const email = uuidv7() + '@example.test';
   const user = await createAccountService(config, () => db.system.db).createPasswordUser(gymA, email, 'Portal member', 'portal-member-password', clock);
+  const session = await factory('authSession', gymA, { userId: user.userId });
   await expectExistingLoginRefused(email, user.userId);
+  expect(await credentials(user.userId)).toHaveLength(1);
+  expect((await sessionsIn(gymA, user.userId)).map(row => row.id)).toEqual([session.id]);
 });
-it('accepting an invitation issued outside password mode needs an existing login\'s own password and never replaces it', async () => {
+const emailMode = createStaffInvitationService({ config: { ...config, passwordMode: 'auto' }, smtpConfigured: async () => true, mailer: smtpMailer(smtp), database: () => db.system.db });
+async function printedBy(inviteService: typeof service, email: string) {
+  const result = await inviteService.inviteStaff(actor(), { email, role: 'coach', delivery: 'print' }, 'https://gym-a.example.test');
+  if (result.data.delivery !== 'print') throw new Error('Expected printed invitation');
+  return { ...result.data, token: new URL(result.data.invitationUrl).hash.slice(1) };
+}
+const credentials = (userId: string) => db.system.db.select().from(authAccount).where(and(eq(authAccount.userId, userId), eq(authAccount.providerId, 'credential')));
+const sessionsIn = (gymId: string, userId: string) => db.system.db.select().from(authSession).where(and(eq(authSession.gymId, gymId), eq(authSession.userId, userId)));
+async function addPassword(userId: string, password: string) {
+  const hash = await passwordAdapter.hash(password);
+  await factory('authAccount', gymA, { userId, accountId: userId, password: hash });
+  return hash;
+}
+it('outside password mode an invitation removes an existing login\'s password and ends its gym sessions', async () => {
   const email = uuidv7() + '@example.test', password = 'existing-account-password';
   const user = await createAccountService(config, () => db.system.db).createPasswordUser(gymA, email, 'Existing member', password, clock);
-  const emailMode = createStaffInvitationService({ config: { ...config, passwordMode: 'auto' }, smtpConfigured: async () => true, mailer: smtpMailer(smtp), database: () => db.system.db });
-  const result = await emailMode.inviteStaff(actor(), { email, role: 'coach', delivery: 'print' }, 'https://gym-a.example.test');
-  if (result.data.delivery !== 'print') throw new Error('Expected printed invitation');
-  const token = new URL(result.data.invitationUrl).hash.slice(1);
-  await expect(service.acceptInvitation(gymA, { token, name: 'Coach', password: 'replacement-password' }, clock)).rejects.toMatchObject({ code: 'forbidden' });
-  await expect(service.acceptInvitation(gymA, { token, name: 'Coach', password }, clock)).resolves.toEqual({ data: null });
-  const [credential] = await db.system.db.select().from(authAccount).where(eq(authAccount.userId, user.userId));
-  expect(await passwordAdapter.verify({ hash: credential!.password!, password })).toBe(true);
+  await factory('authSession', gymA, { userId: user.userId }); const elsewhere = await factory('authSession', gymB, { userId: user.userId });
+  const invite = await printedBy(emailMode, email);
+  expect(invite.staffRole.userId).toBe(user.userId);
+  expect(await credentials(user.userId)).toEqual([]);
+  expect(await sessionsIn(gymA, user.userId)).toEqual([]);
+  expect((await sessionsIn(gymB, user.userId)).map(row => row.id)).toEqual([elsewhere.id]);
+  const audits = await db.forGym(gymA, tx => tx.select().from(auditEvents).where(inArray(auditEvents.targetId, [user.userId, invite.staffRole.id])));
+  expect(audits.filter(row => row.action === 'auth.password_removed')).toMatchObject([{ actorKind: 'user', actorUserId: users.get('owner'), targetType: 'user', targetId: user.userId }]);
+  expect(audits.map(row => row.action)).toEqual(expect.arrayContaining(['staff.role_granted', 'staff.invited']));
+  expect(JSON.stringify(audits)).not.toContain(email);
+  // The invitee sets a new password when the gym signs in by password; the old one no longer works.
+  const next = 'new-invited-password';
+  await expect(service.acceptInvitation(gymA, { token: invite.token, name: 'Coach', password: next }, clock)).resolves.toEqual({ data: null });
+  const [credential] = await credentials(user.userId);
+  expect(await passwordAdapter.verify({ hash: credential!.password!, password: next })).toBe(true);
+  expect(await passwordAdapter.verify({ hash: credential!.password!, password })).toBe(false);
+});
+it('accepting an invitation needs a password added after it was issued and never replaces it', async () => {
+  const identity = await factory('authUser', gymA), password = 'existing-account-password';
+  const invite = await printedBy(emailMode, identity.email), hash = await addPassword(identity.id, password);
+  await expect(service.acceptInvitation(gymA, { token: invite.token, name: 'Coach', password: 'replacement-password' }, clock)).rejects.toMatchObject({ code: 'forbidden' });
+  await expect(service.acceptInvitation(gymA, { token: invite.token, name: 'Coach', password }, clock)).resolves.toEqual({ data: null });
+  expect((await credentials(identity.id))[0]!.password).toBe(hash);
+});
+it('a resend outside password mode removes nothing', async () => {
+  const identity = await factory('authUser', gymA), first = await printedBy(emailMode, identity.email);
+  const hash = await addPassword(identity.id, 'added-after-the-invite');
+  const again = await printedBy(emailMode, identity.email);
+  expect(again.staffRole.id).toBe(first.staffRole.id);
+  expect((await credentials(identity.id)).map(row => row.password)).toEqual([hash]);
+});
+it.each([
+  ['single, auto with SMTP', { passwordMode: 'auto' }, true, true],
+  ['single, off', { passwordMode: 'off', passwordEnabled: false }, true, true],
+  ['single, on', { passwordMode: 'on' }, true, false],
+  ['single, auto without SMTP', { passwordMode: 'auto' }, false, false],
+  ['multi', { tenancy: 'multi', passwordMode: 'off', passwordEnabled: false }, true, false],
+] as const)('removesLeftoverPassword: %s', async (_name, change, smtpConfigured, expected) => {
+  const modes = createStaffInvitationService({ config: { ...config, ...change }, smtpConfigured: async () => smtpConfigured, mailer: smtpMailer(smtp), database: () => db.system.db });
+  expect(await modes.removesLeftoverPassword(gymA)).toBe(expected);
+});
+/** The login's `/sign-in/email` account window count, or null when it has no window. */
+async function windowCount(email: string) {
+  const digest = createHash('sha256').update(normalizeAddress(email)).digest('base64url');
+  const [row] = await db.system.db.select({ count: authRateLimit.count }).from(authRateLimit).where(eq(authRateLimit.key, `account|/sign-in/email|${digest}`));
+  return row?.count ?? null;
+}
+const acceptedBy = async (userId: string) => (await db.forGym(gymA, tx => tx.select().from(staffProfiles).where(eq(staffProfiles.userId, userId)))).length > 0;
+it('accepting with an existing login\'s password counts in the password sign-in account budget', async () => {
+  const identity = await factory('authUser', gymA), password = 'existing-account-password';
+  const invite = await printed(identity.email); await addPassword(identity.id, password);
+  for (let attempt = 0; attempt < 10; attempt++)
+    await expect(service.acceptInvitation(gymA, { token: invite.token, name: 'Coach', password: 'wrong-password-' + attempt }, clock)).rejects.toMatchObject({ code: 'forbidden' });
+  await expect(service.acceptInvitation(gymA, { token: invite.token, name: 'Coach', password }, clock)).rejects.toMatchObject({ code: 'rate_limited' });
+  expect(await db.system.db.select().from(authVerification).where(like(authVerification.value, `%${identity.id}%`))).toHaveLength(1);
+  expect(await acceptedBy(identity.id)).toBe(false);
+  expect((await reserveAccountAttempt(db.system.db, '/sign-in/email', identity.email, signInLimits.account, clock.now().getTime())).reservation).toBeNull();
+  const later = new TestClock(new Date(clock.now().getTime() + 600_000));
+  await expect(service.acceptInvitation(gymA, { token: invite.token, name: 'Coach', password }, later)).resolves.toEqual({ data: null });
+  expect(await acceptedBy(identity.id)).toBe(true);
+});
+it('a right password gives its slot back only once the acceptance commits; a login with no password reserves nothing', async () => {
+  const right = await factory('authUser', gymA), password = 'existing-account-password';
+  const invite = await printed(right.email); await addPassword(right.id, password);
+  await expect(service.acceptInvitation(gymA, { token: invite.token, name: 'Wrong', password: 'wrong-password-1' }, clock)).rejects.toMatchObject({ code: 'forbidden' });
+  expect(await windowCount(right.email)).toBe(1);
+  await expect(service.acceptInvitation(gymA, { token: invite.token, name: 'Coach', password }, clock)).resolves.toEqual({ data: null });
+  expect(await windowCount(right.email)).toBe(1);
+  // The role changed after issue, so the consuming transaction throws and the slot stays counted.
+  const failing = await factory('authUser', gymA), stale = await printed(failing.email); await addPassword(failing.id, password);
+  await db.forGym(gymA, tx => tx.update(staffRoles).set({ role: 'admin', revision: 2 }).where(eq(staffRoles.id, stale.staffRole.id)));
+  await expect(service.acceptInvitation(gymA, { token: stale.token, name: 'Coach', password }, clock)).rejects.toMatchObject({ code: 'not_found' });
+  expect(await windowCount(failing.email)).toBe(1);
+  const fresh = uuidv7() + '@example.test', none = await printed(fresh);
+  await expect(service.acceptInvitation(gymA, { token: none.token, name: 'Coach', password: 'brand-new-password' }, clock)).resolves.toEqual({ data: null });
+  expect(await windowCount(fresh)).toBeNull();
+  const racing = await factory('authUser', gymA), raced = await printed(racing.email); await addPassword(racing.id, password);
+  const results = await Promise.allSettled([0, 1].map(() => service.acceptInvitation(gymA, { token: raced.token, name: 'Coach', password }, clock)));
+  expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
 });
 it('still invites a new address, an identity with no password, and an invited address again before it accepts', async () => {
   expect((await printed()).token).toMatch(/^[a-f0-9]{64}$/);
@@ -166,6 +256,7 @@ it('a gym with password sign-in off invites an identity that has a password as b
   const result = await multi.inviteStaff({ gymId, actorUserId: owner.userId, clock }, { email: identity.email, role: 'coach', delivery: 'print' }, 'https://gym-c.example.test');
   expect(result.data.staffRole.userId).toBe(identity.id);
   expect(result.data.delivery).toBe('print');
+  expect(await credentials(identity.id)).toHaveLength(1);
 });
 it('renders a public, translated acceptance page with a source link and hides password in email mode', async () => {
   const page = await server('anonymous').request('/staff-invitation');

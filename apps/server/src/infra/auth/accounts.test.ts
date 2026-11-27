@@ -7,7 +7,7 @@ import { createFactories } from '@plaingym/db/testing/factories';
 import type { AppError } from '@plaingym/shared';
 import { and, eq, inArray } from 'drizzle-orm';
 import { authConfig } from './config.js';
-import { createAccountService } from './accounts.js';
+import { createAccountService, removeUnprovenPassword } from './accounts.js';
 import { passwordAdapter } from './password.js';
 import { normalizeAddress } from '../email/deliveries.js';
 import { TestClock } from '../../core/clock.js';
@@ -30,6 +30,34 @@ it.each(['resetPassword', 'revokeAllSessions'] as const)('%s deletes only the cu
   else await accounts.revokeAllSessions(gymA, user.id, clock);
   const remaining = await db.system.db.select({ id: authSession.id }).from(authSession).where(inArray(authSession.id, sessions.map(row => row.id)));
   expect(remaining.map(row => row.id).sort()).toEqual(sessions.slice(1).map(row => row.id).sort());
+});
+
+describe('removeUnprovenPassword', () => {
+  it('removes the password and the gym sessions with one audit, and writes nothing for a login without one', async () => {
+    const gymA = uuidv7(), gymB = uuidv7();
+    await factory('gyms', gymA); await factory('gyms', gymB);
+    const user = await factory('authUser', gymA), other = await factory('authUser', gymA), actor = await factory('authUser', gymA);
+    await factory('authAccount', gymA, { userId: user.id, accountId: user.id, password: await passwordAdapter.hash('leftover-password-1') });
+    await factory('authAccount', gymA, { userId: user.id, accountId: uuidv7(), providerId: 'google' });
+    const sessions = [
+      await factory('authSession', gymA, { userId: user.id }),
+      await factory('authSession', gymB, { userId: user.id }),
+      await factory('authSession', gymA, { userId: other.id }),
+    ];
+    // Passwords are visible only to the gym scope on the authentication connection.
+    const remove = (userId: string) => accounts.forGym(gymA, tx => removeUnprovenPassword(tx, { gymId: gymA, userId, actorUserId: actor.id, clock }));
+    expect(await remove(user.id)).toBe(true);
+    const providers = await db.system.db.select({ providerId: authAccount.providerId }).from(authAccount).where(eq(authAccount.userId, user.id));
+    expect(providers.map(row => row.providerId)).toEqual(['google']);
+    const remaining = await db.system.db.select({ id: authSession.id }).from(authSession).where(inArray(authSession.id, sessions.map(row => row.id)));
+    expect(remaining.map(row => row.id).sort()).toEqual(sessions.slice(1).map(row => row.id).sort());
+    const audits = await db.forGym(gymA, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'auth.password_removed')));
+    expect(audits).toMatchObject([{ actorKind: 'user', actorUserId: actor.id, targetType: 'user', targetId: user.id, before: null, after: null }]);
+    expect(await remove(user.id)).toBe(false);
+    expect(await remove(other.id)).toBe(false);
+    expect(await db.forGym(gymA, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'auth.password_removed')))).toHaveLength(1);
+    expect(await db.system.db.select({ id: authSession.id }).from(authSession).where(eq(authSession.userId, other.id))).toHaveLength(1);
+  });
 });
 
 describe('changeOwnPassword', () => {

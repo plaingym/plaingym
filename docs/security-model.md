@@ -349,7 +349,16 @@ lists or bulk-revokes sessions. There is no public sign-up: identities are creat
 by setup, the gym CLI, staff and portal invitations, and the join flow. Password
 mode never verifies an address, so there a staff invitation is refused for an
 address whose login already has a password and no staff role in the gym: that
-password may have been set by someone other than the invitee.
+password may have been set by someone other than the invitee. On a single-gym
+install outside password mode (the gym signs in by login link), a new staff
+invitation or a role grant to a login that has a password removes that password
+and ends the login's sessions in the gym, in the same transaction as the role
+(audited as `auth.password_removed`), so a password nobody proved never signs in
+as staff if the gym later turns password sign-in on; the person signs in by login
+link, or sets a password by accepting an invitation in password mode. In password
+mode a role granted to an existing account from the staff screen trusts that
+account's password, so an owner should grant a role only to a login they know is
+the person's own.
 
 * **Magic links** are sent when the gym has SMTP (its own or the install's). The
   token names the issuing gym, is stored hashed, expires after five minutes and
@@ -393,7 +402,11 @@ password may have been set by someone other than the invitee.
     the password checks a portal onboarding claim makes for an address that
     already has a login (password mode); a right password whose claim goes
     through gives its slot back, and a wrong password, a staff account and a
-    login with no password get the same refusal. This bounds guessing one account's
+    login with no password get the same refusal. Accepting a staff or portal
+    invitation in password mode counts too when the invited login already has a
+    password: the slot is reserved before the password is checked, a full window
+    answers 429 and leaves the invitation unused, and a right password gives its
+    slot back once the acceptance commits. This bounds guessing one account's
     password from many addresses and the sign-in emails one address can be sent
     (in `multi` mode each gym counts its own window, so one address can be sent
     up to 10 links a window from each gym of the install).

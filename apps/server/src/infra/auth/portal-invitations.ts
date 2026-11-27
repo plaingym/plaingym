@@ -9,6 +9,7 @@ import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { z } from 'zod';
 import { idSchema } from '@plaingym/shared/contracts';
 import { passwordAdapter } from './password.js';
+import { releaseAccountAttempt, reserveAccountAttempt, signInLimits } from './account-limit.js';
 
 /** The household login an invitation grants. The link itself is created only when the invitation is accepted. */
 export const portalInvitationBindingSchema = z.strictObject({
@@ -132,6 +133,14 @@ export function createPortalClaimCodes(secret: string) {
 /** Invitation tokens live hashed in `auth_verification`, bound to the issuing gym and the household login they grant. */
 export function createPortalInvitationStore(database = systemDatabase) {
   const forGym = <T>(gymId: string, fn: (tx: Transaction) => Promise<T>) => scopedDatabase(database()).forGym(gymId, fn);
+  /** One slot of the login's password sign-in account budget (single mode only, so no gym scope), or `rate_limited`. */
+  async function reserveSignInAttempt(userId: string, clock: Clock) {
+    const [user] = await database().select({ email: authUser.email }).from(authUser).where(eq(authUser.id, userId));
+    if (!user) throw invalid();
+    const attempt = await reserveAccountAttempt(database(), '/sign-in/email', user.email, signInLimits.account, clock.now().getTime());
+    if (!attempt.reservation) throw new AppError('rate_limited', 'Too many attempts. Try again later.');
+    return attempt.reservation;
+  }
   return {
     /** Removes invitations for an erased/deleted member, or all invitations and claim holds for their last household.
      * Called after the application transaction commits; system rows use this module's own pool. */
@@ -326,7 +335,9 @@ export function createPortalInvitationStore(database = systemDatabase) {
       if (!input.password) throw new AppError('invalid_request', 'Password required');
       if (input.password.length < 12 || input.password.length > 128) throw new AppError('invalid_request', 'Password must contain 12 to 128 characters');
       const [credential] = await database().select().from(authAccount).where(and(eq(authAccount.userId, binding.userId), eq(authAccount.providerId, 'credential')));
-      // An invite never replaces an existing password. Existing password users prove their credentials.
+      // An invite never replaces an existing password. Existing password users prove their credentials, inside the
+      // password sign-in account budget, so a token holder can't guess the login's password without limit.
+      const reservation = credential?.password ? await reserveSignInAttempt(binding.userId, input.clock) : null;
       if (credential?.password && !await passwordAdapter.verify({ hash: credential.password, password: input.password }))
         throw new AppError('forbidden', 'Existing account requires its current password');
       const hash = credential?.password ? undefined : await passwordAdapter.hash(input.password);
@@ -344,6 +355,8 @@ export function createPortalInvitationStore(database = systemDatabase) {
         }
         await tx.delete(authVerification).where(eq(authVerification.id, invite.id));
       });
+      // Only a right password whose acceptance committed gives its slot back; a refused or failed one stays counted.
+      if (reservation) await releaseAccountAttempt(database(), reservation).catch(() => undefined);
     },
   };
 }
