@@ -292,14 +292,14 @@ describe('proving the login before an email change', () => {
   });
 
   describe('a login with a password, where password sign-in is on', () => {
-    const passwordFixture = async () => {
+    const credentialFixture = async () => {
       const f = await fixture();
       await withPassword(f.gymId, f.userId);
       return f;
     };
 
     it('needs its current password, and a refused one records and sends nothing', async () => {
-      const f = await passwordFixture(), clock = new TestClock('2026-11-12T10:00:00Z'), { email, mail } = mailer();
+      const f = await credentialFixture(), clock = new TestClock('2026-11-12T10:00:00Z'), { email, mail } = mailer();
       // One change request an hour: a refused password must not spend it.
       const changes = service('single', { window: 3600, max: 1 });
       const input = { gymId: f.gymId, userId: f.userId, sessionId: f.current.id, newEmail: 'typed@example.test', clock, mail, passwordLogin: true };
@@ -321,7 +321,7 @@ describe('proving the login before an email change', () => {
     });
 
     it('counts wrong passwords against password sign-in, and gives a right one\'s slot back', async () => {
-      const f = await passwordFixture(), clock = new TestClock('2026-11-12T10:00:00Z'), { email, mail } = mailer(), changes = service();
+      const f = await credentialFixture(), clock = new TestClock('2026-11-12T10:00:00Z'), { email, mail } = mailer(), changes = service();
       const input = { gymId: f.gymId, userId: f.userId, sessionId: null, newEmail: 'budget@example.test', clock, mail, passwordLogin: true };
       // Right passwords give their slot back, so many of them never reach the limit.
       for (let index = 0; index < signInLimits.account.max + 1; index++)
@@ -335,7 +335,7 @@ describe('proving the login before an email change', () => {
     });
 
     it('proves the login with the current address instead where password sign-in is off, whatever the password field holds', async () => {
-      const f = await passwordFixture(), clock = new TestClock('2026-11-12T10:00:00Z'), { email, mail } = mailer(), changes = service();
+      const f = await credentialFixture(), clock = new TestClock('2026-11-12T10:00:00Z'), { email, mail } = mailer(), changes = service();
       for (const currentPassword of [undefined, 'not-the-password', password]) {
         const sent = await changes.request({ gymId: f.gymId, userId: f.userId, sessionId: null, newEmail: 'off@example.test', clock, mail, passwordLogin: false, currentPassword });
         expect(sent.awaiting).toBe('current_address');

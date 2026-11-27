@@ -225,7 +225,7 @@ describe('portal invitations', () => {
     expect((await links(f.gymId, user.id)).map(row => row.householdId)).toEqual([f.home.id]);
   });
   const wrong = 'not-the-password-123', refusal = { code: 'conflict', message: 'Account already exists with different credentials' };
-  async function passwordLogin(f: Fixture) {
+  async function loginWithCredential(f: Fixture) {
     const user = await factory('authUser', f.gymId);
     await factory('authAccount', f.gymId, { userId: user.id, accountId: user.id, password: await passwordAdapter.hash(password) });
     return user;
@@ -236,7 +236,7 @@ describe('portal invitations', () => {
     return [error.code, error.status, error.message, error.details];
   };
   it('password onboarding claims spend the account sign-in budget, so ten wrong guesses lock even the right password out', async () => {
-    const f = await fixture(), link = await onboardingLink(f), user = await passwordLogin(f);
+    const f = await fixture(), link = await onboardingLink(f), user = await loginWithCredential(f);
     for (let guess = 0; guess < 10; guess++) await expect(claim(f, link.id, user.email, wrong)).rejects.toMatchObject(refusal);
     await expect(claim(f, link.id, user.email, password)).rejects.toMatchObject({ code: 'rate_limited' });
     expect((await reserveAccountAttempt(db.system.db, '/sign-in/email', user.email, signInLimits.account, clock.now().getTime())).reservation).toBeNull();
@@ -245,14 +245,14 @@ describe('portal invitations', () => {
     expect(stored!.usedAt).toBeNull();
   });
   it('concurrent wrong onboarding guesses never pass the account budget', async () => {
-    const f = await fixture(), link = await onboardingLink(f), user = await passwordLogin(f);
+    const f = await fixture(), link = await onboardingLink(f), user = await loginWithCredential(f);
     const results = await Promise.allSettled(Array.from({ length: 12 }, () => claim(f, link.id, user.email, wrong)));
     const codes = results.map(result => result.status === 'rejected' ? (result.reason as AppError).code : 'claimed');
     expect(codes.filter(code => code === 'conflict')).toHaveLength(10);
     expect(codes.filter(code => code === 'rate_limited')).toHaveLength(2);
   });
   it('a right onboarding password gives its slot back and a wrong one never does', async () => {
-    const f = await fixture(), link = await onboardingLink(f), next = await onboardingLink(f), user = await passwordLogin(f);
+    const f = await fixture(), link = await onboardingLink(f), next = await onboardingLink(f), user = await loginWithCredential(f);
     for (let guess = 0; guess < 9; guess++) await expect(claim(f, link.id, user.email, wrong)).rejects.toMatchObject(refusal);
     expect(await claim(f, link.id, user.email, password)).toEqual({ data: { status: 'claimed' } });
     await expect(claim(f, next.id, user.email, wrong)).rejects.toMatchObject(refusal);
@@ -260,13 +260,13 @@ describe('portal invitations', () => {
   });
   it('an onboarding claim refuses a wrong password, a staff account and a login with no password alike', async () => {
     const f = await fixture(), link = await onboardingLink(f);
-    const member = await passwordLogin(f), staff = await passwordLogin(f), passwordless = await factory('authUser', f.gymId);
+    const member = await loginWithCredential(f), staff = await loginWithCredential(f), noCredential = await factory('authUser', f.gymId);
     await factory('staffRoles', f.gymId, { userId: staff.id, role: 'coach' });
     const refusals = [await refusalOf(claim(f, link.id, member.email, wrong)), await refusalOf(claim(f, link.id, staff.email, password)),
-      await refusalOf(claim(f, link.id, passwordless.email, password))];
+      await refusalOf(claim(f, link.id, noCredential.email, password))];
     expect(refusals[0]).toEqual(['conflict', 409, refusal.message, undefined]);
     expect(refusals[1]).toEqual(refusals[0]); expect(refusals[2]).toEqual(refusals[0]);
-    expect([...await links(f.gymId, staff.id), ...await links(f.gymId, passwordless.id)]).toEqual([]);
+    expect([...await links(f.gymId, staff.id), ...await links(f.gymId, noCredential.id)]).toEqual([]);
   });
   it('an onboarding claim for a new address creates its login without spending the account budget', async () => {
     const f = await fixture(), link = await onboardingLink(f), next = await onboardingLink(f), email = uuidv7() + '@example.test';
@@ -371,7 +371,7 @@ describe('portal invitations', () => {
 describe('accepting with an existing login\'s password', () => {
   const wrong = 'not-the-password-123';
   /** An invitation bound to a login that got its password after the invitation was issued. */
-  async function boundToPassword(f: Fixture) {
+  async function boundToCredential(f: Fixture) {
     const user = await factory('authUser', f.gymId), issued = await invite(f, invitations, input(user.email));
     await factory('authAccount', f.gymId, { userId: user.id, accountId: user.id, password: await passwordAdapter.hash(password) });
     return { ...issued, email: user.email };
@@ -385,7 +385,7 @@ describe('accepting with an existing login\'s password', () => {
     return row?.count ?? null;
   }
   it('counts in the password sign-in account budget, so ten wrong guesses lock even the right password out', async () => {
-    const f = await fixture(), issued = await boundToPassword(f);
+    const f = await fixture(), issued = await boundToCredential(f);
     for (let guess = 0; guess < 10; guess++) await expect(accept(f, issued.token, wrong)).rejects.toMatchObject({ code: 'forbidden' });
     await expect(accept(f, issued.token, password)).rejects.toMatchObject({ code: 'rate_limited' });
     expect(await pending(issued.userId)).toHaveLength(1);
@@ -396,13 +396,13 @@ describe('accepting with an existing login\'s password', () => {
     expect((await links(f.gymId, issued.userId)).map(row => row.householdId)).toEqual([f.home.id]);
   });
   it('a right password gives its slot back only once the acceptance commits; a login with no password reserves nothing', async () => {
-    const f = await fixture(), right = await boundToPassword(f);
+    const f = await fixture(), right = await boundToCredential(f);
     await expect(accept(f, right.token, wrong)).rejects.toMatchObject({ code: 'forbidden' });
     expect(await windowCount(right.email)).toBe(1);
     expect(await accept(f, right.token, password)).toEqual({ data: { status: 'claimed' } });
     expect(await windowCount(right.email)).toBe(1);
     // The login became staff after issue, so the consuming transaction refuses it and the slot stays counted.
-    const failing = await boundToPassword(f);
+    const failing = await boundToCredential(f);
     await factory('staffRoles', f.gymId, { userId: failing.userId, role: 'coach' });
     await expect(accept(f, failing.token, password)).rejects.toBeInstanceOf(Error);
     expect(await windowCount(failing.email)).toBe(1);
@@ -410,7 +410,7 @@ describe('accepting with an existing login\'s password', () => {
     const fresh = await invite(f);
     expect(await accept(f, fresh.token, password)).toEqual({ data: { status: 'claimed' } });
     expect(await windowCount(fresh.request.email)).toBeNull();
-    const racing = await boundToPassword(f);
+    const racing = await boundToCredential(f);
     const results = await Promise.allSettled([0, 1].map(() => accept(f, racing.token, password)));
     expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
   });
