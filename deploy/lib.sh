@@ -208,7 +208,14 @@ write_schema_guard() { # FLOOR RELEASE SNAPSHOT; only verified values reach Comp
   case ":$composition:" in
     *:schema-compatibility.yaml:*) ;;
     *)
-      composition="${composition:-compose.yaml}:schema-compatibility.yaml"
+      # Compose loads an override file by default only while COMPOSE_FILE is unset, so the first list names it.
+      # With both present, Compose loads only compose.override.yml.
+      if [ -z "$composition" ]; then
+        composition=compose.yaml
+        if [ -e "$ROOT/compose.override.yml" ]; then composition="$composition:compose.override.yml"
+        elif [ -e "$ROOT/compose.override.yaml" ]; then composition="$composition:compose.override.yaml"; fi
+      fi
+      composition="$composition:schema-compatibility.yaml"
       { awk '!/^COMPOSE_FILE=/' "$ROOT/.env" > "$ROOT/.env.guard-next" \
         && printf 'COMPOSE_FILE=%s\n' "$composition" >> "$ROOT/.env.guard-next" \
         && env_install "$ROOT/.env.guard-next" COMPOSE_FILE; } \

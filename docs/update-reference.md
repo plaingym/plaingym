@@ -64,7 +64,9 @@ units with the release. It checks the signed manifest, the deployment archive an
 host-file digest before stopping the app. Once the app is healthy, it replaces each file by an
 atomic rename and reloads systemd. The running updater finishes from the file it opened; the
 next run uses the new one. The updater never rewrites `compose.yaml`, the `Caddyfile` or
-`postgres/01-roles.sh`, and changes `.env` only for the image pins and `COMPOSE_FILE`. A
+`postgres/01-roles.sh`, and changes `.env` only for the image pins and `COMPOSE_FILE`; the
+first `COMPOSE_FILE` line it writes lists an existing `compose.override.yaml` or
+`compose.override.yml`. A
 release changing those configuration files still names the required manual steps in its
 upgrade notes. The PostgreSQL and Caddy images themselves do move with releases; see
 [PostgreSQL and Caddy images](#postgresql-and-caddy-images). Signed releases without
@@ -119,7 +121,10 @@ Two kinds of install keep their images, and each update says so in its output. O
 Compose files of its own (`compose.override.yaml` in the install directory, or a
 `COMPOSE_FILE` entry other than `compose.yaml`, `schema-compatibility.yaml` and
 `infrastructure-images.yaml`) keeps both: the updater's Compose commands don't load those
-files, so recreating PostgreSQL or Caddy would drop their settings. One whose `compose.yaml`
+files, so recreating PostgreSQL or Caddy would drop their settings. The updater's own
+commands start the app from `compose.yaml` and the two files it manages, so after an update
+run `sudo docker compose up -d` in the install directory to apply your own files again. One
+whose `compose.yaml`
 names its own image for a service (anything but the official pin) keeps that service, and the
 other still moves.
 

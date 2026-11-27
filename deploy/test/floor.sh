@@ -537,6 +537,51 @@ update 1 FAIL_AT=before_migrating
 [ "$(sort "$case_dir/.env")" = "$(sort "$temporary/environment")" ]
 [ ! -e "$case_dir/schema-compatibility.yaml" ]
 
+# Compose loads compose.override.yaml by default only while .env has no COMPOSE_FILE line, so the guard's first line
+# lists an override file that exists, before the guard.
+guarded_env() { # LINE: .env is the install's own two lines, unchanged and in order, then LINE
+  printf 'APP_IMAGE=ghcr.io/example/app:v1.9.0\nRELEASE_REPOSITORY=example/app\n%s\n' "$1" | cmp - "$case_dir/.env"
+}
+make_install override_listed v2.0.0 v2.0.0
+: > "$case_dir/compose.override.yaml"
+installed write_schema_guard v1.8.0 v1.9.0 00000000-0000-4000-8000-000000000008
+guarded_env 'COMPOSE_FILE=compose.yaml:compose.override.yaml:schema-compatibility.yaml'
+# A second write lists the guard once.
+installed write_schema_guard v1.8.0 v1.9.0 00000000-0000-4000-8000-000000000008
+guarded_env 'COMPOSE_FILE=compose.yaml:compose.override.yaml:schema-compatibility.yaml'
+# Taking the guard down removes only its own entry.
+installed restore_schema_guard
+[ ! -e "$case_dir/schema-compatibility.yaml" ]
+guarded_env 'COMPOSE_FILE=compose.yaml:compose.override.yaml'
+make_install override_yml v2.0.0 v2.0.0
+: > "$case_dir/compose.override.yml"
+installed write_schema_guard v1.8.0 v1.9.0 00000000-0000-4000-8000-000000000008
+guarded_env 'COMPOSE_FILE=compose.yaml:compose.override.yml:schema-compatibility.yaml'
+make_install override_both v2.0.0 v2.0.0
+: > "$case_dir/compose.override.yaml"
+: > "$case_dir/compose.override.yml"
+installed write_schema_guard v1.8.0 v1.9.0 00000000-0000-4000-8000-000000000008
+# With both, Compose loads only compose.override.yml, so the guard lists that one.
+guarded_env 'COMPOSE_FILE=compose.yaml:compose.override.yml:schema-compatibility.yaml'
+# An owner's own list stays as it is, with the guard after it.
+make_install override_own_list v2.0.0 v2.0.0
+printf 'COMPOSE_FILE=compose.yaml:mine.yaml\n' >> "$case_dir/.env"
+: > "$case_dir/compose.override.yaml"
+installed write_schema_guard v1.8.0 v1.9.0 00000000-0000-4000-8000-000000000008
+guarded_env 'COMPOSE_FILE=compose.yaml:mine.yaml:schema-compatibility.yaml'
+# A real update across the floor lists the override in .env, and the updater's own Compose calls still name only
+# compose.yaml and the guard.
+make_install override_update v2.0.0 v2.0.0
+: > "$case_dir/compose.override.yaml"
+update 0
+printf 'APP_IMAGE=ghcr.io/example/app:%s@%s\nRELEASE_REPOSITORY=example/app\nCOMPOSE_FILE=compose.yaml:compose.override.yaml:schema-compatibility.yaml\n' \
+  "$TARGET" "$digest" | cmp - "$case_dir/.env"
+up_call=$(grep ' up -d ' "$CALLS" | tail -n 1)
+case "$up_call" in
+  "compose --project-directory $case_dir --env-file $case_dir/.env -f $case_dir/compose.yaml -f $case_dir/schema-compatibility.yaml up -d "*) ;;
+  *) echo "The updater's own up call changed: $up_call" >&2; exit 1 ;;
+esac
+
 # env_install takes a new .env only when every line but the named key's is there unchanged and in order.
 make_install env_install v2.0.0 v2.0.0
 printf 'COMPOSE_FILE=compose.yaml:compose.override.yaml\n' >> "$case_dir/.env"
