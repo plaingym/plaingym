@@ -3,9 +3,13 @@ import { betterAuth, type BetterAuthPlugin } from 'better-auth';
 import { magicLink } from 'better-auth/plugins';
 import { APIError } from 'better-auth/api';
 import { drizzleAdapter } from '@better-auth/drizzle-adapter';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
 import { eq } from 'drizzle-orm';
+import { jsx } from 'hono/jsx/jsx-runtime';
+import { createTranslator, type Translator } from '@plaingym/shared';
+import { locales } from '@plaingym/shared/locales';
+import { reportedPolicy, reportingEndpoints } from '../../core/csp.js';
 import { scopedDatabase, systemDatabase, validateUuid, type Database } from '@plaingym/db/client';
 import { authUser, authSession, authAccount, authVerification, authRateLimit, householdUsers, staffRoles } from '@plaingym/db';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
@@ -79,6 +83,60 @@ function portalClaimCallback(value: string | null, origin: URL): string | null {
   if (url.origin !== origin.origin || url.pathname !== portalClaimCallbackPath || url.hash || keys.length !== 1 || keys[0] !== 'claim') return null;
   const code = url.searchParams.get('claim')!;
   return validClaimCode(code) ? new URL(portalClaimCallbackPath + '?claim=' + code, origin).href : null;
+}
+/**
+ * How a login link's token is stored: SHA-256, base64url without padding, the form of Better Auth's own `hashed` option,
+ * so links already sent keep working. Owning it lets `handler` find a link's row without consuming it.
+ */
+const linkTokenHash = (token: string) => createHash('sha256').update(token).digest('base64url');
+/** Where a browser signed in as another login completes a login link it chose to follow. */
+export const loginSwitchPath = '/magic-link/switch';
+const authText = createTranslator(locales.en ?? {});
+const switchPageStyle = 'body{margin:0;padding:1.5rem 1rem;font-family:system-ui,sans-serif;line-height:1.5}'
+  + 'main{max-width:28rem;margin:0 auto}h1{font-size:1.5rem;line-height:1.25;margin:0 0 1rem}p{overflow-wrap:anywhere}'
+  + '.action{display:block;box-sizing:border-box;width:100%;min-height:44px;margin-top:.75rem;padding:.625rem 1rem;border-radius:.5rem;'
+  + 'font:inherit;text-align:center;overflow-wrap:anywhere;cursor:pointer}'
+  + 'button.action{border:0;background:#1d4ed8;color:#fff}a.action{border:1px solid;color:inherit;text-decoration:none}';
+/**
+ * The switch page's URL holds the token, so a request from it names only the origin. Not `no-referrer`: under that policy
+ * a browser sends `Origin: null` with the form's POST (Fetch, "append a request Origin header"), which the origin check refuses.
+ */
+const switchReferrerPolicy = 'strict-origin';
+/**
+ * The page a browser signed in as `current` gets for a login link to `next`. It has no script; its form posts the link's
+ * token to `loginSwitchPath`, and its other choice leaves the browser as it is. The renderer escapes every value.
+ */
+export function loginSwitchPage(text: Translator, page: { current: string; next: string; token: string; callbackURL: string | null }) {
+  const values = { current: page.current, next: page.next };
+  return jsx('html', { lang: 'en', children: [
+    jsx('head', { children: [jsx('meta', { charset: 'utf-8' }), jsx('meta', { name: 'viewport', content: 'width=device-width, initial-scale=1' }),
+      jsx('meta', { name: 'color-scheme', content: 'light dark' }), jsx('meta', { name: 'referrer', content: switchReferrerPolicy }),
+      jsx('title', { children: text('staff/auth:switchTitle') }), jsx('style', { children: switchPageStyle })] }),
+    jsx('body', { children: jsx('main', { children: [
+      jsx('h1', { children: text('staff/auth:switchTitle') }), jsx('p', { children: text('staff/auth:switchDescription', values) }),
+      jsx('form', { method: 'post', action: '/api/auth' + loginSwitchPath, children: [
+        jsx('input', { type: 'hidden', name: 'token', value: page.token }),
+        ...(page.callbackURL === null ? [] : [jsx('input', { type: 'hidden', name: 'callbackURL', value: page.callbackURL })]),
+        jsx('button', { type: 'submit', class: 'action', children: text('staff/auth:switchContinue', values) }),
+      ] }),
+      jsx('a', { href: '/', class: 'action', children: text('staff/auth:switchStay', values) }),
+    ] }) }),
+  ] });
+}
+/** The confirmation page as a response: never cached or framed, referring by origin only, and allowed no script. */
+function loginSwitchResponse(page: Parameters<typeof loginSwitchPage>[1]): Response {
+  return new Response('<!doctype html>' + loginSwitchPage(authText, page).toString(), { status: 200, headers: {
+    'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': switchReferrerPolicy,
+    'content-security-policy': reportedPolicy(["default-src 'none'", "style-src 'unsafe-inline'", "form-action 'self'", "base-uri 'none'", "frame-ancestors 'none'"]),
+    'reporting-endpoints': reportingEndpoints,
+  } });
+}
+/** Every answer Better Auth gives through `handler`: never cached, and a refusal carries the standard `Retry-After` too. */
+function forwardedAnswer(response: Response): Response {
+  response.headers.set('cache-control', 'no-store');
+  const retryAfter = response.status === 429 ? response.headers.get('x-retry-after') : null;
+  if (retryAfter && /^\d+$/.test(retryAfter)) response.headers.set('retry-after', retryAfter);
+  return response;
 }
 /** A gym-bound session with the portal household it has chosen, if any. Never request input. */
 export interface BoundSession extends Session {
@@ -191,7 +249,7 @@ export function createAuthService(options: AuthServiceOptions) {
           ...(addressStorage ? { customStorage: addressStorage } : {}),
           customRules: { '/sign-in/email': addressRule, '/sign-in/magic-link': addressRule, '/magic-link/verify': addressRule, '/sign-in/social': addressRule } },
         plugins: [magicLink({
-          expiresIn: options.magicLinkTtl ?? 300, storeToken: 'hashed', disableSignUp: true,
+          expiresIn: options.magicLinkTtl ?? 300, storeToken: { type: 'custom-hasher', hash: async (token: string) => linkTokenHash(token) }, disableSignUp: true,
           generateToken: () => `${gym.gymId}.${randomBytes(32).toString('base64url')}`,
           sendMagicLink: async ({ email, url }, ctx) => {
             assertNoTransaction('auth.sendMagicLink');
@@ -239,6 +297,43 @@ export function createAuthService(options: AuthServiceOptions) {
         assertNoTransaction('auth.getSession');
         return auth.api.getSession({ headers: headers(request), query: { disableCookieCache: true, disableRefresh: true } });
       }
+      /**
+       * The login a link's token would sign in as, while its row is unexpired: the login with the row's address, if any.
+       * It only reads, so the token stays usable once, by whichever request completes it first.
+       */
+      async function linkLogin(token: string): Promise<{ id: string; email: string } | null> {
+        const [row] = await database().select({ value: authVerification.value, expiresAt: authVerification.expiresAt }).from(authVerification)
+          .where(eq(authVerification.identifier, 'magic-link:' + linkTokenHash(token))).limit(1);
+        // Better Auth compares expiry with the system clock too.
+        if (!row || row.expiresAt.getTime() <= Date.now()) return null;
+        let email: unknown;
+        try { email = (JSON.parse(row.value) as { email?: unknown } | null)?.email; } catch { return null; }
+        if (typeof email !== 'string') return null;
+        const [user] = await database().select({ id: authUser.id, email: authUser.email }).from(authUser).where(eq(authUser.email, email.toLowerCase())).limit(1);
+        return user ?? null;
+      }
+      /** The verify call Better Auth runs for a login link: its token, and callbacks rebuilt from the resolved gym. */
+      function verifyUrl(token: string, claim: string | null): URL {
+        const result = new URL('/api/auth/magic-link/verify', origin);
+        result.searchParams.set('token', token);
+        for (const name of ['callbackURL', 'newUserCallbackURL', 'errorCallbackURL']) result.searchParams.set(name, name === 'errorCallbackURL' ? new URL('/login', origin).href : claim ?? new URL('/admin', origin).href);
+        return result;
+      }
+      /** Completes a login link from the confirmation page's form, as the token's own login; never one the form names. */
+      async function switchLogin(request: Request): Promise<Response> {
+        if (!magicLinkEnabled) return new Response(null, { status: 404 });
+        const session = await readSession(request);
+        if (session && session.session.gymId !== gym.gymId) return Response.json({ error: 'session_gym_mismatch' }, { status: 403 });
+        if (request.headers.get('origin') !== origin.origin || request.headers.get('sec-fetch-site') === 'cross-site') return Response.json({ error: 'invalid_origin' }, { status: 403 });
+        let form: FormData;
+        try { form = await request.formData(); } catch { return Response.json({ error: 'invalid_request' }, { status: 400 }); }
+        const token = form.get('token'), callback = form.get('callbackURL');
+        if (typeof token !== 'string') return Response.json({ error: 'invalid_request' }, { status: 400 });
+        if (!token.startsWith(`${gym.gymId}.`)) return Response.json({ error: 'invalid_token_gym' }, { status: 403 });
+        const forwarded = headers(request);
+        forwarded.delete('content-type'); forwarded.delete('content-length');
+        return forwardedAnswer(await auth.handler(new Request(verifyUrl(token, portalClaimCallback(typeof callback === 'string' ? callback : null, origin)), { method: 'GET', headers: forwarded })));
+      }
       const adapter: Auth = {
         async getSession(request): Promise<Session | null> {
           const session = await readSession(request);
@@ -279,6 +374,8 @@ export function createAuthService(options: AuthServiceOptions) {
           if (url.host !== origin.host || !url.pathname.startsWith('/api/auth/')) return new Response(null, { status: 404 });
           const path = url.pathname.slice('/api/auth'.length);
           const key = `${request.method} ${path}`;
+          // Not an allowlisted endpoint: it completes a login link through `/magic-link/verify`, and its limits, below.
+          if (key === `POST ${loginSwitchPath}`) return switchLogin(request);
           const googleEndpoint = Boolean(options.google && (key === 'POST /sign-in/social' || key === 'GET /callback/google'));
           if (!authEndpoints.some((endpoint) => endpoint === key) && !googleEndpoint) return new Response(null, { status: 404 });
           // The gym's Google client as it is now: none means the Google endpoints don't exist for this gym.
@@ -292,15 +389,20 @@ export function createAuthService(options: AuthServiceOptions) {
             if (request.headers.get('origin') !== origin.origin || request.headers.get('sec-fetch-site') === 'cross-site') return Response.json({ error: 'invalid_origin' }, { status: 403 });
           }
           if (googleEndpoint && !await options.google!.beforeRequest(request, gym)) return new Response(null, { status: 403 });
-          if (path === '/magic-link/verify') {
-            if (!url.searchParams.get('token')?.startsWith(`${gym.gymId}.`)) return Response.json({ error: 'invalid_token_gym' }, { status: 403 });
-          }
           // Reconstruct callbacks and origin from the resolved gym. Never propagate caller-supplied redirects.
-          const safeUrl = new URL('/api/auth' + path, origin);
-          if (path === '/magic-link/verify') safeUrl.searchParams.set('token', url.searchParams.get('token')!);
-          // A portal claim callback is the only other allowed destination, rebuilt from its validated code.
-          const claim = path === '/magic-link/verify' ? portalClaimCallback(url.searchParams.get('callbackURL'), origin) : null;
-          for (const name of ['callbackURL', 'newUserCallbackURL', 'errorCallbackURL']) if (path === '/magic-link/verify') safeUrl.searchParams.set(name, name === 'errorCallbackURL' ? new URL('/login', origin).href : claim ?? new URL('/admin', origin).href);
+          let safeUrl = new URL('/api/auth' + path, origin);
+          if (path === '/magic-link/verify') {
+            const token = url.searchParams.get('token');
+            if (!token?.startsWith(`${gym.gymId}.`)) return Response.json({ error: 'invalid_token_gym' }, { status: 403 });
+            // A portal claim callback is the only other allowed destination, rebuilt from its validated code.
+            const claim = portalClaimCallback(url.searchParams.get('callbackURL'), origin);
+            // A browser signed in as another login keeps its session until it confirms; the page leaves the token unused.
+            if (session) {
+              const next = await linkLogin(token);
+              if (next && next.id !== session.user.id) return loginSwitchResponse({ current: session.user.email, next: next.email, token, callbackURL: claim });
+            }
+            safeUrl = verifyUrl(token, claim);
+          }
           let body: string | undefined;
           let accountEmail: string | undefined;
           if (request.method === 'POST') {
@@ -327,9 +429,7 @@ export function createAuthService(options: AuthServiceOptions) {
           } finally { if (attemptId) attempts.delete(attemptId); }
           // Best effort: the session already exists, so a failed release only leaves this success counted like a failure.
           if (path === '/sign-in/email' && response.status === 200 && attempt?.reservation) await releaseAccountAttempt(database(), attempt.reservation).catch(() => undefined);
-          response.headers.set('cache-control', 'no-store');
-          const retryAfter = response.status === 429 ? response.headers.get('x-retry-after') : null;
-          if (retryAfter && /^\d+$/.test(retryAfter)) response.headers.set('retry-after', retryAfter);
+          forwardedAnswer(response);
           if (response.headers.get('content-type')?.includes('application/json') && response.ok) {
             const value: unknown = await response.json();
             if (value && typeof value === 'object') {

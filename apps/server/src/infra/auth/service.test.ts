@@ -8,9 +8,11 @@ import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { authAccount, authSession, authVerification, authRateLimit, staffRoles, auditEvents, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
-import { AppError, errorResponse, staffRoles as roleNames } from '@plaingym/shared';
+import { createHash } from 'node:crypto';
+import { AppError, createTranslator, errorResponse, staffRoles as roleNames } from '@plaingym/shared';
+import { locales } from '@plaingym/shared/locales';
 import { runInTransaction } from '@plaingym/shared/transaction';
-import { createAuthService, authEndpoints } from './service.js';
+import { createAuthService, authEndpoints, loginSwitchPage } from './service.js';
 import { authConfig } from './config.js';
 import { createAccountService } from './accounts.js';
 import { sessionMiddleware } from './middleware.js';
@@ -153,6 +155,104 @@ describe('Better Auth HTTP containment', () => {
     await database.system.db.update(authVerification).set({ expiresAt: new Date('2000-01-01') });
     const response = await f.a.handler(new Request(f.delivered[0]!.url));
     expect(response.headers.get('location')).toContain('INVALID_TOKEN'); expect(cookies(response)).toBe('');
+  });
+  describe('a login link opened in a browser signed in as another login', () => {
+    /** `f.user` signed in by password, and a second login whose links `link` asks for. */
+    async function switching() {
+      const f = await fixture(), other = await factory('authUser', f.gymId, { emailVerified: true });
+      const cookie = cookies(await f.signIn());
+      const link = async () => {
+        expect((await f.a.handler(f.request('/sign-in/magic-link', { email: other.email }))).status).toBe(200);
+        const url = f.delivered.at(-1)!.url;
+        return { url, token: new URL(url).searchParams.get('token')! };
+      };
+      const open = (url: string, as = cookie) => f.a.handler(new Request(url, { headers: as ? { cookie: as } : {} }));
+      const post = (body: BodyInit, extra: Record<string, string> = {}, as = cookie) => f.a.handler(new Request(new URL('/api/auth/magic-link/switch', f.origin), {
+        method: 'POST', body, headers: { origin: f.origin, 'sec-fetch-site': 'same-origin', ...(as ? { cookie: as } : {}), ...extra } }));
+      const form = (fields: Record<string, string>) => new URLSearchParams(fields);
+      const row = async (token: string) => (await database.system.db.select().from(authVerification)
+        .where(eq(authVerification.identifier, 'magic-link:' + createHash('sha256').update(token).digest('base64url'))))[0];
+      const sessionOf = async (value: string) => (await f.a.getSession(f.request('/get-session', undefined, value)))?.userId;
+      return { f, other, cookie, link, open, post, form, row, sessionOf };
+    }
+    it('shows a page naming both logins and keeps the session and the token, then switches once on confirmation', async () => {
+      const { f, other, cookie, link, open, post, form, row, sessionOf } = await switching(), { url, token } = await link();
+      const page = await open(url);
+      expect(page.status).toBe(200);
+      expect(page.headers.get('content-type')).toBe('text/html; charset=utf-8'); expect(page.headers.get('cache-control')).toBe('no-store');
+      expect(page.headers.get('referrer-policy')).toBe('strict-origin'); expect(page.headers.get('set-cookie')).toBeNull();
+      expect(page.headers.get('content-security-policy')).toMatch(/^default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'(?:;|$)/);
+      const html = await page.text();
+      expect(html).toContain(f.user.email); expect(html).toContain(other.email);
+      expect(html).toContain('action="/api/auth/magic-link/switch"'); expect(html).toContain(`name="token" value="${token}"`);
+      expect(html).not.toContain('<script'); expect(html).not.toContain('callbackURL');
+      expect(await sessionOf(cookie)).toBe(f.user.id);
+      expect(await row(token)).toBeDefined();
+      const switched = await post(form({ token }));
+      expect(switched.status).toBe(302); expect(switched.headers.get('location')).toBe(f.origin + '/admin');
+      expect(switched.headers.get('cache-control')).toBe('no-store');
+      expect(cookies(switched)).not.toBe('');
+      expect(await sessionOf(cookies(switched))).toBe(other.id);
+      expect(await row(token)).toBeUndefined();
+      const again = await post(form({ token }));
+      expect(again.status).toBe(302); expect(again.headers.get('location')).toContain(f.origin + '/login'); expect(again.headers.get('location')).toContain('error=INVALID_TOKEN');
+      expect(cookies(again)).toBe('');
+    });
+    it('treats an expired link as now on both the page and the switch', async () => {
+      const { f, link, open, post, form } = await switching(), { url, token } = await link();
+      await database.system.db.update(authVerification).set({ expiresAt: new Date('2000-01-01') })
+        .where(eq(authVerification.identifier, 'magic-link:' + createHash('sha256').update(token).digest('base64url')));
+      for (const response of [await open(url), await post(form({ token }))]) {
+        expect(response.status).toBe(302); expect(response.headers.get('location')).toContain(f.origin + '/login');
+        expect(response.headers.get('location')).toContain('INVALID_TOKEN'); expect(cookies(response)).toBe('');
+      }
+    });
+    it('refuses a cross-origin, other-gym or malformed switch and leaves the token usable', async () => {
+      const { f, other, link, post, form, open, sessionOf } = await switching(), { url, token } = await link();
+      expect((await post(form({ token }), { origin: 'https://evil.example' })).status).toBe(403);
+      expect((await post(form({ token }), { 'sec-fetch-site': 'cross-site' })).status).toBe(403);
+      expect((await post(form({ token: `${f.otherGymId}.${token.split('.')[1]}` }))).status).toBe(403);
+      expect((await post(JSON.stringify({ token }), { 'content-type': 'application/json' })).status).toBe(400);
+      expect((await post(form({ callbackURL: f.origin + '/admin' }))).status).toBe(400);
+      const signedIn = await open(url, '');
+      expect(signedIn.status).toBe(302); expect(await sessionOf(cookies(signedIn))).toBe(other.id);
+    });
+    it('signs in as now with no session or the link\'s own session', async () => {
+      const { other, link, open, sessionOf } = await switching();
+      const first = await open((await link()).url, '');
+      expect(first.status).toBe(302); expect(await sessionOf(cookies(first))).toBe(other.id);
+      const own = await open((await link()).url, cookies(first));
+      expect(own.status).toBe(302); expect(cookies(own)).not.toBe(''); expect(await sessionOf(cookies(own))).toBe(other.id);
+    });
+    it('carries a valid portal claim callback through the page, and only that one', async () => {
+      const { f, other, link, open, post, form } = await switching(), code = 'a'.repeat(16) + '.' + 'b'.repeat(43), claim = `${f.origin}/portal/claim?claim=${code}`;
+      await f.a.sendLoginLink(other.email, code);
+      const url = f.delivered.at(-1)!.url, token = new URL(url).searchParams.get('token')!;
+      const html = await (await open(url)).text();
+      expect(html).toContain(`name="callbackURL" value="${claim}"`);
+      const switched = await post(form({ token, callbackURL: claim }));
+      expect(switched.status).toBe(302); expect(switched.headers.get('location')).toBe(claim);
+      for (const callbackURL of [`https://evil.example/portal/claim?claim=${code}`, `${f.origin}/admin/members?claim=${code}`]) {
+        const response = await post(form({ token: (await link()).token, callbackURL }));
+        expect(response.status).toBe(302); expect(response.headers.get('location')).toBe(f.origin + '/admin');
+      }
+    });
+    it('counts a switch against the address limit on verification and says when to retry', async () => {
+      const { f, link, post, form, row } = await switching(), { token } = await link();
+      const invalid = new URL('/api/auth/magic-link/verify', f.origin);
+      invalid.searchParams.set('token', `${f.gymId}.invalid`);
+      for (let i = 0; i < 20; i++) expect((await f.a.handler(new Request(invalid))).status).toBe(302);
+      const refused = await post(form({ token }));
+      expect(refused.status).toBe(429); expect(cookies(refused)).toBe('');
+      expect(Number(refused.headers.get('retry-after'))).toBeGreaterThan(0);
+      expect(refused.headers.get('retry-after')).toBe(refused.headers.get('x-retry-after'));
+      expect(await row(token)).toBeDefined();
+    });
+    it('escapes the addresses it names', () => {
+      const html = loginSwitchPage(createTranslator(locales.en ?? {}), { current: 'a<b>@example.test', next: 'c"d@example.test', token: 'x', callbackURL: null }).toString();
+      expect(html).toContain('a&lt;b&gt;@example.test'); expect(html).not.toContain('<b>');
+      expect(html).toContain('c&quot;d@example.test');
+    });
   });
   it('answers an unknown address as it answers a wrong password, and a magic-link request alike either way', async () => {
     const f = await fixture(), stranger = `stranger-${uuidv7()}@example.test`;

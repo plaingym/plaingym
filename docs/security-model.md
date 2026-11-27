@@ -333,7 +333,8 @@ prevents further collection. A late Stripe success is recorded and refunded as a
 
 Authentication uses Better Auth for identities and sessions only; roles live in
 PlainGym's own tables. Only an allowlist of its endpoints is reachable (password
-sign-in when enabled, magic-link request and verification when email is set up,
+sign-in when enabled, magic-link request and verification (with its switch
+confirmation, below) when email is set up,
 Google sign-in and its callback when the gym has a Google client, get-session,
 sign-out); every other library endpoint is a 404, and no endpoint
 lists or bulk-revokes sessions. There is no public sign-up: identities are created
@@ -344,7 +345,10 @@ password may have been set by someone other than the invitee.
 
 * **Magic links** are sent when the gym has SMTP (its own or the install's). The
   token names the issuing gym, is stored hashed, expires after five minutes and
-  works once.
+  works once. A browser already signed in as another login keeps its session: the
+  link shows a page naming both addresses, with no script, and signs in only when
+  its button posts the token (from the gym's own origin) to
+  `/api/auth/magic-link/switch`. Showing the page leaves the token unused.
 * **Passwords** are for self-hosted installs without email. `AUTH_PASSWORD_LOGIN`
   is `auto` (on only for a gym with no SMTP), `on` or `off`; multi-gym mode
   requires `off`. Hashes are Argon2id (19 MiB, two passes) with a random salt,
