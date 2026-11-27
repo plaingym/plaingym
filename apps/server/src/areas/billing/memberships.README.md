@@ -61,7 +61,8 @@ date (`household_join_date`), or an existing household that must use its next
 billing date (`household_billing_date`). Other reasons are a status that
 prevents activation or freezing (`membership_status`), an already cancelled
 membership (`membership_cancelled`), resuming before the billing date the
-freeze skipped (`resume_skips_cycle`), and a freeze resume date that isn't in
+freeze skipped, or for an annual membership before its old date plus the days
+frozen (`resume_skips_cycle`), and a freeze resume date that isn't in
 the future (`resume_not_future`). The membership tab gives staff a message
 for each reason and reloads membership data after `household_join_date`,
 `household_billing_date`, `membership_status`, or `membership_cancelled`.
@@ -134,8 +135,10 @@ entries were all skipped says "Some freeze entries can't be shown." instead.
 Annual assignments store their resolved first `next_due_on` in
 `memberships.anniversary_on`, after trial and household alignment. It can differ
 from `starts_on`, including an explicitly supplied renewal date. Monthly
-assignments leave it null. Renewals, freezes, and resumes without an explicit date
-retain it. An explicit annual due-date edit or resume date sets a new anniversary
+assignments leave it null. Renewals and freezes retain it. A resume without an
+explicit date retains it when the date doesn't move and otherwise moves it to the
+new date (the days frozen; see the billing catalog README), unless only the year
+changes. An explicit annual due-date edit or resume date sets a new anniversary
 when its month or day changes, except that February 28 in a non-leap year retains
 an existing February 29 anniversary. An explicit February 28 in a leap year sets
 a February 28 anniversary. The interval changes only when a scheduled plan switch

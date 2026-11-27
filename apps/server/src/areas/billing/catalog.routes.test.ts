@@ -185,6 +185,13 @@ describe('all billing catalog and membership routes', () => {
     }
     expect((await db.forGym(f.gymId, (tx) => tx.select().from(plans).where(eq(plans.id, f.plan.id))))[0]!.revision).toBe(f.plan.revision);
   });
+  it('resumes a membership with no next billing date, and still refuses an unknown field', async () => {
+    const f = await fixture(), app = server(f, staff(f, 'owner'));
+    expect((await request(app, 'resumeMembership', f, { revision: 1, resumesOn: '2028-02-29' })).status).toBe(400);
+    const response = await request(app, 'resumeMembership', f, { revision: 1 });
+    expect(response.status).toBe(200);
+    expect(billingContracts.resumeMembership.response.parse(await response.json()).data).toMatchObject({ status: 'active', revision: 2 });
+  });
 });
 
 describe('catalog prices on the currency step', () => {

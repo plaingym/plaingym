@@ -12,13 +12,20 @@ cancelled when all are cancelled. Pending-only live memberships and members with
 memberships keep the staff-set status. See the
 [membership status rule](../../../../../server/src/areas/billing/memberships.README.md#member-status).
 
-Before freezing, the form names the first skipped billing date and explains that
-resuming immediately or freezing a trial still skips it; a later timed resume can
-skip more cycles. Freeze history is available with `billing.read`, loads on demand,
-and pages through the recorded freezes, newest first. Each event shows when it
-happened in the gym's timezone, the skipped billing date and the next due date
-recorded at the freeze. These dates survive later resumes and edits. Read errors
-offer a retry and an empty history is explicit.
+Before freezing a monthly membership, the form names the first skipped billing date
+and explains that resuming immediately or freezing a trial still skips it; a later
+timed resume can skip more cycles. Its resume form requires the next billing date,
+defaulting to and no earlier than the stored one. For an annual membership, the
+freeze form says no billing date is skipped and that the resume moves the next
+billing date later by the days frozen (due 2027-03-01, frozen 2027-02-10, resumed
+2027-02-24: next due 2027-03-15). Its resume date is optional and starts blank; a
+blank date sends none, and a date earlier than the old date plus the days frozen is
+refused with its own message. Freeze history is available with `billing.read`,
+loads on demand, and pages through the recorded freezes, newest first. Each event
+shows when it happened in the gym's timezone, the skipped billing date and the next
+due date recorded at the freeze, or, when those are the same (an annual freeze),
+one line saying no billing date was skipped. These dates survive later resumes and
+edits. Read errors offer a retry and an empty history is explicit.
 
 Assignment optionally selects a named active discount for the plan or accepts a
 code. Codes ignore letter case. Changing the plan clears the selection. Saving

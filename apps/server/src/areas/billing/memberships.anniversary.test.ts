@@ -75,61 +75,73 @@ describe('persisted annual anniversaries', () => {
     expect((await f.read(monthly.id)).anniversaryOn).toBeNull();
   });
 
-  it('retains the anniversary through freeze, late resume, a clamped date edit and cancellation', async () => {
+  it('keeps the date and anniversary through a freeze, a same-day resume, a clamped date edit and cancellation', async () => {
     const f = await fixture();
     const assigned = await f.service.assign(f.context, f.request);
     const frozen = await f.service.freeze(f.context, { membershipId: assigned.id, revision: assigned.revision });
-    expect(frozen.nextDueOn).toBe('2029-02-28');
-    f.clock.set('2031-03-01T12:00:00Z');
+    expect(frozen.nextDueOn).toBe('2028-02-29');
+    f.clock.set('2028-02-29T20:00:00Z');
     const resumed = await f.service.activate(f.context, { membershipId: assigned.id, revision: frozen.revision });
-    expect(resumed.nextDueOn).toBe('2032-02-29');
+    expect(resumed.nextDueOn).toBe('2028-02-29');
+    expect((await f.read()).anniversaryOn).toBe('2028-02-29');
     const edited = await f.service.update(f.context, { membershipId: assigned.id, revision: resumed.revision, nextDueOn: '2033-02-28' });
     await f.service.cancel(f.context, { membershipId: assigned.id, revision: edited.revision });
     expect(await f.read()).toMatchObject({ startsOn: '2028-02-29', nextDueOn: '2033-02-28', anniversaryOn: '2028-02-29' });
   });
 
-  it('sets a new annual anniversary when edited to another month, then freezes on that anniversary', async () => {
+  it('moves a February 29 date and its anniversary by the days of a 365-day freeze', async () => {
+    const f = await fixture();
+    await f.service.assign(f.context, f.request);
+    const frozen = await f.service.freeze(f.context, { membershipId: f.request.id, revision: 1 });
+    f.clock.set('2029-02-28T12:00:00Z');
+    const resumed = await f.service.activate(f.context, { membershipId: frozen.id, revision: frozen.revision });
+    expect(resumed.nextDueOn).toBe('2029-02-28');
+    expect((await f.read()).anniversaryOn).toBe('2029-02-28');
+  });
+
+  it('sets a new annual anniversary when edited to another month, and a freeze keeps it and the date', async () => {
     const f = await fixture();
     await f.service.assign(f.context, f.request);
     const edited = await f.service.update(f.context, { membershipId: f.request.id, revision: 1, nextDueOn: '2028-06-19' });
     expect((await f.read()).anniversaryOn).toBe('2028-06-19');
     const frozen = await f.service.freeze(f.context, { membershipId: edited.id, revision: edited.revision });
-    expect(frozen.nextDueOn).toBe('2029-06-19');
+    expect(frozen.nextDueOn).toBe('2028-06-19');
     expect((await f.read()).anniversaryOn).toBe('2028-06-19');
   });
 
   it.each([
-    ['2031-02-15', '2031-02-15', '2032-02-15'],
-    ['2031-02-28', '2028-02-29', '2032-02-29'],
-    ['2032-02-28', '2032-02-28', '2033-02-28'],
-    ['2032-02-29', '2028-02-29', '2033-02-28'],
-  ])('distinguishes a February edit to %s from a clamped leap day', async (nextDueOn, anniversaryOn, skippedDueOn) => {
+    ['2031-02-15', '2031-02-15'],
+    ['2031-02-28', '2028-02-29'],
+    ['2032-02-28', '2032-02-28'],
+    ['2032-02-29', '2028-02-29'],
+  ])('distinguishes a February edit to %s from a clamped leap day, and a freeze keeps both', async (nextDueOn, anniversaryOn) => {
     const f = await fixture();
     await f.service.assign(f.context, f.request);
     const edited = await f.service.update(f.context, { membershipId: f.request.id, revision: 1, nextDueOn });
     expect((await f.read()).anniversaryOn).toBe(anniversaryOn);
     const frozen = await f.service.freeze(f.context, { membershipId: edited.id, revision: edited.revision });
-    expect(frozen.nextDueOn).toBe(skippedDueOn);
+    expect(frozen.nextDueOn).toBe(nextDueOn);
     expect((await f.read()).anniversaryOn).toBe(anniversaryOn);
   });
 
   it.each([
-    ['2030-06-19', '2030-07-01T12:00:00Z', '2030-06-19', '2031-06-19'],
-    ['2031-02-15', '2031-03-01T12:00:00Z', '2031-02-15', '2032-02-15'],
-    ['2031-02-28', '2031-03-01T12:00:00Z', '2028-02-29', '2032-02-29'],
-    ['2032-02-28', '2032-03-01T12:00:00Z', '2032-02-28', '2033-02-28'],
-  ])('uses an explicit resume date %s before advancing missed frozen cycles', async (nextDueOn, now, anniversaryOn, resumedDueOn) => {
+    ['2030-07-19', '2030-07-01T12:00:00Z', '2030-07-19', '2031-07-19'],
+    ['2031-02-15', '2031-02-01T12:00:00Z', '2031-02-15', '2032-02-15'],
+    ['2031-02-28', '2031-02-15T12:00:00Z', '2028-02-29', '2032-02-29'],
+    ['2032-02-28', '2032-02-01T12:00:00Z', '2032-02-28', '2033-02-28'],
+  ])('uses an explicit resume date %s later than the days frozen as given', async (nextDueOn, now, anniversaryOn, renewsOn) => {
     const f = await fixture();
     await f.service.assign(f.context, f.request);
     const frozen = await f.service.freeze(f.context, { membershipId: f.request.id, revision: 1 });
     f.clock.set(now);
     const resumed = await f.service.activate(f.context, { membershipId: frozen.id, revision: frozen.revision, nextDueOn });
-    expect(resumed.nextDueOn).toBe(resumedDueOn);
+    expect(resumed.nextDueOn).toBe(nextDueOn);
     expect((await f.read()).anniversaryOn).toBe(anniversaryOn);
-    const refrozen = await f.service.freeze(f.context, { membershipId: resumed.id, revision: resumed.revision });
     const result = calculateCycleInvoice({ ...f.pricing, dueOn: resumed.nextDueOn,
       memberships: [{ membership: resumed, description: 'Annual membership', taxRates: [], annualAnchorOn: anniversaryOn }] });
-    expect(refrozen.nextDueOn).toBe(result.nextDueDates[0]?.nextDueOn);
+    expect(result.nextDueDates[0]?.nextDueOn).toBe(renewsOn);
+    const refrozen = await f.service.freeze(f.context, { membershipId: resumed.id, revision: resumed.revision });
+    expect(refrozen.nextDueOn).toBe(nextDueOn);
   });
 
   // An interval changes only through a scheduled switch; the plan-change tests cover the anniversary when it applies.
@@ -144,12 +156,16 @@ describe('persisted annual anniversaries', () => {
     expect(await f.read()).toMatchObject({ interval: 'annual', anniversaryOn: '2028-02-29' });
   });
 
-  it('uses the anniversary for every skipped cycle of a timed freeze', async () => {
+  it('skips no date for a timed freeze, and moves the date to its resume', async () => {
     const f = await fixture();
     await f.service.assign(f.context, f.request);
     const frozen = await f.service.freeze(f.context, { membershipId: f.request.id, revision: 1, resumesOn: '2032-02-28' });
-    expect(frozen.nextDueOn).toBe('2032-02-29');
+    expect(frozen.nextDueOn).toBe('2028-02-29');
     expect((await f.read()).anniversaryOn).toBe('2028-02-29');
+    f.clock.set('2032-02-28T12:00:00Z');
+    const resumed = await f.service.activate(f.context, { membershipId: frozen.id, revision: frozen.revision });
+    expect(resumed.nextDueOn).toBe('2032-02-28');
+    expect((await f.read()).anniversaryOn).toBe('2032-02-28');
   });
 
   it('keeps a legacy annual schedule and a repeated assignment with no stored anniversary', async () => {
@@ -166,7 +182,7 @@ describe('persisted annual anniversaries', () => {
         taxRates: [], ...(row.anniversaryOn === null ? {} : { annualAnchorOn: row.anniversaryOn }) }] });
     expect(result.nextDueDates[0]?.nextDueOn).toBe('2032-02-28');
     const frozen = await f.service.freeze(f.context, { membershipId: row.id, revision: row.revision });
-    expect(frozen.nextDueOn).toBe('2032-02-28');
+    expect(frozen.nextDueOn).toBe('2031-02-28');
     expect((await f.read()).anniversaryOn).toBeNull();
   });
 });

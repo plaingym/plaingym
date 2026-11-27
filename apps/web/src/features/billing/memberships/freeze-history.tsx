@@ -27,8 +27,11 @@ export function FreezeHistory({ gymId, membershipId, revision, client }: {
         {!history.data.data.length && <p>{text(history.data.pagination.total === 0 ? 'noFreezes' : 'someFreezesHidden')}</p>}
         <ol className="space-y-3">{history.data.data.map(event => <li key={event.id} className="space-y-1 rounded-md bg-muted p-3 text-sm">
           <p>{text('frozenOn', { date: instantLabel(event.occurredAt) })}</p>
-          <p>{text('freezeSkipped', { date: calendarDateLabel(event.skippedDueOn) })}</p>
-          <p>{text('freezeNextDue', { date: calendarDateLabel(event.nextDueOn) })}</p>
+          {/* An annual freeze keeps its date: its resume moves it by the days frozen. */}
+          {event.skippedDueOn === event.nextDueOn ? <p>{text('freezeMovedByDays')}</p> : <>
+            <p>{text('freezeSkipped', { date: calendarDateLabel(event.skippedDueOn) })}</p>
+            <p>{text('freezeNextDue', { date: calendarDateLabel(event.nextDueOn) })}</p>
+          </>}
         </li>)}</ol>
         <div className="flex flex-col gap-2 sm:flex-row">
           {displayedOffset > 0 && <Button variant="outline" disabled={history.isPlaceholderData} onClick={() => setOffset(Math.max(0, displayedOffset - history.data.pagination.limit))}>{text('newerFreezes')}</Button>}

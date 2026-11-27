@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 // eslint-disable-next-line database/system-tables -- PostgreSQL lock probes make the erasure race deterministic.
 import { eq, sql } from 'drizzle-orm';
-import { auditEvents, households, members, memberships, RevisionConflictError, uuidv7 } from '@plaingym/db';
+import { auditEvents, households, leads, members, memberships, RevisionConflictError, uuidv7, writeAudit } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
@@ -380,5 +380,99 @@ describe('membership lifecycle against PostgreSQL', () => {
     expect(job?.cron).toBe('0 0 * * *');
     await job!.handler({}, { jobId: uuidv7(), gymId: f.gymId, timezone: 'America/Vancouver', attempt: 1, clock: f.clock });
     expect((await f.service.get(f.gymId, f.membership.id)).status).toBe('active');
+  });
+});
+
+describe('freezing an annual membership against PostgreSQL', () => {
+  // Gym time is America/Vancouver: 20:00Z is noon there.
+  async function annual(nextDueOn = '2027-03-01', initialStatus: 'active' | 'trial' = 'active') {
+    const gymId = uuidv7(); await factory('gyms', gymId, { currency: 'CAD', timezone: 'America/Vancouver' });
+    const clock = new TestClock('2027-02-01T20:00:00Z'), context = { gymId, actor: { kind: 'system' as const } };
+    const home = await factory('households', gymId, { billingDay: 1 });
+    const member = await factory('members', gymId, { householdId: home.id, status: initialStatus });
+    const plan = await factory('plans', gymId, { interval: 'annual', amountCents: 120000 });
+    const service = createMembershipService({ scope: db.forGym, clock, settings: createGymSettingsAccessor({ scope: db.forGym }) });
+    const membership = await service.assign(context, { id: uuidv7(), memberId: member.id, householdId: home.id, planId: plan.id,
+      startsOn: '2027-02-01', nextDueOn, firstPeriod: 'next_billing_date', initialStatus,
+      ...(initialStatus === 'trial' ? { trialEndsOn: '2027-02-15' } : {}) });
+    const read = async () => (await db.forGym(gymId, tx => tx.select().from(memberships).where(eq(memberships.id, membership.id))))[0]!;
+    const frozenAt = async (now: string | Date, resumesOn?: string) => {
+      clock.set(now);
+      return service.freeze(context, { membershipId: membership.id, revision: (await read()).revision, ...(resumesOn ? { resumesOn } : {}) });
+    };
+    const resume = async (now: string | Date, nextDueOn?: string) => {
+      clock.set(now);
+      return service.activate(context, { membershipId: membership.id, revision: (await read()).revision, ...(nextDueOn ? { nextDueOn } : {}) });
+    };
+    return { gymId, clock, context, member, service, membership, read, frozenAt, resume };
+  }
+  it('keeps the date on freeze and moves it and the anniversary by the days frozen on resume', async () => {
+    const f = await annual();
+    expect((await f.read()).anniversaryOn).toBe('2027-03-01');
+    const frozen = await f.frozenAt('2027-02-10T20:00:00Z');
+    expect(frozen).toMatchObject({ status: 'frozen', nextDueOn: '2027-03-01', frozenAt: '2027-02-10T20:00:00.000Z' });
+    expect((await f.read()).anniversaryOn).toBe('2027-03-01');
+    const resumed = await f.resume('2027-02-24T20:00:00Z');
+    expect(resumed).toMatchObject({ status: 'active', nextDueOn: '2027-03-15', frozenAt: null, resumesOn: null });
+    expect((await f.read()).anniversaryOn).toBe('2027-03-15');
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, f.membership.id)));
+    expect(audits.map(event => event.action).toSorted()).toEqual(['billing.membership.activated', 'billing.membership.assigned', 'billing.membership.frozen']);
+  });
+  it('counts local calendar days: none on the same day, one across local midnight within one UTC date', async () => {
+    const local = (date: string, time: string) => zonedInstant(date, time, 'America/Vancouver', { gap: 'shift' })!;
+    const same = await annual();
+    await same.frozenAt(local('2027-02-10', '00:30'));
+    expect(await same.resume(local('2027-02-10', '23:30'))).toMatchObject({ nextDueOn: '2027-03-01' });
+    expect((await same.read()).anniversaryOn).toBe('2027-03-01');
+    const midnight = await annual();
+    const frozenAt = local('2027-02-10', '23:30'), resumedAt = local('2027-02-11', '00:30');
+    expect(frozenAt.toISOString().slice(0, 10)).toBe(resumedAt.toISOString().slice(0, 10));
+    await midnight.frozenAt(frozenAt);
+    expect(await midnight.resume(resumedAt)).toMatchObject({ nextDueOn: '2027-03-02' });
+  });
+  it.each(['2027-04-10T08:00:00Z', '2027-04-13T20:00:00Z'])('ends the days of a timed freeze on its resume date when the date job runs at %s', async now => {
+    const f = await annual();
+    expect(await f.frozenAt('2027-02-10T20:00:00Z', '2027-04-10')).toMatchObject({ nextDueOn: '2027-03-01', resumesOn: '2027-04-10' });
+    f.clock.set(now);
+    expect(await f.service.processDates(f.gymId, 'America/Vancouver')).toBe(1);
+    // 2027-02-10 to 2027-04-10 is 59 days.
+    expect(await f.service.get(f.gymId, f.membership.id)).toMatchObject({ status: 'active', nextDueOn: '2027-04-29' });
+  });
+  it('bills a membership already past due when frozen on its resume date', async () => {
+    const f = await annual('2027-02-01');
+    await f.frozenAt('2027-02-10T20:00:00Z');
+    expect(await f.resume('2027-02-24T20:00:00Z')).toMatchObject({ nextDueOn: '2027-02-24' });
+  });
+  it.each([['2027-03-14', false], ['2027-03-15', true], ['2027-04-14', true]] as const)('takes a staff resume date %s only from the shifted date on (%s)', async (nextDueOn, accepted) => {
+    const f = await annual();
+    await f.frozenAt('2027-02-10T20:00:00Z');
+    const result = f.resume('2027-02-24T20:00:00Z', nextDueOn);
+    if (accepted) {
+      expect(await result).toMatchObject({ status: 'active', nextDueOn });
+      expect((await f.read()).anniversaryOn).toBe(nextDueOn);
+    } else {
+      await expect(result).rejects.toMatchObject({ code: 'conflict', details: { reason: ['resume_skips_cycle'] } });
+      expect(await f.read()).toMatchObject({ status: 'frozen', nextDueOn: '2027-03-01' });
+    }
+  });
+  it.each([['2028-03-01', '2027-03-15'], ['2029-03-01', '2027-03-15'], ['2027-06-01', '2027-06-15']])(
+    'resumes a freeze made when a freeze skipped a year, with the row at %s, from the date before it', async (rowDueOn, resumedDueOn) => {
+      const f = await annual();
+      await f.frozenAt('2027-02-10T20:00:00Z');
+      // The release before this one moved the date on by a year when freezing, and audited that move.
+      await db.forGym(f.gymId, async tx => {
+        await tx.update(memberships).set({ nextDueOn: rowDueOn }).where(eq(memberships.id, f.membership.id));
+        await writeAudit(tx, { gymId: f.gymId, actorKind: 'system', action: 'billing.membership.frozen', targetType: 'membership',
+          targetId: f.membership.id, before: { nextDueOn: '2027-03-01' }, after: { nextDueOn: '2028-03-01' }, occurredAt: f.clock.now() });
+      });
+      expect(await f.resume('2027-02-24T20:00:00Z')).toMatchObject({ status: 'active', nextDueOn: resumedDueOn });
+    });
+  it('moves a frozen trial\'s first bill by the days frozen and wins its lead on resume', async () => {
+    const f = await annual('2027-02-15', 'trial');
+    expect(f.membership).toMatchObject({ status: 'trial', nextDueOn: '2027-02-15' });
+    await f.frozenAt('2027-02-05T20:00:00Z');
+    expect(await f.resume('2027-02-15T20:00:00Z')).toMatchObject({ status: 'active', nextDueOn: '2027-02-25' });
+    const rows = await db.forGym(f.gymId, tx => tx.select().from(leads).where(eq(leads.memberId, f.member.id)));
+    expect(rows).toMatchObject([{ stage: 'won', wonAt: f.clock.now() }]);
   });
 });

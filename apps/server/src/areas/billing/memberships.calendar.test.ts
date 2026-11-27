@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { addCalendarMonths, advanceDue, householdNextDate, trialEnd } from './memberships.calendar.js';
+import { addCalendarMonths, advanceDue, calendarDaysBetween, householdNextDate, trialEnd } from './memberships.calendar.js';
 
 describe('membership calendar dates', () => {
   it.each([
@@ -32,7 +32,16 @@ describe('membership calendar dates', () => {
     expect(trialEnd('2028-03-10', 7)).toBe('2028-03-17');
     expect(trialEnd('2028-02-28', 2)).toBe('2028-03-01');
   });
+  it.each([
+    ['2027-02-10', '2027-02-24', 14], ['2028-02-28', '2028-03-01', 2], ['2027-02-28', '2027-03-01', 1],
+    ['2028-03-08', '2028-03-15', 7], ['2027-02-10', '2027-02-10', 0], ['2027-02-24', '2027-02-10', -14],
+    ['2028-02-29', '2029-02-28', 365],
+  ])('counts the calendar days from %s to %s as %i', (from, to, days) => {
+    expect(calendarDaysBetween(from, to)).toBe(days);
+  });
   it('rejects invalid dates and intervals', () => {
+    expect(() => calendarDaysBetween('2027-02-29', '2027-03-01')).toThrow();
+    expect(() => calendarDaysBetween('2027-02-10', '2027-2-24')).toThrow();
     expect(() => addCalendarMonths('2028-02-30', 1)).toThrow();
     expect(() => addCalendarMonths('2028-02-29', 0.5)).toThrow();
     expect(() => advanceDue('2028-02-29', 'monthly', 0)).toThrow();

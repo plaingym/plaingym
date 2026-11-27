@@ -145,7 +145,7 @@ export const freezeMembershipRequestSchema = z.strictObject({
 });
 export const resumeMembershipRequestSchema = z.strictObject({
   revision: revisionSchema,
-  nextDueOn: dateSchema,
+  nextDueOn: dateSchema.optional(),
 });
 export const cancelMembershipRequestSchema = z.strictObject({ revision: revisionSchema });
 

@@ -4,7 +4,7 @@ import { forGym, memberships, households, members, plans, auditEvents,
   revisionGuard, assertRevised, uuidv7, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { z } from 'zod';
-import { isCalendarDate, localDate } from '@plaingym/shared/time';
+import { addDays, isCalendarDate, localDate } from '@plaingym/shared/time';
 import * as c from '@plaingym/shared/contracts';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import type { MembershipLifecycle, AssignMembership, MembershipEdit, UpdateMembership } from '../../core/interfaces/membership-lifecycle.js';
@@ -14,7 +14,7 @@ import { logWarn } from '../../core/log.js';
 import { gymSettingsAccessor } from '../settings/settings.js';
 import { markLeadWon } from '../leads/stages.js';
 import { catalogAudit, catalogMissing } from './catalog.js';
-import { addCalendarMonths, advanceDue, householdNextDate, trialEnd } from './memberships.calendar.js';
+import { addCalendarMonths, advanceDue, calendarDaysBetween, householdNextDate, trialEnd } from './memberships.calendar.js';
 import { cancelScheduledSwitchRequestSchema, checkSwitch, clearedSwitch, planSwitchedAction, recordedSwitch, refuse, rescheduledSwitch, sameSwitchRequest,
   scheduledSwitch, switchedNow, unscheduled, switchPlanRequestSchema, switchScheduledAction, type CancelScheduledSwitchRequest,
   type PlanSwitchedNowAudit, type RecordedSwitchRequest, type SwitchPlanRequest, type SwitchScheduledAudit } from './memberships.plan-change.js';
@@ -48,6 +48,34 @@ async function frozenBeforeActive(tx: Transaction, row: Row): Promise<boolean> {
     .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
   const status = (freeze?.before as { status?: string } | null | undefined)?.status;
   return status === 'trial';
+}
+/**
+ * The resumed due date of a frozen annual membership: its date moved later by the calendar days it was frozen (to
+ * `owedFrom`, the scheduled resume date when the resume runs late), and never before `owedFrom`. A date given by
+ * staff may be later than that, never earlier. A freeze made when a freeze still skipped a year moved the row's date
+ * on; such a freeze resumes from the date its audit shows before it.
+ */
+async function annualResumeDue(tx: Transaction, before: Row, timezone: string, owedFrom: string, requested?: string) {
+  const frozenOn = before.frozenAt ? localDate(before.frozenAt, timezone) : null;
+  const days = frozenOn === null ? 0 : Math.max(0, calendarDaysBetween(frozenOn, owedFrom));
+  const [freeze] = await tx.select({ before: auditEvents.before, after: auditEvents.after }).from(auditEvents).where(and(
+    eq(auditEvents.action, 'billing.membership.frozen'), eq(auditEvents.targetId, before.id)))
+    .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
+  const snapshot = (value: unknown) => {
+    const date = (value as { nextDueOn?: unknown } | null | undefined)?.nextDueOn;
+    return typeof date === 'string' && c.dateSchema.safeParse(date).success ? date : null;
+  };
+  const skippedFrom = snapshot(freeze?.before), skippedTo = snapshot(freeze?.after);
+  const base = skippedFrom !== null && skippedTo !== null && skippedTo > skippedFrom && before.nextDueOn >= skippedTo
+    ? skippedFrom : before.nextDueOn;
+  const shifted = addDays(base, days);
+  if (requested !== undefined && requested < shifted) refuse('resume_skips_cycle', 'Resume cannot bill before the old date plus the days frozen');
+  const due = requested ?? (shifted < owedFrom ? owedFrom : shifted);
+  // A date given by staff is an edit (a leap-day clamp keeps the anniversary); a moved date moves the anniversary too.
+  const original = before.anniversaryOn;
+  const anniversaryOn = requested !== undefined || due === before.nextDueOn ? editedAnniversary(before, due)
+    : original?.slice(5) === due.slice(5) ? original : due;
+  return { due, anniversaryOn };
 }
 /** Explicit date changes set a new anniversary, except the normal short-year clamp. */
 function editedAnniversary(before: Row, nextDueOn?: string): string | null {
@@ -322,7 +350,7 @@ export function createMembershipService(options: MembershipOptions = {}) {
         return { data: rows.map(row => serialize(row, presentDiscount(applied.get(row.id)))), pagination: { limit: query.limit, offset: query.offset, total } };
       });
     },
-    async activate(context: MutationContext, request: MembershipEdit & { nextDueOn?: string }) {
+    async activate(context: MutationContext, request: MembershipEdit & { nextDueOn?: string | undefined }) {
       const gym = await settings.get(context.gymId);
       return edit(context, request, 'activated', async (tx, before) => {
         if (!['pending', 'trial', 'frozen'].includes(before.status)) refuse('membership_status', 'Membership cannot be activated');
@@ -331,8 +359,13 @@ export function createMembershipService(options: MembershipOptions = {}) {
         let due = request.nextDueOn ?? before.nextDueOn;
         c.dateSchema.parse(due);
         if (due < before.startsOn) refuse('billing_before_start', 'Billing cannot start before membership starts');
-        const anniversaryOn = editedAnniversary(before, request.nextDueOn);
-        if (before.status === 'frozen') {
+        let anniversaryOn = editedAnniversary(before, request.nextDueOn);
+        if (before.status === 'frozen' && before.interval === 'annual') {
+          const today = localDate(clock.now(), gym.timezone);
+          const owedFrom = before.resumesOn !== null && before.resumesOn < today ? before.resumesOn : today;
+          ({ due, anniversaryOn } = await annualResumeDue(tx, before, gym.timezone, owedFrom, request.nextDueOn));
+          if (due < before.startsOn) refuse('billing_before_start', 'Billing cannot start before membership starts');
+        } else if (before.status === 'frozen') {
           const home = catalogMissing((await tx.select().from(households).where(eq(households.id, before.householdId)))[0]);
           const today = localDate(clock.now(), gym.timezone);
           if (request.nextDueOn !== undefined && due < before.nextDueOn) refuse('resume_skips_cycle', 'Resume must preserve the skipped cycle');
@@ -355,6 +388,9 @@ export function createMembershipService(options: MembershipOptions = {}) {
         if (!['active', 'trial'].includes(before.status)) refuse('membership_status', 'Membership cannot be frozen');
         const today = localDate(clock.now(), gym.timezone);
         if (request.resumesOn != null && c.dateSchema.parse(request.resumesOn) <= today) refuse('resume_not_future', 'Resume date must be in the future');
+        // An annual membership skips no date: its resume moves the date by the days frozen.
+        if (before.interval === 'annual')
+          return { status: 'frozen', frozenAt: clock.now(), resumesOn: request.resumesOn ?? null, nextDueOn: before.nextDueOn };
         const home = catalogMissing((await tx.select().from(households).where(eq(households.id, before.householdId)))[0]);
         const anchor = before.interval === 'annual' ? Number(before.nextDueOn.slice(8)) : home.billingDay;
         let nextDueOn = advanceDue(before.nextDueOn, before.interval as c.BillingInterval, anchor, before.anniversaryOn);

@@ -11,6 +11,7 @@ import { StripeFixtures } from '../../../infra/payments/stripe-fixtures.js';
 import { createMembershipService } from '../memberships.js';
 import { createPaymentService } from '../payments.js';
 import { createChargeRunner } from './index.js';
+import { generateCycle } from './store.js';
 import { createMembersService } from '../../members/members.js';
 import { FakeJobs } from '../../../infra/jobs/index.js';
 import { useRunnerFixture, type Fixture } from './runner.fixture.test-helper.js';
@@ -214,6 +215,25 @@ describe('charge runner with PostgreSQL', () => {
         expect((await f.read()).invoices).toHaveLength(0);
       }
     }
+  });
+  it('neither bills nor advances a frozen annual membership past its date, and still bills a sibling due that day', async () => {
+    const f = await fixture({ interval: 'annual', status: 'frozen', dueOn: '2028-02-29', startsOn: '2027-02-28' });
+    const before = (await f.read()).memberships[0]!;
+    await f.runner.daily(f.gymId); await f.runner.daily(f.gymId);
+    let rows = await f.read();
+    expect(rows.invoices).toHaveLength(0); expect(rows.payments).toHaveLength(0);
+    expect(rows.memberships[0]).toMatchObject({ status: 'frozen', nextDueOn: '2028-02-29', revision: before.revision });
+    const gym = await f.settings.get(f.gymId);
+    expect(await db.forGym(f.gymId, tx => generateCycle(tx, gym, f.clock, f.home.id, '2028-03-01'))).toBe(false);
+    const sibling = await factory('members', f.gymId, { householdId: f.home.id });
+    const monthly = await factory('memberships', f.gymId, { householdId: f.home.id, memberId: sibling.id, planId: f.plan.id,
+      status: 'active', startsOn: '2028-01-01', nextDueOn: '2028-03-01' });
+    await f.runner.daily(f.gymId);
+    rows = await f.read();
+    expect(rows.invoices.map(row => [row.dueOn, row.amountCents])).toEqual([['2028-03-01', 10000]]);
+    expect(rows.lines.map(line => line.membershipId)).toEqual([monthly.id]);
+    expect(rows.memberships.find(row => row.id === monthly.id)?.nextDueOn).toBe('2028-04-01');
+    expect(rows.memberships.find(row => row.id === before.id)).toMatchObject({ status: 'frozen', nextDueOn: '2028-02-29', revision: before.revision });
   });
   it('holds an already-issued unpaid period after a long outage', async () => {
     const f = await fixture(); const bill = await invoice(f);

@@ -134,6 +134,11 @@ describe('revisions and membership lifecycle requests', () => {
       expect(schema.safeParse({ ...fields, revision }).success).toBe(false);
     }
   });
+  it('lets a resume leave its next billing date out, but never take an unknown field', () => {
+    expect(resumeMembershipRequestSchema.parse({ revision: 2 })).toEqual({ revision: 2 });
+    expect(resumeMembershipRequestSchema.safeParse({ revision: 2, nextDueOn: '2026-02-30' }).success).toBe(false);
+    expect(resumeMembershipRequestSchema.safeParse({ revision: 2, resumesOn: '2026-11-21' }).success).toBe(false);
+  });
   it('leaves stale revision detection to the atomic service and preserves its conflict convention', () => {
     expect(updatePlanRequestSchema.parse({ revision: 1, name: 'Old client' }).revision).toBe(1);
     const conflict = new AppError('conflict', 'Reload before saving.');

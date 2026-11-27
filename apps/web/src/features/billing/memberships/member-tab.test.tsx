@@ -36,7 +36,6 @@ function start(role: StaffRole, options: { plans?: Plan[]; row?: Membership; cal
 afterEach(cleanup);
 it.each([
   { name: 'monthly', interval: 'monthly' as const, status: 'active' as const, due: '2026-11-01', label: 'Nov 1, 2026', resume: '' },
-  { name: 'annual', interval: 'annual' as const, status: 'active' as const, due: '2027-02-28', label: 'Feb 28, 2027', resume: '' },
   { name: 'several cycles', interval: 'monthly' as const, status: 'active' as const, due: '2026-11-01', label: 'Nov 1, 2026', resume: '2027-03-01' },
   { name: 'trial', interval: 'monthly' as const, status: 'trial' as const, due: '2026-11-13', label: 'Nov 13, 2026', resume: '' },
 ])('names the first skipped billing date for a $name freeze before submitting', async scenario => {
@@ -48,6 +47,63 @@ it.each([
   expect(client.call).not.toHaveBeenCalled();
   save();
   await waitFor(() => expect(client.call).toHaveBeenCalledWith('freezeMembership', { revision: 1, resumesOn: scenario.resume || null }, { membershipId: membership.id }));
+});
+it('says a freeze skips no annual billing date before submitting', async () => {
+  const client = start('admin', { row: { ...membership, interval: 'annual', nextDueOn: '2027-02-28' } });
+  fireEvent.click(await screen.findByRole('button', { name: 'Freeze' }));
+  expect(screen.getByText('Freezing an annual membership skips no billing date. When it resumes, its next billing date (Feb 28, 2027) moves later by the number of days it was frozen.')).toBeDefined();
+  expect(screen.queryByText(/Freezing skips the billing date/)).toBeNull();
+  save();
+  await waitFor(() => expect(client.call).toHaveBeenCalledWith('freezeMembership', { revision: 1, resumesOn: null }, { membershipId: membership.id }));
+});
+it('resumes a monthly membership with a required date defaulting to, and no earlier than, its next billing date', async () => {
+  start('admin', { row: { ...membership, status: 'frozen', frozenAt: createdAt, nextDueOn: '2026-12-01' } });
+  fireEvent.click(await screen.findByRole('button', { name: 'Resume' }));
+  expect(screen.getByText('Choose the next billing date. The skipped cycle will stay skipped.')).toBeDefined();
+  const input = screen.getByLabelText('Next billing date', { selector: 'input[name="date"]' });
+  expect(input).toMatchObject({ required: true, value: '2026-12-01', min: '2026-12-01' });
+});
+it('resumes an annual membership with an optional blank date, sending only its revision', async () => {
+  const frozen = { ...membership, interval: 'annual' as const, status: 'frozen' as const, frozenAt: createdAt, nextDueOn: '2027-03-01' };
+  const client = start('admin', { row: frozen });
+  fireEvent.click(await screen.findByRole('button', { name: 'Resume' }));
+  expect(screen.getByText('Leave the date blank to move the next billing date later by the number of days frozen. Choose a date only to bill later than that.')).toBeDefined();
+  expect(screen.queryByText('Choose the next billing date. The skipped cycle will stay skipped.')).toBeNull();
+  const input = screen.getByLabelText('Next billing date', { selector: 'input[name="date"]' });
+  expect(input).toMatchObject({ required: false, value: '', min: '' });
+  save();
+  await waitFor(() => expect(client.call).toHaveBeenCalledWith('resumeMembership', { revision: 1 }, { membershipId: membership.id }));
+});
+it('sends a chosen annual resume date and explains its refusal in days frozen', async () => {
+  const frozen = { ...membership, interval: 'annual' as const, status: 'frozen' as const, frozenAt: createdAt, nextDueOn: '2027-03-01' };
+  const client = start('admin', { row: frozen, call: async () => { throw new ApiError(409, 'conflict', ['resume_skips_cycle']); } });
+  fireEvent.click(await screen.findByRole('button', { name: 'Resume' }));
+  fireEvent.change(screen.getByLabelText('Next billing date', { selector: 'input[name="date"]' }), { target: { value: '2027-03-05' } });
+  save();
+  expect(await screen.findByText("The next billing date can't be earlier than the old date plus the days frozen.")).toBeDefined();
+  expect(client.call).toHaveBeenCalledWith('resumeMembership', { revision: 1, nextDueOn: '2027-03-05' }, { membershipId: membership.id });
+});
+it('keeps the monthly skipped-cycle refusal text', async () => {
+  start('admin', { row: { ...membership, status: 'frozen', frozenAt: createdAt, nextDueOn: '2026-12-01' },
+    call: async () => { throw new ApiError(409, 'conflict', ['resume_skips_cycle']); } });
+  fireEvent.click(await screen.findByRole('button', { name: 'Resume' }));
+  save();
+  expect(await screen.findByText("The next billing date can't be before the billing date the freeze skipped.")).toBeDefined();
+});
+it('shows one line for a freeze that skipped no billing date, and both dates otherwise', async () => {
+  const history = vi.fn(async () => ({ data: [
+    { id: id(10), occurredAt: createdAt, skippedDueOn: '2027-03-01', nextDueOn: '2027-03-01' },
+    { id: id(11), occurredAt: createdAt, skippedDueOn: '2026-02-01', nextDueOn: '2026-03-01' },
+  ], pagination: { limit: 10, offset: 0, total: 2 } }));
+  start('front_desk', { history, row: { ...membership, interval: 'annual', nextDueOn: '2027-03-15' } });
+  fireEvent.click(await screen.findByRole('button', { name: 'Freeze history' }));
+  const entries = within(await screen.findByRole('region', { name: 'Freeze history' })).getAllByRole('listitem');
+  expect(entries).toHaveLength(2);
+  expect(entries[0]!.textContent).toContain('No billing date skipped. The next billing date moves by the days frozen.');
+  expect(entries[0]!.textContent).not.toContain('Skipped billing date');
+  expect(entries[1]!.textContent).toContain('Skipped billing date: Feb 1, 2026');
+  expect(entries[1]!.textContent).toContain('Next billing date after this freeze: Mar 1, 2026');
+  expect(entries[1]!.textContent).not.toContain('No billing date skipped');
 });
 it('loads historical skipped and resulting dates on demand, pages them, and keeps them after resume', async () => {
   const event = { id: id(10), occurredAt: createdAt, skippedDueOn: '2026-02-01', nextDueOn: '2026-06-01' };

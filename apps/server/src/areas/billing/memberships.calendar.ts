@@ -27,4 +27,12 @@ export function householdNextDate(startsOn: string, billingDay: number) {
   const candidate = addCalendarMonths(startsOn, 0, billingDay);
   return candidate >= startsOn ? candidate : addCalendarMonths(startsOn, 1, billingDay);
 }
+/** Whole calendar days from one date to another, negative when `to` is earlier. No instants or offsets. */
+export function calendarDaysBetween(from: string, to: string) {
+  const day = (date: string) => {
+    dateSchema.parse(date);
+    return Date.UTC(Number(date.slice(0, 4)), Number(date.slice(5, 7)) - 1, Number(date.slice(8))) / 86_400_000;
+  };
+  return day(to) - day(from);
+}
 export function trialEnd(startsOn: string, days: number) { return addDays(startsOn, days); }

@@ -4,11 +4,15 @@
 `calculateCycleInvoice` takes frozen `MembershipSnapshot` values, descriptions,
 and resolved tax rates. It calculates one household's invoice for **one exact due
 date**. Active memberships on other dates are left for separate invocations.
-Pending, trial, and cancelled memberships are excluded. Frozen memberships produce
-only a skipped due-date advance; the lifecycle service must resume them explicitly.
-A frozen membership whose scheduled resume date has arrived (on or before the due
-date) is neither skipped nor billed: that cycle is owed, so it waits for the resume
-and is then billed as active. Run the lifecycle's date job before the charge run.
+Pending, trial, and cancelled memberships are excluded. Frozen monthly memberships
+produce only a skipped due-date advance; the lifecycle service must resume them
+explicitly. A frozen monthly membership whose scheduled resume date has arrived (on
+or before the due date) is neither skipped nor billed: that cycle is owed, so it
+waits for the resume and is then billed as active. A frozen annual membership is
+always neither skipped nor billed, whatever its dates: its resume moves its due date
+later by the days frozen (due 2027-03-01, frozen 2027-02-10, resumed 2027-02-24:
+next due 2027-03-15), and the charge run leaves it out so it never blocks the
+household's other due memberships. Run the lifecycle's date job before the charge run.
 An empty or entirely frozen cycle has no invoice. Free active plans produce a
 zero-total invoice and advance normally.
 Each due-date advance carries the engine's `prorated` flag. Callers use that flag

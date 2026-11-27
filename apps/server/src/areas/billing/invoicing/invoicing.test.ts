@@ -87,6 +87,16 @@ describe('household cycles', () => {
     expect(calculateCycleInvoice(cycle({ dueOn: '2026-02-28', billingDay: 31,
       memberships: [priced({ status: 'frozen', nextDueOn: '2026-02-28', resumesOn })] }))).toEqual({ invoice: null, nextDueDates: [] });
   });
+  it.each([null, '2026-02-20', '2026-04-01'])('neither skips nor bills a frozen annual membership (resume %s)', (resumesOn) => {
+    expect(calculateCycleInvoice(cycle({ memberships: [priced({ interval: 'annual', amountCents: 120_000, startsOn: '2025-03-01',
+      status: 'frozen', resumesOn })] }))).toEqual({ invoice: null, nextDueDates: [] });
+  });
+  it('bills the other memberships due beside a frozen annual one', () => {
+    const result = calculateCycleInvoice(cycle({ memberships: [priced(),
+      priced({ id: id(12), interval: 'annual', amountCents: 120_000, startsOn: '2025-03-01', status: 'frozen' })] }));
+    expect(result.invoice?.lineItems.map((line) => line.membershipId)).toEqual([id(10)]);
+    expect(result.nextDueDates).toMatchObject([{ membershipId: id(10), nextDueOn: '2026-04-01', skipped: false }]);
+  });
   it('handles an empty household without creating an empty invoice', () => {
     expect(calculateCycleInvoice(cycle({ memberships: [] }))).toEqual({ invoice: null, nextDueDates: [] });
   });

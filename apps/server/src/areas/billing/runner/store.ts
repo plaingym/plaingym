@@ -82,8 +82,10 @@ export async function generateCycle(tx: Transaction, gym: GymSettings, clock: Cl
   const rows = await tx.select().from(memberships).where(and(eq(memberships.householdId, householdId),
     inArray(memberships.status, ['active', 'frozen']), lte(memberships.nextDueOn, today)))
     .orderBy(asc(memberships.nextDueOn), asc(memberships.id)).for('update');
-  // A scheduled resume is lifecycle-owned. Do not let it block other due memberships.
-  const due = rows.filter(row => row.status !== 'frozen' || row.resumesOn === null || row.resumesOn > row.nextDueOn);
+  // A scheduled resume is lifecycle-owned, and so is every frozen annual membership (its resume moves the date by
+  // the days frozen). Do not let either block other due memberships.
+  const due = rows.filter(row => row.status !== 'frozen' ||
+    row.interval !== 'annual' && (row.resumesOn === null || row.resumesOn > row.nextDueOn));
   const dueOn = due[0]?.nextDueOn;
   if (!dueOn) return false;
   const previous = (await tx.select().from(invoices).where(and(eq(invoices.householdId, householdId),

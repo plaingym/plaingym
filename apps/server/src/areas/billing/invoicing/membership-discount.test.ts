@@ -63,11 +63,13 @@ describe('membership discount quotes', () => {
     ['2026-04-01', 'annual', 'active', false, '2027-04-01'],
     ['2026-03-16', 'monthly', 'frozen', true, '2026-04-01'],
     ['2026-04-01', 'monthly', 'frozen', false, '2026-05-01'],
-    ['2026-04-01', 'annual', 'frozen', false, '2027-04-01'],
+    // A frozen annual membership is neither skipped nor billed: its resume moves the date by the days frozen.
+    ['2026-04-01', 'annual', 'frozen', false, null],
   ] as const)('reports the engine proration flag for %s %s %s', (dueOn, interval, status, prorated, nextDueOn) => {
     const result = calculateCycleInvoice({ ...household, dueOn,
       memberships: [priced(percentage(5_000), { nextDueOn: dueOn, interval, status })] });
-    expect(result.nextDueDates).toMatchObject([{ membershipId: id(10), previousDueOn: dueOn, nextDueOn, prorated, skipped: status === 'frozen' }]);
+    if (nextDueOn === null) expect(result.nextDueDates).toEqual([]);
+    else expect(result.nextDueDates).toMatchObject([{ membershipId: id(10), previousDueOn: dueOn, nextDueOn, prorated, skipped: status === 'frozen' }]);
     expect(result.invoice === null).toBe(status === 'frozen');
   });
 

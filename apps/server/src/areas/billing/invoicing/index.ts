@@ -70,9 +70,10 @@ export function calculateCycleInvoice(input: CycleInvoiceInput): CycleInvoiceRes
     ids.add(item.membership.id);
   }
   // A frozen membership whose scheduled resume has arrived owes this cycle: leave it (no skip, no charge)
-  // for the lifecycle's resume, after which it is billed as active.
+  // for the lifecycle's resume, after which it is billed as active. A frozen annual membership is never
+  // skipped: its resume moves the date by the days frozen.
   const due = input.memberships.filter(({ membership }) => membership.nextDueOn === input.dueOn &&
-    (membership.status === 'active' || membership.status === 'frozen' &&
+    (membership.status === 'active' || membership.status === 'frozen' && membership.interval !== 'annual' &&
       (membership.resumesOn === null || membership.resumesOn > input.dueOn)))
     .toSorted((a, b) => compareIds(a.membership, b.membership))
     .map((item) => ({ item, ...cycleTerms(input, item) }));

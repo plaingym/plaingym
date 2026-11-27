@@ -84,7 +84,9 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
         }
         const code = error.status === 409 && error.reason.find(reason => Object.hasOwn(refusalText, reason));
         if (code) {
-          setMessage(text(refusalText[code]!));
+          // An annual resume may bill no earlier than its old date plus the days frozen.
+          const annual = code === 'resume_skips_cycle' && rows.data?.find(row => row.id === membershipId)?.interval === 'annual';
+          setMessage(text(annual ? 'refusal_resume_before_frozen_days' : refusalText[code]!));
           setReloading(true);
           let refresh: PlanRefresh | undefined;
           if (code === 'plan_inactive') {
@@ -210,6 +212,8 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
   // so a change made elsewhere meanwhile is a conflict rather than silently undone.
   const [base, setBase] = useState(row);
   const plan = plans.find(item => item.id === row.planId);
+  // A freeze skips no annual billing date; its resume moves the date by the days frozen.
+  const annual = row.interval === 'annual';
   const scheduled = row.scheduledPlanId && row.scheduledAmountCents !== null && row.scheduledInterval && row.scheduledOn
     ? { plan: plans.find(item => item.id === row.scheduledPlanId), price: money(row.scheduledAmountCents, row.currency), interval: text(row.scheduledInterval), on: calendarDateLabel(row.scheduledOn) } : null;
   const priceOnly = !!scheduled && row.scheduledPlanId === row.planId;
@@ -231,7 +235,9 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
   }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget);
-    const input = action === 'freeze' ? { resumesOn: form.get('date') || null } : { nextDueOn: form.get('date') };
+    const date = form.get('date');
+    // A blank annual resume date moves the next billing date by the days frozen, so it sends none.
+    const input = action === 'freeze' ? { resumesOn: date || null } : annual && !date ? {} : { nextDueOn: date };
     if (await mutate(action === 'freeze' ? 'freezeMembership' : 'resumeMembership', { revision: row.revision, ...input }, row.id, closeStaleAction)) setAction(null);
   }
   return <li className="min-w-0 space-y-3 rounded-lg border p-4">
@@ -274,8 +280,8 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
         <div className="flex flex-col gap-2 sm:flex-row"><Button type="submit">{text('save')}</Button><Button variant="outline" onClick={() => setAction(null)}>{text('back')}</Button></div>
       </form>}
       {(action === 'freeze' || action === 'resume') && <form onSubmit={event => void submit(event)} className="space-y-3">
-        <p className="text-sm text-muted-foreground">{text(action === 'freeze' ? 'freezeHelp' : 'resumeHelp', { date: calendarDateLabel(row.nextDueOn) })}</p>
-        <Label className="block min-w-0">{text(action === 'freeze' ? 'resumesOn' : 'nextDueOn')}<Input type="date" name="date" required={action === 'resume'} {...(action === 'resume' ? { min: row.nextDueOn, defaultValue: row.nextDueOn } : {})}/></Label>
+        <p className="text-sm text-muted-foreground">{text(action === 'freeze' ? annual ? 'freezeHelpAnnual' : 'freezeHelp' : annual ? 'resumeHelpAnnual' : 'resumeHelp', { date: calendarDateLabel(row.nextDueOn) })}</p>
+        <Label className="block min-w-0">{text(action === 'freeze' ? 'resumesOn' : 'nextDueOn')}<Input type="date" name="date" required={action === 'resume' && !annual} {...(action === 'resume' && !annual ? { min: row.nextDueOn, defaultValue: row.nextDueOn } : {})}/></Label>
         <div className="flex flex-col gap-2 sm:flex-row"><Button type="submit">{text('save')}</Button><Button variant="outline" onClick={() => setAction(null)}>{text('back')}</Button></div>
       </form>}
     </fieldset>}
