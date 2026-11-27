@@ -318,6 +318,100 @@ describe('gym isolation of sign-in limits', () => {
   });
 });
 
+describe('per-gym login-link ceiling', () => {
+  const ceiling = (max = 3) => fixture({ loginLinkCeiling: { window: 3600, max }, accountRateLimit: { window: 600, max: 1000 }, rateLimit: { window: 60, max: 1000 } });
+  let stranger = 0;
+  const unlinked = (gymId: string) => `stranger-${stranger++}-${gymId}@example.test`;
+  const bodies = async (responses: Response[]) => Promise.all(responses.map(async (response) => JSON.stringify(await response.json())));
+
+  it('sends at most its ceiling of links an hour to unlinked addresses, with the same answer for the dropped ones', async () => {
+    const f = await ceiling();
+    const emails = Array.from({ length: 4 }, () => unlinked(f.gymId));
+    const responses: Response[] = [];
+    for (const email of emails) responses.push(await f.askLink(address(), email));
+    expect(statuses(responses)).toEqual([200, 200, 200, 200]);
+    expect(new Set(await bodies(responses)).size).toBe(1);
+    expect(f.delivered).toEqual(emails.slice(0, 3));
+  });
+
+  it('never counts or drops a link to an address with a staff role or household login in the gym', async () => {
+    const f = await ceiling();
+    for (let i = 0; i < 3; i++) await f.askLink(address(), unlinked(f.gymId));
+    await factory('staffRoles', f.gymId, { userId: f.user.id });
+    const household = await factory('households', f.gymId);
+    const member = await factory('authUser', f.gymId, { emailVerified: true });
+    await factory('householdUsers', f.gymId, { householdId: household.id, userId: member.id, scope: 'payer' });
+    const fifth = unlinked(f.gymId);
+    expect(statuses([await f.askLink(address(), f.user.email), await f.askLink(address(), member.email), await f.askLink(address(), fifth)]))
+      .toEqual([200, 200, 200]);
+    expect(f.delivered.slice(3)).toEqual([f.user.email.toLowerCase(), member.email.toLowerCase()]);
+  });
+
+  it('counts an identity without a staff role or household login in the gym as unlinked', async () => {
+    const f = await ceiling(1);
+    const other = unlinked(f.gymId);
+    expect(statuses([await f.askLink(address()), await f.askLink(address(), other)])).toEqual([200, 200]);
+    expect(f.delivered).toEqual([f.user.email.toLowerCase()]);
+  });
+
+  it('opens again when its fixed window ends, and dropped sends never extend the window', async () => {
+    const f = await ceiling();
+    for (let i = 0; i < 3; i++) await f.askLink(address(), unlinked(f.gymId));
+    f.advance(1800);
+    expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(200);
+    expect(f.delivered).toHaveLength(3);
+    f.advance(1800);
+    const again = unlinked(f.gymId);
+    expect((await f.askLink(address(), again)).status).toBe(200);
+    expect(f.delivered.at(-1)).toBe(again);
+  });
+
+  it('keeps the ceiling exact for concurrent requests', async () => {
+    const f = await ceiling();
+    const responses = await Promise.all(Array.from({ length: 6 }, () => f.askLink(address(), unlinked(f.gymId))));
+    expect(statuses(responses)).toEqual([200, 200, 200, 200, 200, 200]);
+    expect(new Set(await bodies(responses)).size).toBe(1);
+    expect(f.delivered).toHaveLength(3);
+  });
+
+  it('counts each gym apart', async () => {
+    const a = await ceiling(), b = await ceiling();
+    for (let i = 0; i < 4; i++) await a.askLink(address(), unlinked(a.gymId));
+    expect(a.delivered).toHaveLength(3);
+    for (let i = 0; i < 3; i++) await b.askLink(address(), unlinked(b.gymId));
+    expect(b.delivered).toHaveLength(3);
+    await a.askLink(address(), unlinked(a.gymId));
+    expect(a.delivered).toHaveLength(3);
+  });
+
+  it('never counts or drops the links the app sends itself', async () => {
+    const f = await ceiling();
+    for (let i = 0; i < 3; i++) await f.askLink(address(), unlinked(f.gymId));
+    await f.from(address()).sendLoginLink('stranger@example.test');
+    expect(f.delivered.at(-1)).toBe('stranger@example.test');
+    f.advance(3600);
+    await f.from(address()).sendLoginLink('stranger@example.test');
+    const asked = Array.from({ length: 3 }, () => unlinked(f.gymId));
+    for (const email of asked) expect((await f.askLink(address(), email)).status).toBe(200);
+    expect(f.delivered.slice(-3)).toEqual(asked);
+  });
+
+  it('logs the dropped sends once per window, with the gym and no address', async () => {
+    const f = await ceiling(1);
+    const lines: string[] = [], previous = setLogSink(line => { lines.push(line); });
+    const dropped = Array.from({ length: 3 }, () => unlinked(f.gymId));
+    try {
+      await f.askLink(address(), unlinked(f.gymId));
+      for (const email of dropped) expect((await f.askLink(address(), email)).status).toBe(200);
+    } finally { setLogSink(previous); }
+    expect(f.delivered).toHaveLength(1);
+    const logged = lines.filter(line => line.includes('auth.login_link_ceiling'));
+    expect(logged.map(line => JSON.parse(line) as Record<string, unknown>))
+      .toEqual([expect.objectContaining({ level: 'warn', event: 'auth.login_link_ceiling', gymId: f.gymId, limit: 1 })]);
+    for (const email of dropped) expect(logged[0]).not.toContain(email);
+  });
+});
+
 describe('the Better Auth pin', () => {
   it('stays at the version the gym address storage was checked against', () => {
     const dependencies: Readonly<Record<string, string>> = serverManifest.dependencies;

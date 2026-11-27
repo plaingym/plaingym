@@ -359,7 +359,8 @@ password may have been set by someone other than the invitee.
   both Google's address and the identity's own are verified. The app keeps the
   Google account's ID and none of its tokens.
 * **Rate limits.** Two limits, both counted in the database so every app process
-  shares them, and both answered with 429 and `Retry-After`.
+  shares them, and both answered with 429 and `Retry-After`, plus a per-gym
+  ceiling on login links to unlinked addresses (the last bullet below).
   In `multi` mode both budgets belong to the resolved gym, so traffic at one
   gym cannot close sign-in at another. Single-gym budgets are unchanged:
   * **Per client address:** 20 attempts a minute at each of password sign-in,
@@ -384,6 +385,18 @@ password may have been set by someone other than the invitee.
     link requests, refusing even a correct password until the window ends;
     Google sign-in and an already-sent link still work. The owner's CLI reset
     clears the account windows so an owner without email has a recovery path.
+  * **Per gym, to unlinked addresses:** the sign-in page sends at most 100 login
+    links an hour, counted in the database, to addresses with no staff role and
+    no household login in the gym, so one client can't turn the gym's mail server
+    on strangers. Addresses linked to the gym are never counted or refused, and
+    the links the app sends itself (the first owner, a portal claim, a join's
+    sign-in link) aren't counted. Past the ceiling the request gets the same
+    200 body and nothing is sent, and the server logs `auth.login_link_ceiling`
+    with the gym and the limit, never the address, once per window. Each gym
+    counts its own, in either tenancy mode. A dropped request answers sooner
+    than a sent one, and while the gym's mail server is failing it answers 200
+    where a linked address gets 503, so once the hour's ceiling is spent the
+    answer can show whether an address is linked to the gym.
 * **Resets.** Staff may reset the password only of users whose roles are all below
   their own (a member who is also staff counts as staff). Only an owner may change
   or revoke an existing admin role, so an admin cannot demote a peer to reset
@@ -430,7 +443,9 @@ password may have been set by someone other than the invitee.
     session of the login, unlinks Google and is audited as the system.
 * **Setup.** The first owner is created, or a backup restored, only with the
   `SETUP_TOKEN` from the server's `.env`, sent from the private link the installer
-  prints. A valid certificate for the hostname is not enough.
+  prints. A valid certificate for the hostname is not enough. Every first-boot
+  request counts toward the install's request limit whether or not its token is
+  right, so wrong tokens are refused with 429 once the budget is spent.
 * **Restore safety.** Restore turns billing, member emails and member texts off and holds backup
   pruning until an owner explicitly confirms the old server is gone. The backup
   request action is for owners/admins; releasing pruning is owner-only and audited.

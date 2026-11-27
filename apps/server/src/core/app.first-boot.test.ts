@@ -99,4 +99,22 @@ describe('first-boot application routing with no gym', () => {
     expect((await request('https://gym.example')).status).toBe(200);
     expect((await request('https://gym.example')).status).toBe(429);
   });
+
+  it('counts first-boot writes with a wrong setup token toward the install rate limit', async () => {
+    const build = () => createApp({ setupToken, resolveGym, session, authorize, installOrigin: 'https://gym.example',
+      origin: () => { throw new Error('No gym exists from which to derive an origin'); },
+      rateLimit: { limit: 2 }, contributions: { routes: [fixture(setupContracts.start)] },
+    });
+    const ask = (app: ReturnType<typeof build>, token: string) => app.request('/api/setup/start',
+      { method: 'POST', headers: { origin: 'https://gym.example', 'x-setup-token': token } });
+    const wrong = 'wrong-first-boot-token-at-least-32-characters';
+    const guessed = build();
+    expect((await ask(guessed, wrong)).status).toBe(403);
+    expect((await ask(guessed, wrong)).status).toBe(403);
+    expect((await ask(guessed, wrong)).status).toBe(429);
+    expect((await ask(guessed, setupToken)).status).toBe(429);
+    const fresh = build();
+    expect((await ask(fresh, wrong)).status).toBe(403);
+    expect((await ask(fresh, setupToken)).status).toBe(200);
+  });
 });

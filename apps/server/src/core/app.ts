@@ -126,11 +126,16 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
   // and its status reader run outside the activity lease that restore must drain.
   const restoreIds = new Set([setupContracts.restore, setupContracts.restoreStatus]
     .map((contract) => `${contract.method.toUpperCase()} ${contract.path}`));
+  // The install limiter runs outside the setup-token check, so a request with a wrong token counts toward the budget.
   for (const entry of installRoutes.filter((entry) => firstBootIds.has(entry.id))) {
     entry.mount(app, (permission) => async (context, next) => {
       const guarded = () => entry.id === 'GET /api/setup'
         ? authorizeInstall(permission)(context, next)
-        : setupToken(context, async () => { await authorizeInstall(permission)(context, next); });
+        : installCsrf(context, async () => {
+          await installLimiter(context, async () => {
+            await setupToken(context, async () => { await installAuthorize(permission)(context, next); });
+          });
+        });
       if (options.restoreGate && !restoreIds.has(entry.id)) {
         return options.restoreGate(context, async () => { await guarded(); });
       }

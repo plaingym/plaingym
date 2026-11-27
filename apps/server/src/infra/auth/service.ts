@@ -5,8 +5,9 @@ import { APIError } from 'better-auth/api';
 import { drizzleAdapter } from '@better-auth/drizzle-adapter';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
-import { systemDatabase, validateUuid, type Database } from '@plaingym/db/client';
-import { authUser, authSession, authAccount, authVerification, authRateLimit } from '@plaingym/db';
+import { eq } from 'drizzle-orm';
+import { scopedDatabase, systemDatabase, validateUuid, type Database } from '@plaingym/db/client';
+import { authUser, authSession, authAccount, authVerification, authRateLimit, householdUsers, staffRoles } from '@plaingym/db';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { portalClaimCodeSchema } from '@plaingym/shared/contracts';
 import type { Auth, Session } from './index.js';
@@ -14,7 +15,8 @@ import { passwordLogin, type AuthConfig } from './config.js';
 import { passwordAdapter } from './password.js';
 import { emailServiceFailure } from '../email/failure.js';
 import { logWarn } from '../../core/log.js';
-import { accountLimitedPaths, reserveAccountAttempt, releaseAccountAttempt, gymAddressStorage, signInLimits, type AccountReservation, type SignInRule } from './account-limit.js';
+import { accountLimitedPaths, reserveAccountAttempt, releaseAccountAttempt, gymAddressStorage, signInLimits, loginLinkCeiling, reserveLoginLinkCeiling,
+  type AccountReservation, type SignInRule } from './account-limit.js';
 
 export interface ResolvedAuthGym {
   readonly gymId: string;
@@ -53,9 +55,13 @@ export interface AuthServiceOptions {
   readonly rateLimit?: SignInRule;
   /** Password and login-link sign-in's limit per account (default `signInLimits.account`). */
   readonly accountRateLimit?: SignInRule;
+  /** Login links a gym sends to addresses with no staff role or household login there, per window (default `loginLinkCeiling`). */
+  readonly loginLinkCeiling?: SignInRule;
   /** Epoch milliseconds for the per-account windows (default `Date.now`). */
   readonly now?: () => number;
 }
+/** Per gym, the epoch millisecond its logged login-link ceiling window ends, so a full window logs once per process. */
+const ceilingLogged = new Map<string, number>();
 /** The only post-login destination besides the admin: completing a portal claim the user proved by email. */
 export const portalClaimCallbackPath = '/portal/claim';
 /**
@@ -102,6 +108,7 @@ export function createAuthService(options: AuthServiceOptions) {
   if (config.smtpConfigured && !options.sendMagicLink) throw new Error('Configured SMTP requires a magic-link sender');
   const database = options.database ?? systemDatabase, now = options.now ?? Date.now;
   const addressRule = options.rateLimit ?? signInLimits.address, accountRule = options.accountRateLimit ?? signInLimits.account;
+  const ceilingRule = options.loginLinkCeiling ?? loginLinkCeiling;
   /** A refusal with the standard `Retry-After` beside Better Auth's own `X-Retry-After`. */
   const tooManyRequests = (seconds: number) => Response.json({ message: 'Too many requests. Please try again later.' }, { status: 429,
     headers: { 'retry-after': String(seconds), 'x-retry-after': String(seconds), 'cache-control': 'no-store' } });
@@ -119,6 +126,18 @@ export function createAuthService(options: AuthServiceOptions) {
       // Each HTTP password or login-link call through this binding, under the random ID `handler` sends in the internal
       // attempt header. Its own entry holds its own reservation, so concurrent calls never release each other's.
       const attempts = new Map<string, AccountAttempt>();
+      /** Whether an identity with this address has a staff role or a household login in this gym. */
+      async function linked(email: string): Promise<boolean> {
+        const address = email.toLowerCase();
+        return scopedDatabase(database()).forGym(gym.gymId, async (tx) => {
+          const [staff] = await tx.select({ userId: staffRoles.userId }).from(staffRoles)
+            .innerJoin(authUser, eq(authUser.id, staffRoles.userId)).where(eq(authUser.email, address)).limit(1);
+          if (staff) return true;
+          const [member] = await tx.select({ userId: householdUsers.userId }).from(householdUsers)
+            .innerJoin(authUser, eq(authUser.id, householdUsers.userId)).where(eq(authUser.email, address)).limit(1);
+          return Boolean(member);
+        });
+      }
       // Better Auth runs onRequest plugins after its atomic address check, so a reservation is made only for a call the
       // address limit admitted. A request without a known attempt ID (provisioning, sessions, Google) reserves nothing.
       const accountLimit: BetterAuthPlugin = {
@@ -174,14 +193,31 @@ export function createAuthService(options: AuthServiceOptions) {
         plugins: [magicLink({
           expiresIn: options.magicLinkTtl ?? 300, storeToken: 'hashed', disableSignUp: true,
           generateToken: () => `${gym.gymId}.${randomBytes(32).toString('base64url')}`,
-          sendMagicLink: async ({ email, url }) => {
+          sendMagicLink: async ({ email, url }, ctx) => {
             assertNoTransaction('auth.sendMagicLink');
             if (!options.sendMagicLink) throw new Error('Magic-link delivery is not configured');
+            // Only the public sign-in request counts toward the gym's ceiling, and only for an address the gym hasn't linked;
+            // the links the app sends itself (`sendLoginLink`) carry no attempt ID. Over the ceiling the request gets the
+            // same answer and nothing is sent.
+            const attemptId = (ctx?.request?.headers ?? ctx?.headers)?.get(accountAttemptHeader);
+            const publicRequest = attemptId != null && attempts.get(attemptId)?.path === '/sign-in/magic-link';
+            if (publicRequest && !await linked(email)) {
+              const result = await reserveLoginLinkCeiling(database(), gym.gymId, ceilingRule, now());
+              if (result.retryAfter !== null) {
+                const at = now();
+                if (at >= (ceilingLogged.get(gym.gymId) ?? 0)) {
+                  ceilingLogged.set(gym.gymId, at + result.retryAfter * 1000);
+                  logWarn('auth.login_link_ceiling', { gymId: gym.gymId, limit: ceilingRule.max });
+                }
+                return;
+              }
+            }
             try {
               await options.sendMagicLink({ email: email.toLowerCase(), url, gymId: gym.gymId });
             } catch (error) {
-              // The gym's sending service failed, whoever asked: Better Auth sends for every address, so this answer
-              // says nothing about whether the address has an account. The original error stays the (unsent) cause.
+              // The gym's sending service failed, whoever asked: Better Auth sends for every address, so this answer says
+              // nothing about whether the address has an account, except that a send the ceiling dropped above answered 200.
+              // The original error stays the (unsent) cause.
               const failure = emailServiceFailure(error);
               if (failure === null) throw error;
               // Better Auth logs an APIError by its message alone; name the class (never the reply or the address) here.

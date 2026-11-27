@@ -36,7 +36,21 @@ export interface AccountReservation { readonly id: string; readonly key: string;
  */
 export async function reserveAccountAttempt(database: Database, path: string, email: string, rule: SignInRule, now: number, gymId?: string)
   : Promise<{ retryAfter: null; reservation: AccountReservation } | { retryAfter: number; reservation: null }> {
-  const key = accountKey(path, email, gymId), resetAt = now + rule.window * 1000, id = uuidv7();
+  return reserveWindow(database, accountKey(path, email, gymId), rule, now);
+}
+
+/** At most this many login links an hour per gym to addresses with no staff role or household login there. */
+export const loginLinkCeiling: SignInRule = { window: 3600, max: 100 };
+
+/** Reserves one of the gym's login-link sends to unlinked addresses in its fixed window; refusals never extend it. */
+export async function reserveLoginLinkCeiling(database: Database, gymId: string, rule: SignInRule, now: number)
+  : Promise<{ retryAfter: null; reservation: AccountReservation } | { retryAfter: number; reservation: null }> {
+  return reserveWindow(database, `ceiling|login-link|${gymId}`, rule, now);
+}
+
+async function reserveWindow(database: Database, key: string, rule: SignInRule, now: number)
+  : Promise<{ retryAfter: null; reservation: AccountReservation } | { retryAfter: number; reservation: null }> {
+  const resetAt = now + rule.window * 1000, id = uuidv7();
   const ended = sql`${authRateLimit.lastRequest} <= ${now}`;
   const [row] = await database.insert(authRateLimit).values({ id, key, count: 1, lastRequest: resetAt })
     .onConflictDoUpdate({ target: authRateLimit.key, set: {
