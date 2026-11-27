@@ -15,9 +15,14 @@ a payer uses the household-member paths for other members, or when their login
 has no member profile of its own.
 
 For a new portal booking or waitlist entry, the member's status must be
-`active`, `trial` or `visitor` (the statuses the kiosk lets check in), read
-under the member lock in the booking transaction; `prospect`, `frozen` and
-`cancelled` members are refused with `inactiveMember`. Then a pack holder
+`active`, `trial` or `visitor` (the statuses the kiosk lets check in), or
+`prospect` while the member holds a usable class credit (`usableLots` from
+`areas/billing/packs`: a lot with credits left that hasn't expired) and is a
+pack holder (`isPackHolder`, so a pack refunded in full counts for nothing even
+before its credits are reversed), read
+under the member lock in the booking transaction; other prospects, and `frozen`
+and `cancelled` members whatever credits they hold, are refused with
+`inactiveMember`. The status itself doesn't change. Then a pack holder
 (`isPackHolder`: a member with a class-credit lot that wasn't refunded in full)
 needs a usable, unexpired credit or an active membership (`active` or `trial`).
 The booking transaction makes both checks after checking the portal's member

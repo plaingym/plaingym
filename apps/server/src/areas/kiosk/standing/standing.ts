@@ -2,14 +2,22 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import { forGym, members, waiverSignatures, waiverTemplates } from '@plaingym/db';
 import type { KioskStandingCheck, StandingContext } from '../../../core/interfaces/extensions.js';
+import { isPackHolder, usableLots } from '../../billing/packs/index.js';
 
-/** Statuses that may check in; prospects, frozen and cancelled members see the front desk. */
+/** Statuses that may check in; a prospect may too while holding a usable class credit. Frozen and cancelled members see the front desk. */
 const activeStatuses = new Set(['active', 'trial', 'visitor']);
 export function inactiveStanding(scope: typeof forGym = forGym): KioskStandingCheck {
   return { id: 'inactive', async check(context) {
-    const [row] = await scope(context.gymId, (tx) => tx.select({ status: members.status, anonymizedAt: members.anonymizedAt })
-      .from(members).where(eq(members.id, context.memberId)));
-    return row && !row.anonymizedAt && activeStatuses.has(row.status) ? { status: 'ok' } : { status: 'front_desk', reasonCode: 'inactive' };
+    const allowed = await scope(context.gymId, async (tx) => {
+      const [row] = await tx.select({ status: members.status, anonymizedAt: members.anonymizedAt })
+        .from(members).where(eq(members.id, context.memberId));
+      if (!row || row.anonymizedAt) return false;
+      if (activeStatuses.has(row.status)) return true;
+      // A pack refunded in full counts for nothing, even before its credits are reversed.
+      return row.status === 'prospect' && (await usableLots(tx, context.memberId, context.clock.now())).length > 0
+        && await isPackHolder(tx, context.memberId);
+    });
+    return allowed ? { status: 'ok' } : { status: 'front_desk', reasonCode: 'inactive' };
   } };
 }
 /** Every current waiver (each family's latest version, unless that version is retired) must be signed.

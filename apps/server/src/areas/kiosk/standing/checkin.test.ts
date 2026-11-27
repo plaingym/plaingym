@@ -2,7 +2,7 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { and, eq } from 'drizzle-orm';
-import { attendances, auditEvents, classSessions, households, members, uuidv7 } from '@plaingym/db';
+import { attendances, auditEvents, classCreditEntries, classSessions, households, members, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError, staffRoles } from '@plaingym/shared';
@@ -292,6 +292,69 @@ describe('kiosk name and PIN check-in', () => {
     expect(await service.memberStanding(gymC, frozen.id, true)).toMatchObject({ status: 'front_desk', reasons: expect.arrayContaining(['inactive']) });
     await expect(service.memberStanding(gymB, home.parent.id, true)).rejects.toMatchObject({ code: 'not_found' });
   });
+  describe('a prospect member', () => {
+    const balance = async (memberId: string) => (await database.forGym(gymA, (tx) => tx.select({ credits: classCreditEntries.credits })
+      .from(classCreditEntries).where(eq(classCreditEntries.memberId, memberId)))).reduce((sum, row) => sum + row.credits, 0);
+    const statusOf = async (memberId: string) => (await database.forGym(gymA, (tx) => tx.select({ status: members.status })
+      .from(members).where(eq(members.id, memberId))))[0]!.status;
+
+    it('checks in with a usable credit, spending it, and sees the front desk the next day once it is gone', async () => {
+      const home = await family();
+      const prospect = await factory('members', gymA, { householdId: home.id, firstName: 'Pat', lastName: 'Rivera', status: 'prospect' });
+      await factory('classCreditEntries', gymA, { memberId: prospect.id, credits: 1 });
+      expect(await service.memberStanding(gymA, prospect.id, true)).toMatchObject({ status: 'ok', reasons: [] });
+      const request = { name: home.name, pin: home.pin, checkins: [{ memberId: prospect.id, sessionId: null }] };
+      expect(await service.checkin(gymA, deviceA, request)).toMatchObject([{ status: 'checked_in' }]);
+      expect(await visits(gymA, prospect.id)).toHaveLength(1);
+      expect(await balance(prospect.id)).toBe(0);
+      expect(await statusOf(prospect.id)).toBe('prospect');
+      const today = clock.now();
+      clock.set(new Date(today.getTime() + 24 * 60 * 60_000));
+      try {
+        expect(await service.checkin(gymA, deviceA, request)).toEqual([{ status: 'see_front_desk' }]);
+        expect(await visits(gymA, prospect.id)).toHaveLength(1);
+        expect(await service.memberStanding(gymA, prospect.id, true)).toMatchObject({ status: 'front_desk', reasons: expect.arrayContaining(['inactive']) });
+      } finally { clock.set(today); }
+    });
+
+    it('sees the front desk without a credit', async () => {
+      const home = await family();
+      const prospect = await factory('members', gymA, { householdId: home.id, firstName: 'Lee', lastName: 'Rivera', status: 'prospect' });
+      const results = await service.checkin(gymA, deviceA, { name: home.name, pin: home.pin, checkins: [{ memberId: prospect.id, sessionId: null }] });
+      expect(results).toEqual([{ status: 'see_front_desk' }]);
+      expect(await visits(gymA, prospect.id)).toHaveLength(0);
+      expect(await service.memberStanding(gymA, prospect.id, true)).toMatchObject({ status: 'front_desk', reasons: ['inactive'] });
+    });
+
+    it('sees the front desk when the only pack was refunded in full, before its credits are reversed', async () => {
+      const home = await family(), pack = await factory('classPacks', gymA);
+      const prospect = await factory('members', gymA, { householdId: home.id, firstName: 'Ray', lastName: 'Rivera', status: 'prospect' });
+      const invoice = await factory('invoices', gymA, { householdId: home.id, status: 'refunded', number: 9101 });
+      const sale = await factory('classPackSales', gymA, { invoiceId: invoice.id, householdId: home.id, memberId: prospect.id, packId: pack.id });
+      await factory('classCreditEntries', gymA, { memberId: prospect.id, kind: 'grant', credits: 10, saleId: sale.id, adjustmentId: null, reason: null });
+      const results = await service.checkin(gymA, deviceA, { name: home.name, pin: home.pin, checkins: [{ memberId: prospect.id, sessionId: null }] });
+      expect(results).toEqual([{ status: 'see_front_desk' }]);
+      expect(await visits(gymA, prospect.id)).toHaveLength(0);
+      expect(await balance(prospect.id)).toBe(10);
+      expect(await service.memberStanding(gymA, prospect.id, true)).toMatchObject({ status: 'front_desk', reasons: expect.arrayContaining(['inactive']) });
+    });
+
+    it('sees the front desk when the only credit has expired, and leaves frozen members with credits there too', async () => {
+      const home = await family();
+      const prospect = await factory('members', gymA, { householdId: home.id, firstName: 'Max', lastName: 'Rivera', status: 'prospect' });
+      const frozen = await factory('members', gymA, { householdId: home.id, firstName: 'Ira', lastName: 'Rivera', status: 'frozen' });
+      await factory('classCreditEntries', gymA, { memberId: prospect.id, credits: 1, expiresAt: clock.now() });
+      await factory('classCreditEntries', gymA, { memberId: frozen.id, credits: 5 });
+      const results = await service.checkin(gymA, deviceA, { name: home.name, pin: home.pin,
+        checkins: [{ memberId: prospect.id, sessionId: null }, { memberId: frozen.id, sessionId: null }] });
+      expect(results).toEqual([{ status: 'see_front_desk' }, { status: 'see_front_desk' }]);
+      for (const memberId of [prospect.id, frozen.id]) {
+        expect(await visits(gymA, memberId)).toHaveLength(0);
+        expect(await service.memberStanding(gymA, memberId, true)).toMatchObject({ status: 'front_desk', reasons: expect.arrayContaining(['inactive']) });
+      }
+    });
+  });
+
   it('fails closed without the gym key', async () => {
     const unconfigured = createKioskCheckin({ scope: database.forGym, clock });
     const home = await family();

@@ -10,13 +10,13 @@ import type { PortalIdentity } from '../../core/interfaces/member-household.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { lockMemberForWrite, memberWriteScope } from '../members/member-write.js';
 import { createGymSettingsAccessor, readBookingRules } from '../settings/settings.js';
-import { lacksClassEligibility } from '../billing/packs/index.js';
+import { isPackHolder, lacksClassEligibility, usableLots } from '../billing/packs/index.js';
 import { withJobTransaction, type JobTransaction } from '../../infra/jobs/index.js';
 import { activeBookings, assertBookable, assertCancellable, bookablePlaces, bookingAudit, bookingConflict, cutoffPassed, openPlaces, reconcileSessionBookings,
   type BookingRow } from './bookings.rules.js';
 import { readRosterPage } from './bookings.roster.query.js';
 
-/** The statuses the kiosk lets check in; only these may take a new place or waitlist entry through the portal. */
+/** The statuses the kiosk lets check in; only these, or a prospect holding a usable class credit, may take a new place or waitlist entry through the portal. */
 const portalBookableStatuses = new Set(['active', 'trial', 'visitor']);
 
 export interface BookingOptions { scope?: typeof forGym; clock?: Clock; settings?: GymSettingsAccessor; }
@@ -87,7 +87,11 @@ export function createBookingService(options: BookingOptions = {}) {
         if (existing) return { booking: await bookingView(tx, existing), promoted: [] };
         const now = clock.now(), rules = await readBookingRules(tx, context.gymId);
         assertBookable(session, { ...gym, ...rules }, now);
-        if (context.portal && !portalBookableStatuses.has(locked.status)) bookingConflict('inactiveMember');
+        // A prospect holding an unspent, unexpired class credit may book; read under the member lock so a spent credit is seen.
+        // A pack refunded in full counts for nothing, even before its credits are reversed.
+        if (context.portal && !portalBookableStatuses.has(locked.status)
+          && !(locked.status === 'prospect' && (await usableLots(tx, value.memberId, now)).length > 0 && await isPackHolder(tx, value.memberId)))
+          bookingConflict('inactiveMember');
         if (context.portal && await lacksClassEligibility(tx, value.memberId, now)) bookingConflict('noCredits');
         const promoted = await reconcileSessionBookings(tx, session, { gymId: context.gymId, actor: { kind: 'system' } }, now, rules);
         active = await activeBookings(tx, session.id);

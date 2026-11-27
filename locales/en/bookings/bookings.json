@@ -41,7 +41,7 @@
   "full": "This class is full.",
   "waitlistClosed": "The cancellation cutoff has passed and the waitlist is closed.",
   "erasedMember": "An erased member cannot be booked.",
-  "inactiveMember": "Only active, trial and visitor members can book or join the waitlist. Please contact the front desk.",
+  "inactiveMember": "Only active, trial and visitor members, or members with an unused class credit, can book or join the waitlist. Please contact the front desk.",
   "noCredits": "You need an unexpired class credit or an active or trial membership to book or join the waitlist. Please contact the front desk.",
   "capacityBelowBooked": "Capacity cannot be lower than the number already booked.",
   "gym": "Your gym",

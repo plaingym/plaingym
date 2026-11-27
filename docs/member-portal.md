@@ -115,9 +115,12 @@ an eligible bank account when the gym has enabled bank payments.
 ## How booking works
 
 * To book or join a waitlist in the portal, a member must be active, on a trial
-  or a visitor; the portal refuses prospect, frozen and cancelled members with a
-  message to contact the front desk. Bookings a member already holds stay, and
-  they can still cancel them.
+  or a visitor. A prospect who holds an unused, unexpired class credit can book
+  and check in at the kiosk too; their status stays prospect. The portal refuses
+  other prospects, and frozen and cancelled members, with a message to contact
+  the front desk; for a prospect without a credit, staff set the member active
+  or book for them. Bookings a member already holds stay, and they can still
+  cancel them.
 * A member who has held class credits also needs an unexpired credit or an active or
   trial membership to book or join a waitlist in the portal. If neither is
   available, the portal refuses the booking; contact the front desk. Booking does not

@@ -192,7 +192,7 @@ describe('portal class-credit eligibility', () => {
 });
 
 describe('portal booking status', () => {
-  const inactiveMessage = 'Only active, trial and visitor members can book or join the waitlist. Please contact the front desk.';
+  const inactiveMessage = 'Only active, trial and visitor members, or members with an unused class credit, can book or join the waitlist. Please contact the front desk.';
   const setStatus = (f: Fixture, memberId: string, status: string) =>
     db.forGym(f.gymId, tx => tx.update(members).set({ status }).where(eq(members.id, memberId)));
   const memberRows = (f: Fixture, memberId: string) =>
@@ -263,6 +263,71 @@ describe('portal booking status', () => {
     const server = app(f, memberPrincipal(f, true));
     for (const memberId of [f.member.id, foreign.member.id])
       expect((await post(server, `/api/portal/members/${memberId}/bookings`, { sessionId: f.session.id })).status).toBe(404);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(classBookings))).toHaveLength(0);
+  });
+
+  it('books a prospect holding a usable credit on both portal paths without changing the status or spending the credit', async () => {
+    const f = await fixture(), server = app(f, memberPrincipal(f));
+    for (const memberId of [f.member.id, f.sibling.id]) {
+      await setStatus(f, memberId, 'prospect');
+      await factory('classCreditEntries', f.gymId, { memberId, credits: 1 });
+    }
+    const before = await db.forGym(f.gymId, tx => tx.select().from(classCreditEntries));
+    for (const path of ['/api/portal/bookings', `/api/portal/members/${f.sibling.id}/bookings`]) {
+      const response = await post(server, path, { sessionId: f.session.id });
+      expect(response.status).toBe(200);
+      expect((await response.json()).data).toMatchObject({ status: 'booked' });
+    }
+    for (const memberId of [f.member.id, f.sibling.id]) {
+      expect(await memberRows(f, memberId)).toMatchObject([{ status: 'booked', bookedByKind: 'member' }]);
+      const [row] = await db.forGym(f.gymId, tx => tx.select({ status: members.status }).from(members).where(eq(members.id, memberId)));
+      expect(row!.status).toBe('prospect');
+    }
+    expect(await db.forGym(f.gymId, tx => tx.select().from(classCreditEntries))).toEqual(before);
+  });
+
+  it.each(['expired', 'spent'] as const)('refuses a prospect whose only lot is %s with the status refusal, not the credit one', async state => {
+    const f = await fixture(), server = app(f, memberPrincipal(f));
+    for (const memberId of [f.member.id, f.sibling.id]) {
+      await setStatus(f, memberId, 'prospect');
+      if (state === 'expired') await factory('classCreditEntries', f.gymId, { memberId, credits: 1, expiresAt: clock.now() });
+      else {
+        const lot = await factory('classCreditEntries', f.gymId, { memberId, credits: 1 });
+        await factory('classCreditEntries', f.gymId, { memberId, kind: 'use', credits: -1, lotId: lot.id,
+          attendanceId: uuidv7(), adjustmentId: null, reason: null });
+      }
+    }
+    const before = await memberAudits(f);
+    await expectInactive(await post(server, '/api/portal/bookings', { sessionId: f.session.id }));
+    await expectInactive(await post(server, `/api/portal/members/${f.sibling.id}/bookings`, { sessionId: f.session.id }));
+    expect(await db.forGym(f.gymId, tx => tx.select().from(classBookings))).toHaveLength(0);
+    expect(await memberAudits(f)).toEqual(before);
+  });
+
+  it('refuses a prospect whose only pack was refunded in full before its credits are reversed', async () => {
+    const f = await fixture(), server = app(f, memberPrincipal(f)), pack = await factory('classPacks', f.gymId);
+    let number = 900;
+    for (const memberId of [f.member.id, f.sibling.id]) {
+      await setStatus(f, memberId, 'prospect');
+      const invoice = await factory('invoices', f.gymId, { householdId: f.member.householdId, status: 'refunded', number: ++number });
+      const sale = await factory('classPackSales', f.gymId, { invoiceId: invoice.id, householdId: f.member.householdId, memberId, packId: pack.id });
+      await factory('classCreditEntries', f.gymId, { memberId, kind: 'grant', credits: 10, saleId: sale.id, adjustmentId: null, reason: null });
+    }
+    const before = await memberAudits(f);
+    await expectInactive(await post(server, '/api/portal/bookings', { sessionId: f.session.id }));
+    await expectInactive(await post(server, `/api/portal/members/${f.sibling.id}/bookings`, { sessionId: f.session.id }));
+    expect(await db.forGym(f.gymId, tx => tx.select().from(classBookings))).toHaveLength(0);
+    expect(await memberAudits(f)).toEqual(before);
+  });
+
+  it.each(['frozen', 'cancelled'])('refuses a %s member holding a usable credit on both paths', async status => {
+    const f = await fixture(), server = app(f, memberPrincipal(f));
+    for (const memberId of [f.member.id, f.sibling.id]) {
+      await setStatus(f, memberId, status);
+      await factory('classCreditEntries', f.gymId, { memberId, credits: 5 });
+    }
+    await expectInactive(await post(server, '/api/portal/bookings', { sessionId: f.session.id }));
+    await expectInactive(await post(server, `/api/portal/members/${f.sibling.id}/bookings`, { sessionId: f.session.id }));
     expect(await db.forGym(f.gymId, tx => tx.select().from(classBookings))).toHaveLength(0);
   });
 

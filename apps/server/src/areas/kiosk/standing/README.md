@@ -48,7 +48,13 @@ responses cannot repopulate a screen that was reset.
 
 `createStandingChecks` accepts providers implementing `KioskStandingCheck`.
 Inactive and missing-waiver checks are enabled, along with the billing and
-class-credit checks from the billing area. Each waiver family's latest version is required unless retired;
+class-credit checks from the billing area. The inactive check (`inactiveStanding`)
+passes an `active`, `trial` or `visitor` member who isn't erased, and a
+`prospect` who holds a usable class credit (`usableLots` from
+`areas/billing/packs`: a lot with credits left that hasn't expired) and is a
+pack holder (`isPackHolder`, so a pack refunded in full counts for nothing even
+before its credits are reversed), read in the same transaction as the status; the member's status doesn't change. `frozen` and
+`cancelled` members see the front desk whatever credits they hold. Each waiver family's latest version is required unless retired;
 membership agreements are excluded. Provider failures fail closed. Only the
 staff standing route exposes reason codes; device responses contain no reason
 text or billing fields. `GET /api/kiosk/standing/{memberId}` gives the billing

@@ -171,6 +171,17 @@ describe('QR check-in and revocable member codes', () => {
     expect(responses.map((response) => response.status)).toEqual([200, 200, 200]);
     expect(await visits(member.id)).toHaveLength(1);
   });
+  it('checks in a prospect holding a usable credit, and sends a prospect without one to the front desk', async () => {
+    const prospect = async () => factory('members', gymA, { householdId: (await factory('households', gymA)).id,
+      firstName: 'Pat', lastName: 'PrivateSurname', status: 'prospect' });
+    const holder = await prospect(), without = await prospect();
+    await factory('classCreditEntries', gymA, { memberId: holder.id, credits: 2 });
+    const held = await issue(holder), none = await issue(without);
+    expect(await qr.checkin(gymA, deviceId, { code: held.code, sessionId: null })).toMatchObject({ status: 'checked_in' });
+    expect(await visits(holder.id)).toHaveLength(1);
+    expect(await qr.checkin(gymA, deviceId, { code: none.code, sessionId: null })).toEqual({ status: 'see_front_desk' });
+    expect(await visits(without.id)).toHaveLength(0);
+  });
   it('keeps inactive/erased members, waiver and billing failures neutral and private', async () => {
     const member = await person(), issued = await issue(member);
     const blocked = createQrCheckin({ scope: db.forGym, clock, codes, standing: createStandingChecks([
