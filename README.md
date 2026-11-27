@@ -14,7 +14,7 @@ Run your gym on your terms, with your data on your own server.</p>
 [Install](docs/install.md) · [Try the demo](docs/demo.md) · [Documentation](docs/README.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
 
 </div>
-
+a
 <p align="center">
 <a href="apps/server/src/demo/screenshots/members-light-2x-97447fedba731822.webp">
 <picture>
