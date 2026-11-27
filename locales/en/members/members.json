@@ -14,6 +14,7 @@
   "line1": "Address line 1", "line2": "Address line 2", "city": "City", "region": "State or province", "postalCode": "Postal code", "countryCode": "Country code (two letters)",
   "billingDay": "Billing day (1–31)", "discount": "Family discount (%)", "saveBilling": "Save billing settings",
   "invalidDiscount": "Enter a percentage from 0 to 100 with up to two decimal places.",
+  "discountManagersOnly": "Only an owner or admin can change the family discount.",
   "pin": "New household PIN (4–8 digits)", "setPin": "Set PIN", "clearPin": "Clear PIN",
   "pinIsSet": "A PIN is set.", "pinNotSet": "No PIN is set.", "pinNew": "New PIN (4–8 digits)", "pinSaved": "PIN saved.", "pinCleared": "PIN cleared.",
   "pinShared": "Another household uses this PIN. Members with similar names may not be able to check in.",

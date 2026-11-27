@@ -263,7 +263,7 @@ async function requestFor(definition: ReturnType<typeof createMembersRoutes>[num
       : definition.path === '/api/member-tags' ? { name: uuidv7() }
       : definition.path.endsWith('/medical-notes') ? { revision: 1, medicalNotes: 'Updated medical' }
       : definition.path.endsWith('/anonymize') ? { revision: 1 }
-      : definition.path.endsWith('/billing-settings') ? { revision: 1, billingDay: 31, familyDiscountBasisPoints: 100 }
+      : definition.path.endsWith('/billing-settings') ? { revision: 1, billingDay: 31, familyDiscountBasisPoints: 0 }
       : definition.path.endsWith('/pin') ? { revision: 1, pin: '1234' }
       : definition.path.endsWith('/sms-consent') ? { revision: 1, consent: false, ...(definition.path.includes('/members/') ? { kind: 'notices' } : {}) }
       : definition.path.endsWith('/photo') ? { revision: 1, contentType: 'image/png', base64: png.toString('base64') }
@@ -796,5 +796,65 @@ describe('members and households', () => {
     await job.handler(null, { gymId: gymA, timezone: 'UTC', clock: jobClock, jobId: uuidv7(), attempt: 1 });
     expect((await uploads.head(photo.photoKey!))!.deletedAt).toBeUndefined();
     expect((await service.getMember(gymA, person.id)).photoKey).toBe(photo.photoKey);
+  });
+});
+
+describe('household family discount', () => {
+  const billing = (id: string) => database.forGym(gymA, async tx => (await tx.select({ billingDay: households.billingDay,
+    familyDiscountBasisPoints: households.familyDiscountBasisPoints, revision: households.revision }).from(households).where(eq(households.id, id)))[0]);
+  const billingAudits = (id: string) => database.forGym(gymA, tx => tx.select().from(auditEvents)
+    .where(and(eq(auditEvents.targetId, id), eq(auditEvents.action, 'household.billing.updated'))));
+  const settings = (id: string) => `/api/households/${id}/billing-settings`;
+
+  it('refuses front desk a discount change and writes nothing', async () => {
+    const home = await factory('households', gymA);
+    const response = await send(staff('front_desk'), settings(home.id), 'PATCH', { revision: 1, billingDay: 5, familyDiscountBasisPoints: 10000 });
+    expect(response.status).toBe(403);
+    expect(await billing(home.id)).toEqual({ billingDay: 1, familyDiscountBasisPoints: 0, revision: 1 });
+    expect(await billingAudits(home.id)).toEqual([]);
+  });
+  it('lets front desk change the billing day with the stored discount unchanged', async () => {
+    const home = await factory('households', gymA);
+    expect((await send(staff('front_desk'), settings(home.id), 'PATCH', { revision: 1, billingDay: 5, familyDiscountBasisPoints: 0 })).status).toBe(200);
+    expect(await billing(home.id)).toEqual({ billingDay: 5, familyDiscountBasisPoints: 0, revision: 2 });
+  });
+  it('treats lowering a stored discount as a change', async () => {
+    const kept = await factory('households', gymA, { familyDiscountBasisPoints: 1500 });
+    expect((await send(staff('front_desk'), settings(kept.id), 'PATCH', { revision: 1, billingDay: 5, familyDiscountBasisPoints: 1500 })).status).toBe(200);
+    const lowered = await factory('households', gymA, { familyDiscountBasisPoints: 1500 });
+    expect((await send(staff('front_desk'), settings(lowered.id), 'PATCH', { revision: 1, billingDay: 5, familyDiscountBasisPoints: 0 })).status).toBe(403);
+    expect(await billing(lowered.id)).toEqual({ billingDay: 1, familyDiscountBasisPoints: 1500, revision: 1 });
+  });
+  it.each(['admin', 'owner'] as const)('lets %s change both and audits before and after', async (role) => {
+    const home = await factory('households', gymA);
+    const response = await send(staff(role), settings(home.id), 'PATCH', { revision: 1, billingDay: 7, familyDiscountBasisPoints: 2500 });
+    expect(response.status).toBe(200);
+    expect(await billing(home.id)).toEqual({ billingDay: 7, familyDiscountBasisPoints: 2500, revision: 2 });
+    const audits = await billingAudits(home.id);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.before).toEqual({ billingDay: '1', familyDiscountBasisPoints: '0' });
+    expect(audits[0]!.after).toEqual({ billingDay: '7', familyDiscountBasisPoints: '2500' });
+  });
+  it('refuses front desk a household created with a discount', async () => {
+    const name = 'Family ' + uuidv7();
+    const created = () => database.forGym(gymA, tx => tx.select({ id: households.id }).from(households).where(eq(households.name, name)));
+    expect((await send(staff('front_desk'), '/api/households', 'POST', { name, familyDiscountBasisPoints: 500 })).status).toBe(403);
+    expect(await created()).toEqual([]);
+    expect((await send(staff('front_desk'), '/api/households', 'POST', { name, familyDiscountBasisPoints: 0 })).status).toBe(200);
+    expect((await send(staff('front_desk'), '/api/households', 'POST', { name })).status).toBe(200);
+    expect((await send(staff('admin'), '/api/households', 'POST', { name, familyDiscountBasisPoints: 500 })).status).toBe(200);
+    expect(await created()).toHaveLength(3);
+  });
+  it('answers a stale revision with 409 for front desk sending the stored discount', async () => {
+    const home = await factory('households', gymA);
+    await service.updateHousehold(context(), home.id, { revision: 1, name: 'Changed' });
+    expect((await send(staff('front_desk'), settings(home.id), 'PATCH', { revision: 1, billingDay: 5, familyDiscountBasisPoints: 0 })).status).toBe(409);
+    expect(await billing(home.id)).toEqual({ billingDay: 1, familyDiscountBasisPoints: 0, revision: 2 });
+  });
+  it('answers 409, not 403, when an admin changed the discount since front desk loaded the form', async () => {
+    const home = await factory('households', gymA, { familyDiscountBasisPoints: 1500 });
+    expect((await send(staff('admin'), settings(home.id), 'PATCH', { revision: 1, billingDay: 1, familyDiscountBasisPoints: 1000 })).status).toBe(200);
+    expect((await send(staff('front_desk'), settings(home.id), 'PATCH', { revision: 1, billingDay: 5, familyDiscountBasisPoints: 1500 })).status).toBe(409);
+    expect(await billing(home.id)).toEqual({ billingDay: 1, familyDiscountBasisPoints: 1000, revision: 2 });
   });
 });

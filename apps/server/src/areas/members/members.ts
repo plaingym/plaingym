@@ -407,8 +407,10 @@ export function createMembersService(options: MembersOptions = {}) {
       const row = await getHouseholdRow(tx, id), read = household(row, await phoneCountry(tx, gymId, [row.phone]));
       return { ...read, sms: { ...read.sms, optedOutAt: read.sms.phoneE164 ? await readSmsOptedOut(tx, 'household', id, row.phoneE164 ?? read.sms.phoneE164) : null } };
     }); },
-    async createHousehold(context: MutationContext, input: c.CreateHouseholdRequest) {
+    async createHousehold(context: MutationContext, input: c.CreateHouseholdRequest, mayChangeDiscount = true) {
       const data = c.createHouseholdRequestSchema.parse(input);
+      if (!mayChangeDiscount && (data.familyDiscountBasisPoints ?? 0) > 0)
+        throw new AppError('forbidden', 'Changing the family discount needs plan management', { reason: ['family_discount'] });
       return scope(context.gymId, async (tx) => {
         const country = await phoneCountry(tx, context.gymId, [data.phone]);
         const row = missing((await tx.insert(households).values({ ...data, phoneE164: normalizePhone(data.phone, country), id: uuidv7(), gymId: context.gymId, createdAt: clock.now() }).returning(householdFields))[0]);
@@ -454,12 +456,22 @@ export function createMembersService(options: MembersOptions = {}) {
     async getHouseholdBilling(gymId: string, id: string) {
       return scope(gymId, async (tx) => c.householdBillingSettingsSchema.parse(missing((await tx.select(billingFields).from(households).where(eq(households.id, id)))[0])));
     },
-    async updateHouseholdBilling(context: MutationContext, id: string, input: c.UpdateHouseholdBillingSettingsRequest) {
+    /** Changing the family discount needs plan management (`mayChangeDiscount`); the billing day doesn't. */
+    async updateHouseholdBilling(context: MutationContext, id: string, input: c.UpdateHouseholdBillingSettingsRequest, mayChangeDiscount = true) {
       const { revision, ...changes } = c.updateHouseholdBillingSettingsRequestSchema.parse(input);
       return scope(context.gymId, async (tx) => {
-        await getHouseholdRow(tx, id); const guard = revisionGuard(households.revision, revision);
+        await getHouseholdRow(tx, id);
+        const before = missing((await tx.select(billingFields).from(households).where(eq(households.id, id)))[0]);
+        // A stale form is a conflict first, so a discount someone else changed since isn't refused as the caller's change.
+        if (before.revision !== revision) throw new RevisionConflictError();
+        if (!mayChangeDiscount && changes.familyDiscountBasisPoints !== before.familyDiscountBasisPoints)
+          throw new AppError('forbidden', 'Changing the family discount needs plan management', { reason: ['family_discount'] });
+        const guard = revisionGuard(households.revision, revision);
         const row = assertRevised(await tx.update(households).set({ ...changes, revision: guard.next }).where(and(eq(households.id, id), guard.matches)).returning(billingFields));
-        await audit(tx, context, 'household.billing.updated', 'household', id); return c.householdBillingSettingsSchema.parse(row);
+        await audit(tx, context, 'household.billing.updated', 'household', id,
+          { billingDay: String(before.billingDay), familyDiscountBasisPoints: String(before.familyDiscountBasisPoints) },
+          { billingDay: String(row.billingDay), familyDiscountBasisPoints: String(row.familyDiscountBasisPoints) });
+        return c.householdBillingSettingsSchema.parse(row);
       });
     },
     async setHouseholdPin(context: MutationContext, id: string, input: c.SetHouseholdPinRequest): Promise<c.SetHouseholdPinResponse> {

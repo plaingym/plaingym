@@ -76,7 +76,7 @@ function Profile({ memberId, gymId, roles, enabledModules }: { memberId: string;
         </>}</Panel>
         {manage && <StaffSmsConsent record={member} samePhone={samePhoneAs(member, household.data?.data, { other: 'household' })}/>}
         <Photo member={member} manage={manage}/><MemberTags gymId={gymId} memberId={memberId} manage={canStaff(roles, 'tags.manage')}/>
-      </div><div className="min-w-0 space-y-6">{manage && <HouseholdDetails key={member.householdId} gymId={gymId} householdId={member.householdId} member={member}/>}
+      </div><div className="min-w-0 space-y-6">{manage && <HouseholdDetails key={member.householdId} gymId={gymId} householdId={member.householdId} member={member} pricing={canStaff(roles, 'plans.manage')}/>}
         {canStaff(roles, 'medical.read') && <MedicalNotes gymId={gymId} memberId={memberId} manage={manage}/>}
       </div></div>}/>
       {(canStaff(roles, 'members.delete') || (!member.anonymizedAt && canStaff(roles, 'members.anonymize'))) &&

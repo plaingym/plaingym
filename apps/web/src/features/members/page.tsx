@@ -30,9 +30,9 @@ export function MembersPage() {
   if (bootstrap.isError) return <Page><ErrorState message={text('loadFailed')} onRetry={() => void bootstrap.refetch()}/></Page>;
   const session = bootstrap.data.session;
   if (!session || !canStaff(session.roles, 'members.read')) return <Page><Alert variant="error">{text('noAccess')}</Alert></Page>;
-  return <Roster gymId={bootstrap.data.gym.id} manage={canStaff(session.roles, 'members.manage')}/>;
+  return <Roster gymId={bootstrap.data.gym.id} manage={canStaff(session.roles, 'members.manage')} pricing={canStaff(session.roles, 'plans.manage')}/>;
 }
-function Roster({ gymId, manage }: { gymId: string; manage: boolean }) {
+function Roster({ gymId, manage, pricing }: { gymId: string; manage: boolean; pricing: boolean }) {
   const [search, setSearch] = useState(''), [status, setStatus] = useState(''), [tagId, setTag] = useState(''), [offset, setOffset] = useState(0);
   const [creating, setCreating] = useState(false), [created, setCreated] = useState<c.Member>(), [showHouseholds, setShowHouseholds] = useState(false);
   const params = new URLSearchParams({ limit: String(pageSize), offset: String(offset), ...(search ? { search } : {}), ...(status ? { status } : {}), ...(tagId ? { tagId } : {}) });
@@ -75,7 +75,7 @@ function Roster({ gymId, manage }: { gymId: string; manage: boolean }) {
     {manage && <TagManager tags={tags.data?.data ?? []}/>}
     {manage && <PageSection title={text('manageHouseholds')} actions={<Button variant="outline" aria-expanded={showHouseholds} aria-controls="households-manager"
       onClick={() => setShowHouseholds(!showHouseholds)}>{text(showHouseholds ? 'hideHouseholds' : 'showHouseholds')}</Button>}>
-      <div id="households-manager" hidden={!showHouseholds}>{showHouseholds && <HouseholdsManager gymId={gymId}/>}</div>
+      <div id="households-manager" hidden={!showHouseholds}>{showHouseholds && <HouseholdsManager gymId={gymId} pricing={pricing}/>}</div>
     </PageSection>}
     {creating && <Dialog title={text('addMember')} closeLabel={text('closeDialog')} onClose={() => setCreating(false)}>
       <AddMember gymId={gymId} onCreated={(member) => { setCreating(false); setCreated(member); }}/>

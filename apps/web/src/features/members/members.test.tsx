@@ -51,7 +51,7 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 describe('member admin UI', () => {
   it('shows an invalid family percentage beside the field before transport', async () => {
-    view(<HouseholdDetails householdId={homeId} gymId={homeId}/>);
+    view(<HouseholdDetails householdId={homeId} gymId={homeId} pricing/>);
     const field = await screen.findByLabelText('Family discount (%)');
     fireEvent.change(field, { target: { value: '1e1' } });
     fireEvent.submit(screen.getByRole('button', { name: 'Save billing settings' }).closest('form')!);
@@ -60,10 +60,29 @@ describe('member admin UI', () => {
     expect(vi.mocked(memberRequest).mock.calls.some(call => call[2] === 'PATCH')).toBe(false);
   });
   it.each([['12.34', 1234], ['0', 0], ['00', 0], ['.5', 50], [' 10 ', 1000], ['100', 10000]])('saves a household discount of %s percent as %s basis points', async (percent, points) => {
-    view(<HouseholdDetails householdId={homeId} gymId={homeId}/>);
+    view(<HouseholdDetails householdId={homeId} gymId={homeId} pricing/>);
     fireEvent.change(await screen.findByLabelText('Family discount (%)'), { target: { value: percent } });
     fireEvent.click(screen.getByRole('button', { name: 'Save billing settings' }));
     await waitFor(() => expect(memberRequest).toHaveBeenCalledWith(expect.anything(), `/api/households/${homeId}/billing-settings`, 'PATCH', expect.objectContaining({ familyDiscountBasisPoints: points })));
+  });
+  it('shows the family discount read-only without plan management and saves the stored one with the edited day', async () => {
+    const fallback = vi.mocked(memberRequest).getMockImplementation()!;
+    vi.mocked(memberRequest).mockImplementation(async (schema, path, method, ...rest) => path.endsWith('/billing-settings')
+      ? { data: { id: homeId, billingDay: 1, familyDiscountBasisPoints: 1500, revision: 1 } } : fallback(schema, path, method, ...rest));
+    view(<HouseholdDetails householdId={homeId} gymId={homeId} pricing={false}/>);
+    const field = await screen.findByLabelText('Family discount (%)') as HTMLInputElement;
+    const note = screen.getByText('Only an owner or admin can change the family discount.');
+    expect(field.readOnly).toBe(true);
+    expect(field.getAttribute('aria-describedby')).toBe(note.id);
+    fireEvent.change(screen.getByLabelText('Billing day (1–31)'), { target: { value: '5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save billing settings' }));
+    await waitFor(() => expect(memberRequest).toHaveBeenCalledWith(expect.anything(), `/api/households/${homeId}/billing-settings`, 'PATCH',
+      { revision: 1, billingDay: 5, familyDiscountBasisPoints: 1500 }));
+  });
+  it('leaves the family discount editable with plan management and shows no managers-only note', async () => {
+    view(<HouseholdDetails householdId={homeId} gymId={homeId} pricing/>);
+    expect((await screen.findByLabelText('Family discount (%)') as HTMLInputElement).readOnly).toBe(false);
+    expect(screen.queryByText('Only an owner or admin can change the family discount.')).toBeNull();
   });
   it('places tabs above profile fields and destructive actions in the last section at 360 px', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 360 });
@@ -162,7 +181,7 @@ describe('member admin UI', () => {
     expect(memberRequest).not.toHaveBeenCalled();
   });
   it('says no PIN is set and offers no Clear PIN without one', async () => {
-    view(<HouseholdDetails householdId={homeId} gymId={homeId}/>);
+    view(<HouseholdDetails householdId={homeId} gymId={homeId} pricing/>);
     expect(await screen.findByText('No PIN is set.')).toBeDefined();
     expect(screen.queryByText('A PIN is set.')).toBeNull();
     expect(screen.getByLabelText('New household PIN (4–8 digits)')).toBeDefined();
@@ -173,7 +192,7 @@ describe('member admin UI', () => {
     vi.mocked(memberRequest).mockImplementation(async (schema, path, method, ...rest) => path === `/api/households/${homeId}/pin` && method === 'PUT'
       ? { data: household(true), sharedPin: true }
       : path.includes('/households/') && !path.endsWith('/billing-settings') && !path.includes('/portal-') ? { data: household(true) } : fallback(schema, path, method, ...rest));
-    view(<HouseholdDetails householdId={homeId} gymId={homeId}/>);
+    view(<HouseholdDetails householdId={homeId} gymId={homeId} pricing/>);
     expect(await screen.findByText('A PIN is set.')).toBeDefined();
     expect(screen.queryByText('No PIN is set.')).toBeNull();
     expect((screen.getByRole('button', { name: 'Clear PIN' }) as HTMLButtonElement).disabled).toBe(false);
@@ -188,7 +207,7 @@ describe('member admin UI', () => {
     vi.mocked(memberRequest).mockImplementation(async (schema, path, method, ...rest) => path === `/api/households/${homeId}/pin` && method === 'PUT'
       ? { data: household(false), sharedPin: false }
       : path.includes('/households/') && !path.endsWith('/billing-settings') && !path.includes('/portal-') ? { data: household(true) } : fallback(schema, path, method, ...rest));
-    view(<HouseholdDetails householdId={homeId} gymId={homeId}/>);
+    view(<HouseholdDetails householdId={homeId} gymId={homeId} pricing/>);
     fireEvent.click(await screen.findByRole('button', { name: 'Clear PIN' }));
     expect(await screen.findByText('PIN cleared.')).toBeDefined();
     expect(screen.queryByText(/Another household uses this PIN/)).toBeNull();

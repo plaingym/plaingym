@@ -279,6 +279,15 @@ multi-gym mode.
 `payments.custom` is billing a custom amount; front desk bills catalog charge
 types and existing invoices only.
 
+A household's family discount applies to its whole cycle invoice, so changing it
+also needs `plans.manage` (owners and admins), checked in the handler beyond the
+routes' `households.manage`: `PATCH /api/households/{householdId}/billing-settings`
+with a discount other than the stored one, or `POST /api/households` with one
+above 0, answers 403 for front desk and writes nothing. Front desk can still
+change the billing day by sending the stored discount, and the billing form shows
+the discount read-only to them. The `household.billing.updated` audit holds the
+billing day and discount before and after the change.
+
 | Card import route | Required capability | Owner | Admin | Coach | Front desk |
 | :--- | :--- | :---: | :---: | :---: | :---: |
 | `POST /api/billing/households/{householdId}/payment-methods/import` | `payments.record` | yes | yes | | yes |

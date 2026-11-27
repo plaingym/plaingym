@@ -2,7 +2,7 @@
 import { z } from '@hono/zod-openapi';
 import { bodyLimit } from 'hono/body-limit';
 import type { forGym } from '@plaingym/db';
-import { AppError, type Clock } from '@plaingym/shared';
+import { AppError, canStaff, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { route, type JobRegistration } from '../../core/registry.js';
 import { logError, logInfo } from '../../core/log.js';
@@ -170,11 +170,13 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
     jsonRoute(contracts.updateMedicalNotes, async (ctx, p, _q, b) => ({ data: await current().service.updateMedicalNotes(mutation(ctx), p.memberId!, c.updateMemberMedicalNotesRequestSchema.parse(b)) })),
     jsonRoute(contracts.listHouseholds, async (ctx, _p, q) => current().service.listHouseholds(ctx.gym.gymId, c.householdListQuerySchema.parse(q))),
     jsonRoute(contracts.getHousehold, async (ctx, p) => ({ data: await current().service.getHousehold(ctx.gym.gymId, p.householdId!) })),
-    jsonRoute(contracts.createHousehold, async (ctx, _p, _q, b) => ({ data: await current().service.createHousehold(mutation(ctx), c.createHouseholdRequestSchema.parse(b)) })),
+    jsonRoute(contracts.createHousehold, async (ctx, _p, _q, b) => ({ data: await current().service.createHousehold(mutation(ctx), c.createHouseholdRequestSchema.parse(b),
+      ctx.principal.kind === 'staff' && canStaff(ctx.principal.roles, 'plans.manage')) })),
     jsonRoute(contracts.updateHousehold, async (ctx, p, _q, b) => ({ data: await current().service.updateHousehold(mutation(ctx), p.householdId!, c.updateHouseholdRequestSchema.parse(b)) })),
     jsonRoute(contracts.deleteHousehold, async (ctx, p, _q, b) => { await current().service.deleteHousehold(mutation(ctx), p.householdId!, c.deleteMemberRecordRequestSchema.parse(b).revision); return { data: null }; }),
     jsonRoute(contracts.getHouseholdBilling, async (ctx, p) => ({ data: await current().service.getHouseholdBilling(ctx.gym.gymId, p.householdId!) })),
-    jsonRoute(contracts.updateHouseholdBilling, async (ctx, p, _q, b) => ({ data: await current().service.updateHouseholdBilling(mutation(ctx), p.householdId!, c.updateHouseholdBillingSettingsRequestSchema.parse(b)) })),
+    jsonRoute(contracts.updateHouseholdBilling, async (ctx, p, _q, b) => ({ data: await current().service.updateHouseholdBilling(mutation(ctx), p.householdId!, c.updateHouseholdBillingSettingsRequestSchema.parse(b),
+      ctx.principal.kind === 'staff' && canStaff(ctx.principal.roles, 'plans.manage')) })),
     jsonRoute(contracts.setHouseholdPin, async (ctx, p, _q, b) => current().service.setHouseholdPin(mutation(ctx), p.householdId!, c.setHouseholdPinRequestSchema.parse(b))),
     jsonRoute(contracts.listTags, async (ctx, _p, q) => current().service.listTags(ctx.gym.gymId, c.paginationSchema.parse(q))),
     jsonRoute(contracts.createTag, async (ctx, _p, _q, b) => ({ data: await current().service.createTag(mutation(ctx), c.createMemberTagRequestSchema.parse(b)) })),

@@ -84,6 +84,9 @@ target in the same gym transaction. Audits deliberately omit personal details,
 medical notes and credentials so anonymization does not leave copies in the
 append-only log. Normal member projections exclude medical notes and check-in
 credentials. Medical writes require both `members.manage` and `medical.read`.
+Changing a household's family discount, or creating a household with one, also
+requires `plans.manage` (the routes pass it as `mayChangeDiscount`), and the
+`household.billing.updated` audit holds the billing day and discount before and after.
 
 SMS consent belongs to `phone_e164`. Staff, portal and people-import phone edits
 use `smsPhoneChange` in `member-write.ts`. Reformatting the same normalized number

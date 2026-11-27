@@ -19,7 +19,7 @@ import { Field, Panel, ErrorMessage, text, useDraft, useMemberSave } from './com
 import { basisPointsToPercent, percentToBasisPoints } from '../billing/discounts/percent.js';
 import { samePhoneAs, StaffSmsConsent } from './sms-consent.js';
 
-export function HouseholdsManager({ gymId }: { gymId: string }) {
+export function HouseholdsManager({ gymId, pricing }: { gymId: string; pricing: boolean }) {
   const [search, setSearch] = useState(''), [offset, setOffset] = useState(0), [selected, setSelected] = useState('');
   const query = useQuery({ queryKey: ['members', gymId, 'household-manager', search, offset], queryFn: ({ signal }) => memberRequest(c.householdListResponseSchema,
     '/api/households?' + new URLSearchParams({ limit: '50', offset: String(offset), ...(search ? { search } : {}) }), 'GET', undefined, signal) });
@@ -29,7 +29,7 @@ export function HouseholdsManager({ gymId }: { gymId: string }) {
     {selected && <Button variant="outline" onClick={() => { setSelected(''); setSearch(''); }}>{text('createHousehold')}</Button>}
     <ErrorMessage error={query.error}/>
     <Pager offset={offset} total={query.data?.pagination.total ?? 0} limit={50} onChange={setOffset} previousLabel={text('previous')} nextLabel={text('next')}/>
-    {selected ? <HouseholdDetails key={selected} gymId={gymId} householdId={selected} onDeleted={() => { setSelected(''); setSearch(''); }}/>
+    {selected ? <HouseholdDetails key={selected} gymId={gymId} householdId={selected} pricing={pricing} onDeleted={() => { setSelected(''); setSearch(''); }}/>
       : <HouseholdForm onSaved={(home) => { setSelected(home.id); setSearch(home.name); }}/>}
   </div>;
 }
@@ -64,8 +64,11 @@ export function HouseholdForm({ household, onSaved }: { household?: c.Household;
     <Button type="submit" className="w-full sm:w-auto" disabled={state.busy}>{text(household ? 'save' : 'createHousehold')}</Button>
   </form>;
 }
-/** With `member` (a member's profile), the billing consent panel says when the member's own phone is this number. */
-export function HouseholdDetails({ householdId, gymId, onDeleted, member }: { householdId: string; gymId: string; onDeleted?: () => void; member?: c.Member }) {
+/**
+ * With `member` (a member's profile), the billing consent panel says when the member's own phone is this number.
+ * Without `pricing` (plan management), the family discount is read-only.
+ */
+export function HouseholdDetails({ householdId, gymId, pricing, onDeleted, member }: { householdId: string; gymId: string; pricing: boolean; onDeleted?: () => void; member?: c.Member }) {
   const query = useQuery({ queryKey: ['members', gymId, 'household', householdId], queryFn: ({ signal }) => memberRequest(c.householdResponseSchema, `/api/households/${householdId}`, 'GET', undefined, signal) });
   const billing = useQuery({ queryKey: ['members', gymId, 'billing', householdId], queryFn: ({ signal }) => memberRequest(c.householdBillingSettingsResponseSchema, `/api/households/${householdId}/billing-settings`, 'GET', undefined, signal) });
   return <Panel title={text('household')}><ErrorMessage error={query.error}/>{query.isPending && <LoadingState label={text('loading')}/>}{query.data && <>
@@ -73,7 +76,7 @@ export function HouseholdDetails({ householdId, gymId, onDeleted, member }: { ho
     <StaffSmsConsent record={query.data.data} household
       samePhone={samePhoneAs(query.data.data, member, { other: 'member', name: member ? `${member.firstName} ${member.lastName}` : '' })}/>
     <PinForm household={query.data.data}/>
-    {billing.data && <BillingForm billing={billing.data.data}/>}
+    {billing.data && <BillingForm billing={billing.data.data} pricing={pricing}/>}
     {onDeleted && <DeleteHousehold household={query.data.data} onDeleted={onDeleted}/>}
   </>}</Panel>;
 }
@@ -99,22 +102,27 @@ function PinForm({ household }: { household: c.Household }) {
     {saved?.shared && <Alert variant="warning">{text('pinShared')}</Alert>}
   </form>;
 }
-function BillingForm({ billing }: { billing: c.HouseholdBillingSettings }) {
+/** Without `pricing` the discount is read-only and a save sends the stored one, so only the billing day changes. */
+function BillingForm({ billing, pricing }: { billing: c.HouseholdBillingSettings; pricing: boolean }) {
   const draft = useDraft({ day: String(billing.billingDay), discount: basisPointsToPercent(billing.familyDiscountBasisPoints) }), state = useMemberSave();
   const [discountError, setDiscountError] = useState(false);
+  const describedBy = pricing ? (discountError ? `discount-error-${billing.id}` : undefined) : `discount-note-${billing.id}`;
   // The household revision also changes with contact and PIN saves; draft.changes() catches real conflicts.
   return <form className="space-y-3 border-t border-border pt-4" onSubmit={(event) => { event.preventDefault();
-    let familyDiscountBasisPoints: number;
-    try { familyDiscountBasisPoints = percentToBasisPoints(draft.values.discount.trim(), { min: 0 }); }
-    catch { setDiscountError(true); return; }
+    let familyDiscountBasisPoints = billing.familyDiscountBasisPoints;
+    if (pricing) {
+      try { familyDiscountBasisPoints = percentToBasisPoints(draft.values.discount.trim(), { min: 0 }); }
+      catch { setDiscountError(true); return; }
+    }
     setDiscountError(false);
     void state.save(async () => {
     const { day } = { ...draft.values, ...draft.changes() };
     await memberRequest(c.householdBillingSettingsResponseSchema, `/api/households/${billing.id}/billing-settings`, 'PATCH', c.updateHouseholdBillingSettingsRequestSchema.parse({ revision: billing.revision, billingDay: Number(day), familyDiscountBasisPoints }));
   }, draft.reset); }}>
     <ErrorMessage error={state.error}/><Field name="billingDay" type="number" value={draft.values.day} onChange={(value) => draft.set('day', value)}/>
-    <Label className="grid gap-2">{text('discount')}<Input type="text" inputMode="decimal" required aria-invalid={discountError} aria-describedby={discountError ? `discount-error-${billing.id}` : undefined}
+    <Label className="grid gap-2">{text('discount')}<Input type="text" inputMode="decimal" required readOnly={!pricing} aria-invalid={discountError} aria-describedby={describedBy}
       value={draft.values.discount} onChange={event => { draft.set('discount', event.target.value); setDiscountError(false); }}/></Label>
+    {!pricing && <p id={`discount-note-${billing.id}`} className="text-sm text-muted-foreground">{text('discountManagersOnly')}</p>}
     {discountError && <p id={`discount-error-${billing.id}`} role="alert" className="text-sm text-destructive">{text('invalidDiscount')}</p>}
     <Button type="submit" className="w-full sm:w-auto" disabled={state.busy}>{text('saveBilling')}</Button>
   </form>;
