@@ -35,7 +35,8 @@ directory. Compose loads that file by default only while `.env` has no `COMPOSE_
 The first `COMPOSE_FILE` line the updater writes lists the file when it exists. Once the line
 exists, add a Compose file you create later to it by hand, before `schema-compatibility.yaml`
 (for example `COMPOSE_FILE=compose.yaml:compose.override.yaml:schema-compatibility.yaml`), and
-remove its entry if you remove the file. With no overrides, a single-gym
+remove its entry if you remove the file. Updates and rollbacks load the same files, so the
+mount stays in place through them. With no overrides, a single-gym
 install is served at `https://GYM_HOSTNAME` and keeps uploads on its data volume.
 
 After changing `.env`, run `sudo docker compose up -d` in the install directory.
@@ -268,7 +269,7 @@ image updates preserve their local Compose configuration.
 | `APP_IMAGE` | none | The exact image to run: a version tag or a `sha256` digest, never `latest`. `update.sh` changes it. |
 | `POSTGRES_IMAGE` | `compose.yaml`'s pin | The PostgreSQL image to run, set by `update.sh` when a release moves it ([PostgreSQL and Caddy images](update-reference.md#postgresql-and-caddy-images)). Read through `infrastructure-images.yaml`. |
 | `CADDY_IMAGE` | `compose.yaml`'s pin | The Caddy image to run, set by `update.sh` the same way. |
-| `COMPOSE_FILE` | `compose.yaml` | The updater appends `schema-compatibility.yaml` so ordinary Compose commands preserve the startup rollback guard, and `infrastructure-images.yaml` once a release first moves PostgreSQL or Caddy, so they run the images `.env` names. When the updater first writes the line, it lists an existing `compose.override.yaml` or `compose.override.yml` after `compose.yaml` (with both, the `.yml` one, which is the one Compose loads); once the line exists, Compose loads only the files it lists, so add your own files to it by hand, before `schema-compatibility.yaml`. |
+| `COMPOSE_FILE` | `compose.yaml` | The updater appends `schema-compatibility.yaml` so ordinary Compose commands preserve the startup rollback guard, and `infrastructure-images.yaml` once a release first moves PostgreSQL or Caddy, so they run the images `.env` names. When the updater first writes the line, it lists an existing `compose.override.yaml` or `compose.override.yml` after `compose.yaml` (with both, the `.yml` one, which is the one Compose loads); once the line exists, Compose loads only the files it lists, so add your own files to it by hand, before `schema-compatibility.yaml`. The updater's own Compose commands load the same files of yours. |
 | `ACME_EMAIL` | none | The email Caddy gives the certificate authority. |
 | `COMPOSE_PROJECT_NAME` | `plaingym` | The Compose project name (container and volume prefix). |
 | `HTTP_PORT` | `80` | The host port Caddy publishes for HTTP (certificate challenges and redirects). |

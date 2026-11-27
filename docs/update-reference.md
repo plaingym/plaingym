@@ -120,11 +120,17 @@ the images `.env` names before anything else.
 Two kinds of install keep their images, and each update says so in its output. One with
 Compose files of its own (`compose.override.yaml` in the install directory, or a
 `COMPOSE_FILE` entry other than `compose.yaml`, `schema-compatibility.yaml` and
-`infrastructure-images.yaml`) keeps both: the updater's Compose commands don't load those
-files, so recreating PostgreSQL or Caddy would drop their settings. The updater's own
-commands start the app from `compose.yaml` and the two files it manages, so after an update
-run `sudo docker compose up -d` in the install directory to apply your own files again. One
-whose `compose.yaml`
+`infrastructure-images.yaml`) keeps both, because the updater's image file is loaded after
+those files and would replace an image they name. The updater's Compose commands load your
+own files: the `COMPOSE_FILE` entries in order or, without that line, `compose.override.yml`
+or `compose.override.yaml`. Unlike `docker compose`, which refuses a listed file that is gone,
+the updater leaves it out. Your files come after `compose.yaml` and before the two files the
+updater manages, so an update or a rollback keeps their settings, such as a custom packs
+mount. If the previous version won't start with them during a rollback, the updater starts it
+without them and says so; fix them, then run `sudo docker compose up -d`. An own file that
+names an image for the app would replace every release, so the updater refuses to install
+while one does (Automatic updates shows the reason); `APP_IMAGE` in `.env` names the app's
+image. One whose `compose.yaml`
 names its own image for a service (anything but the official pin) keeps that service, and the
 other still moves.
 

@@ -177,7 +177,11 @@ rollback() {
     recovery_notice
     return 1
   fi
-  APP_IMAGE="$previous_id" compose up -d --no-deps --pull never --wait --wait-timeout 90 app
+  APP_IMAGE="$previous_id" compose up -d --no-deps --pull never --wait --wait-timeout 90 app && return 0
+  # An own Compose file that broke since the last start would keep the previous version down too: try once without.
+  [ -n "$(owner_compose_files)" ] || return 1
+  echo "The previous version didn't start with this install's own Compose files, so it starts without them. Fix them, then run sudo docker compose up -d." >&2
+  OWN_COMPOSE_FILES=off APP_IMAGE="$previous_id" compose up -d --no-deps --pull never --wait --wait-timeout 90 app
 }
 cleanup() {
   exit_status=$?
@@ -366,11 +370,16 @@ settle() { # TARGET
 # --- PostgreSQL and Caddy images (docs/update-reference.md, "PostgreSQL and Caddy images") ----------------------------
 # An update to a newer signed release moves them to the images its manifest names. compose.yaml is never written: the
 # override infrastructure-images.yaml reads POSTGRES_IMAGE and CADDY_IMAGE from .env, which the pin's rename commits.
-own_compose_files() { # Whether this install has Compose files that the updater's own Compose calls don't load.
-  [ ! -e "$ROOT/compose.override.yaml" ] && [ ! -e "$ROOT/compose.override.yml" ] || return 0
-  read_env COMPOSE_FILE | awk -F: '
-    { for (i = 1; i <= NF; i++) if ($i != "" && $i !~ /^(compose|schema-compatibility|infrastructure-images)\.yaml$/) own = 1 }
-    END { exit !own }'
+own_compose_files() { # Whether this install has Compose files of its own (lib.sh, owner_compose_files).
+  # Every Compose call loads them, but infrastructure-images.yaml comes after them and would replace an image they name.
+  [ -n "$(owner_compose_files)" ]
+}
+# Whether an own Compose file names the app's image, which would replace the release every Compose call starts.
+own_app_image() {
+  own_compose_files || return 1
+  own_probe=plaingym-update-probe
+  own_images=$(APP_IMAGE=$own_probe compose config --images app 2>/dev/null) || return 1
+  [ -n "$own_images" ] && [ "$own_images" != "$own_probe" ]
 }
 # Sets infra_postgres and infra_caddy to the images to move to, and pulls and checks them before anything stops.
 # Returns 2 when an image can't be pulled, and 1 when one fails its check or the Compose files can't be written.
@@ -868,6 +877,7 @@ if [ "$patch" = false ]; then
   if [ -z "$recovery_version" ]; then
     [ "$target" != "$current" ] || { echo 'Already on the requested image.'; exit 0; }
   fi
+  ! own_app_image || fail "This install's own Compose files name an image for the app, so an update would start that image instead of the release. Remove that image line (APP_IMAGE in .env names the app's image), then run this again. Nothing was changed."
   # Pull while the app runs, then compare what the request names with the running image: a tag of the running
   # release, or its digest, is the same image however the pin spells it.
   APP_IMAGE="$target" compose pull app
@@ -1042,6 +1052,11 @@ digest=$(manifest_value "$work/manifest" digest)
 target="$image:$tag@$digest"
 valid_image "$target" || finish skipped manifest_invalid 1
 
+# An image an own Compose file names for the app would replace the release every Compose call starts.
+if own_app_image; then
+  echo "This install's own Compose files name an image for the app, so no release can be installed. Remove that image line; APP_IMAGE in .env names the app's image." >&2
+  finish skipped own_app_image 1
+fi
 # Pull while the app runs, and check what arrived before anything stops.
 APP_IMAGE="$target" compose pull app || finish skipped pull_failed 1
 remember_image "$(docker image inspect "$target" --format '{{.Id}}' 2>/dev/null || true)" "$image:$tag@$digest" "$tag"

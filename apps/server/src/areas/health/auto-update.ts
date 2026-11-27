@@ -29,7 +29,8 @@ const changeResults: readonly string[] = ['updated', 'rolled_back', 'failed'];
 export const autoUpdateReasons = {
   skipped: ['disabled', 'check_failed', 'backups_not_configured', 'restore_in_progress', 'no_signing_key', 'version_unknown',
     'release_list_unavailable', 'manifest_unavailable', 'manifest_invalid', 'signature_invalid', 'pull_failed', 'digest_mismatch',
-    'image_check_failed', 'migration_in_patch', 'snapshot_failed', 'rolled_back_version', 'repeated_failure'],
+    'image_check_failed', 'migration_in_patch', 'snapshot_failed', 'rolled_back_version', 'repeated_failure',
+    'own_app_image'],
   rolled_back: ['startup_failed', 'health_check_failed', 'interrupted', 'rollback_failed'],
   failed: ['rollback_failed'],
 } as const;

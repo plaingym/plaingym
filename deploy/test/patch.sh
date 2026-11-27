@@ -130,7 +130,11 @@ case "$*" in
     # snapshot_signal: the unit is stopped during the snapshot (systemd signals update.sh and its commands).
     [ "${FAIL_AT:-}" != snapshot_signal ] || { kill -TERM "$PPID"; exit 143; }
     [ "${FAIL_AT:-}" != snapshot ] || { echo 'S3 refused the upload' >&2; exit 1; } ;;
+  # The app's image as the loaded files give it: OWN_APP_IMAGE stands for an own Compose file naming one.
+  *' config --images app') echo "${OWN_APP_IMAGE:-${APP_IMAGE:-}}" ;;
   *'up -d '*)
+    # own_files: an own Compose file that broke, so any start that loads it fails.
+    case "${FAIL_AT:-}:$*" in own_files:*compose.override.yaml*) : > "$FIXTURES/down"; exit 1 ;; esac
     started=true
     if [ "${APP_IMAGE:-}" = "$PREVIOUS_ID" ]; then [ "${FAIL_AT:-}" != rollback ] || started=false
     elif [ -n "${APP_IMAGE:-}" ]; then [ "${FAIL_AT:-}" != startup ] || started=false
@@ -1247,17 +1251,59 @@ grep -q 'An earlier update stopped while changing PostgreSQL or Caddy' "$tempora
 [ ! -e "$case_dir/.infrastructure-update" ]
 recorded "--result updated --from v1.2.3 --to v1.2.5"
 
-# An install with its own Compose files updates the app and says why PostgreSQL and Caddy stay as they are.
-for own in override list; do
+# An install with its own Compose files updates the app and says why PostgreSQL and Caddy stay as they are. Every
+# Compose call, the rollback's too, loads its files right after compose.yaml, as `docker compose` in the directory does.
+# owns: each Compose call loads FILE right after compose.yaml.
+owns() {
+  grep -F -- "-f $case_dir/compose.yaml " "$CALLS" > "$temporary/compose-calls"
+  [ -s "$temporary/compose-calls" ]
+  if grep -vF -- "-f $case_dir/compose.yaml -f $case_dir/$1 " "$temporary/compose-calls"; then
+    echo "A Compose call without $1." >&2; exit 1
+  fi
+}
+for own in override list rollback; do
   make_install "infra-own-$own"
   with_images "$P1" "$C1"
-  if [ "$own" = override ]; then : > "$case_dir/compose.override.yaml"; else printf 'COMPOSE_FILE=compose.yaml:mine.yaml\n' >> "$case_dir/.env"; fi
-  expect_status 0 --patch --now
-  recorded "--result updated --from v1.2.3 --to v1.2.5"
+  case "$own" in
+    list) owner_file=mine.yaml; printf 'COMPOSE_FILE=compose.yaml:mine.yaml\n' >> "$case_dir/.env" ;;
+    *) owner_file=compose.override.yaml ;;
+  esac
+  : > "$case_dir/$owner_file"
+  if [ "$own" = rollback ]; then
+    expect_status 1 FAIL_AT=health --patch --now
+    recorded '--result rolled_back --reason health_check_failed --from v1.2.3 --to v1.2.5 --failures 1'
+    called " 90 app IMAGE=$PREVIOUS_ID"
+  else
+    expect_status 0 --patch --now
+    recorded "--result updated --from v1.2.3 --to v1.2.5"
+  fi
+  owns "$owner_file"
   grep -qF 'This install has its own Compose files, so its PostgreSQL and Caddy images stay as they are. See docs/update-reference.md.' "$temporary/output"
   never 'pull postgres'; never 'pull caddy'; never '120 postgres'; never '60 caddy'
   [ ! -e "$case_dir/infrastructure-images.yaml" ]
 done
+# A COMPOSE_FILE entry whose file is gone is left out, so the update still starts the app, and it isn't an own file.
+make_install infra-own-gone
+with_images "$P1" "$C1"
+printf 'COMPOSE_FILE=./compose.yaml:gone.yaml\n' >> "$case_dir/.env"
+expect_status 0 --patch --now
+recorded "--result updated --from v1.2.3 --to v1.2.5"
+never "$case_dir/gone.yaml"
+if grep -qF 'This install has its own Compose files' "$temporary/output"; then echo 'A gone file counted as an own file.' >&2; exit 1; fi
+# An own file that names the app's image would replace the release: nothing is pulled, stopped or started.
+make_install own-app-image
+: > "$case_dir/compose.override.yaml"
+expect_status 1 OWN_APP_IMAGE=registry.example/custom:1 --patch --now
+recorded '--result skipped --reason own_app_image --from v1.2.3 --to v1.2.5'
+never ' pull app'; never ' stop app'; never ' 90 app'
+grep -qF "This install's own Compose files name an image for the app" "$temporary/output"
+# An own file that broke stops the update and the first rollback start; the previous version then starts without it.
+make_install own-files-broken
+: > "$case_dir/compose.override.yaml"
+expect_status 1 FAIL_AT=own_files --patch --now
+recorded '--result rolled_back --reason startup_failed --from v1.2.3 --to v1.2.5 --failures 1'
+grep " 90 app IMAGE=$PREVIOUS_ID" "$CALLS" | tail -n 1 | grep -qvF -- "compose.override.yaml"
+grep -qF "The previous version didn't start with this install's own Compose files" "$temporary/output"
 # A compose.yaml naming its own PostgreSQL image keeps it; Caddy still moves, and the override covers only Caddy.
 make_install infra-own-image
 with_images "$P1" "$C1"

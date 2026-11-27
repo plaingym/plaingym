@@ -569,8 +569,8 @@ printf 'COMPOSE_FILE=compose.yaml:mine.yaml\n' >> "$case_dir/.env"
 : > "$case_dir/compose.override.yaml"
 installed write_schema_guard v1.8.0 v1.9.0 00000000-0000-4000-8000-000000000008
 guarded_env 'COMPOSE_FILE=compose.yaml:mine.yaml:schema-compatibility.yaml'
-# A real update across the floor lists the override in .env, and the updater's own Compose calls still name only
-# compose.yaml and the guard.
+# A real update across the floor lists the override in .env, and the updater's own Compose calls load it too, after
+# compose.yaml and before the guard.
 make_install override_update v2.0.0 v2.0.0
 : > "$case_dir/compose.override.yaml"
 update 0
@@ -578,7 +578,7 @@ printf 'APP_IMAGE=ghcr.io/example/app:%s@%s\nRELEASE_REPOSITORY=example/app\nCOM
   "$TARGET" "$digest" | cmp - "$case_dir/.env"
 up_call=$(grep ' up -d ' "$CALLS" | tail -n 1)
 case "$up_call" in
-  "compose --project-directory $case_dir --env-file $case_dir/.env -f $case_dir/compose.yaml -f $case_dir/schema-compatibility.yaml up -d "*) ;;
+  "compose --project-directory $case_dir --env-file $case_dir/.env -f $case_dir/compose.yaml -f $case_dir/compose.override.yaml -f $case_dir/schema-compatibility.yaml up -d "*) ;;
   *) echo "The updater's own up call changed: $up_call" >&2; exit 1 ;;
 esac
 

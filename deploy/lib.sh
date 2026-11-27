@@ -69,12 +69,40 @@ compose() (
   # The exec replaces only this subshell, so the calling script can continue.
   compose_exec "$@"
 )
+# The install's own Compose files that exist, one per line in their COMPOSE_FILE order: the entries other than
+# compose.yaml and the two files update.sh manages, or, with no COMPOSE_FILE value, the override file Compose loads by
+# default (compose.override.yml when both exist). Unlike `docker compose`, a listed file that is gone is left out, so a
+# stale entry can't stop an update or its rollback. OWN_COMPOSE_FILES=off lists none: a rollback's last try.
+owner_compose_files() {
+  [ "${OWN_COMPOSE_FILES:-on}" != off ] || return 0
+  owner_listed=$(read_env COMPOSE_FILE)
+  if [ -z "$owner_listed" ]; then
+    if [ -e "$ROOT/compose.override.yml" ]; then printf '%s\n' "$ROOT/compose.override.yml"
+    elif [ -e "$ROOT/compose.override.yaml" ]; then printf '%s\n' "$ROOT/compose.override.yaml"; fi
+    return 0
+  fi
+  printf '%s\n' "$owner_listed" | awk -F: -v root="$ROOT" '{
+    for (i = 1; i <= NF; i++) {
+      path = $i; sub(/^\.\//, "", path)
+      if (path == "") continue
+      if (path !~ /^\//) path = root "/" path
+      if (path == root "/compose.yaml" || path == root "/schema-compatibility.yaml" || path == root "/infrastructure-images.yaml") continue
+      print path
+    } }' | while IFS= read -r owner_path; do [ ! -e "$owner_path" ] || printf '%s\n' "$owner_path"; done
+}
 compose_exec() {
-  # Files listed later win: compose.yaml, then the schema guard, then the images update.sh manages.
+  # Files listed later win: compose.yaml, the install's own files, then the schema guard, then the images update.sh
+  # manages. Loading the owner's files keeps their settings (a mount, a limit) through every update and rollback.
   if [ -f "$ROOT/infrastructure-images.yaml" ]; then set -- -f "$ROOT/infrastructure-images.yaml" "$@"; fi
   if [ -f "$ROOT/schema-compatibility.yaml" ]; then
     set -- -f "$ROOT/schema-compatibility.yaml" "$@"
   fi
+  # Prepended last first, so they keep their order. This runs just before exec, so IFS and noglob need no restoring.
+  owner_files=$(owner_compose_files | awk '{ line[NR] = $0 } END { for (i = NR; i > 0; i--) print line[i] }')
+  IFS='
+'
+  set -f
+  for owner_file in $owner_files; do set -- -f "$owner_file" "$@"; done
   exec docker compose --project-directory "$ROOT" --env-file "$ROOT/.env" -f "$ROOT/compose.yaml" "$@"
 }
 # A release version: vX.Y.Z without leading zeros or a suffix.
