@@ -261,7 +261,9 @@ image updates preserve their local Compose configuration.
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |
 | `APP_IMAGE` | none | The exact image to run: a version tag or a `sha256` digest, never `latest`. `update.sh` changes it. |
-| `COMPOSE_FILE` | `compose.yaml` | The updater appends `schema-compatibility.yaml` so ordinary Compose commands preserve the startup rollback guard. |
+| `POSTGRES_IMAGE` | `compose.yaml`'s pin | The PostgreSQL image to run, set by `update.sh` when a release moves it ([PostgreSQL and Caddy images](update-reference.md#postgresql-and-caddy-images)). Read through `infrastructure-images.yaml`. |
+| `CADDY_IMAGE` | `compose.yaml`'s pin | The Caddy image to run, set by `update.sh` the same way. |
+| `COMPOSE_FILE` | `compose.yaml` | The updater appends `schema-compatibility.yaml` so ordinary Compose commands preserve the startup rollback guard, and `infrastructure-images.yaml` once a release first moves PostgreSQL or Caddy, so they run the images `.env` names. |
 | `ACME_EMAIL` | none | The email Caddy gives the certificate authority. |
 | `COMPOSE_PROJECT_NAME` | `plaingym` | The Compose project name (container and volume prefix). |
 | `HTTP_PORT` | `80` | The host port Caddy publishes for HTTP (certificate challenges and redirects). |

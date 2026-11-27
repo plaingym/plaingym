@@ -9,6 +9,8 @@
 # release-signing.pem, and bootstrap.sh, COMMIT's deploy/bootstrap.sh with VERSION, OWNER/REPO and PUBLIC.pem filled
 # in. A release passes the committed key, so its archive is the tag's deploy/ folder as it is. The archive is built
 # from Git, never the working tree, with fixed owners, modes and times, so the same inputs give the same bytes.
+# DIR also gets the manifest lines publish.sh signs: host-digests.txt, the host files' SHA-256s, and
+# infrastructure-images.txt, the PostgreSQL and Caddy images COMMIT's compose.yaml pins.
 set -eu
 umask 077
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -58,6 +60,13 @@ for host_file in $host_files; do
   printf 'host.%s=sha256:%s\n' "$(printf '%s' "$host_file" | tr '[:upper:]' '[:lower:]')" \
     "$(sha256sum "$stage/deploy/$host_file" | cut -d' ' -f1)" >> "$out/host-digests.txt"
 done
+# The PostgreSQL and Caddy images COMMIT's compose.yaml pins, which update.sh moves installs to with this release.
+postgres_image=$(compose_image "$stage/deploy/compose.yaml" postgres)
+caddy_image=$(compose_image "$stage/deploy/compose.yaml" caddy)
+if ! printf '%s\n' "$postgres_image" | grep -Eq "$postgres_image_pattern" || ! printf '%s\n' "$caddy_image" | grep -Eq "$caddy_image_pattern"; then
+  fail 'deploy/compose.yaml must pin postgres:18 and caddy:2.N.N-alpine by digest.'
+fi
+printf 'postgres_image=%s\ncaddy_image=%s\n' "$postgres_image" "$caddy_image" > "$out/infrastructure-images.txt"
 key=$(sed '/^-----/d' "$stage/deploy/release-signing.pem" | tr -d '\r\n')
 printf '%s\n' "$key" | grep -Eq '^[A-Za-z0-9+/]{1,64}={0,2}$' || fail 'The public key does not fit on one PEM line.'
 archive="$out/plaingym-deploy-$version.tar.gz"

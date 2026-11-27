@@ -2,8 +2,9 @@
 # Updating reference
 
 The operator detail behind [What happens each night](updating.md) and
-[Update by hand](update-by-hand.md): how the updater treats the host's files, the signing
-key, key rotation, rollback floors and forward recovery, and which images it keeps. The
+[Update by hand](update-by-hand.md): how the updater treats the host's files and the
+PostgreSQL and Caddy images, the signing key, key rotation, rollback floors and forward
+recovery, and which images it keeps. The
 updater's own mechanics (its lock, state files and exit codes) are in
 [`deploy/README.md`](../deploy/README.md#updates-and-recovery); the version rules are in
 [versioning.md](versioning.md).
@@ -62,9 +63,12 @@ The updater refreshes `update.sh`, `lib.sh`, `rotate-key.sh`, `restore.sh` and b
 units with the release. It checks the signed manifest, the deployment archive and every
 host-file digest before stopping the app. Once the app is healthy, it replaces each file by an
 atomic rename and reloads systemd. The running updater finishes from the file it opened; the
-next run uses the new one. The updater preserves `.env`, Compose, Caddy and PostgreSQL
-configuration. A release changing those configuration files still names the required manual
-steps in its upgrade notes. Signed releases without host-file digests update only the image.
+next run uses the new one. The updater never rewrites `compose.yaml`, the `Caddyfile` or
+`postgres/01-roles.sh`, and changes `.env` only for the image pins and `COMPOSE_FILE`. A
+release changing those configuration files still names the required manual steps in its
+upgrade notes. The PostgreSQL and Caddy images themselves do move with releases; see
+[PostgreSQL and Caddy images](#postgresql-and-caddy-images). Signed releases without
+host-file digests update only the image.
 
 Previous copies stay in `.host-history/`, associated with the image they ran with. A failed
 replacement restores them before restarting the previous image. After a power loss, the next
@@ -77,6 +81,47 @@ afterwards. `--rollback` restores the previous host files and units when a saved
 Successful updates remove saved host generations once their image is gone from the host and
 has no saved registry pin that `--rollback` could pull again. Don't remove these directories
 while an update or recovery is unfinished.
+
+## PostgreSQL and Caddy images
+
+Each signed release names the PostgreSQL and Caddy images its `deploy/compose.yaml` pins
+(`postgres_image` and `caddy_image` in the manifest). An update to a newer release, the
+nightly patch or `./update.sh IMAGE`, moves the install to them when they differ from what it
+runs. `--rollback`, a recovery update and an update to an older release leave both images as
+they are. PostgreSQL only moves within major 18 on the default image (`postgres:18` or
+`postgres:18.N`), and Caddy within `caddy:2.N.N-alpine`, each by digest; a manifest naming
+anything else is invalid. A release that needs another major names the manual steps in its
+upgrade notes.
+
+Before anything stops, the updater pulls both new images and checks them: PostgreSQL must
+report version 18 and Caddy version 2. A failed pull or check skips the update (`pull_failed`
+or `image_check_failed`) and changes nothing. PostgreSQL is recreated on its new image after
+the pre-upgrade snapshot, while the app is stopped; the updater then checks that the server is
+major 18 and that the database's recorded collation version matches the new image's. Caddy is
+recreated once the new app is healthy, and must keep running for ten seconds without a
+restart. Any failure, of these or of the app, puts both services back on their previous
+images, then starts the previous app. After a successful update the image each service ran
+before is removed, never forced.
+
+The images an install runs are in `.env`, as `POSTGRES_IMAGE` and `CADDY_IMAGE`, written in
+the same rename as `APP_IMAGE`: the app and both images change together or not at all.
+`compose.yaml` is never edited. The updater owns a small Compose file beside it,
+`infrastructure-images.yaml`, which sets each service's image to the `.env` value or, without
+one, to the pin `compose.yaml` had when the file was written, and lists it in `COMPOSE_FILE` so
+ordinary `docker compose` commands use it too. A fresh install has neither until an update
+first tries to move an image: both are written once the new images pass their checks, before
+anything stops, and stay if that update then fails. Once they exist, change an image by editing `.env`, not the image lines
+of `compose.yaml`. If an update is cut off while PostgreSQL or Caddy may run another image than
+`.env` names (`.infrastructure-update` in the install directory), the next run starts both on
+the images `.env` names before anything else.
+
+Two kinds of install keep their images, and each update says so in its output. One with
+Compose files of its own (`compose.override.yaml` in the install directory, or a
+`COMPOSE_FILE` entry other than `compose.yaml`, `schema-compatibility.yaml` and
+`infrastructure-images.yaml`) keeps both: the updater's Compose commands don't load those
+files, so recreating PostgreSQL or Caddy would drop their settings. One whose `compose.yaml`
+names its own image for a service (anything but the official pin) keeps that service, and the
+other still moves.
 
 ## The release signing key
 

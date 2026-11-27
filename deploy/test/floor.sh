@@ -15,7 +15,7 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir "$temporary/bin" "$temporary/release"
-export PATH="$temporary/bin:$PATH" CALLS="$temporary/calls" FIXTURES="$temporary/release"
+export PATH="$temporary/bin:$PATH" CALLS="$temporary/calls" FIXTURES="$temporary/release" UPDATE_INFRA_SETTLE_SECONDS=0
 digest=sha256:$(printf 'd%.0s' $(seq 64))
 export DIGEST="$digest"
 PREVIOUS_ID="sha256:$(printf 'a%.0s' $(seq 64))"
@@ -36,7 +36,7 @@ if [ "${SNAPSHOT_CHECK_PRINT_ARGS:-}" = true ]; then
   printf '%s\0' "$@" "IMAGE=${APP_IMAGE:-configured}"
   exit 0
 fi
-printf '%s IMAGE=%s\n' "$*" "${APP_IMAGE:-configured}" >> "$CALLS"
+printf '%s IMAGE=%s POSTGRES_IMAGE=%s CADDY_IMAGE=%s\n' "$*" "${APP_IMAGE:-configured}" "${POSTGRES_IMAGE:-unset}" "${CADDY_IMAGE:-unset}" >> "$CALLS"
 guard=
 for argument in "$@"; do case "$argument" in *schema-compatibility.yaml) guard=$argument ;; esac; done
 version_of() {
@@ -54,9 +54,19 @@ compatible() {
 }
 case "$*" in
   *' ps --status running --services') [ "${APP_STATE:-running}" != running ] || echo app ;;
+  # PostgreSQL and Caddy: their checks, their own starts and the database check pass; an image's ID is its digest.
+  *' --entrypoint postgres '*) echo 'postgres (PostgreSQL) 18.2' ;;
+  *' --entrypoint caddy '*) echo 'v2.11.8 h1:fixture' ;;
+  *' up -d '*' postgres caddy'|*' up -d '*' postgres'|*' up -d '*' caddy') ;;
+  *' ps -q caddy') echo caddy-1 ;;
+  'inspect caddy-1 '*) echo 'running 0' ;;
+  *' exec -T postgres '*server_version_num*) echo '18|t' ;;
   "image inspect "*" --format {{.Id}}")
     case "$3" in *:v1.9.0|"$PREVIOUS_ID") [ "${PIN_REMOVED:-}" != true ] || { echo 'No such image' >&2; exit 1; } ;; esac
-    case "$3" in "$OLDER_ID") echo "$OLDER_ID" ;; *:v1.9.0|"$PREVIOUS_ID") echo "$PREVIOUS_ID" ;; *"$INITIAL_ID") echo "$INITIAL_ID" ;; *) echo "$DIGEST" ;; esac ;;
+    case "$3" in
+      postgres:*|caddy:*) echo "sha256:${3##*@sha256:}" ;;
+      "$OLDER_ID") echo "$OLDER_ID" ;; *:v1.9.0|"$PREVIOUS_ID") echo "$PREVIOUS_ID" ;; *"$INITIAL_ID") echo "$INITIAL_ID" ;; *) echo "$DIGEST" ;;
+    esac ;;
   'image inspect '*'org.opencontainers.image.version'*) version_of "$3" ;;
   'image inspect '*RepoDigests*) echo "ghcr.io/example/app@$DIGEST" ;;
   *' snapshot-check '*)
@@ -903,6 +913,76 @@ sh "$case_dir/update.sh" --rollback > "$temporary/output" 2>&1
 said 'Rolled back to v1.9.0'
 pinned "$PREVIOUS_ID"
 
+# PostgreSQL and Caddy images: a manual update to a newer signed release applies its images as the nightly patch does;
+# --rollback, an update to an older release and a recovery update leave both as they are.
+infra_digest() { printf 'sha256:%s' "$(printf '%064d' 0 | tr 0 "$1")"; }
+P0="postgres:18@$(infra_digest 3)" P1="postgres:18.2@$(infra_digest 4)"
+C0="caddy:2.11.7-alpine@$(infra_digest 6)" C1="caddy:2.11.8-alpine@$(infra_digest 7)"
+infra_install() { # The install's compose.yaml pins P0 and C0.
+  printf 'services:\n  postgres:\n    image: %s\n  app:\n    image: app\n  caddy:\n    image: %s\n' "$P0" "$C0" > "$case_dir/compose.yaml"
+  cp "$case_dir/compose.yaml" "$temporary/compose.yaml"
+}
+infra_release() { # POSTGRES CADDY: the fixture's signed release also names these images
+  printf 'postgres_image=%s\ncaddy_image=%s\n' "$1" "$2" >> "$FIXTURES/manifest"
+  openssl pkeyutl -sign -inkey "$FIXTURES/key.pem" -rawin -in "$FIXTURES/manifest" -out "$FIXTURES/manifest.sig"
+}
+line_of() { grep -n -- "$1" "$CALLS" | head -n 1 | cut -d: -f1; }
+no_infrastructure_calls() {
+  if grep -Eq 'pull (postgres|caddy):|--entrypoint (postgres|caddy) |120 postgres|60 caddy|server_version_num' "$CALLS"; then
+    echo 'Unexpected PostgreSQL or Caddy call.' >&2; cat "$CALLS" >&2; exit 1
+  fi
+}
+make_install infra_manual v1.10.0 v1.9.0
+infra_install
+infra_release "$P1" "$C1"
+update 0
+pinned "ghcr.io/example/app:$TARGET@$digest"
+grep -qx "POSTGRES_IMAGE=$P1" "$case_dir/.env" && grep -qx "CADDY_IMAGE=$C1" "$case_dir/.env"
+grep -qx 'COMPOSE_FILE=compose.yaml:infrastructure-images.yaml:schema-compatibility.yaml' "$case_dir/.env"
+grep -qx "    image: '\${POSTGRES_IMAGE:-$P0}'" "$case_dir/infrastructure-images.yaml"
+grep -qx "    image: '\${CADDY_IMAGE:-$C0}'" "$case_dir/infrastructure-images.yaml"
+cmp -s "$temporary/compose.yaml" "$case_dir/compose.yaml"
+[ ! -e "$case_dir/.infrastructure-update" ]
+for check in "pull $P1" "pull $C1" ' --entrypoint postgres ' ' --entrypoint caddy '; do
+  [ "$(line_of "$check")" -lt "$(line_of ' stop app')" ]
+done
+[ "$(line_of ' snapshot pre-upgrade')" -lt "$(line_of "120 postgres IMAGE=configured POSTGRES_IMAGE=$P1 CADDY_IMAGE=unset")" ]
+[ "$(line_of 'server_version_num')" -lt "$(line_of " 90 app IMAGE=ghcr.io/example/app:$TARGET@$digest")" ]
+[ "$(line_of ' node /app/deploy/healthcheck.mjs')" -lt "$(line_of "60 caddy IMAGE=configured POSTGRES_IMAGE=unset CADDY_IMAGE=$C1")" ]
+grep -q "^image rm $(infra_digest 3) " "$CALLS" && grep -q "^image rm $(infra_digest 6) " "$CALLS"
+: > "$CALLS"
+update_with 0 --rollback
+said 'Rolled back to v1.9.0'
+no_infrastructure_calls
+grep -qx "POSTGRES_IMAGE=$P1" "$case_dir/.env" && grep -qx "CADDY_IMAGE=$C1" "$case_dir/.env"
+make_install infra_older v1.8.0 v1.8.0
+infra_install
+printf '2026-11-01T00:00:00Z\tv1.9.0\t%s\tinstall\tv1.8.0\t-\n' "$PREVIOUS_ID" > "$case_dir/version-history.tsv"
+infra_release "$P1" "$C1"
+update 0
+pinned "ghcr.io/example/app:v1.8.0@$digest"
+no_infrastructure_calls
+[ ! -e "$case_dir/infrastructure-images.yaml" ]
+if grep -Eq '^(POSTGRES|CADDY)_IMAGE=' "$case_dir/.env"; then echo 'An older release changed an image.' >&2; exit 1; fi
+make_install infra_recovery v2.0.0 v2.0.0
+infra_install
+update 1 FAIL_AT=after_migrating
+[ -e "$case_dir/.schema-recovery" ]
+infra_release "$P1" "$C1"
+: > "$CALLS"
+update 0 APP_STATE=stopped
+pinned "ghcr.io/example/app:$TARGET@$digest"
+no_infrastructure_calls
+[ ! -e "$case_dir/infrastructure-images.yaml" ]
+if grep -Eq '^(POSTGRES|CADDY)_IMAGE=' "$case_dir/.env"; then echo 'A recovery update changed an image.' >&2; exit 1; fi
+# Taking the schema guard down keeps the override listed, wherever the guard is in the list.
+make_install infra_guard v2.0.0 v2.0.0
+printf "services:\n  app:\n    environment:\n      SCHEMA_ROLLBACK_FLOOR: 'v2.0.0'\n" > "$case_dir/schema-compatibility.yaml"
+printf 'COMPOSE_FILE=compose.yaml:schema-compatibility.yaml:infrastructure-images.yaml\n' >> "$case_dir/.env"
+installed restore_schema_guard
+grep -qx 'COMPOSE_FILE=compose.yaml:infrastructure-images.yaml' "$case_dir/.env"
+[ ! -e "$case_dir/schema-compatibility.yaml" ]
+
 # The history: rollbacks walk back, a rollback's restart of the running version changes nothing, and an update
 # from there leaves the version it replaced as the way back.
 ROOT="$temporary/history"
@@ -933,4 +1013,4 @@ declined_patch v1.2.4
 row v1.3.0 "$two" update v1.2.0; row v1.2.5 "$three" rollback v1.2.0
 declined_patch v1.3.0
 if declined_patch v1.2.6; then echo 'Held back a patch of the version running.' >&2; exit 1; fi
-echo 'PASS: floor notices, abandoned attempts, guarded rollback, stopped and restarting forward recovery, retained original snapshots across retries, earlier guards, skipped minors, killed runs and history replay.'
+echo 'PASS: floor notices, abandoned attempts, guarded rollback, stopped and restarting forward recovery, retained original snapshots across retries, earlier guards, skipped minors, killed runs and history replay; PostgreSQL and Caddy images on manual updates.'

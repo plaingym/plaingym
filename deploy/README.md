@@ -207,11 +207,14 @@ such a refresh.
 
 The **Image scan** workflow builds the runtime image every Monday, on demand, and
 for `task/**` pushes and pull requests that change the Dockerfile, the runtime
-package script or pins, the exceptions, or the scan workflow itself, and
+package script or pins, `compose.yaml`, the exceptions, or the scan workflow itself, and
 scans it with Trivy (run from its image, pinned by digest). It lists every high
 and critical advisory and fails when one has a fixed version, which a pin refresh
 usually resolves. Advisories without a fix are listed for review but don't fail
-the run. `deploy/trivy-ignore.yaml` holds the reviewed exceptions: each entry
+the run. Its `infrastructure` job scans the PostgreSQL and Caddy images
+`compose.yaml` pins, by reference, the same way; it fails on a fixable advisory only
+on the weekly and manual runs (a task branch or pull request only lists them), and
+moving a pin to a fixed image reaches installs with the next release. `deploy/trivy-ignore.yaml` holds the reviewed exceptions: each entry
 names the advisory, why it doesn't apply or can't be fixed yet, and an
 `expired_at` date after which the scan fails on it again. JavaScript dependencies
 are checked separately by the **Dependency advisories** workflow (`pnpm audit`).
@@ -517,7 +520,10 @@ release update the signed manifest's name, tag and digest, and `--rollback` the 
 digest the previous image was pulled with, so a removed image can be pulled back (a
 locally built image with no registry digest keeps its image ID). A manual `--unsigned` update to an
 image without a release version label has no signed manifest, so it pins the reference
-as given. A failed image start or check restarts the exact
+as given. A release update also moves PostgreSQL and Caddy to the images its signed
+manifest names, as the nightly patch does: `--rollback` and recovery updates leave them
+([PostgreSQL and Caddy images](../docs/update-reference.md#postgresql-and-caddy-images)).
+A failed image start or check restarts the exact
 previous local image (by image ID) when the schema allows it, so keep those images available. If an update
 migrated across a floor, retry its release or update to a newer compatible signed
 release; the failure message names that option beside the snapshot to restore.
@@ -630,13 +636,18 @@ Each night, in order, the updater:
    below);
 4. pulls `IMAGE:vX.Y.Z@DIGEST` from the manifest while the app runs, and checks
    that the pulled image has that digest and version label, and that its
-   migrations (`/app/migrations`) are byte for byte those of the running image;
+   migrations (`/app/migrations`) are byte for byte those of the running image; when
+   the manifest names newer PostgreSQL or Caddy images, it pulls and checks those too
+   ([PostgreSQL and Caddy images](../docs/update-reference.md#postgresql-and-caddy-images));
 5. writes `.auto-update.inflight` (the versions and the time the app stops), stops the app, takes the pre-upgrade snapshot
    (a failure, or a stop during it, restarts the running image and skips),
-   starts the new image, runs the health check, waits a minute, and checks again
-   that the same container is healthy and never restarted;
-6. pins the new image in `.env`, or on any failure starts the previous image by
-   image ID and reports the rollback, counting the failed attempt;
+   recreates PostgreSQL on its new image if there is one, starts the new image,
+   runs the health check, waits a minute, and checks again that the same container
+   is healthy and never restarted, then recreates Caddy on its new image if there is one;
+6. pins the new image in `.env`, with any new `POSTGRES_IMAGE` and `CADDY_IMAGE` in
+   the same rename, or on any failure starts PostgreSQL and Caddy on the images
+   `.env` names, then the previous image by image ID, and reports the rollback,
+   counting the failed attempt;
 7. after success, keeps the current image and the two before it on the rollback
    stack. Older stack entries have their images removed, the installer's too
    once it falls off, and then get a `trimmed` row in `version-history.tsv`, so
@@ -645,7 +656,8 @@ Each night, in order, the updater:
    release that was rolled back. Removal is by image ID and never forced: Docker
    keeps an image a container uses or that other names refer to, and an entry
    whose image stays (or whose removal times out) stays on the stack until a later
-   update removes it. No global image prune runs, and images the updater didn't
+   update removes it. The PostgreSQL and Caddy images the update replaced are
+   removed the same way. No global image prune runs, and images the updater didn't
    record are untouched.
 
 The journal line for each result names what happened: "updated from v1.2.3 to
@@ -659,7 +671,9 @@ and the next run starts the pinned image first and reports the interruption. A
 rollback that fails keeps the marker too, marked `rollback_failed`, so each hourly
 run tries to start the pinned image again until it runs. The failure is reported
 once; once the pinned image runs, the recovery is reported with the time the app
-stopped. Its log is in the journal: `journalctl -u plaingym-update`.
+stopped. A run killed while PostgreSQL or Caddy may run another image than `.env`
+names leaves `.infrastructure-update`, and the next run of any kind first starts
+both on the images `.env` names. Its log is in the journal: `journalctl -u plaingym-update`.
 
 ### Rotating the encryption key
 
@@ -907,6 +921,8 @@ host.restore.sh=sha256:<64 hex digits>
 host.release-signing.pem=sha256:<64 hex digits>
 host.systemd/plaingym-update.service=sha256:<64 hex digits>
 host.systemd/plaingym-update.timer=sha256:<64 hex digits>
+postgres_image=postgres:18@sha256:<64 hex digits>
+caddy_image=caddy:2.11.7-alpine@sha256:<64 hex digits>
 revision=<40 hex digits>
 migrations=sha256:<64 hex digits>
 released=2026-11-03T12:00:00Z
@@ -914,6 +930,11 @@ released=2026-11-03T12:00:00Z
 
 * `digest` is the multi-arch index; installs pull `IMAGE:VERSION@DIGEST`. The
   `digest.linux/*` lines are its per-architecture images.
+* `postgres_image` and `caddy_image` are the images the tagged commit's
+  `compose.yaml` pins, which `deploy-assets.sh` reads (it refuses any other than
+  `postgres:18` or `postgres:18.N`, and `caddy:2.N.N-alpine`, by digest). The updater
+  moves installs to them ([PostgreSQL and Caddy images](../docs/update-reference.md#postgresql-and-caddy-images));
+  both or neither must be present, and older updaters ignore them.
 * `deploy_archive` names the release's deployment files and `deploy_archive_sha256`
   is their SHA-256, checked by the release `bootstrap.sh` and the updater.
   `host_format=1` requires all seven `host.*` digests and the archive fields.

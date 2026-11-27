@@ -51,24 +51,39 @@ cleanup() {
 trap cleanup EXIT
 mkdir "$temporary/bin" "$temporary/release"
 export PATH="$temporary/bin:$PATH" CALLS="$temporary/calls" RECORDS="$temporary/records" NOTIFIED="$temporary/notified" FIXTURES="$temporary/release"
-export UPDATE_SETTLE_SECONDS=0
+export UPDATE_SETTLE_SECONDS=0 UPDATE_INFRA_SETTLE_SECONDS=0
 digest=sha256:$(printf 'd%.0s' $(seq 64))
+# PostgreSQL and Caddy images: P0 and C0 are the install's compose.yaml pins, P1, P2 and C1 newer releases' images.
+infra_digest() { printf 'sha256:%s' "$(printf '%064d' 0 | tr 0 "$1")"; }
+P0="postgres:18@$(infra_digest 3)" P1="postgres:18.2@$(infra_digest 4)" P2="postgres:18.3@$(infra_digest 5)"
+C0="caddy:2.11.7-alpine@$(infra_digest 6)" C1="caddy:2.11.8-alpine@$(infra_digest 7)"
 export DIGEST="$digest"
 PREVIOUS_ID="sha256:$(printf 'a%.0s' $(seq 64))"
 export PREVIOUS_ID
 
-# Docker: logs each call with the image it targets, and fails where FAIL_AT says. A start that fails leaves the app
-# down (the file `down`) until a start succeeds. DISTINCT_IDS gives each release's image its own ID and label.
+# Docker: logs each call with the images it targets, and fails where FAIL_AT says. A start that fails leaves the app
+# down (the file `down`) until a start succeeds. DISTINCT_IDS gives each release's image its own ID and label. A
+# PostgreSQL or Caddy image's ID is its digest; PG_CHECK is what the database check on a new PostgreSQL answers.
 cat > "$temporary/bin/docker" <<'MOCK'
 #!/bin/sh
 set -eu
-printf '%s IMAGE=%s\n' "$*" "${APP_IMAGE:-configured}" >> "$CALLS"
+printf '%s IMAGE=%s POSTGRES_IMAGE=%s CADDY_IMAGE=%s\n' "$*" "${APP_IMAGE:-configured}" "${POSTGRES_IMAGE:-unset}" "${CADDY_IMAGE:-unset}" >> "$CALLS"
 version_in() { tag=${1#*:v}; printf 'v%s\n' "${tag%%@*}"; }
 id_in() { tag=${1##*.}; printf 'sha256:%064d\n' "${tag%%@*}"; }
 case "$*" in
   *' ps --status running --services') [ "${FAIL_AT:-}" = app_down ] || [ -e "$FIXTURES/down" ] || echo app ;;
   *' ps -q app') echo container-1 ;;
   'inspect container-1 '*) if [ "${FAIL_AT:-}" = settle ]; then echo 'healthy 1'; else echo 'healthy 0'; fi ;;
+  *' ps -q caddy') echo caddy-1 ;;
+  'inspect caddy-1 '*) if [ "${FAIL_AT:-}" = caddy_settle ]; then echo 'running 1'; else echo 'running 0'; fi ;;
+  'pull '*) [ "${FAIL_AT:-}" != infra_pull ] ;;
+  *' --entrypoint postgres '*) if [ "${FAIL_AT:-}" = postgres_check ]; then echo 'postgres (PostgreSQL) 19.0'; else echo 'postgres (PostgreSQL) 18.2'; fi ;;
+  *' --entrypoint caddy '*) echo 'v2.11.8 h1:fixture' ;;
+  # The restore of both services after a failure, PostgreSQL alone on its new image, and Caddy alone.
+  *' up -d '*' postgres caddy') [ "${FAIL_AT:-}" != infra_restore ] ;;
+  *' up -d '*' postgres') case "${FAIL_AT:-}" in postgres_up|infra_restore) exit 1 ;; esac ;;
+  *' up -d '*' caddy') [ "${FAIL_AT:-}" != caddy_up ] ;;
+  *' exec -T postgres '*server_version_num*) echo "${PG_CHECK:-18|t}" ;;
   *' exec -T app gym-app auto-update check') cat "$FIXTURES/check" ;;
   *' exec -T postgres '*) echo '20|1000' ;;
   *' exec -T app gym-app auto-update record '*)
@@ -85,6 +100,7 @@ case "$*" in
     [ "$3" != "${GONE_REF:-}" ] || exit 1
     case "$3" in
       sha256:*) echo "$3" ;;
+      postgres:*|caddy:*) echo "sha256:${3##*@sha256:}" ;;
       *:v1.2.1@*) echo "sha256:$(printf 'b%.0s' $(seq 64))" ;;
       *:v1.2.2@*) echo "sha256:$(printf 'e%.0s' $(seq 64))" ;;
       *@sha256:*) if [ -n "${DISTINCT_IDS:-}" ]; then id_in "$3"; else echo "$DIGEST"; fi ;;
@@ -211,6 +227,13 @@ write_manifest() {
     "$1" "$digest" "$(printf 'a%.0s' $(seq 64))" "$(printf 'b%.0s' $(seq 64))" "$(printf '1%.0s' $(seq 40))" "$(printf 'c%.0s' $(seq 64))" > "$FIXTURES/manifest"
   openssl pkeyutl -sign -inkey "${2:-$temporary/release/key.pem}" -rawin -in "$FIXTURES/manifest" -out "$FIXTURES/manifest.sig"
 }
+with_images() { # POSTGRES CADDY: the fixture's signed manifest also names these images
+  printf 'postgres_image=%s\ncaddy_image=%s\n' "$1" "$2" >> "$FIXTURES/manifest"
+  openssl pkeyutl -sign -inkey "$temporary/release/key.pem" -rawin -in "$FIXTURES/manifest" -out "$FIXTURES/manifest.sig"
+}
+# compose.yaml as it is laid out, with only the lines the updater reads.
+printf 'name: plaingym\nservices:\n  postgres:\n    image: %s\n    restart: unless-stopped\n  app:\n    image: app\n  caddy:\n    image: %s\nvolumes:\n  pgdata:\n' \
+  "$P0" "$C0" > "$FIXTURES/compose.yaml"
 # checks [RESTORE] [ENABLED] [BACKUPS] [WINDOW_START]: what `gym-app auto-update check` answers. Without WINDOW_START
 # it answers as an app older than the window setting, with no window_start line.
 checks() {
@@ -224,7 +247,7 @@ make_install() {
   cp "$source_dir/update.sh" "$source_dir/lib.sh" "$case_dir/"
   chmod 0644 "$case_dir/lib.sh"
   cp "$temporary/release/public.pem" "$case_dir/release-signing.pem"
-  : > "$case_dir/compose.yaml"
+  cp "$FIXTURES/compose.yaml" "$case_dir/compose.yaml"
   printf 'APP_IMAGE=ghcr.io/example/app:v1.2.3\nRELEASE_REPOSITORY=example/app\nFAKE_SECRET=private-test-value\n' > "$case_dir/.env"
   : > "$CALLS"; : > "$RECORDS"; : > "$NOTIFIED"
   rm -f "$FIXTURES/down" "$FIXTURES/removed"
@@ -1060,4 +1083,210 @@ grep -q 'Could not download the deployment files of v1.2.5' "$temporary/output"
 old_hosts
 never ' stop app'
 
-echo 'PASS: patch selection, signature, digest and migration checks, setting off, skipped snapshot, rollback, window, pending results; signed host generations, tampering, partial failure, interruption and rollback.'
+# --- PostgreSQL and Caddy images ---------------------------------------------------------------------------------
+override_text() { # SERVICES...: infrastructure-images.yaml as update.sh writes it for these services
+  printf '%s\n' "# Written by update.sh; don't edit. PostgreSQL and Caddy run the images .env names (POSTGRES_IMAGE, CADDY_IMAGE)." 'services:'
+  for service do
+    case "$service" in
+      postgres) printf '%s\n' '  postgres:' "    image: '\${POSTGRES_IMAGE:-$P0}'" ;;
+      caddy) printf '%s\n' '  caddy:' "    image: '\${CADDY_IMAGE:-$C0}'" ;;
+    esac
+  done
+}
+restored='120 postgres caddy IMAGE=configured POSTGRES_IMAGE=unset CADDY_IMAGE=unset'
+no_line() { if grep -Eq "^($1)=" "$case_dir/.env"; then echo "Unexpected .env line: $1" >&2; exit 1; fi; }
+
+# A manifest names both images or neither: PostgreSQL 18 on its default variant and Caddy 2 on Alpine, by digest.
+make_install infra-manifest
+(
+  ROOT=$case_dir
+  # shellcheck source=deploy/lib.sh
+  . "$case_dir/lib.sh"
+  images_accepted() { # POSTGRES CADDY: manifest_check on the fixture's manifest with these keys added (- for none)
+    cp "$FIXTURES/manifest" "$temporary/images-manifest"
+    [ "$1" = - ] || printf 'postgres_image=%s\n' "$1" >> "$temporary/images-manifest"
+    [ "$2" = - ] || printf 'caddy_image=%s\n' "$2" >> "$temporary/images-manifest"
+    manifest_check "$temporary/images-manifest" v1.2.5
+  }
+  images_accepted "$P1" "$C1"
+  images_accepted - -
+  for refused in "$P1 -" "- $C1" "postgres:19@$(infra_digest 4) $C1" "postgres:18-alpine@$(infra_digest 4) $C1" \
+    "postgres:18 $C1" "$P1 caddy:3.0.0-alpine@$(infra_digest 7)" "$P1 caddy:2.11.8@$(infra_digest 7)"; do
+    # shellcheck disable=SC2086 # Two words without spaces.
+    if images_accepted $refused; then echo "manifest_check accepted: $refused" >&2; exit 1; fi
+  done
+)
+
+# Newer images: both are pulled and checked while the app runs, PostgreSQL moves after the snapshot while the app is
+# stopped, Caddy once the app is healthy, and one rename of .env commits the app and both images.
+make_install infra-success
+with_images "$P1" "$C1"
+expect_status 0 --patch --now
+recorded "--result updated --from v1.2.3 --to v1.2.5"
+pinned "$target"
+[ "$(grep -c '^POSTGRES_IMAGE=' "$case_dir/.env")" -eq 1 ] && grep -qx "POSTGRES_IMAGE=$P1" "$case_dir/.env"
+[ "$(grep -c '^CADDY_IMAGE=' "$case_dir/.env")" -eq 1 ] && grep -qx "CADDY_IMAGE=$C1" "$case_dir/.env"
+# The schema guard of the swap is listed after the override.
+grep -qx 'COMPOSE_FILE=compose.yaml:infrastructure-images.yaml:schema-compatibility.yaml' "$case_dir/.env"
+override_text postgres caddy | cmp -s - "$case_dir/infrastructure-images.yaml"
+cmp -s "$FIXTURES/compose.yaml" "$case_dir/compose.yaml"
+[ ! -e "$case_dir/.infrastructure-update" ] && [ ! -e "$case_dir/infrastructure-images.yaml.next" ]
+for check in "pull $P1" "pull $C1" ' --entrypoint postgres ' ' --entrypoint caddy '; do
+  [ "$(line_of "$check")" -lt "$(line_of ' stop app')" ]
+done
+[ "$(line_of ' snapshot pre-upgrade')" -lt "$(line_of "120 postgres IMAGE=configured POSTGRES_IMAGE=$P1 CADDY_IMAGE=unset")" ]
+[ "$(line_of '120 postgres IMAGE')" -lt "$(line_of 'server_version_num')" ]
+[ "$(line_of 'server_version_num')" -lt "$(line_of " 90 app IMAGE=$target")" ]
+[ "$(line_of ' node /app/deploy/healthcheck.mjs')" -lt "$(line_of "60 caddy IMAGE=configured POSTGRES_IMAGE=unset CADDY_IMAGE=$C1")" ]
+[ "$(line_of "image rm $(infra_digest 3)")" -gt "$(line_of '60 caddy IMAGE')" ]
+tail -n 1 "$CALLS" | grep -q "^image rm $(infra_digest 6) "
+never "$restored"
+# Before the swap writes the schema guard, a Compose call loads compose.yaml and then the override.
+grep ' stop app' "$CALLS" | grep -q -- "-f $case_dir/compose.yaml -f $case_dir/infrastructure-images.yaml stop app"
+
+# A release naming the images the install runs, or none: no Docker call for them, no file and no .env line.
+for images in same none; do
+  make_install "infra-$images"
+  [ "$images" = none ] || with_images "$P0" "$C0"
+  expect_status 0 --patch --now
+  recorded "--result updated --from v1.2.3 --to v1.2.5"
+  never 'pull postgres'; never 'pull caddy'; never ' --entrypoint postgres '; never "image inspect $P0"
+  never '120 postgres'; never '60 caddy'
+  [ ! -e "$case_dir/infrastructure-images.yaml" ]
+  no_line 'POSTGRES_IMAGE|CADDY_IMAGE'
+  if grep -q infrastructure-images "$case_dir/.env"; then echo 'COMPOSE_FILE lists the override.' >&2; exit 1; fi
+done
+
+# Only Caddy's image differs: PostgreSQL is never recreated or queried.
+make_install infra-caddy
+with_images "$P0" "$C1"
+expect_status 0 --patch --now
+recorded "--result updated --from v1.2.3 --to v1.2.5"
+never '120 postgres'; never 'server_version_num'; never 'pull postgres'
+grep -qx "CADDY_IMAGE=$C1" "$case_dir/.env"
+no_line POSTGRES_IMAGE
+override_text postgres caddy | cmp -s - "$case_dir/infrastructure-images.yaml"
+called "image rm $(infra_digest 6)"
+never "image rm $(infra_digest 3)"
+
+# An image that can't be pulled, or fails its check, skips the update before anything stops.
+make_install infra-pull
+with_images "$P1" "$C1"
+expect_status 1 FAIL_AT=infra_pull --patch --now
+recorded "--result skipped --reason pull_failed --from v1.2.3 --to v1.2.5"
+never ' stop app'
+[ ! -e "$case_dir/infrastructure-images.yaml" ]
+make_install infra-check
+with_images "$P1" "$C1"
+expect_status 1 FAIL_AT=postgres_check --patch --now
+recorded "--result skipped --reason image_check_failed --from v1.2.3 --to v1.2.5"
+never ' stop app'
+[ ! -e "$case_dir/infrastructure-images.yaml" ]
+
+# PostgreSQL doesn't start on its new image, or answers with another major or collation version: both services go back
+# to the images .env names, then the previous app starts; .env keeps the previous pin.
+attempt=0
+for failure in FAIL_AT=postgres_up 'PG_CHECK=18|f' 'PG_CHECK=17|t'; do
+  attempt=$((attempt + 1))
+  make_install "infra-startup-$attempt"
+  with_images "$P1" "$C1"
+  expect_status 1 "$failure" --patch --now
+  recorded "--result rolled_back --reason startup_failed --from v1.2.3 --to v1.2.5 --failures 1"
+  [ "$(line_of '120 postgres IMAGE')" -lt "$(line_of "$restored")" ]
+  [ "$(line_of "$restored")" -lt "$(line_of " 90 app IMAGE=$PREVIOUS_ID")" ]
+  never " 90 app IMAGE=$target"
+  pinned ghcr.io/example/app:v1.2.3
+  no_line POSTGRES_IMAGE
+  [ ! -e "$case_dir/.infrastructure-update" ]
+done
+
+# The app's health check fails after PostgreSQL moved: both services go back before the previous app starts.
+make_install infra-health
+with_images "$P1" "$C1"
+expect_status 1 FAIL_AT=health --patch --now
+recorded "--result rolled_back --reason health_check_failed --from v1.2.3 --to v1.2.5 --failures 1"
+[ "$(line_of ' node /app/deploy/healthcheck.mjs')" -lt "$(line_of "$restored")" ]
+[ "$(line_of "$restored")" -lt "$(line_of " 90 app IMAGE=$PREVIOUS_ID")" ]
+never '60 caddy'
+no_line 'POSTGRES_IMAGE|CADDY_IMAGE'
+[ ! -e "$case_dir/.infrastructure-update" ]
+
+# Caddy doesn't start on its new image, or doesn't keep running: the same restore, and only COMPOSE_FILE changed.
+for failure in caddy_up caddy_settle; do
+  make_install "infra-$failure"
+  with_images "$P1" "$C1"
+  cp "$case_dir/.env" "$temporary/env-before"
+  expect_status 1 FAIL_AT=$failure --patch --now
+  recorded "--result rolled_back --reason health_check_failed --from v1.2.3 --to v1.2.5 --failures 1"
+  [ "$(line_of '60 caddy IMAGE')" -lt "$(line_of "$restored")" ]
+  [ "$(line_of "$restored")" -lt "$(line_of " 90 app IMAGE=$PREVIOUS_ID")" ]
+  grep -v '^COMPOSE_FILE=' "$case_dir/.env" | cmp -s - "$temporary/env-before"
+  [ ! -e "$case_dir/.infrastructure-update" ]
+done
+
+# The restore itself fails: the rollback failed, and the marker stays. The next run starts with the same restore
+# before anything else, and the marker goes once it works.
+make_install infra-restore
+with_images "$P1" "$C1"
+expect_status 1 FAIL_AT=infra_restore --patch --now
+grep -q 'Could not start PostgreSQL and Caddy on their previous images.' "$temporary/output"
+recorded "--result failed --reason rollback_failed --from v1.2.3 --to v1.2.5 --failures 1"
+[ -e "$case_dir/.infrastructure-update" ]
+: > "$CALLS"
+expect_status 1 FAKE_HOUR=14 --patch
+head -n 1 "$CALLS" | grep -q -- "$restored"
+[ ! -e "$case_dir/.infrastructure-update" ]
+recorded '--result rolled_back --reason rollback_failed --from v1.2.3 --to v1.2.5 --failures 1 --down-at [0-9T:Z-]+'
+
+# A marker left by a run killed outright: the next run's first Compose call is the restore.
+make_install infra-marker
+: > "$case_dir/.infrastructure-update"
+expect_status 0 --patch --now
+head -n 1 "$CALLS" | grep -q -- "$restored"
+grep -q 'An earlier update stopped while changing PostgreSQL or Caddy' "$temporary/output"
+[ ! -e "$case_dir/.infrastructure-update" ]
+recorded "--result updated --from v1.2.3 --to v1.2.5"
+
+# An install with its own Compose files updates the app and says why PostgreSQL and Caddy stay as they are.
+for own in override list; do
+  make_install "infra-own-$own"
+  with_images "$P1" "$C1"
+  if [ "$own" = override ]; then : > "$case_dir/compose.override.yaml"; else printf 'COMPOSE_FILE=compose.yaml:mine.yaml\n' >> "$case_dir/.env"; fi
+  expect_status 0 --patch --now
+  recorded "--result updated --from v1.2.3 --to v1.2.5"
+  grep -qF 'This install has its own Compose files, so its PostgreSQL and Caddy images stay as they are. See docs/update-reference.md.' "$temporary/output"
+  never 'pull postgres'; never 'pull caddy'; never '120 postgres'; never '60 caddy'
+  [ ! -e "$case_dir/infrastructure-images.yaml" ]
+done
+# A compose.yaml naming its own PostgreSQL image keeps it; Caddy still moves, and the override covers only Caddy.
+make_install infra-own-image
+with_images "$P1" "$C1"
+sed -i "s#^    image: $P0\$#    image: example/postgres:18@$(infra_digest 8)#" "$case_dir/compose.yaml"
+expect_status 0 --patch --now
+grep -qF 'compose.yaml names its own image for postgres, so it stays as it is.' "$temporary/output"
+never 'pull postgres'; never '120 postgres'
+called "60 caddy IMAGE=configured POSTGRES_IMAGE=unset CADDY_IMAGE=$C1"
+override_text caddy | cmp -s - "$case_dir/infrastructure-images.yaml"
+grep -qx "CADDY_IMAGE=$C1" "$case_dir/.env"
+no_line POSTGRES_IMAGE
+
+# A second update moves PostgreSQL again: one .env line, the override listed once, and the image it replaced removed.
+# Every Compose call loads compose.yaml, the schema guard, then the override.
+make_install infra-again
+with_images "$P1" "$C1"
+expect_status 0 DISTINCT_IDS=true --patch --now
+printf '[{"tag_name": "v1.2.6"}, {"tag_name": "v1.2.5"}]\n' > "$FIXTURES/releases.json"
+write_manifest v1.2.6
+with_images "$P2" "$C1"
+: > "$CALLS"
+expect_status 0 DISTINCT_IDS=true --patch --now
+recorded "--result updated --from v1.2.5 --to v1.2.6"
+[ "$(grep -c '^POSTGRES_IMAGE=' "$case_dir/.env")" -eq 1 ] && grep -qx "POSTGRES_IMAGE=$P2" "$case_dir/.env"
+[ "$(grep -c '^CADDY_IMAGE=' "$case_dir/.env")" -eq 1 ] && grep -qx "CADDY_IMAGE=$C1" "$case_dir/.env"
+[ "$(grep '^COMPOSE_FILE=' "$case_dir/.env" | tr ':' '\n' | grep -cx infrastructure-images.yaml)" -eq 1 ]
+called "image rm $(infra_digest 4)"
+never "pull $C1"; never '60 caddy'
+grep " 90 app IMAGE=" "$CALLS" | grep -q -- "-f $case_dir/compose.yaml -f $case_dir/schema-compatibility.yaml -f $case_dir/infrastructure-images.yaml up "
+printf '[{"tag_name": "v2.0.0"}, {"tag_name":"v1.3.0"},\n {"tag_name": "v1.2.5"}, {"tag_name": "v1.2.4"}, {"tag_name": "v1.2.3"}]\n' > "$FIXTURES/releases.json"
+
+echo 'PASS: patch selection, signature, digest and migration checks, setting off, skipped snapshot, rollback, window, pending results; signed host generations, tampering, partial failure, interruption and rollback; PostgreSQL and Caddy image updates, checks, restores and the marker.'

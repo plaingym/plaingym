@@ -57,6 +57,8 @@ if [ "${bootstrap_restored:-false}" = true ]; then exec sh "$ROOT/update.sh" "$@
 . "$ROOT/lib.sh"
 [ "$(id -u)" -eq 0 ] || fail 'Run update.sh as root.'
 [ -f "$ROOT/.env" ] || fail 'Missing installation .env.'
+# PostgreSQL and Caddy run the images .env names, except where a call below passes a new one.
+unset POSTGRES_IMAGE CADDY_IMAGE
 usage='Usage: ./update.sh [--unsigned] IMAGE (explicit semver tag or sha256 digest) | ./update.sh --patch [--now] | ./update.sh --rollback'
 patch=false
 now=false
@@ -81,6 +83,8 @@ NOTICES="$ROOT/auto-update.notices"
 INFLIGHT="$ROOT/.auto-update.inflight"
 ATTEMPT="$ROOT/.schema-attempt"
 RECOVERY="$ROOT/.schema-recovery"
+# Exists exactly while PostgreSQL or Caddy may run another image than .env names; the next run starts those first.
+INFRA="$ROOT/.infrastructure-update"
 recovery_version=
 work=
 host_source=
@@ -108,6 +112,13 @@ interrupted=false
 previous_id=
 swap_pin=
 attempt_end=failed
+# The PostgreSQL and Caddy images this update moves to (infrastructure_plan), the IDs of the images they replace, and
+# whether either service was started on its new image.
+infra_postgres=
+infra_caddy=
+infra_postgres_before=
+infra_caddy_before=
+infra_started=false
 recovery_notice() {
   failed_version=$(cut -f3 "$RECOVERY")
   restore_snapshot=$(cut -f6 "$RECOVERY")
@@ -143,7 +154,23 @@ settle_attempt() {
   attempt_end=abandoned
   target_floor=-
 }
+infrastructure_restore() ( # PostgreSQL and Caddy on the images .env names.
+  # A call that failed under set -e leaves its APP_IMAGE=, POSTGRES_IMAGE= or CADDY_IMAGE= in the exit handler's
+  # environment; here every value comes from .env.
+  unset APP_IMAGE POSTGRES_IMAGE CADDY_IMAGE
+  compose_exec up -d --no-deps --pull never --wait --wait-timeout 120 postgres caddy
+)
 rollback() {
+  # PostgreSQL first, so the attempt can be settled and the previous app started against the image .env names.
+  if [ "$infra_started" = true ]; then
+    compose stop app || true
+    if ! infrastructure_restore; then
+      echo 'Could not start PostgreSQL and Caddy on their previous images.' >&2
+      return 1
+    fi
+    rm -f "$INFRA"
+    infra_started=false
+  fi
   settle_attempt || return 1
   # A recovery retry that changed nothing still cannot restart code below the already-migrated floor.
   if [ -f "$RECOVERY" ]; then
@@ -158,7 +185,8 @@ cleanup() {
   # The rename of .env commits both the image and its host files, even if a signal arrived immediately after it.
   if { [ "$changed" = true ] || [ "$stage" = finished ]; } && [ "$(read_env APP_IMAGE)" = "$swap_pin" ]; then
     changed=false; stopped=false; stage=finished
-    rm -f "$ATTEMPT" "$RECOVERY" "$ROOT/schema-compatibility.yaml.before"
+    rm -f "$ATTEMPT" "$RECOVERY" "$ROOT/schema-compatibility.yaml.before" "$INFRA"
+    infra_started=false
     exit_status=0
   fi
   # Restore before rollback uses Compose or any other release-owned file. Leave the journal for a retry on failure.
@@ -180,7 +208,11 @@ cleanup() {
       history_record "$to_version" "$target_id" "$history_outcome" "$target_floor" "$snapshot"
       if [ "$requested_rollback" = true ]; then report updated -; fi
       # After the update's own row, so its image tops the rollback stack.
-      if [ "$requested_rollback" = false ]; then prune_images || true; prune_host_history || true; fi
+      if [ "$requested_rollback" = false ]; then
+        prune_images || true; prune_host_history || true
+        infrastructure_prune "$infra_postgres" "$infra_postgres_before"
+        infrastructure_prune "$infra_caddy" "$infra_caddy_before"
+      fi
     else
       history_record "$to_version" "$target_id" "$attempt_end" "$target_floor" "$snapshot"
       if [ "$outcome" = rolled_back ] || [ "$outcome" = restarted ]; then
@@ -285,16 +317,40 @@ swap_image() { # TARGET
   stopped=false
   changed=true
   stage=startup
+  # The snapshot above ran on the old PostgreSQL, and the app is stopped.
+  if [ -n "$infra_postgres" ]; then
+    : > "$INFRA"
+    infra_started=true
+    POSTGRES_IMAGE="$infra_postgres" compose up -d --no-deps --pull never --wait --wait-timeout 120 postgres
+    infrastructure_database_check || fail "PostgreSQL on $infra_postgres is not major 18 or its collation version differs from the database's; restoring the previous images."
+  fi
   APP_IMAGE="$1" compose up -d --no-deps --pull never --wait --wait-timeout 90 app
   stage=health
   APP_IMAGE="$1" compose exec -T app node /app/deploy/healthcheck.mjs
   [ "$patch" = false ] || settle "$1"
+  if [ -n "$infra_caddy" ]; then
+    : > "$INFRA"
+    infra_started=true
+    CADDY_IMAGE="$infra_caddy" compose up -d --no-deps --pull never --wait --wait-timeout 60 caddy
+    infrastructure_caddy_settle || fail "Caddy on $infra_caddy did not keep running; restoring the previous images."
+  fi
   if [ -n "$host_source" ]; then host_apply "$host_source" "$1" "$previous_id" || fail 'Could not install the signed host files; restoring the previous copies.'; fi
-  # Startup completes migrations before reporting healthy. Publish the pin only afterwards.
-  awk -v image="$1" 'BEGIN { found=0 } /^APP_IMAGE=/ { print "APP_IMAGE=" image; found=1; next } { print } END { if (!found) print "APP_IMAGE=" image }' "$ROOT/.env" > "$ROOT/.env.next" \
+  # Startup completes migrations before reporting healthy. Publish the pin only afterwards, in one rename with the
+  # PostgreSQL and Caddy images it ran with.
+  set -- APP_IMAGE
+  [ -z "$infra_postgres" ] || set -- "$@" POSTGRES_IMAGE
+  [ -z "$infra_caddy" ] || set -- "$@" CADDY_IMAGE
+  awk -v image="$swap_pin" -v postgres="$infra_postgres" -v caddy="$infra_caddy" '
+    function put(key, value) { if (!(key in done)) print key "=" value; done[key] = 1 }
+    /^APP_IMAGE=/ { print "APP_IMAGE=" image; found=1; next }
+    postgres != "" && /^POSTGRES_IMAGE=/ { put("POSTGRES_IMAGE", postgres); next }
+    caddy != "" && /^CADDY_IMAGE=/ { put("CADDY_IMAGE", caddy); next }
+    { print }
+    END { if (!found) print "APP_IMAGE=" image; if (postgres != "") put("POSTGRES_IMAGE", postgres); if (caddy != "") put("CADDY_IMAGE", caddy) }' "$ROOT/.env" > "$ROOT/.env.next" \
     || { rm -f "$ROOT/.env.next"; fail 'Could not write .env; the update was not applied.'; }
-  env_install "$ROOT/.env.next" APP_IMAGE || fail 'Could not write .env; the update was not applied.'
-  rm -f "$RECOVERY" "$ATTEMPT" "$ROOT/schema-compatibility.yaml.before"
+  env_install "$ROOT/.env.next" "$@" || fail 'Could not write .env; the update was not applied.'
+  rm -f "$RECOVERY" "$ATTEMPT" "$ROOT/schema-compatibility.yaml.before" "$INFRA"
+  infra_started=false
   stage=finished
   changed=false
 }
@@ -305,6 +361,99 @@ settle() { # TARGET
   [ "$(compose ps -q app)" = "$container" ] || return 1
   [ "$(docker inspect "$container" --format '{{.State.Health.Status}} {{.RestartCount}}')" = 'healthy 0' ] || return 1
   APP_IMAGE="$1" compose exec -T app node /app/deploy/healthcheck.mjs
+}
+
+# --- PostgreSQL and Caddy images (docs/update-reference.md, "PostgreSQL and Caddy images") ----------------------------
+# An update to a newer signed release moves them to the images its manifest names. compose.yaml is never written: the
+# override infrastructure-images.yaml reads POSTGRES_IMAGE and CADDY_IMAGE from .env, which the pin's rename commits.
+own_compose_files() { # Whether this install has Compose files that the updater's own Compose calls don't load.
+  [ ! -e "$ROOT/compose.override.yaml" ] && [ ! -e "$ROOT/compose.override.yml" ] || return 0
+  read_env COMPOSE_FILE | awk -F: '
+    { for (i = 1; i <= NF; i++) if ($i != "" && $i !~ /^(compose|schema-compatibility|infrastructure-images)\.yaml$/) own = 1 }
+    END { exit !own }'
+}
+# Sets infra_postgres and infra_caddy to the images to move to, and pulls and checks them before anything stops.
+# Returns 2 when an image can't be pulled, and 1 when one fails its check or the Compose files can't be written.
+infrastructure_plan() { # MANIFEST
+  infra_postgres=
+  infra_caddy=
+  [ -n "$(manifest_value "$1" postgres_image)" ] || return 0
+  [ -z "$recovery_version" ] || return 0
+  valid_version "$from_version" && valid_version "$to_version" || return 0
+  [ "$to_version" != "$from_version" ] && version_at_least "$to_version" "$from_version" || return 0
+  if own_compose_files; then
+    echo 'This install has its own Compose files, so its PostgreSQL and Caddy images stay as they are. See docs/update-reference.md.'
+    return 0
+  fi
+  infra_services=
+  for infra_service in postgres caddy; do
+    infra_base=$(compose_image "$ROOT/compose.yaml" "$infra_service") || infra_base=
+    case "$infra_service" in
+      postgres) infra_pattern=$postgres_image_pattern; infra_current=$(read_env POSTGRES_IMAGE) ;;
+      *) infra_pattern=$caddy_image_pattern; infra_current=$(read_env CADDY_IMAGE) ;;
+    esac
+    if ! printf '%s\n' "$infra_base" | grep -Eq "$infra_pattern"; then
+      echo "compose.yaml names its own image for $infra_service, so it stays as it is."
+      continue
+    fi
+    infra_services="$infra_services $infra_service"
+    [ -n "$infra_current" ] || infra_current=$infra_base
+    infra_new=$(manifest_value "$1" "${infra_service}_image")
+    [ "$infra_new" != "$infra_current" ] || continue
+    infra_before=$(docker image inspect "$infra_current" --format '{{.Id}}' 2>/dev/null) || infra_before=
+    case "$infra_service" in
+      postgres) infra_postgres=$infra_new; infra_postgres_before=$infra_before ;;
+      *) infra_caddy=$infra_new; infra_caddy_before=$infra_before ;;
+    esac
+  done
+  [ -n "$infra_postgres$infra_caddy" ] || return 0
+  if [ -n "$infra_postgres" ]; then docker pull "$infra_postgres" || return 2; fi
+  if [ -n "$infra_caddy" ]; then docker pull "$infra_caddy" || return 2; fi
+  if [ -n "$infra_postgres" ]; then
+    docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --pull never \
+      --entrypoint postgres "$infra_postgres" --version | grep -Eq '^postgres \(PostgreSQL\) 18\.' || return 1
+  fi
+  if [ -n "$infra_caddy" ]; then
+    # The caddy binary carries the capability to bind ports 80 and 443, and can't run where it is dropped.
+    docker run --rm --network none --read-only --cap-drop ALL --cap-add NET_BIND_SERVICE --security-opt no-new-privileges \
+      --pull never --entrypoint caddy "$infra_caddy" version | grep -q '^v2\.' || return 1
+  fi
+  # Until .env names another image the override gives each service compose.yaml's own, so this changes nothing yet.
+  # shellcheck disable=SC2086 # Service names only.
+  infrastructure_file $infra_services > "$ROOT/infrastructure-images.yaml.next" \
+    || { rm -f "$ROOT/infrastructure-images.yaml.next"; return 1; }
+  if cmp -s "$ROOT/infrastructure-images.yaml.next" "$ROOT/infrastructure-images.yaml"; then
+    rm -f "$ROOT/infrastructure-images.yaml.next"
+  else
+    mv "$ROOT/infrastructure-images.yaml.next" "$ROOT/infrastructure-images.yaml" \
+      || { rm -f "$ROOT/infrastructure-images.yaml.next"; return 1; }
+  fi
+  # Ordinary `docker compose` commands load the same files as the updater's explicit -f arguments.
+  infra_listed=$(read_env COMPOSE_FILE)
+  case ":$infra_listed:" in
+    *:infrastructure-images.yaml:*) ;;
+    *)
+      { awk '!/^COMPOSE_FILE=/' "$ROOT/.env" > "$ROOT/.env.infrastructure-next" \
+        && printf 'COMPOSE_FILE=%s\n' "${infra_listed:-compose.yaml}:infrastructure-images.yaml" >> "$ROOT/.env.infrastructure-next" \
+        && env_install "$ROOT/.env.infrastructure-next" COMPOSE_FILE; } \
+        || { rm -f "$ROOT/.env.infrastructure-next"; return 1; } ;;
+  esac
+}
+infrastructure_database_check() { # PostgreSQL answers on major 18, with the collation version its database recorded.
+  # shellcheck disable=SC2016
+  [ "$(compose exec -T postgres sh -c 'exec psql -X -U postgres -d "$POSTGRES_DB" -qtAc "$1"' sh \
+    "select current_setting('server_version_num')::int / 10000, coalesce((select datcollversion is not distinct from pg_database_collation_actual_version(oid) from pg_database where datname = current_database()), true)")" = '18|t' ]
+}
+infrastructure_caddy_settle() { # Caddy keeps running on its new image: the same container, never restarted.
+  infra_container=$(compose ps -q caddy) && [ -n "$infra_container" ] || return 1
+  sleep "${UPDATE_INFRA_SETTLE_SECONDS:-10}"
+  [ "$(compose ps -q caddy)" = "$infra_container" ] || return 1
+  [ "$(docker inspect "$infra_container" --format '{{.State.Status}} {{.RestartCount}}')" = 'running 0' ]
+}
+infrastructure_prune() { # NEW_IMAGE BEFORE_ID: after a successful update, the image a service ran before goes.
+  [ -n "$1" ] && [ -n "$2" ] || return 0
+  [ "$(docker image inspect "$1" --format '{{.Id}}' 2>/dev/null || true)" != "$2" ] || return 0
+  remove_image "$2" || true
 }
 
 # --- Automatic patch updates (--patch) ---------------------------------------------------------------------
@@ -574,6 +723,14 @@ trap cleanup EXIT
 trap 'interrupted=true; exit 130' HUP INT TERM
 host_recover || fail 'Could not recover host files from an interrupted update.'
 
+# A run killed outright while PostgreSQL or Caddy may have run a new image: put both back on the images .env names
+# first. The blocks below then start the pinned app as before.
+if [ -f "$INFRA" ]; then
+  echo 'An earlier update stopped while changing PostgreSQL or Caddy; starting the images .env names.' >&2
+  infrastructure_restore || fail 'PostgreSQL or Caddy did not start on the images .env names. Fix the error above and run update.sh again.'
+  rm -f "$INFRA"
+fi
+
 # A run killed outright during a manual update left its record: finish what its exit handler would have done.
 # This run only does that, even when --rollback started it, so it reports the earlier update, not a rollback.
 if [ -f "$ATTEMPT" ]; then
@@ -761,6 +918,10 @@ if [ "$patch" = false ]; then
     host_download "$work/manifest" "https://github.com/$repository/releases/download/$to_version" "$work" || host_status=$?
     [ "$host_status" -ne 2 ] || fail "Could not download the deployment files of $to_version. Nothing was installed."
     [ "$host_status" -eq 0 ] || fail 'Invalid signed host files or release signing key change. Nothing was installed.'
+    infra_status=0
+    infrastructure_plan "$work/manifest" || infra_status=$?
+    [ "$infra_status" -ne 2 ] || fail "Could not pull the PostgreSQL or Caddy image of $to_version. Nothing was changed."
+    [ "$infra_status" -eq 0 ] || fail "The PostgreSQL or Caddy image of $to_version failed its check. Nothing was changed."
   fi
   if [ -n "$recovery_version" ] && ! valid_version "$to_version"; then
     fail "Recovery requires $recovery_version or a newer compatible signed release. Nothing was changed."
@@ -897,6 +1058,10 @@ host_status=0
 host_download "$work/manifest" "https://github.com/$repository/releases/download/$tag" "$work" || host_status=$?
 [ "$host_status" -ne 2 ] || finish skipped manifest_unavailable 1
 [ "$host_status" -eq 0 ] || finish skipped manifest_invalid 1
+infra_status=0
+infrastructure_plan "$work/manifest" || infra_status=$?
+[ "$infra_status" -ne 2 ] || finish skipped pull_failed 1
+[ "$infra_status" -eq 0 ] || finish skipped image_check_failed 1
 
 history_install
 swap_image "$target"

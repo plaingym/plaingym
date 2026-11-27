@@ -32,6 +32,34 @@ env_install() {
 image_name_pattern='^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?(/[a-z0-9][a-z0-9._-]*)+$'
 version_pattern='^v(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$'
 valid_image_name() { printf '%s\n' "$1" | grep -Eq "$image_name_pattern"; }
+# The only PostgreSQL and Caddy images a release may name: major 18 on the default variant, and Caddy 2 on Alpine,
+# each by digest (docs/update-reference.md, "PostgreSQL and Caddy images").
+postgres_image_pattern='^postgres:18(\.[0-9]{1,3})?@sha256:[a-f0-9]{64}$'
+caddy_image_pattern='^caddy:2\.[0-9]{1,3}\.[0-9]{1,3}-alpine@sha256:[a-f0-9]{64}$'
+compose_image() { # FILE SERVICE: the first image: value in SERVICE's block under services:, or nothing
+  # Written for compose.yaml's own layout: two-space service names and four-space keys.
+  awk -v service="$2" '
+    /^[^ #]/ { services = ($0 ~ /^services:[[:space:]]*$/); inside = 0; next }
+    services && /^  [^ #]/ { inside = ($0 ~ ("^  " service ":[[:space:]]*$")); next }
+    inside && /^    image:/ {
+      value = $0; sub(/^    image:[[:space:]]*/, "", value); sub(/[[:space:]]+$/, "", value)
+      if (value ~ /^\047.*\047$/ || value ~ /^".*"$/) value = substr(value, 2, length(value) - 2)
+      print value; exit
+    }' "$1"
+}
+infrastructure_file() { # SERVICE...: the text of infrastructure-images.yaml for these services (postgres, caddy)
+  # Each service defaults to the image compose.yaml names, so the file changes nothing until .env names another.
+  printf '%s\n' "# Written by update.sh; don't edit. PostgreSQL and Caddy run the images .env names (POSTGRES_IMAGE, CADDY_IMAGE)." 'services:'
+  for infrastructure_service do
+    case "$infrastructure_service" in
+      postgres) infrastructure_variable=POSTGRES_IMAGE ;;
+      caddy) infrastructure_variable=CADDY_IMAGE ;;
+      *) return 1 ;;
+    esac
+    printf "  %s:\n    image: '\${%s:-%s}'\n" "$infrastructure_service" "$infrastructure_variable" \
+      "$(compose_image "$ROOT/compose.yaml" "$infrastructure_service")" || return 1
+  done
+}
 valid_repository() {
   printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' || return 1
   # Dot-only path segments normalize outside the requested repository.
@@ -42,6 +70,8 @@ compose() (
   compose_exec "$@"
 )
 compose_exec() {
+  # Files listed later win: compose.yaml, then the schema guard, then the images update.sh manages.
+  if [ -f "$ROOT/infrastructure-images.yaml" ]; then set -- -f "$ROOT/infrastructure-images.yaml" "$@"; fi
   if [ -f "$ROOT/schema-compatibility.yaml" ]; then
     set -- -f "$ROOT/schema-compatibility.yaml" "$@"
   fi
@@ -146,7 +176,8 @@ restore_schema_guard() { # The guard as keep_schema_guard found it, or none, wit
     return
   fi
   listed=$(read_env COMPOSE_FILE)
-  composition=${listed%:schema-compatibility.yaml}
+  # The guard leaves the list wherever it is in it; every other entry stays, in order.
+  composition=$(printf '%s\n' "$listed" | awk -F: '{ for (i = 1; i <= NF; i++) if ($i != "schema-compatibility.yaml") { out = out sep $i; sep = ":" } } END { print out }') || return 1
   # .env never got the guard (its rewrite failed, as on a full disk): only the guard file goes, .env stays as it is.
   if [ "$composition" = "$listed" ]; then
     rm -f "$ROOT/schema-compatibility.yaml"
@@ -217,6 +248,11 @@ manifest_check() { # MANIFEST VERSION
   manifest_value "$1" digest | grep -Eq '^sha256:[a-f0-9]{64}$' || return 1
   manifest_value "$1" revision | grep -Eq '^[a-f0-9]{40}$' || return 1
   manifest_value "$1" migrations | grep -Eq '^sha256:[a-f0-9]{64}$' || return 1
+  # The PostgreSQL and Caddy images of the release's compose.yaml: both or neither (releases before they were listed).
+  if grep -Eq '^(postgres|caddy)_image=' "$1"; then
+    manifest_value "$1" postgres_image | grep -Eq "$postgres_image_pattern" || return 1
+    manifest_value "$1" caddy_image | grep -Eq "$caddy_image_pattern" || return 1
+  fi
   if [ -n "$(manifest_value "$1" host_format)" ]; then
     [ "$(manifest_value "$1" host_format)" = 1 ] || return 1
     [ "$(manifest_value "$1" deploy_archive)" = "plaingym-deploy-$2.tar.gz" ] || return 1

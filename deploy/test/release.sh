@@ -139,6 +139,21 @@ refuse_publish 'A prerelease is a v0.Y.Z version' --prerelease --version v1.2.3 
 refuse_publish 'never signed with the prerelease key' --version v1.2.3 --rollback-floor v1.2.3 --public-key "$source_dir/prerelease-signing.pem"
 [ "$(sed '/^-----/d' "$source_dir/release-signing.pem")" != "$(sed '/^-----/d' "$source_dir/prerelease-signing.pem")" ]
 
+# --- deploy-assets.sh: the PostgreSQL and Caddy images a release names --------------------------------------------
+# A revision whose compose.yaml pins another PostgreSQL major gives no assets. Built from a scratch repository holding
+# this deploy/ folder, with that one line changed.
+pins="$temporary/pins"
+mkdir "$pins"
+cp -R "$source_dir" "$pins/deploy"
+sed -i "s#^    image: postgres:18@#    image: postgres:19@#" "$pins/deploy/compose.yaml"
+grep -q '^    image: postgres:19@sha256:' "$pins/deploy/compose.yaml"
+git -C "$pins" init -q -b main
+git -C "$pins" -c user.name=Release -c user.email=release@example.org -c commit.gpgsign=false add -A
+git -C "$pins" -c user.name=Release -c user.email=release@example.org -c commit.gpgsign=false commit -q -m 'fix: postgres 19'
+if sh "$pins/deploy/release/deploy-assets.sh" --revision "$(git -C "$pins" rev-parse HEAD)" --version v1.2.3 --repository release-test/plaingym \
+  --public-key "$temporary/public.pem" --out "$temporary/pins-assets" > "$temporary/output" 2>&1; then echo 'Built assets for postgres:19.' >&2; exit 1; fi
+grep -qF 'deploy/compose.yaml must pin postgres:18 and caddy:2.N.N-alpine by digest.' "$temporary/output"
+
 # --- publish.sh: a dry release to a throwaway registry ---------------------------------------------------
 if ! docker info > /dev/null 2>&1; then echo 'SKIP: no Docker for the publish dry run.' >&2; echo 'PASS: check-tag.sh and the publish key choice.'; exit 0; fi
 registry_name="$run_id-registry"
@@ -185,6 +200,11 @@ manifest="$temporary/release/release-manifest.txt"
 manifest_verify "$temporary/public.pem" "$manifest" "$manifest.sig"
 manifest_check "$manifest" v1.2.3
 [ "$(manifest_value "$manifest" rollback_floor)" = v1.1.0 ]
+# It names the PostgreSQL and Caddy images the revision's compose.yaml pins.
+git -C "$source_dir/.." show "$revision:deploy/compose.yaml" > "$temporary/compose.yaml"
+[ -n "$(manifest_value "$manifest" postgres_image)" ] && [ -n "$(manifest_value "$manifest" caddy_image)" ]
+[ "$(manifest_value "$manifest" postgres_image)" = "$(compose_image "$temporary/compose.yaml" postgres)" ]
+[ "$(manifest_value "$manifest" caddy_image)" = "$(compose_image "$temporary/compose.yaml" caddy)" ]
 [ "$(manifest_value "$manifest" image)" = "$registry/release-test/app" ]
 digest=$(manifest_value "$manifest" digest)
 # The exact canonical reference the updater records can be removed without a global prune.

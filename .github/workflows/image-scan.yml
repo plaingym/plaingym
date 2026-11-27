@@ -3,7 +3,9 @@ name: Image scan
 # Pinned packages don't notice advisories published after a release. This builds the runtime image
 # and scans it with Trivy (run from its image, pinned by digest). It fails on a high or critical
 # advisory that has a fixed version, unless deploy/trivy-ignore.yaml lists it; every high and
-# critical finding, fixed or not, is listed in the run log for review.
+# critical finding, fixed or not, is listed in the run log for review. The infrastructure job scans
+# the PostgreSQL and Caddy images deploy/compose.yaml pins the same way, failing only on the weekly
+# and manual runs.
 on:
   schedule:
     - cron: '17 6 * * 1'
@@ -12,12 +14,14 @@ on:
     paths:
       - 'deploy/Dockerfile'
       - 'deploy/apt-runtime*'
+      - 'deploy/compose.yaml'
       - 'deploy/trivy-ignore.yaml'
       - '.github/workflows/image-scan.yml'
   pull_request:
     paths:
       - 'deploy/Dockerfile'
       - 'deploy/apt-runtime*'
+      - 'deploy/compose.yaml'
       - 'deploy/trivy-ignore.yaml'
       - '.github/workflows/image-scan.yml'
   workflow_dispatch:
@@ -31,7 +35,7 @@ env:
   IMAGE: plaingym:v0.0.0-scan
 jobs:
   scheduled-failure:
-    needs: [scan]
+    needs: [scan, infrastructure]
     if: >-
       ${{ !cancelled() && github.event_name == 'schedule' && github.ref == 'refs/heads/main' &&
           (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
@@ -94,3 +98,38 @@ jobs:
           docker run --rm -v "$RUNNER_TEMP:/scan" -v "$PWD/deploy:/policy:ro" "$TRIVY_IMAGE" image --input /scan/image.tar \
             --cache-dir /scan/trivy-cache --scanners vuln --severity HIGH,CRITICAL --ignorefile /policy/trivy-ignore.yaml \
             --ignore-unfixed --exit-code 1 --skip-db-update --no-progress --skip-version-check
+  # The PostgreSQL and Caddy images installs run, which update.sh moves to with each release (docs/update-reference.md).
+  # Trivy reads each from its registry by the pinned reference. A task branch or pull request only lists advisories.
+  infrastructure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Read the pinned images
+        run: |
+          . deploy/lib.sh
+          postgres_image=$(compose_image deploy/compose.yaml postgres)
+          caddy_image=$(compose_image deploy/compose.yaml caddy)
+          printf '%s\n' "$postgres_image" | grep -Eq "$postgres_image_pattern"
+          printf '%s\n' "$caddy_image" | grep -Eq "$caddy_image_pattern"
+          printf 'POSTGRES_IMAGE=%s\nCADDY_IMAGE=%s\n' "$postgres_image" "$caddy_image" >> "$GITHUB_ENV"
+      - name: List every high and critical advisory
+        run: |
+          for image in "$POSTGRES_IMAGE" "$CADDY_IMAGE"; do
+            echo "Scanning $image"
+            docker run --rm -v "$RUNNER_TEMP:/scan" -v "$PWD/deploy:/policy:ro" "$TRIVY_IMAGE" image "$image" \
+              --cache-dir /scan/trivy-cache --scanners vuln --severity HIGH,CRITICAL --ignorefile /policy/trivy-ignore.yaml \
+              --no-progress --skip-version-check
+          done
+      - name: Fail on fixable advisories
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: |
+          status=0
+          for image in "$POSTGRES_IMAGE" "$CADDY_IMAGE"; do
+            docker run --rm -v "$RUNNER_TEMP:/scan" -v "$PWD/deploy:/policy:ro" "$TRIVY_IMAGE" image "$image" \
+              --cache-dir /scan/trivy-cache --scanners vuln --severity HIGH,CRITICAL --ignorefile /policy/trivy-ignore.yaml \
+              --ignore-unfixed --exit-code 1 --skip-db-update --no-progress --skip-version-check || status=1
+          done
+          exit "$status"

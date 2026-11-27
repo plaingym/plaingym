@@ -21,6 +21,11 @@ looks for a newer patch release of the version you run (from 1.2.3 it takes 1.2.
 3. installs the new version and checks that it stays healthy for a minute;
 4. goes back to the previous version if it doesn't.
 
+A release can also carry newer PostgreSQL and Caddy images (security fixes for the database
+and for the web server on ports 80 and 443). The update moves both with the app, checks
+them, and puts them back too if anything fails
+([details](update-reference.md#postgresql-and-caddy-images)).
+
 Owners switch it off, or on again, in **Settings → Updates**; it is on by default. The
 **Nightly update window** select there picks the window's start hour. It does
 nothing, and tells you why, until backups are set up
