@@ -19,7 +19,7 @@ import type { Auth, Session } from './index.js';
 import { passwordLogin, type AuthConfig } from './config.js';
 import { passwordAdapter } from './password.js';
 import { emailServiceFailure } from '../email/failure.js';
-import { logWarn } from '../../core/log.js';
+import { logError, logWarn } from '../../core/log.js';
 import { accountLimitedPaths, reserveAccountAttempt, releaseAccountAttempt, gymAddressStorage, signInLimits, loginLinkCeiling, reserveLoginLinkCeiling,
   type AccountReservation, type SignInRule } from './account-limit.js';
 import { authLibraryLogger } from './library-log.js';
@@ -141,6 +141,21 @@ function loginSwitchResponse(page: Parameters<typeof loginSwitchPage>[1]): Respo
     'reporting-endpoints': reportingEndpoints,
   } });
 }
+/**
+ * Runs Better Auth's router. With `onAPIError.throw`, an error other than an API error rejects instead of reaching
+ * the router's raw `console.error`; it is logged here without its message and answered with the router's bare 500.
+ * The library's own logging is skipped for an internal-error API error too, so a 500 it answers is logged here.
+ */
+async function routed(auth: { handler: (request: Request) => Promise<Response> }, request: Request): Promise<Response> {
+  const path = new URL(request.url).pathname;
+  let response: Response;
+  try { response = await auth.handler(request); } catch (error) {
+    logError('auth.handler_error', { path }, error);
+    return new Response(null, { status: 500, statusText: 'Internal Server Error' });
+  }
+  if (response.status === 500) logError('auth.handler_error', { path, status: 500 });
+  return response;
+}
 /** Every answer Better Auth gives through `handler`: never cached, and a refusal carries the standard `Retry-After` too. */
 function forwardedAnswer(response: Response): Response {
   response.headers.set('cache-control', 'no-store');
@@ -234,6 +249,10 @@ export function createAuthService(options: AuthServiceOptions) {
       const build = (google: { clientId: string; clientSecret: string } | null) => betterAuth({
         secret: config.secret, baseURL: origin.origin, basePath: '/api/auth', trustedOrigins: [origin.origin],
         logger: authLibraryLogger,
+        // An error other than an API error rejects out of `handler` to `routed`, which logs it without its message.
+        // Otherwise the router behind Better Auth writes it raw to the console (`# SERVER_ERROR:`), and a query
+        // error's message carries its bound parameters, such as the address a sign-in looked up.
+        onAPIError: { throw: true },
         database: drizzleAdapter(database(), { provider: 'pg', schema: {
           user: authUser, session: authSession, account: authAccount, verification: authVerification, rateLimit: authRateLimit,
         }, transaction: true }),
@@ -365,7 +384,7 @@ export function createAuthService(options: AuthServiceOptions) {
         if (!token.startsWith(`${gym.gymId}.`)) return Response.json({ error: 'invalid_token_gym' }, { status: 403 });
         const forwarded = headers(request);
         forwarded.delete('content-type'); forwarded.delete('content-length');
-        return forwardedAnswer(await auth.handler(new Request(verifyUrl(token, portalClaimCallback(typeof callback === 'string' ? callback : null, origin)), { method: 'GET', headers: forwarded })));
+        return forwardedAnswer(await routed(auth, new Request(verifyUrl(token, portalClaimCallback(typeof callback === 'string' ? callback : null, origin)), { method: 'GET', headers: forwarded })));
       }
       const adapter: Auth = {
         async getSession(request): Promise<Session | null> {
@@ -458,7 +477,7 @@ export function createAuthService(options: AuthServiceOptions) {
           if (attempt && attemptId) { attempts.set(attemptId, attempt); forwarded.set(accountAttemptHeader, attemptId); }
           let response: Response;
           try {
-            response = await (google ? build(google) : auth).handler(new Request(safeUrl, { method: request.method, headers: forwarded, ...(body ? { body } : {}) }));
+            response = await routed(google ? build(google) : auth, new Request(safeUrl, { method: request.method, headers: forwarded, ...(body ? { body } : {}) }));
           } finally { if (attemptId) attempts.delete(attemptId); }
           // Best effort: the session already exists, so a failed release only leaves this success counted like a failure.
           if (path === '/sign-in/email' && response.status === 200 && attempt?.reservation) await releaseAccountAttempt(database(), attempt.reservation).catch(() => undefined);

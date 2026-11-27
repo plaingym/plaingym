@@ -8,7 +8,7 @@ import { eq } from 'drizzle-orm';
 import { DrizzleQueryError } from 'drizzle-orm/errors';
 import { setLogSink } from '../../core/log.js';
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
-import { authAccount, authSession, authVerification, authRateLimit, staffRoles, auditEvents, uuidv7 } from '@plaingym/db';
+import { authAccount, authSession, authUser, authVerification, authRateLimit, staffRoles, auditEvents, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { createHash } from 'node:crypto';
@@ -326,6 +326,34 @@ describe('Better Auth HTTP containment', () => {
       expect(JSON.parse(logged[0]!)).toMatchObject({ level: 'error', message: 'INTERNAL_SERVER_ERROR', error: { query } });
       expect(lines.join('\n').toLowerCase()).not.toContain(f.user.email.toLowerCase());
     } finally { select.mockRestore(); consoleError.mockRestore(); consoleWarn.mockRestore(); setLogSink(previous); }
+  });
+  it('logs a routed endpoint\'s query error without its address and answers 500, with nothing on the console', async () => {
+    const f = await fixture();
+    // An API error still answers as itself: a wrong password is the usual 401.
+    expect((await f.a.handler(f.request('/sign-in/email', { email: f.user.email, password: 'not-the-password-1' }))).status).toBe(401);
+    const query = 'select "id" from "auth_user" where "email" = $1';
+    const lines: string[] = [], previous = setLogSink((line) => { lines.push(line); });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    // The sign-in's user lookup fails as a Drizzle query does, with the submitted address among its bound parameters.
+    // Only reads of `auth_user` fail: the rate limits read before the router and must still work.
+    const db = database.system.db, original = db.select.bind(db);
+    const select = vi.spyOn(db, 'select').mockImplementation(((...args: Parameters<typeof original>) => {
+      const builder = original(...args), from = builder.from.bind(builder);
+      return Object.assign(builder, { from: (table: Parameters<typeof from>[0]) => {
+        if (table === authUser) throw new DrizzleQueryError(query, [f.user.email]);
+        return from(table);
+      } });
+    }) as typeof db.select);
+    try {
+      const answer = await f.a.handler(f.request('/sign-in/email', { email: f.user.email, password }));
+      expect(answer.status).toBe(500);
+      expect(await answer.text()).toBe('');
+      expect(consoleError).not.toHaveBeenCalled();
+      const logged = lines.filter((line) => line.includes('"auth.handler_error"'));
+      expect(logged).toHaveLength(1);
+      expect(JSON.parse(logged[0]!)).toMatchObject({ level: 'error', path: '/api/auth/sign-in/email', error: { query } });
+      expect(lines.join('\n').toLowerCase()).not.toContain(f.user.email.toLowerCase());
+    } finally { select.mockRestore(); consoleError.mockRestore(); setLogSink(previous); }
   });
   it('rejects auth calls inside a transaction', async () => {
     const f = await fixture();
