@@ -43,7 +43,7 @@ function login(context: Context<RequestEnvironment>) {
 const t = createTranslator(locales.en ?? {});
 /** The page the emailed link opens. The token stays in the fragment and is posted as JSON; the markup never contains it. */
 export function emailChangePage(text: Translator, nonce: string) {
-  const script = `const token=location.hash.slice(1);history.replaceState(null,'',location.pathname);const button=document.getElementById('confirm');const show=(id)=>{document.getElementById(id).hidden=false;};button.addEventListener('click',async()=>{button.disabled=true;for(const id of ['error','expired','other','taken'])document.getElementById(id).hidden=true;try{const response=await fetch('/api/account/email/confirm',{method:'POST',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});if(response.ok){const body=await response.json();document.getElementById('address').textContent=body.data.email;button.hidden=true;show('success');return;}show(response.status===404?'expired':response.status===403?'other':response.status===409?'taken':'error');}catch{show('error');}finally{button.disabled=false;}});`;
+  const script = `const token=location.hash.slice(1);history.replaceState(null,'',location.pathname);const button=document.getElementById('confirm');const show=(id)=>{document.getElementById(id).hidden=false;};button.addEventListener('click',async()=>{button.disabled=true;for(const id of ['error','expired','other','taken'])document.getElementById(id).hidden=true;try{const response=await fetch('/api/account/email/confirm',{method:'POST',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});if(response.ok){const body=await response.json();button.hidden=true;if(body.data.status==='sent'){show('sent');return;}document.getElementById('address').textContent=body.data.email;show('success');return;}show(response.status===404?'expired':response.status===403?'other':response.status===409?'taken':'error');}catch{show('error');}finally{button.disabled=false;}});`;
   return jsx('html', { lang: 'en', class: 'theme-system', children: [
     jsx('head', { children: [jsx('meta', { charset: 'utf-8' }), jsx('meta', { name: 'viewport', content: 'width=device-width, initial-scale=1' }), jsx('meta', { name: 'color-scheme', content: 'light dark' }), jsx('meta', { name: 'referrer', content: 'no-referrer' }), jsx('title', { children: text('auth/account:confirmTitle') })] }),
     jsx('body', { children: [jsx('main', { children: [
@@ -53,6 +53,7 @@ export function emailChangePage(text: Translator, nonce: string) {
       jsx('p', { id: 'other', role: 'alert', hidden: true, children: text('auth/account:confirmOtherLogin') }),
       jsx('p', { id: 'taken', role: 'alert', hidden: true, children: text('auth/account:confirmTaken') }),
       jsx('p', { id: 'error', role: 'alert', hidden: true, children: text('auth/account:confirmError') }),
+      jsx('p', { id: 'sent', role: 'status', hidden: true, children: text('auth/account:confirmSent') }),
       jsx('div', { id: 'success', role: 'status', hidden: true, children: [
         jsx('p', { children: [text('auth/account:confirmDone'), ' ', jsx('strong', { id: 'address' })] }),
         jsx('p', { children: [text('auth/account:confirmSessions'), ' ', jsx('a', { href: '/login', children: text('auth/account:signIn') })] }),
@@ -69,6 +70,11 @@ export function createAccountRoutes(options?: AccountRouteOptions) {
   let fallback: EmailChangeService | undefined;
   // Unwired, the account still shows; the install's tenancy decides whether a change could apply (demo mode is `multi`).
   const service = () => dependencies()?.service ?? (fallback ??= createEmailChangeService({ config: { tenancy: process.env.TENANCY === 'multi' ? 'multi' : 'single' } }));
+  /** Whether password sign-in is on for the gym, as the password change tests it: then a login with a password proves an email change with it. */
+  const passwordOn = async (gymId: string) => {
+    const deps = dependencies();
+    return Boolean(deps?.config && deps.config.tenancy === 'single' && passwordLogin(deps.config, await deps.smtpConfigured(gymId)));
+  };
   const { get, requestEmailChange, confirmEmailChange, changePassword } = accountContracts;
   return [route({
     method: get.method, path: get.path, permission: get.permission, description: get.description,
@@ -87,30 +93,32 @@ export function createAccountRoutes(options?: AccountRouteOptions) {
     const deps = dependencies();
     const emailChange: AccountSummary['emailChange'] = service().tenancy !== 'single' ? 'several_gyms'
       : deps && await deps.smtpConfigured(gym.gymId) ? 'available' : 'no_email';
-    return context.json({ data: { ...own, ...access, emailChange } }, 200);
+    const emailChangeProof: AccountSummary['emailChangeProof'] = own.password && await passwordOn(gym.gymId) ? 'password' : 'current_address';
+    return context.json({ data: { ...own, ...access, emailChange, emailChangeProof } }, 200);
   }), route({
     method: requestEmailChange.method, path: requestEmailChange.path, permission: requestEmailChange.permission, description: requestEmailChange.description,
     request: { body: { required: true, content: { 'application/json': { schema: requestEmailChange.body } } } },
-    responses: { 200: { description: 'Email sent to the new address', content: { 'application/json': { schema: requestEmailChange.response } } } },
+    responses: { 200: { description: 'Change started: a link was sent to the new address (password proof) or to the current address (`awaiting`)', content: { 'application/json': { schema: requestEmailChange.response } } } },
   }, async (context) => {
     const userId = login(context), { gym, clock } = context.get('context');
     context.header('Cache-Control', 'no-store');
     const deps = dependencies();
     if (!deps || !await deps.smtpConfigured(gym.gymId)) throw new AppError('unavailable', 'This gym can\'t send email');
+    const { newEmail, currentPassword } = context.req.valid('json');
     const sent = await deps.service.request({ gymId: gym.gymId, userId, sessionId: requestSession(context.req.raw)?.sessionId ?? null,
-      newEmail: context.req.valid('json').newEmail, clock, mail: deps.mail });
-    return context.json({ data: { email: sent.email, expiresAt: sent.expiresAt } }, 200);
+      newEmail, currentPassword, passwordLogin: await passwordOn(gym.gymId), clock, mail: deps.mail });
+    return context.json({ data: { email: sent.email, expiresAt: sent.expiresAt, awaiting: sent.awaiting } }, 200);
   }), route({
     method: confirmEmailChange.method, path: confirmEmailChange.path, permission: confirmEmailChange.permission, description: confirmEmailChange.description,
     request: { body: { required: true, content: { 'application/json': { schema: confirmEmailChange.body } } } },
-    responses: { 200: { description: 'Sign-in email changed', content: { 'application/json': { schema: confirmEmailChange.response } } } },
+    responses: { 200: { description: 'Link opened: the change applied (`changed`), or the new address was sent its link (`sent`)', content: { 'application/json': { schema: confirmEmailChange.response } } } },
   }, async (context) => {
     const { gym, clock, principal } = context.get('context');
     context.header('Cache-Control', 'no-store');
     const sessionUserId = principal.kind === 'staff' || principal.kind === 'member' ? login(context) : null;
     const deps = dependencies();
-    const applied = await service().confirm({ gymId: gym.gymId, token: context.req.valid('json').token, sessionUserId, clock, ...deps ? { mail: deps.mail } : {} });
-    return context.json({ data: { email: applied.to } }, 200);
+    const opened = await service().confirm({ gymId: gym.gymId, token: context.req.valid('json').token, sessionUserId, clock, ...deps ? { mail: deps.mail } : {} });
+    return context.json({ data: { email: opened.to, status: opened.status } }, 200);
   }), route({
     method: changePassword.method, path: changePassword.path, permission: changePassword.permission, description: changePassword.description,
     request: { body: { required: true, content: { 'application/json': { schema: changePassword.body } } } },

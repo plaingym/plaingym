@@ -16,6 +16,8 @@ export const emailChangeTokenSchema = z.string().regex(/^[a-f0-9]{64}$/);
  * one login's address is shared by every gym it belongs to; `no_email` when this gym can't send the confirmation link.
  */
 export const emailChangeAvailabilitySchema = z.enum(['available', 'several_gyms', 'no_email']);
+/** Which link a pending change waits for: the one sent to the current address first, or the one sent to the new address. */
+const emailChangeAwaitingSchema = z.enum(['current_address', 'new_address']);
 export const accountSummarySchema = z.strictObject({
   email: z.string().min(1),
   /** Whether the login has a password (whether password sign-in is on for the gym is in the shell bootstrap). */
@@ -26,11 +28,17 @@ export const accountSummarySchema = z.strictObject({
   roles: z.array(staffRoleNameSchema).readonly(),
   /** The households this login is linked to in this gym, as payer or member. */
   households: z.array(z.strictObject({ name: z.string(), scope: z.enum(['payer', 'member']) })).readonly(),
-  /** A change waiting for its link to be opened, if any. */
-  pendingEmail: z.strictObject({ email: z.string().min(1), expiresAt: instantSchema }).nullable(),
+  /** A change waiting for a link to be opened, if any: the current address's link first, then the new address's. */
+  pendingEmail: z.strictObject({ email: z.string().min(1), expiresAt: instantSchema, awaiting: emailChangeAwaitingSchema }).nullable(),
   emailChange: emailChangeAvailabilitySchema,
+  /**
+   * How a change request proves the login: `password`, its current password (the login has one and password sign-in is on
+   * for the gym); `current_address`, a link sent to the current sign-in email, opened before the new address gets its link.
+   */
+  emailChangeProof: z.enum(['password', 'current_address']),
 });
-export const requestEmailChangeSchema = z.strictObject({ newEmail: accountEmailSchema });
+/** `currentPassword` is required where the account's `emailChangeProof` is `password`, and ignored otherwise. */
+export const requestEmailChangeSchema = z.strictObject({ newEmail: accountEmailSchema, currentPassword: z.string().min(1).max(128).optional() });
 export const confirmEmailChangeSchema = z.strictObject({ token: emailChangeTokenSchema });
 export const changePasswordSchema = z.strictObject({ currentPassword: z.string().min(1).max(128), newPassword: z.string().min(12).max(128) });
 const signedIn = { kind: 'public' } as const;
@@ -39,13 +47,13 @@ export const accountContracts = {
     description: 'The signed-in login\'s own account. Answers 401 without a staff or portal session.',
     response: z.strictObject({ data: accountSummarySchema }) },
   requestEmailChange: { method: 'post', path: '/api/account/email', permission: signedIn,
-    description: 'Sends a link to a free address, or an in-use notice instead when another login uses it, with the same response. Notifies the old address at request time with the new address masked. The change applies only when the link is opened; an address in use is refused then. Answers 401 without a staff or portal session.',
+    description: 'Starts a sign-in email change once the login is proved. With the `password` proof the body carries the current password (400 `currentPassword: required` or `wrong_password`, 429 after too many wrong ones, counted with password sign-in); the new address then gets a link, or an in-use notice when another login uses it, with the same response, and the old address gets a notice with the new address masked (`awaiting: new_address`). With the `current_address` proof a link goes to the current address first and nothing to the new one yet (`awaiting: current_address`). The change applies only when the new address\'s link is opened; an address in use is refused then. Answers 401 without a staff or portal session.',
     body: requestEmailChangeSchema,
-    response: z.strictObject({ data: z.strictObject({ email: z.string().min(1), expiresAt: instantSchema }) }) },
+    response: z.strictObject({ data: z.strictObject({ email: z.string().min(1), expiresAt: instantSchema, awaiting: emailChangeAwaitingSchema }) }) },
   confirmEmailChange: { method: 'post', path: '/api/account/email/confirm', permission: { kind: 'public' },
-    description: 'Applies a sign-in email change from the link sent to the new address. The token is the authority; a session of another login is refused.',
+    description: 'Opens a sign-in email change link. The current address\'s link sends the new address its link (or the in-use notice) and changes nothing yet (`status: sent`); the new address\'s link applies the change (`status: changed`). `email` is the new address. The token is the authority and is used once; a session of another login is refused.',
     body: confirmEmailChangeSchema,
-    response: z.strictObject({ data: z.strictObject({ email: z.string().min(1) }) }) },
+    response: z.strictObject({ data: z.strictObject({ email: z.string().min(1), status: z.enum(['changed', 'sent']) }) }) },
   changePassword: { method: 'post', path: '/api/account/password', permission: signedIn,
     description: 'Changes the signed-in login\'s own password after checking the current one. Ends the login\'s other sessions in this gym. Answers 401 without a staff or portal session, 403 where password sign-in is off.',
     body: changePasswordSchema,

@@ -19,9 +19,11 @@ export function createAccountClient(fetcher: typeof fetch = (...args) => fetch(.
       if (!response.ok) throw await failure(response);
       return parseResponse(accountContracts.get.response, await response.json()).data;
     },
-    async requestEmailChange(newEmail: string) {
+    /** `currentPassword` proves the login where the account's `emailChangeProof` is `password`. */
+    async requestEmailChange(newEmail: string, currentPassword?: string) {
+      const body = requestEmailChangeSchema.parse(currentPassword ? { newEmail, currentPassword } : { newEmail });
       const response = await fetcher(accountContracts.requestEmailChange.path, { method: 'POST', credentials: 'same-origin',
-        headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(requestEmailChangeSchema.parse({ newEmail })) });
+        headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(body) });
       if (!response.ok) throw await failure(response);
       return parseResponse(accountContracts.requestEmailChange.response, await response.json()).data;
     },

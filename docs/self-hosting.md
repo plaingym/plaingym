@@ -268,7 +268,9 @@ the test data. Members enter card and bank account details on Stripe's hosted pa
   Owners and admins reset other staff passwords in the admin.
 * **Changing your sign-in email.** Everyone can see and change their own sign-in
   email under **Account** → **Your account** in the admin or member portal once
-  the gym has email. The change applies when the link sent to the new
+  the gym has email. The request asks for the current password where the login
+  has one and password sign-in is on, or else sends a link to the current address
+  first. The change applies when the link sent to the new
   address is opened. An owner who has lost the old mailbox moves their login on the
   server instead; every session ends, and they sign in with the new address:
 

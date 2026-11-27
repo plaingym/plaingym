@@ -20,12 +20,17 @@ export const accountKey = (userId: string) => ['account', userId] as const;
 function errorText(error: unknown) {
   if (error instanceof AccountRequestError) {
     if (error.details?.newEmail?.includes('same_email')) return text('errorSame');
+    if (error.details?.currentPassword?.includes('wrong_password')) return text('passwordWrong');
+    if (error.details?.currentPassword?.includes('required')) return text('errorPasswordRequired');
     if (error.status === 429) return text('errorRateLimited');
     if (error.status === 503) return text('unavailableNoEmail');
   }
   return text('errorGeneric');
 }
 const formatTime = (instant: string) => instantLabel(instant);
+/** What a pending change waits for: the link to the current address first, or the one to the new address. */
+const pendingText = (pending: { email: string; expiresAt: string; awaiting: 'current_address' | 'new_address' }) =>
+  text(pending.awaiting === 'current_address' ? 'pendingCurrent' : 'pending', { email: pending.email, time: formatTime(pending.expiresAt) });
 
 function Row({ label, children }: { label: ReactNode; children: ReactNode }) {
   return <div className="flex flex-col gap-1 border-b border-border py-3 last:border-b-0 sm:flex-row sm:gap-4">
@@ -36,12 +41,15 @@ function Row({ label, children }: { label: ReactNode; children: ReactNode }) {
 
 function ChangeEmail({ account, client, userId }: { account: AccountSummary; client: AccountClient; userId: string }) {
   const cache = useQueryClient();
-  const [value, setValue] = useState(''), [message, setMessage] = useState<{ kind: 'status' | 'alert'; text: string } | null>(null);
+  const [value, setValue] = useState(''), [current, setCurrent] = useState('');
+  const [message, setMessage] = useState<{ kind: 'status' | 'alert'; text: string } | null>(null);
+  // With the `password` proof the login's current password goes with the request; otherwise its current address gets a link first.
+  const withPassword = account.emailChangeProof === 'password';
   const change = useMutation({
-    mutationFn: (newEmail: string) => client.requestEmailChange(newEmail),
+    mutationFn: (args: [newEmail: string, currentPassword?: string]) => client.requestEmailChange(...args),
     onSuccess: async (sent) => {
       setValue('');
-      setMessage({ kind: 'status', text: text('pending', { email: sent.email, time: formatTime(sent.expiresAt) }) });
+      setMessage({ kind: 'status', text: pendingText(sent) });
       await cache.invalidateQueries({ queryKey: accountKey(userId) });
     },
     // A request that fails after it was recorded (503) has withdrawn the earlier link too, so read the summary again.
@@ -49,28 +57,34 @@ function ChangeEmail({ account, client, userId }: { account: AccountSummary; cli
       setMessage({ kind: 'alert', text: errorText(error) });
       await cache.invalidateQueries({ queryKey: accountKey(userId) });
     },
+    // The password is never kept in the form after it was sent, whatever the answer.
+    onSettled: () => setCurrent(''),
   });
   if (account.emailChange !== 'available') return <Alert>{text(account.emailChange === 'several_gyms' ? 'unavailableSeveralGyms' : 'unavailableNoEmail')}</Alert>;
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const parsed = accountEmailSchema.safeParse(value.trim());
     if (!parsed.success) { setMessage({ kind: 'alert', text: text('invalidEmail') }); return; }
+    if (withPassword && !current) { setMessage({ kind: 'alert', text: text('errorPasswordRequired') }); return; }
     setMessage(null);
-    change.mutate(parsed.data);
+    change.mutate(withPassword ? [parsed.data, current] : [parsed.data]);
   };
   return <div className="space-y-3">
-    <p className="text-sm text-muted-foreground">{text('changeHelp')}</p>
+    <p className="text-sm text-muted-foreground">{text(withPassword ? 'changeHelp' : 'changeHelpCurrent')}</p>
     {account.googleLinked && <p className="text-sm text-muted-foreground">{text('changeGoogle')}</p>}
     {account.pendingEmail && message?.kind !== 'status' && <p role="status" className="rounded-md border border-border p-3 text-sm">
-      {text('pending', { email: account.pendingEmail.email, time: formatTime(account.pendingEmail.expiresAt) })}</p>}
+      {pendingText(account.pendingEmail)}</p>}
     <FormMessage message={message} />
-    <form className="flex flex-col gap-3 sm:flex-row sm:items-end" onSubmit={submit} noValidate>
-      <div className="min-w-0 flex-1 space-y-1">
+    <form className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end" onSubmit={submit} noValidate>
+      <div className="min-w-0 flex-1 space-y-1 sm:min-w-56">
         <Label htmlFor="account-new-email">{text('newEmail')}</Label>
         <Input id="account-new-email" type="email" autoComplete="email" inputMode="email" maxLength={254} required value={value}
           onChange={(event) => setValue(event.target.value)} />
       </div>
-      <Button type="submit" className="min-h-11" disabled={change.isPending || !value.trim()}>{text('changeSubmit')}</Button>
+      {withPassword && <div className="min-w-0 flex-1 sm:min-w-56">
+        <PasswordField id="account-email-current-password" label={text('currentPassword')} value={current} onChange={setCurrent} autoComplete="current-password" />
+      </div>}
+      <Button type="submit" className="min-h-11" disabled={change.isPending || !value.trim() || (withPassword && !current)}>{text('changeSubmit')}</Button>
     </form>
   </div>;
 }

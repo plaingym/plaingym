@@ -77,8 +77,10 @@ shows the refusal so staff can invite the member with another address.
 Revoking a login (**Revoke access**) removes access at once, including an open
 session. A person with logins to several households picks one when they sign in and
 can switch from the portal header. **Account** → **Your account** shows their
-sign-in email and lets them change it. The change applies when they open the
-link sent to the new address (see [security-model.md](security-model.md#sign-in)).
+sign-in email and lets them change it. They first give their current password
+(where they have one and the gym has password sign-in on) or open a link sent to
+their current address; the change then applies when they open the link sent to
+the new address (see [security-model.md](security-model.md#sign-in)).
 
 ## 3. What members see
 

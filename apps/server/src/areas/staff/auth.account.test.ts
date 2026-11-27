@@ -97,7 +97,7 @@ describe('your account routes', () => {
   it('refuses requests without a staff or portal session', async () => {
     const f = await fixture(), app = routeApp(f);
     expect((await request(app, f, f.gymId, '/api/account')).status).toBe(401);
-    expect((await request(app, f, f.gymId, '/api/account/email', '', { newEmail: 'anyone@example.test' })).status).toBe(401);
+    expect((await request(app, f, f.gymId, '/api/account/email', '', { newEmail: 'anyone@example.test', currentPassword: password })).status).toBe(401);
     expect(f.email.messages).toEqual([]);
   });
 
@@ -105,9 +105,9 @@ describe('your account routes', () => {
     const f = await fixture(), app = routeApp(f);
     const current = await f.signIn(f.gymId, f.owner.email), other = await f.signIn(f.gymId, f.owner.email);
     expect(await summary(app, f, current)).toEqual({ status: 200, body: { email: f.owner.email, password: true, googleLinked: false,
-      roles: ['owner'], households: [], pendingEmail: null, emailChange: 'available' } });
+      roles: ['owner'], households: [], pendingEmail: null, emailChange: 'available', emailChangeProof: 'password' } });
 
-    const asked = await request(app, f, f.gymId, '/api/account/email', current, { newEmail: 'owner.moved@example.test' });
+    const asked = await request(app, f, f.gymId, '/api/account/email', current, { newEmail: 'owner.moved@example.test', currentPassword: password });
     expect(asked.status).toBe(200);
     expect(f.email.messages.map(message => message.to)).toEqual(['owner.moved@example.test', f.owner.email]);
     expect(f.email.messages[1]!.text).toContain('o***@example.test');
@@ -118,7 +118,7 @@ describe('your account routes', () => {
 
     const confirmed = await request(app, f, f.gymId, '/api/account/email/confirm', current, { token: tokenOf(f.email.messages[0]!) });
     expect(confirmed.status).toBe(200);
-    expect(await confirmed.json()).toEqual({ data: { email: 'owner.moved@example.test' } });
+    expect(await confirmed.json()).toEqual({ data: { email: 'owner.moved@example.test', status: 'changed' } });
     // The session that asked stays signed in; the other one ended. The old address got the notice.
     expect((await summary(app, f, current)).body).toMatchObject({ email: 'owner.moved@example.test', pendingEmail: null });
     expect((await summary(app, f, other)).status).toBe(401);
@@ -132,7 +132,7 @@ describe('your account routes', () => {
 
   it('answers an in-use address like a free one, sends a notice instead of a link, and refuses a body naming another login', async () => {
     const f = await fixture(), app = routeApp(f), cookie = await f.signIn(f.gymId, f.payerA.email);
-    const taken = await request(app, f, f.gymId, '/api/account/email', cookie, { newEmail: f.payerB.email });
+    const taken = await request(app, f, f.gymId, '/api/account/email', cookie, { newEmail: f.payerB.email, currentPassword: password });
     const takenBody = await taken.json();
     const takenSummary = (await summary(app, f, cookie)).body;
     expect(f.email.messages.map(message => message.to)).toEqual([f.payerB.email, f.payerA.email]);
@@ -140,21 +140,21 @@ describe('your account routes', () => {
     expect(f.email.messages[0]!.html).not.toContain('<a');
     expect(f.email.messages[0]!.text).not.toContain('/account-email');
     expect(f.email.messages[1]!.text).toContain('Someone asked to change');
-    const free = await request(app, f, f.gymId, '/api/account/email', cookie, { newEmail: 'free@example.test' });
+    const free = await request(app, f, f.gymId, '/api/account/email', cookie, { newEmail: 'free@example.test', currentPassword: password });
     expect(taken.status).toBe(free.status);
     expect(taken.status).toBe(200);
     const freeBody = await free.json();
     expect(takenBody).toEqual({ data: { ...freeBody.data, email: f.payerB.email } });
     // Reading the account summary must not reveal whether the destination is occupied either.
     expect(takenSummary).toEqual({ ...(await summary(app, f, cookie)).body,
-      pendingEmail: { email: f.payerB.email, expiresAt: freeBody.data.expiresAt } });
-    expect((await request(app, f, f.gymId, '/api/account/email', cookie, { newEmail: 'x@example.test', userId: f.payerB.id })).status).toBe(400);
+      pendingEmail: { email: f.payerB.email, expiresAt: freeBody.data.expiresAt, awaiting: 'new_address' } });
+    expect((await request(app, f, f.gymId, '/api/account/email', cookie, { newEmail: 'x@example.test', currentPassword: password, userId: f.payerB.id })).status).toBe(400);
     expect(await emailOf(f.payerB.id)).toBe(f.payerB.email);
   });
 
   it('refuses confirmation if another login has since taken the address', async () => {
     const f = await fixture(), app = routeApp(f), cookie = await f.signIn(f.gymId, f.payerA.email);
-    await request(app, f, f.gymId, '/api/account/email', cookie, { newEmail: 'contested.route@example.test' });
+    await request(app, f, f.gymId, '/api/account/email', cookie, { newEmail: 'contested.route@example.test', currentPassword: password });
     await factory('authUser', f.gymId, { email: 'contested.route@example.test' });
     const confirmed = await request(app, f, f.gymId, '/api/account/email/confirm', cookie, { token: tokenOf(f.email.messages[0]!) });
     expect(confirmed.status).toBe(409);
@@ -162,11 +162,50 @@ describe('your account routes', () => {
     expect(await emailOf(f.payerA.id)).toBe(f.payerA.email);
   });
 
+  it('asks a login with a password for it where password sign-in is on, and refuses a missing or wrong one', async () => {
+    const f = await fixture(), app = routeApp(f), cookie = await f.signIn(f.gymId, f.payerA.email);
+    expect((await summary(app, f, cookie)).body).toMatchObject({ password: true, emailChangeProof: 'password' });
+    const missing = await request(app, f, f.gymId, '/api/account/email', cookie, { newEmail: 'with.password@example.test' });
+    expect(missing.status).toBe(400);
+    expect(await missing.json()).toMatchObject({ error: { details: { currentPassword: ['required'] } } });
+    const wrong = await request(app, f, f.gymId, '/api/account/email', cookie, { newEmail: 'with.password@example.test', currentPassword: 'not-the-password' });
+    expect(wrong.status).toBe(400);
+    expect(await wrong.json()).toMatchObject({ error: { details: { currentPassword: ['wrong_password'] } } });
+    expect(f.email.messages).toEqual([]);
+    expect((await summary(app, f, cookie)).body).toMatchObject({ pendingEmail: null });
+    const asked = await request(app, f, f.gymId, '/api/account/email', cookie, { newEmail: 'with.password@example.test', currentPassword: password });
+    expect((await asked.json()).data).toMatchObject({ email: 'with.password@example.test', awaiting: 'new_address' });
+  });
+
+  it('proves a login by its current address where password sign-in is off: two links over HTTP', async () => {
+    const f = await fixture(), cookie = await f.signIn(f.gymId, f.owner.email);
+    // `auto` with email for the gym: password sign-in is off, so the login's password proves nothing here.
+    const app = routeApp(f, { passwordLogin: 'auto', smtp: true });
+    expect((await summary(app, f, cookie)).body).toMatchObject({ password: true, emailChangeProof: 'current_address' });
+    const asked = await request(app, f, f.gymId, '/api/account/email', cookie, { newEmail: 'two.steps@example.test' });
+    expect(asked.status).toBe(200);
+    expect((await asked.json()).data).toMatchObject({ email: 'two.steps@example.test', awaiting: 'current_address' });
+    expect(f.email.messages.map(message => message.to)).toEqual([f.owner.email]);
+    expect((await summary(app, f, cookie)).body).toMatchObject({ pendingEmail: { email: 'two.steps@example.test', awaiting: 'current_address' } });
+
+    const proved = await request(app, f, f.gymId, '/api/account/email/confirm', cookie, { token: tokenOf(f.email.messages[0]!) });
+    expect(proved.status).toBe(200);
+    expect(await proved.json()).toEqual({ data: { email: 'two.steps@example.test', status: 'sent' } });
+    expect(await emailOf(f.owner.id)).toBe(f.owner.email);
+    expect(f.email.messages.map(message => message.to)).toEqual([f.owner.email, 'two.steps@example.test']);
+    expect((await summary(app, f, cookie)).body).toMatchObject({ pendingEmail: { email: 'two.steps@example.test', awaiting: 'new_address' } });
+
+    const applied = await request(app, f, f.gymId, '/api/account/email/confirm', '', { token: tokenOf(f.email.messages[1]!) });
+    expect(await applied.json()).toEqual({ data: { email: 'two.steps@example.test', status: 'changed' } });
+    expect(await emailOf(f.owner.id)).toBe('two.steps@example.test');
+    expect((await summary(app, f, cookie)).body).toMatchObject({ email: 'two.steps@example.test', pendingEmail: null });
+  });
+
   it('refuses cross-household requests: one household\'s login can\'t complete another\'s change', async () => {
     const f = await fixture(), app = routeApp(f);
     const a = await f.signIn(f.gymId, f.payerA.email), b = await f.signIn(f.gymId, f.payerB.email);
     expect((await summary(app, f, a)).body).toMatchObject({ email: f.payerA.email, roles: [], households: [{ name: 'Test Household', scope: 'payer' }] });
-    expect((await request(app, f, f.gymId, '/api/account/email', a, { newEmail: 'household.a@example.test' })).status).toBe(200);
+    expect((await request(app, f, f.gymId, '/api/account/email', a, { newEmail: 'household.a@example.test', currentPassword: password })).status).toBe(200);
     const token = tokenOf(f.email.messages[0]!);
     expect((await request(app, f, f.gymId, '/api/account/email/confirm', b, { token })).status).toBe(403);
     expect(await emailOf(f.payerA.id)).toBe(f.payerA.email);
@@ -184,14 +223,14 @@ describe('your account routes', () => {
     const f = await fixture(), app = routeApp(f), cookie = await f.signIn(f.gymId, f.owner.email);
     // The same login is also staff at gym B, as one identity may be.
     await factory('staffRoles', f.otherGymId, { userId: f.owner.id, role: 'owner' });
-    expect((await request(app, f, f.gymId, '/api/account/email', cookie, { newEmail: 'cross.gym@example.test' })).status).toBe(200);
+    expect((await request(app, f, f.gymId, '/api/account/email', cookie, { newEmail: 'cross.gym@example.test', currentPassword: password })).status).toBe(200);
     const token = tokenOf(f.email.messages[0]!);
     expect((await request(app, f, f.otherGymId, '/api/account/email/confirm', '', { token })).status).toBe(404);
     const otherCookie = await f.signIn(f.otherGymId, f.owner.email);
     expect((await request(app, f, f.otherGymId, '/api/account/email/confirm', otherCookie, { token })).status).toBe(404);
     // Gym A's session at gym B's origin is refused before any route runs.
     expect((await request(app, f, f.otherGymId, '/api/account', cookie)).status).toBe(403);
-    expect((await request(app, f, f.otherGymId, '/api/account/email', cookie, { newEmail: 'other@example.test' })).status).toBe(403);
+    expect((await request(app, f, f.otherGymId, '/api/account/email', cookie, { newEmail: 'other@example.test', currentPassword: password })).status).toBe(403);
     expect(await emailOf(f.owner.id)).toBe(f.owner.email);
     // Gym B's view lists only gym B's roles and no change pending there.
     expect((await summary(app, f, otherCookie, f.otherGymId)).body).toMatchObject({ roles: ['owner'], households: [], pendingEmail: null });
@@ -201,10 +240,10 @@ describe('your account routes', () => {
     const f = await fixture(), cookie = await f.signIn(f.gymId, f.owner.email);
     const noEmail = routeApp(f, { smtp: false });
     expect((await summary(noEmail, f, cookie)).body).toMatchObject({ emailChange: 'no_email' });
-    expect((await request(noEmail, f, f.gymId, '/api/account/email', cookie, { newEmail: 'nomail@example.test' })).status).toBe(503);
+    expect((await request(noEmail, f, f.gymId, '/api/account/email', cookie, { newEmail: 'nomail@example.test', currentPassword: password })).status).toBe(503);
     const multi = routeApp(f, { tenancy: 'multi' });
     expect((await summary(multi, f, cookie)).body).toMatchObject({ emailChange: 'several_gyms' });
-    expect((await request(multi, f, f.gymId, '/api/account/email', cookie, { newEmail: 'multi@example.test' })).status).toBe(403);
+    expect((await request(multi, f, f.gymId, '/api/account/email', cookie, { newEmail: 'multi@example.test', currentPassword: password })).status).toBe(403);
     expect(f.email.messages).toEqual([]);
   });
 
@@ -254,5 +293,8 @@ describe('your account routes', () => {
     expect(html).toMatch(/<footer>.*<(?:a|span)\b[^>]*>Version [^<]+<\/(?:a|span)><\/footer>/);
     expect(html).not.toContain('aria-label="Version');
     expect(html).toContain('location.hash');
+    // The current address's link answers `sent`: the page then says the new address got its link.
+    expect(html).toContain('<p id="sent" role="status" hidden="">Thanks. We sent a confirmation link to the new address.');
+    expect(html).toContain('status===\'sent\'');
   });
 });

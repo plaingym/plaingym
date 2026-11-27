@@ -417,15 +417,29 @@ password may have been set by someone other than the invitee.
   (`/admin/account`, `/portal/account`) showing its sign-in email, sign-in methods
   and access in the gym, where it may change its email and, when it has a
   password and the gym has password sign-in on, its password (see **Resets**). The routes act only for
-  the session's own login; no request names another. The app sends a link to the
+  the session's own login; no request names another. A session alone can't move
+  the login (an unlocked front-desk computer, say): the request first proves the
+  login in one of two ways.
+  * **The current password**, where the login has one and the gym has password
+    sign-in on. A wrong one is refused like a wrong current password on the
+    password form (and records and sends nothing); each counts against the
+    login's password sign-in limit, and a right one gives its attempt back.
+  * **A link to the current address** otherwise (the login has no password, or
+    password sign-in is off for the gym). Nothing goes to the new address until
+    that link is opened, and it names the new address only masked. Opening it
+    replaces it with the link to the new address; it never applies a change.
+
+  The app then sends a link to the
   new address, stored hashed under the issuing gym for one hour and one use, and
   the change applies only when that link is opened, on that gym's hostname; a link
-  opened while another login is signed in on the browser is refused. An address
+  of either step opened while another login is signed in on the browser is refused.
+  Asking again replaces every outstanding link of the login. An address
   another login uses gets a short in-use notice instead of a link, with the same
   request response and pending summary as a free address; opening a link still
-  refuses an address in use. At request time the old address gets a notice naming
-  the new address only masked, even if delivery to the new address fails. Failed
-  notices to the old address are logged. A login may ask five times an hour.
+  refuses an address in use. With the password proof, at request time the old
+  address gets a notice naming the new address only masked, even if delivery to the
+  new address fails. Failed notices to the old address are logged. A login may ask
+  five times an hour.
   Applying the change marks the new address
   verified, ends the login's other sessions (the session that asked stays signed
   in), writes an audit event without either address, and sends the old address a

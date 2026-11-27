@@ -15,7 +15,7 @@ for (const width of [360, 1280]) {
       if (path === '/api/auth/bootstrap') return route.fulfill({ json: { data: { gym, session,
         login: { password: true, magicLink: false, google: false } } } });
       if (path === '/api/account') return route.fulfill({ json: { data: { email: 'owner@example.invalid', password: true,
-        googleLinked: false, roles: ['owner'], households: [], pendingEmail: null, emailChange: 'no_email' } } });
+        googleLinked: false, roles: ['owner'], households: [], pendingEmail: null, emailChange: 'no_email', emailChangeProof: 'password' } } });
       if (path === '/api/account/password') {
         if (wrong) return route.fulfill({ status: 400, json: { error: { code: 'invalid_request', details: { currentPassword: ['wrong_password'] } } } });
         return route.fulfill({ json: { data: null } });

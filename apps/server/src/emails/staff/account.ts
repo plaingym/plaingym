@@ -11,6 +11,19 @@ export function renderEmailChangeLink(url: string, gymName: string, t: Translato
   return { subject, html: `<p>${escape(description)}</p><p><a href="${escape(url)}">${escape(button)}</a></p><p>${escape(ignore)}</p>`,
     text: `${description}\n\n${button}: ${url}\n\n${ignore}` };
 }
+/**
+ * Sent to the current address first when the login has no password to prove itself with: opening this link sends the new
+ * address its own link. Names the new address only masked.
+ */
+export function renderEmailChangeProofLink(url: string, maskedNewEmail: string, gymName: string, t: Translator): RenderedEmail {
+  const parsed = new URL(url);
+  if (!['https:', 'http:'].includes(parsed.protocol)) throw new Error('Invalid confirmation URL');
+  const subject = t('auth/account:proofSubject', { gym: gymName });
+  const description = t('auth/account:proofDescription', { gym: gymName, email: maskedNewEmail });
+  const ignore = t('auth/account:proofIgnore', { gym: gymName }), button = t('auth/account:proofButton');
+  return { subject, html: `<p>${escape(description)}</p><p><a href="${escape(url)}">${escape(button)}</a></p><p>${escape(ignore)}</p>`,
+    text: `${description}\n\n${button}: ${url}\n\n${ignore}` };
+}
 /** Sent to the old address once the change has applied. Names the new address only masked. */
 export function renderEmailChangedNotice(maskedNewEmail: string, gymName: string, t: Translator): RenderedEmail {
   const subject = t('auth/account:noticeSubject', { gym: gymName });

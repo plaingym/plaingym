@@ -14,15 +14,15 @@ import { AccountPage } from './page.js';
 
 const userId = '019ab4f0-0000-7000-8000-000000000001';
 const base: AccountSummary = { email: 'owner@example.test', password: true, googleLinked: true, roles: ['owner'], households: [],
-  pendingEmail: null, emailChange: 'available' };
+  pendingEmail: null, emailChange: 'available', emailChangeProof: 'current_address' };
 function start(account: Partial<AccountSummary> = {}, login: ShellBootstrap['login'] = { password: false, magicLink: true, google: true }, request?: AccountClient['requestEmailChange'],
   changePassword: AccountClient['changePassword'] = async () => undefined) {
   let current: AccountSummary = { ...base, ...account };
   const client: AccountClient = {
     summary: vi.fn(async () => current),
     requestEmailChange: vi.fn(request ?? (async (newEmail: string) => {
-      current = { ...current, pendingEmail: { email: newEmail, expiresAt: '2026-11-12T11:00:00.000Z' } };
-      return { email: newEmail, expiresAt: '2026-11-12T11:00:00.000Z' };
+      current = { ...current, pendingEmail: { email: newEmail, expiresAt: '2026-11-12T11:00:00.000Z', awaiting: 'new_address' } };
+      return { email: newEmail, expiresAt: '2026-11-12T11:00:00.000Z', awaiting: 'new_address' as const };
     })),
     changePassword: vi.fn(changePassword),
   };
@@ -75,7 +75,7 @@ describe('your account page', () => {
     GermanDefaultDateTimeFormat.prototype = installed.prototype;
     Object.defineProperty(Intl, 'DateTimeFormat', { value: GermanDefaultDateTimeFormat, configurable: true, writable: true });
     try {
-      start({ pendingEmail: { email: 'pending@example.test', expiresAt: '2026-11-15T18:30:00Z' } });
+      start({ pendingEmail: { email: 'pending@example.test', expiresAt: '2026-11-15T18:30:00Z', awaiting: 'new_address' } });
       const label = instantLabel('2026-11-15T18:30:00Z');
       expect(await screen.findByText(content => content.includes('pending@example.test') && content.includes(label))).toBeTruthy();
     } finally {
@@ -84,7 +84,7 @@ describe('your account page', () => {
   });
 
   it.each([400, 429])('keeps a pending notice beside a failed second request (%s)', async (status) => {
-    start({ pendingEmail: { email: 'pending@example.test', expiresAt: '2026-11-12T11:00:00.000Z' } }, undefined,
+    start({ pendingEmail: { email: 'pending@example.test', expiresAt: '2026-11-12T11:00:00.000Z', awaiting: 'new_address' } }, undefined,
       async () => { throw new AccountRequestError(status, 'failed'); });
     await userEvent.type(await screen.findByLabelText('New email'), 'another@example.test');
     await userEvent.click(screen.getByRole('button', { name: 'Send link' }));
@@ -94,11 +94,11 @@ describe('your account page', () => {
 
   it('drops a pending notice whose link a failed send withdrew (503)', async () => {
     let withdrawn = false;
-    const client = start({ pendingEmail: { email: 'pending@example.test', expiresAt: '2026-11-12T11:00:00.000Z' } }, undefined,
+    const client = start({ pendingEmail: { email: 'pending@example.test', expiresAt: '2026-11-12T11:00:00.000Z', awaiting: 'new_address' } }, undefined,
       async () => { withdrawn = true; throw new AccountRequestError(503, 'unavailable'); });
     const summary = client.summary as ReturnType<typeof vi.fn>;
     summary.mockImplementation(async () => ({ ...base, pendingEmail: withdrawn ? null
-      : { email: 'pending@example.test', expiresAt: '2026-11-12T11:00:00.000Z' } }));
+      : { email: 'pending@example.test', expiresAt: '2026-11-12T11:00:00.000Z', awaiting: 'new_address' } }));
     await userEvent.type(await screen.findByLabelText('New email'), 'another@example.test');
     await userEvent.click(screen.getByRole('button', { name: 'Send link' }));
     expect(await screen.findByRole('alert')).toBeTruthy();
@@ -106,7 +106,7 @@ describe('your account page', () => {
   });
 
   it('explains an invalid typed address locally and preserves the pending notice', async () => {
-    const client = start({ pendingEmail: { email: 'pending@example.test', expiresAt: '2026-11-12T11:00:00.000Z' } });
+    const client = start({ pendingEmail: { email: 'pending@example.test', expiresAt: '2026-11-12T11:00:00.000Z', awaiting: 'new_address' } });
     await userEvent.type(await screen.findByLabelText('New email'), 'invalid');
     await userEvent.click(screen.getByRole('button', { name: 'Send link' }));
     expect((await screen.findByRole('alert')).textContent).toContain('Enter a valid email address.');
@@ -134,7 +134,7 @@ describe('your account page', () => {
       expect(element.className).not.toContain('wrap-anywhere');
     };
     const household = 'H'.repeat(60), pending = 'p'.repeat(47) + '@example.test', typed = 'x'.repeat(60);
-    start({ households: [{ name: household, scope: 'payer' }], pendingEmail: { email: pending, expiresAt: '2026-11-12T11:00:00.000Z' } });
+    start({ households: [{ name: household, scope: 'payer' }], pendingEmail: { email: pending, expiresAt: '2026-11-12T11:00:00.000Z', awaiting: 'new_address' } });
     wraps((await screen.findByText(content => content.includes(household))).closest('dd')!);
     wraps(screen.getByText(content => content.includes(pending)));
     await userEvent.type(screen.getByLabelText('New email'), typed);
@@ -147,6 +147,63 @@ describe('your account page', () => {
     const sent = await screen.findByText(content => content.includes(moved));
     expect(sent.getAttribute('role')).toBe('status');
     wraps(sent);
+  });
+
+  describe('proving the login for an email change', () => {
+    it('asks for the current password with the password proof, sends it, and clears it after every answer', async () => {
+      let calls = 0;
+      const client = start({ emailChangeProof: 'password' }, undefined, async (newEmail) => {
+        if (calls++ === 0) throw new AccountRequestError(400, 'invalid_request', { currentPassword: ['wrong_password'] });
+        return { email: newEmail, expiresAt: '2026-11-12T11:00:00.000Z', awaiting: 'new_address' };
+      });
+      const field = await screen.findByLabelText('Current password') as HTMLInputElement;
+      expect(field.type).toBe('password');
+      expect(field.autocomplete).toBe('current-password');
+      expect(screen.getByText(/Your current address gets a notice now/)).toBeTruthy();
+      await userEvent.type(screen.getByLabelText('New email'), 'moved@example.test');
+      // The button waits for the password.
+      expect((screen.getByRole('button', { name: 'Send link' }) as HTMLButtonElement).disabled).toBe(true);
+      await userEvent.type(field, 'not-the-password');
+      await userEvent.click(screen.getByRole('button', { name: 'Send link' }));
+      expect((await screen.findByRole('alert')).textContent).toContain('The current password is wrong.');
+      expect(client.requestEmailChange).toHaveBeenCalledWith('moved@example.test', 'not-the-password');
+      expect(field.value).toBe('');
+      await userEvent.type(field, 'the-password');
+      await userEvent.click(screen.getByRole('button', { name: 'Send link' }));
+      expect(await screen.findByText(/An email was sent to moved@example.test/)).toBeTruthy();
+      expect(client.requestEmailChange).toHaveBeenLastCalledWith('moved@example.test', 'the-password');
+      expect(field.value).toBe('');
+    });
+
+    it('explains a missing password the server asked for', async () => {
+      start({ emailChangeProof: 'password' }, undefined, async () => { throw new AccountRequestError(400, 'invalid_request', { currentPassword: ['required'] }); });
+      await userEvent.type(await screen.findByLabelText('New email'), 'moved@example.test');
+      await userEvent.type(screen.getByLabelText('Current password'), 'x');
+      await userEvent.click(screen.getByRole('button', { name: 'Send link' }));
+      expect((await screen.findByRole('alert')).textContent).toContain('Enter your current password.');
+    });
+
+    it('sends the first link to the current address without a password field, and says so', async () => {
+      const client = start({ emailChangeProof: 'current_address' }, undefined, async (newEmail) =>
+        ({ email: newEmail, expiresAt: '2026-11-12T11:00:00.000Z', awaiting: 'current_address' }));
+      await screen.findByLabelText('New email');
+      expect(screen.queryByLabelText('Current password')).toBeNull();
+      expect(screen.getByText(/We first email your current address a link to confirm it's you/)).toBeTruthy();
+      expect(screen.queryByText(/Your current address gets a notice now/)).toBeNull();
+      await userEvent.type(screen.getByLabelText('New email'), 'moved@example.test');
+      await userEvent.click(screen.getByRole('button', { name: 'Send link' }));
+      await waitFor(() => expect(client.requestEmailChange).toHaveBeenCalledWith('moved@example.test'));
+      const pending = await screen.findByText(/We sent a link to your current sign-in email/);
+      expect(pending.textContent).toContain('moved@example.test');
+      expect(pending.getAttribute('role')).toBe('status');
+    });
+
+    it('shows a pending change that waits for the current address\'s link', async () => {
+      start({ pendingEmail: { email: 'pending@example.test', expiresAt: '2026-11-12T11:00:00.000Z', awaiting: 'current_address' } });
+      const pending = await screen.findByText(/We sent a link to your current sign-in email/);
+      expect(pending.textContent).toContain('pending@example.test');
+      expect(screen.queryByText(/An email was sent to/)).toBeNull();
+    });
   });
 
   describe('password change', () => {
