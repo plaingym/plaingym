@@ -51,7 +51,11 @@ The argument is an explicit version tag, or a `sha256` digest, for your server's
 5. records the new image in `.env` only once the new version is healthy.
 
 If you ask for the image you already run, it prints "Already on the requested image." and
-does nothing else. A forked install sets `RELEASE_REPOSITORY` first
+does nothing else. A `vX.Y.Z` tag must get an image labelled with that version (a registry
+tag can be moved to another image), and a labelled image is always verified against its
+signed release. An image with no release version label, such as a local build, has no
+signature to check: it installs only with `sudo ./update.sh --unsigned IMAGE`, which never
+skips the checks of a labelled image. A forked install sets `RELEASE_REPOSITORY` first
 ([install reference](install-reference.md#behind-a-proxy-or-a-fork)).
 
 ## After the update
@@ -73,6 +77,10 @@ database (last row), which leaves the app stopped.
 | "The pre-upgrade snapshot failed (reason above). Nothing was changed; the current version is restarting." | The backup failed (bucket unreachable, credentials changed). The line above says why. | Check the bucket and its keys under **Settings → Integrations**, and `sudo docker compose logs app`; run again. |
 | "Update failed; restarting the previous image." | The new version didn't start or didn't pass its health check. | Unless the next line says the failed update changed the database (last row), the old version is back. Read `sudo docker compose logs app` for the reason before trying again. |
 | "An update or key rotation is running." | An update or a key rotation is in progress (it takes a lock). | Wait for it to finish, then run the command again. |
+| "The image's version doesn't match the requested tag. Nothing was changed." | The image the tag now names carries another version, or none: the tag was moved. | Check the tag on the releases page and ask for the release by its tag or digest from there. Don't install it with `--unsigned`. |
+| "This image has no release version label, so its signature can't be checked. …" | The image isn't a release (a local or development build). | If you built or trust it, run `sudo ./update.sh --unsigned IMAGE`; otherwise update to a release. |
+| "Could not write .env; the update was not applied." | The new pin couldn't be written (often a full disk). `.env` keeps the previous pin, and the previous image restarts unless the next row's message follows. | Free some disk space (`df -h`), then run the update again. |
+| "Could not rewrite .env (is the disk full?), so … stays stopped." | A failed update couldn't take its schema guard down; `.env` is unchanged. | Free some disk space, then run `sudo ./update.sh` with the same image again: it finishes the failed update and starts the previous version. |
 | "The app must be running before an update." | The app is stopped. | Read `sudo docker compose logs app`. If the current release will not start, `sudo ./update.sh --rollback` (below). |
 | Anything about a rollback floor, "Update failed; the previous version stays stopped.", "The failed update changed the database", "Recovery requires …" or "The recovery image is missing or incompatible" | The update changed the database and then failed. | Follow [the rollback floor section](update-reference.md#updating-across-a-rollback-floor): retry the same release, or update to a newer compatible one, or [restore](restore-reference.md#when-rollback-is-refused) the backup the message names. |
 

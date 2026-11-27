@@ -14,8 +14,8 @@ cat > "$temporary/bin/docker" <<'MOCK'
 set -eu
 printf '%s IMAGE=%s\n' "$*" "${APP_IMAGE:-configured}" >> "$CALLS"
 case "$*" in
-  # The requested release is another image; its digest names the running one.
-  'image inspect example:v1.0.1 --format {{.Id}}') echo sha256:next; exit 0 ;;
+  # The requested image is another one, with no release version label; its digest names the running one.
+  'image inspect example:v1.0.1-local --format {{.Id}}') echo sha256:next; exit 0 ;;
   'image inspect '*) echo sha256:previous; exit 0 ;;
   *' ps --status running --services')
     [ "${FAIL_AT:-}" != compose ] || { echo 'Cannot connect to the Docker daemon' >&2; exit 1; }
@@ -38,9 +38,18 @@ make_install() {
   printf 'APP_IMAGE=example:v1.0.0\nFAKE_SECRET=private-test-value\n' > "$case_dir/.env"
   : > "$CALLS"
 }
+# An image with no release version label has no signature to check: it installs only with --unsigned.
+make_install unlabelled
+before=$(sha256sum "$case_dir/.env")
+if sh "$case_dir/update.sh" example:v1.0.1-local > "$temporary/output" 2>&1; then echo 'Installed an unlabelled image without --unsigned.' >&2; exit 1; fi
+grep -q 'run ./update.sh --unsigned IMAGE' "$temporary/output"
+[ "$before" = "$(sha256sum "$case_dir/.env")" ]
+if grep -q ' stop app\| snapshot \|up -d' "$CALLS"; then echo 'Stopped or started something for a refused unlabelled image.' >&2; exit 1; fi
 make_install success
-sh "$case_dir/update.sh" example:v1.0.1 > "$temporary/output" 2>&1
-grep -qx APP_IMAGE=example:v1.0.1 "$case_dir/.env"
+sh "$case_dir/update.sh" --unsigned example:v1.0.1-local > "$temporary/output" 2>&1
+grep -qx APP_IMAGE=example:v1.0.1-local "$case_dir/.env"
+grep -qx FAKE_SECRET=private-test-value "$case_dir/.env"
+[ "$(stat -c %a "$case_dir/.env")" = 600 ]
 [ "$(grep -n ' pull app' "$CALLS" | cut -d: -f1)" -lt "$(grep -n ' stop app' "$CALLS" | cut -d: -f1)" ]
 [ "$(grep -n ' stop app' "$CALLS" | cut -d: -f1)" -lt "$(grep -n ' snapshot pre-upgrade' "$CALLS" | cut -d: -f1)" ]
 [ "$(grep -n ' snapshot pre-upgrade' "$CALLS" | cut -d: -f1)" -lt "$(grep -n ' up -d ' "$CALLS" | cut -d: -f1)" ]
@@ -59,7 +68,7 @@ for request in example:v1.0.0 "example@sha256:$(printf 'a%.0s' $(seq 64))"; do
 done
 for stage in pull snapshot startup health; do
   make_install "$stage"
-  if FAIL_AT="$stage" sh "$case_dir/update.sh" example:v1.0.1 > "$temporary/output" 2>&1; then
+  if FAIL_AT="$stage" sh "$case_dir/update.sh" --unsigned example:v1.0.1-local >"$temporary/output" 2>&1; then
     echo "Expected $stage failure" >&2; exit 1
   fi
   grep -qx APP_IMAGE=example:v1.0.0 "$case_dir/.env"
@@ -76,7 +85,7 @@ for stage in pull snapshot startup health; do
 done
 for app_state in stopped restarting; do
   make_install "app_$app_state"
-  if APP_STATE="$app_state" sh "$case_dir/update.sh" example:v1.0.1 > "$temporary/output" 2>&1; then
+  if APP_STATE="$app_state" sh "$case_dir/update.sh" --unsigned example:v1.0.1-local >"$temporary/output" 2>&1; then
     echo "Accepted an ordinary update with app $app_state and no recovery record." >&2; exit 1
   fi
   grep -q 'The app must be running before an update' "$temporary/output"
@@ -84,7 +93,7 @@ for app_state in stopped restarting; do
   if grep -q 'stop app\|snapshot pre-upgrade\|up -d' "$CALLS"; then exit 1; fi
 done
 make_install compose-error
-if FAIL_AT=compose sh "$case_dir/update.sh" example:v1.0.1 > "$temporary/output" 2>&1; then exit 1; fi
+if FAIL_AT=compose sh "$case_dir/update.sh" --unsigned example:v1.0.1-local >"$temporary/output" 2>&1; then exit 1; fi
 grep -q 'Cannot connect to the Docker daemon' "$temporary/output"
 grep -q 'Could not check whether the app is running' "$temporary/output"
 if grep -q 'The app must be running' "$temporary/output"; then exit 1; fi
@@ -92,7 +101,7 @@ if grep -q 'stop app\|snapshot pre-upgrade\|up -d' "$CALLS"; then exit 1; fi
 
 make_install locked
 touch "$case_dir/.rotate-key.inflight"
-for arguments in 'example:v1.0.1' '--patch --now'; do
+for arguments in '--unsigned example:v1.0.1-local' '--patch --now'; do
   status=0
   # shellcheck disable=SC2086
   sh "$case_dir/update.sh" $arguments > "$temporary/output" 2>&1 || status=$?
@@ -104,13 +113,16 @@ for arguments in 'example:v1.0.1' '--patch --now'; do
   [ ! -s "$CALLS" ]
 done
 rm "$case_dir/.rotate-key.inflight"
-if flock "$case_dir/.update.lock" sh "$case_dir/update.sh" example:v1.0.1 > "$temporary/output" 2>&1; then exit 1; fi
+if flock "$case_dir/.update.lock" sh "$case_dir/update.sh" --unsigned example:v1.0.1-local > "$temporary/output" 2>&1; then exit 1; fi
 [ ! -s "$CALLS" ]
 if sh "$case_dir/update.sh" example:latest >/dev/null 2>&1; then exit 1; fi
+if sh "$case_dir/update.sh" --unsigned example:latest >/dev/null 2>&1; then exit 1; fi
 # Automatic patch updates have their own test (patch.sh); here only malformed arguments are refused.
-for arguments in '' '--now' 'example:v1.0.1 example:v1.0.2' '--patch extra'; do
+for arguments in '' '--now' 'example:v1.0.1 example:v1.0.2' '--patch extra' '--unsigned' '--unsigned --patch' '--unsigned a b' \
+  '--patch --unsigned' '--rollback --unsigned'; do
   # shellcheck disable=SC2086
-  if sh "$case_dir/update.sh" $arguments >/dev/null 2>&1; then echo "Accepted: $arguments" >&2; exit 1; fi
+  if sh "$case_dir/update.sh" $arguments > "$temporary/output" 2>&1; then echo "Accepted: $arguments" >&2; exit 1; fi
+  case $arguments in --unsigned*) grep -q '^Usage: ./update.sh \[--unsigned\] IMAGE' "$temporary/output" ;; esac
 done
 [ ! -s "$CALLS" ]
-echo 'PASS: coordinated snapshot, pull before capture, publication, startup/health failures, rollback, lock, version pinning.'
+echo 'PASS: coordinated snapshot, pull before capture, publication, startup/health failures, rollback, lock, version pinning, unlabelled images only with --unsigned.'

@@ -240,6 +240,8 @@ stub apt-get "printf 'apt-get %s\n' \"\$*\" >> \"\$CALLS\""
 
 : > "$CALLS"
 install_gym --hostname gym.localhost --email owner@example.org
+# A first install takes no update lock: nothing else can be updating it yet.
+[ ! -e "$root/.update.lock" ]
 [ "$(stat -c %a "$root/.env")" = 600 ]
 [ "$(stat -c %a "$root/rotate-key.sh")" = 700 ]
 grep -qx GYM_HOSTNAME=gym.localhost "$root/.env"
@@ -269,6 +271,18 @@ grep -qF 'different release repository' "$temporary/output"
 expect_refusal --hostname gym.localhost --email owner@example.org --repository ../repo
 grep -qF 'Use --repository OWNER/REPO' "$temporary/output"
 before=$(hashes)
+
+# A re-run waits for an update or key rotation holding the update lock, and gives up without changing anything.
+files() { find "$root" -type f ! -name .update.lock -exec sha256sum {} + | sort; }
+files_before=$(files)
+: > "$CALLS"
+if flock "$root/.update.lock" env INSTALL_LOCK_WAIT=1 sh "$source_dir/install.sh" --directory "$root" --image plaingym:v0.0.0-local \
+  --image-archive "$temporary/image.tar" --hostname gym.localhost --email owner@example.org > "$temporary/output" 2>&1; then
+  echo 'A re-run went ahead while an update held the lock.' >&2; exit 1
+fi
+grep -qx 'An update is running. Try again in a few minutes. Nothing was changed.' "$temporary/output"
+if grep -Eq '^(docker|apt-get|ufw|systemctl)' "$CALLS"; then echo 'A re-run changed the host while an update held the lock.' >&2; exit 1; fi
+[ "$files_before" = "$(files)" ]
 
 : > "$CALLS"
 install_gym --hostname gym.localhost --email owner@example.org

@@ -10,6 +10,25 @@ read_env() { # KEY [FILE] [UNIQUE]; the last value wins unless UNIQUE is true.
   # The installer writes unquoted single-line values. Never source a config file.
   awk -v key="$1" -v single="${3:-false}" 'index($0, key "=") == 1 { n++; sub(/^[^=]*=/, ""); value=$0 } END { if (single != "true" || n == 1) print value }' "${2:-$ROOT/.env}"
 }
+# env_install NEXT KEY...: make NEXT the install's .env, but only when it keeps every other line of .env unchanged and
+# in order, so a write cut short (a full disk) can never replace .env and lose its secrets. On any mismatch or error
+# NEXT is removed and .env stays as it was. Prints nothing.
+env_install() {
+  env_next=$1; shift
+  env_keys=$(printf '%s|' "$@")
+  env_keys="^(${env_keys%|})="
+  # A failed read adds a different marker to each side, so two failures never match.
+  if [ -s "$env_next" ] \
+    && env_kept=$({ awk -v keys="$env_keys" '$0 !~ keys' "$ROOT/.env" || echo 'unreadable .env'; } | sha256sum) \
+    && env_next_kept=$({ awk -v keys="$env_keys" '$0 !~ keys' "$env_next" || echo 'unreadable next .env'; } | sha256sum) \
+    && [ "$env_kept" = "$env_next_kept" ] \
+    && chmod 0600 "$env_next" \
+    && mv "$env_next" "$ROOT/.env"; then
+    return 0
+  fi
+  rm -f "$env_next"
+  return 1
+}
 image_name_pattern='^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?(/[a-z0-9][a-z0-9._-]*)+$'
 version_pattern='^v(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$'
 valid_image_name() { printf '%s\n' "$1" | grep -Eq "$image_name_pattern"; }
@@ -126,12 +145,20 @@ restore_schema_guard() { # The guard as keep_schema_guard found it, or none, wit
     mv "$ROOT/schema-compatibility.yaml.before" "$ROOT/schema-compatibility.yaml"
     return
   fi
+  listed=$(read_env COMPOSE_FILE)
+  composition=${listed%:schema-compatibility.yaml}
+  # .env never got the guard (its rewrite failed, as on a full disk): only the guard file goes, .env stays as it is.
+  if [ "$composition" = "$listed" ]; then
+    rm -f "$ROOT/schema-compatibility.yaml"
+    return
+  fi
+  # This runs during a rollback, where set -e is off: check every step, and keep the guard until .env is rewritten.
+  awk '!/^COMPOSE_FILE=/' "$ROOT/.env" > "$ROOT/.env.guard-next" || { rm -f "$ROOT/.env.guard-next"; return 1; }
+  if [ -n "$composition" ] && [ "$composition" != compose.yaml ]; then
+    printf 'COMPOSE_FILE=%s\n' "$composition" >> "$ROOT/.env.guard-next" || { rm -f "$ROOT/.env.guard-next"; return 1; }
+  fi
+  env_install "$ROOT/.env.guard-next" COMPOSE_FILE || return 1
   rm -f "$ROOT/schema-compatibility.yaml"
-  composition=$(read_env COMPOSE_FILE)
-  composition=${composition%:schema-compatibility.yaml}
-  awk '!/^COMPOSE_FILE=/' "$ROOT/.env" > "$ROOT/.env.guard-next"
-  if [ -n "$composition" ] && [ "$composition" != compose.yaml ]; then printf 'COMPOSE_FILE=%s\n' "$composition" >> "$ROOT/.env.guard-next"; fi
-  mv "$ROOT/.env.guard-next" "$ROOT/.env"
 }
 write_schema_guard() { # FLOOR RELEASE SNAPSHOT; only verified values reach Compose, never shell source.
   if ! valid_version "$1" || ! valid_version "$2"; then fail 'Invalid schema compatibility state.'; fi
@@ -151,9 +178,10 @@ write_schema_guard() { # FLOOR RELEASE SNAPSHOT; only verified values reach Comp
     *:schema-compatibility.yaml:*) ;;
     *)
       composition="${composition:-compose.yaml}:schema-compatibility.yaml"
-      awk '!/^COMPOSE_FILE=/' "$ROOT/.env" > "$ROOT/.env.guard-next"
-      printf 'COMPOSE_FILE=%s\n' "$composition" >> "$ROOT/.env.guard-next"
-      mv "$ROOT/.env.guard-next" "$ROOT/.env" ;;
+      { awk '!/^COMPOSE_FILE=/' "$ROOT/.env" > "$ROOT/.env.guard-next" \
+        && printf 'COMPOSE_FILE=%s\n' "$composition" >> "$ROOT/.env.guard-next" \
+        && env_install "$ROOT/.env.guard-next" COMPOSE_FILE; } \
+        || { rm -f "$ROOT/.env.guard-next"; fail 'Could not rewrite .env. Nothing was changed.'; } ;;
   esac
 }
 # Release manifests (release-manifest.txt, deploy/README.md "Releases") are `key=value` lines,

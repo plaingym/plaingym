@@ -131,6 +131,11 @@ while [ "$#" -gt 0 ]; do case "$1" in -o) output=$2; shift 2 ;; https://*) url=$
 printf 'curl %s\n' "$url" >> "$CALLS"
 case "$url" in
   https://api.github.com/repos/example/app/releases?per_page=100) [ "${FAIL_AT:-}" != releases ] || exit 22; cp "$FIXTURES/releases.json" "$output" ;;
+  # Later pages come from releases-N.json; FAIL_AT=releases_page_N fails page N.
+  'https://api.github.com/repos/example/app/releases?per_page=100&page='*)
+    page=${url##*=}
+    [ "${FAIL_AT:-}" != "releases_page_$page" ] || exit 22
+    cp "$FIXTURES/releases-$page.json" "$output" ;;
   https://github.com/example/app/releases/download/*/release-manifest.txt) [ "${FAIL_AT:-}" != manifest ] || exit 22; cp "$FIXTURES/manifest" "$output" ;;
   https://github.com/example/app/releases/download/*/release-manifest.txt.sig) cp "$FIXTURES/manifest.sig" "$output" ;;
   https://github.com/example/app/releases/download/*/plaingym-deploy-*.tar.gz) [ "${FAIL_AT:-}" != archive ] || exit 22; cp "$FIXTURES/host.tar.gz" "$output" ;;
@@ -545,6 +550,38 @@ never 'curl '
 make_install releases
 expect_status 1 FAIL_AT=releases --patch --now
 recorded "--result skipped --reason release_list_unavailable --from v1.2.3"
+
+# The release list is read in pages of 100, until a page that isn't full, and at most 10 pages.
+release_list_requests() { grep '^curl https://api.github.com/' "$CALLS" | sed 's/^curl //'; }
+full_page() { # FILE MAJOR: 100 releases, none of them of the running minor
+  seq 0 99 | awk -v major="$2" 'BEGIN { printf "[" } { printf "%s{\"tag_name\": \"v%s.%s.0\"}", (NR > 1 ? ", " : ""), major, $1 } END { print "]" }' > "$1"
+}
+cp "$FIXTURES/releases.json" "$temporary/releases.json"
+make_install one-page
+expect_status 0 --patch --now
+recorded "--result updated --from v1.2.3 --to v1.2.5"
+[ "$(release_list_requests)" = 'https://api.github.com/repos/example/app/releases?per_page=100' ]
+make_install second-page
+full_page "$FIXTURES/releases.json" 3
+printf '[{"tag_name": "v1.2.5"}, {"tag_name": "v1.2.4"}]\n' > "$FIXTURES/releases-2.json"
+expect_status 0 --patch --now
+recorded "--result updated --from v1.2.3 --to v1.2.5"
+[ "$(release_list_requests | tr '\n' ' ')" = 'https://api.github.com/repos/example/app/releases?per_page=100 https://api.github.com/repos/example/app/releases?per_page=100&page=2 ' ]
+# A page that can't be read ends the run: never a choice from part of the list.
+make_install second-page-unavailable
+expect_status 1 FAIL_AT=releases_page_2 --patch --now
+recorded "--result skipped --reason release_list_unavailable --from v1.2.3"
+never ' pull app'
+never ' stop app'
+make_install ten-pages
+for page in 2 3 4 5 6 7 8 9 10; do full_page "$FIXTURES/releases-$page.json" "$((page + 2))"; done
+printf '[{"tag_name": "v1.2.5"}]\n' > "$FIXTURES/releases-11.json"
+expect_status 0 --patch --now
+recorded "--result up_to_date --from v1.2.3"
+[ "$(release_list_requests | wc -l)" -eq 10 ]
+never 'page=11'
+cp "$temporary/releases.json" "$FIXTURES/releases.json"
+rm -f "$FIXTURES"/releases-*.json
 make_install manifest
 expect_status 1 FAIL_AT=manifest --patch --now
 recorded "--result skipped --reason manifest_unavailable --from v1.2.3 --to v1.2.5"

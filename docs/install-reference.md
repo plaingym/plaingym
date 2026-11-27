@@ -64,7 +64,9 @@ In order, the installer:
 6. prints `https://gym.example.org/setup#token=…`.
 
 Running the same command again is safe: it keeps `.env`, starts anything that has
-stopped and prints the link again. It refuses a different hostname, email or image;
+stopped and prints the link again. It waits up to a minute for a running update or key
+rotation, and otherwise stops with "An update is running. Try again in a few minutes.
+Nothing was changed." It refuses a different hostname, email or image;
 change the image with `update.sh` ([update by hand](update-by-hand.md)).
 
 Before it prints the link, the installer fetches a random value of this install's through

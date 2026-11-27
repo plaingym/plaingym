@@ -74,6 +74,12 @@ add_env() {
   mv "$ROOT/.env.next" "$ROOT/.env"
 }
 
+# A re-run waits for a running update or key rotation, as they take the same lock, and holds it until it exits, so it
+# never recreates the app from the old pin in the middle of an update.
+if [ "$existing" = true ]; then
+  exec 9>"$ROOT/.update.lock"
+  flock -w "${INSTALL_LOCK_WAIT:-60}" 9 || fail 'An update is running. Try again in a few minutes. Nothing was changed.'
+fi
 sh "$SOURCE/host.sh"
 # A re-run keeps the loaded image even if a newer bundle reuses its tag;
 # changing the running image is update.sh's job.

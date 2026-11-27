@@ -325,7 +325,10 @@ public bootstrap/configuration files are readable by their containers.
 Re-running the same command is safe: it keeps `.env` and its secrets, leaves
 the installed files and the running image alone, starts anything that stopped,
 and prints the setup link again (or the sign-in address once setup is done). A
-re-run with a different hostname, email, or image stops without changes; change
+re-run takes the updater's lock before it changes anything, so it never runs beside
+`update.sh` or `rotate-key.sh`: it waits up to 60 seconds for a running one, then
+stops with "An update is running. Try again in a few minutes. Nothing was changed."
+A re-run with a different hostname, email, or image stops without changes; change
 the image with `update.sh`.
 Containers have rotating logs. Only Caddy publishes ports. The app runs as
 `node` with a read-only root filesystem, dropped capabilities, no Docker
@@ -474,8 +477,15 @@ After a recorded update migrated across a floor and failed, a manual update to
 that same release or a newer compatible signed release also accepts a stopped or
 restarting app. It pulls the target image and compares it with the running one: the
 same image, by any tag or digest, prints "Already on the requested image." and changes
-nothing. It verifies a release image against its signed
-manifest and digest, then stops any running app and runs
+nothing. A request with a `vX.Y.Z` tag must get an image whose
+`org.opencontainers.image.version` label is that version, since a registry tag can be
+moved to another image; otherwise it stops with "The image's version doesn't match the
+requested tag. Nothing was changed." An image labelled with a release version is always
+verified against its signed manifest and digest. An image with no release version label
+(a local or development build) has no signature to check, so it installs only with
+`sudo ./update.sh --unsigned IMAGE`; `--unsigned` never skips the checks of a labelled
+image, and a recovery update still needs a signed release. Once verified, it stops any
+running app and runs
 `node /app/maintenance.mjs snapshot pre-upgrade` in a one-off app container: a
 coordinated, encrypted install snapshot to the gym's backup destination, ordinarily kept
 under the backup retention's pre-upgrade rule. Updates, requested rollbacks and forward
@@ -505,7 +515,7 @@ reporting healthy, runs the health check, and changes the persisted image pin
 in `.env` only on success. Every release path pins the same form, `IMAGE:vX.Y.Z@DIGEST`: a
 release update the signed manifest's name, tag and digest, and `--rollback` the name and
 digest the previous image was pulled with, so a removed image can be pulled back (a
-locally built image with no registry digest keeps its image ID). A manual update to an
+locally built image with no registry digest keeps its image ID). A manual `--unsigned` update to an
 image without a release version label has no signed manifest, so it pins the reference
 as given. A failed image start or check restarts the exact
 previous local image (by image ID) when the schema allows it, so keep those images available. If an update
@@ -609,7 +619,8 @@ Each night, in order, the updater:
    there is no `release-signing.pem` in the install directory, or the running
    image's `org.opencontainers.image.version` label isn't a release version;
 2. reads the tag names of the repository's GitHub releases (`RELEASE_REPOSITORY`,
-   default `plaingym/plaingym`) and picks the newest `vX.Y.Z` with the running
+   default `plaingym/plaingym`), up to 10 pages of 100 (a page that can't be read
+   skips the night as `release_list_unavailable`), and picks the newest `vX.Y.Z` with the running
    X.Y and a higher Z; none means up to date, and a release the owner rolled back
    from, or an older patch than that, is skipped and reported. So is a release
    whose automatic attempts failed twice (rolled back, failed, or interrupted):

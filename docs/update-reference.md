@@ -87,7 +87,12 @@ install it explicitly before updating. This is separate from rotating the instal
 encryption key with `rotate-key.sh`.
 
 An image with a release version label requires its signed release manifest and signature,
-even when it came from a mirror or a local build; there is no verification override. For a
+even when it came from a mirror or a local build, and `--unsigned` doesn't change that. A
+request with a `vX.Y.Z` tag must get an image labelled with that version: a registry tag can
+be moved to another image, so a mismatch stops with "The image's version doesn't match the
+requested tag. Nothing was changed." Only an image with no release version label (a local or
+development build) installs without a signature, and only with `./update.sh --unsigned IMAGE`;
+a recovery update still requires a signed release. For a
 fork, set `RELEASE_REPOSITORY=owner/repository` in the install's `.env` to the GitHub
 repository publishing its signed releases, and install its release signing public key. A
 network outage, missing release assets, an invalid signature or a digest mismatch stops the

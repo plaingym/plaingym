@@ -1,6 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-only
 # ./update.sh IMAGE           Update to an explicit image, run by the owner (deploy/README.md, "Updates and recovery").
+# ./update.sh --unsigned IMAGE The same for an image with no release version label, which has no signature to check.
 # ./update.sh --patch [--now] The nightly timer's run: install the newest signed patch release of the running minor
 #                             version, once a night in the three hours from the start hour the owner picks in
 #                             Settings → Updates (default 02:00–05:00), in the gym's timezone (--now: at once).
@@ -56,16 +57,21 @@ if [ "${bootstrap_restored:-false}" = true ]; then exec sh "$ROOT/update.sh" "$@
 . "$ROOT/lib.sh"
 [ "$(id -u)" -eq 0 ] || fail 'Run update.sh as root.'
 [ -f "$ROOT/.env" ] || fail 'Missing installation .env.'
-usage='Usage: ./update.sh IMAGE (explicit semver tag or sha256 digest) | ./update.sh --patch [--now] | ./update.sh --rollback'
+usage='Usage: ./update.sh [--unsigned] IMAGE (explicit semver tag or sha256 digest) | ./update.sh --patch [--now] | ./update.sh --rollback'
 patch=false
 now=false
 requested_rollback=false
+# --unsigned allows only an image with no release version label; a labelled image is always verified.
+unsigned=false
+request=
 case "$#:${1:-}:${2:-}" in
   1:--rollback:) requested_rollback=true ;;
   1:--patch:) patch=true ;;
   2:--patch:--now) patch=true; now=true ;;
+  2:--unsigned:-*) fail "$usage" ;;
+  2:--unsigned:*) unsigned=true; request=$2; valid_image "$2" || fail 'Use an explicit semver tag or sha256 digest.' ;;
   1:-*) fail "$usage" ;;
-  1:*) valid_image "$1" || fail 'Use an explicit semver tag or sha256 digest.' ;;
+  1:*) request=$1; valid_image "$1" || fail 'Use an explicit semver tag or sha256 digest.' ;;
   *) fail "$usage" ;;
 esac
 current=$(read_env APP_IMAGE)
@@ -131,7 +137,8 @@ settle_attempt() {
     recovery_notice
     return 1
   fi
-  restore_schema_guard
+  # Keep the attempt when .env can't be rewritten, so the next run settles it again.
+  restore_schema_guard || { echo "Could not rewrite .env (is the disk full?), so $from_version stays stopped. Free some space and run update.sh again." >&2; return 1; }
   rm -f "$ATTEMPT"
   attempt_end=abandoned
   target_floor=-
@@ -284,9 +291,9 @@ swap_image() { # TARGET
   [ "$patch" = false ] || settle "$1"
   if [ -n "$host_source" ]; then host_apply "$host_source" "$1" "$previous_id" || fail 'Could not install the signed host files; restoring the previous copies.'; fi
   # Startup completes migrations before reporting healthy. Publish the pin only afterwards.
-  awk -v image="$1" 'BEGIN { found=0 } /^APP_IMAGE=/ { print "APP_IMAGE=" image; found=1; next } { print } END { if (!found) print "APP_IMAGE=" image }' "$ROOT/.env" > "$ROOT/.env.next"
-  chmod 0600 "$ROOT/.env.next"
-  mv "$ROOT/.env.next" "$ROOT/.env"
+  awk -v image="$1" 'BEGIN { found=0 } /^APP_IMAGE=/ { print "APP_IMAGE=" image; found=1; next } { print } END { if (!found) print "APP_IMAGE=" image }' "$ROOT/.env" > "$ROOT/.env.next" \
+    || { rm -f "$ROOT/.env.next"; fail 'Could not write .env; the update was not applied.'; }
+  env_install "$ROOT/.env.next" APP_IMAGE || fail 'Could not write .env; the update was not applied.'
   rm -f "$RECOVERY" "$ATTEMPT" "$ROOT/schema-compatibility.yaml.before"
   stage=finished
   changed=false
@@ -700,7 +707,7 @@ if [ "$requested_rollback" = true ]; then
 fi
 
 if [ "$patch" = false ]; then
-  target=$1
+  target=$request
   if [ -z "$recovery_version" ]; then
     [ "$target" != "$current" ] || { echo 'Already on the requested image.'; exit 0; }
   fi
@@ -715,6 +722,17 @@ if [ "$patch" = false ]; then
   history_install
   if [ -n "$recovery_version" ]; then from_version=$(cut -f2 "$RECOVERY"); else from_version=$(image_version "$current"); fi
   to_version=$(image_version "$target")
+  # A registry tag can be moved to another image: a release tag in the request must be the image's own version. A
+  # tag with a suffix (v1.2.3-rc.1) or a request by digest alone names no release. A release-shaped tag that isn't
+  # canonical (v01.10.0) never matches a label, so it is refused too.
+  requested_tag=${request%@sha256:*}
+  case "${requested_tag##*/}" in
+    *:*) requested_tag=${requested_tag##*:}; requested_tag=v${requested_tag#v} ;;
+    *) requested_tag= ;;
+  esac
+  if printf '%s\n' "$requested_tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' && [ "$to_version" != "$requested_tag" ]; then
+    fail "The image's version doesn't match the requested tag. Nothing was changed."
+  fi
   if valid_version "$to_version"; then
     work=$(mktemp -d)
     repository=$(read_env RELEASE_REPOSITORY); [ -n "$repository" ] || repository=plaingym/plaingym
@@ -746,6 +764,9 @@ if [ "$patch" = false ]; then
   fi
   if [ -n "$recovery_version" ] && ! valid_version "$to_version"; then
     fail "Recovery requires $recovery_version or a newer compatible signed release. Nothing was changed."
+  fi
+  if ! valid_version "$to_version" && [ "$unsigned" = false ]; then
+    fail "This image has no release version label, so its signature can't be checked. To install it anyway, run ./update.sh --unsigned IMAGE. Nothing was changed."
   fi
   [ -n "$work" ] || work=$(mktemp -d)
   if [ -z "$recovery_version" ]; then remember_manual_image "$current" "$from_version"; fi
@@ -826,10 +847,19 @@ if valid_version "$version"; then from_version=$version; fi
 repository=$(read_env RELEASE_REPOSITORY)
 [ -n "$repository" ] || repository=plaingym/plaingym
 valid_repository "$repository" || finish skipped release_list_unavailable 1
-download "https://api.github.com/repos/$repository/releases?per_page=100" "$work/releases.json" 5000000 \
-  || finish skipped release_list_unavailable 1
-# Only tag names are read from the list; the signed manifest below is what is trusted.
-tags=$(grep -Eo '"tag_name"[[:space:]]*:[[:space:]]*"v[0-9]+\.[0-9]+\.[0-9]+"' "$work/releases.json" | grep -Eo 'v[0-9]+\.[0-9]+\.[0-9]+' || true)
+# Only tag names are read from the list; the signed manifest below is what is trusted. Read up to 10 pages of 100
+# releases, until a page that isn't full. A page that can't be read ends the run: never choose from part of the list.
+tags=
+page=1
+while :; do
+  address="https://api.github.com/repos/$repository/releases?per_page=100"
+  [ "$page" -eq 1 ] || address="$address&page=$page"
+  download "$address" "$work/releases.json" 5000000 || finish skipped release_list_unavailable 1
+  page_tags=$(grep -Eo '"tag_name"[[:space:]]*:[[:space:]]*"v[0-9]+\.[0-9]+\.[0-9]+"' "$work/releases.json" | grep -Eo 'v[0-9]+\.[0-9]+\.[0-9]+' || true)
+  tags=$(printf '%s\n%s' "$tags" "$page_tags")
+  if [ "$(grep -o '"tag_name"' "$work/releases.json" | wc -l)" -lt 100 ] || [ "$page" -ge 10 ]; then break; fi
+  page=$((page + 1))
+done
 tag=$(newest_patch "$from_version" "$tags")
 [ -n "$tag" ] || finish up_to_date -
 to_version=$tag

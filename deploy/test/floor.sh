@@ -163,11 +163,15 @@ case "$*" in
     cp "$FIXTURES/schema" "$SNAPSHOTS/$snapshot"
     printf 'Snapshot: %s\n' "$snapshot" ;;
   *' exec -T postgres '*) [ "${FAIL_AT:-}" != database ] && [ ! -e "$FIXTURES/database_down" ] || exit 1; cat "$FIXTURES/schema" ;;
-  *' node /app/deploy/healthcheck.mjs') [ "${FAIL_AT:-}" != health ] ;;
+  *' node /app/deploy/healthcheck.mjs')
+    # SHORT_ENV_AT: from this step on, .env rewrites are cut short (the awk fixture).
+    [ "${SHORT_ENV_AT:-}" != health ] || : > "$FIXTURES/short_env"
+    [ "${FAIL_AT:-}" != health ] ;;
   *'up -d '*)
     compatible "${APP_IMAGE:-$PREVIOUS_ID}"
     [ "${FAIL_AT:-}" != snapshot_rollback ] || exit 1
     if [ "${APP_IMAGE:-}" != "$PREVIOUS_ID" ] && [ "${APP_IMAGE:-}" != "$OLDER_ID" ]; then
+      [ "${SHORT_ENV_AT:-}" != startup ] || : > "$FIXTURES/short_env"
       case "${FAIL_AT:-}" in
         before_migrating) exit 1 ;;
         database_lost) : > "$FIXTURES/database_down"; exit 1 ;;
@@ -189,7 +193,25 @@ case "$url" in
   *) exit 22 ;;
 esac
 MOCK
-chmod 0700 "$temporary/bin/docker" "$temporary/bin/curl"
+REAL_AWK=$(command -v awk)
+export REAL_AWK
+cat > "$temporary/bin/awk" <<'MOCK'
+#!/bin/sh
+# While short_env exists, a rewrite of .env keeps only its first line, as a write cut short by a full disk would, and
+# exits with the status short_env holds (0 when it is empty). Every other awk program runs as it is.
+if [ -e "$FIXTURES/short_env" ]; then
+  for argument do
+    case "$argument" in
+      '!/^COMPOSE_FILE=/'|*'"APP_IMAGE=" image'*)
+        "$REAL_AWK" "$@" | head -n 1
+        short_status=$(cat "$FIXTURES/short_env")
+        exit "${short_status:-0}" ;;
+    esac
+  done
+fi
+exec "$REAL_AWK" "$@"
+MOCK
+chmod 0700 "$temporary/bin/docker" "$temporary/bin/curl" "$temporary/bin/awk"
 cat > "$temporary/bin/timeout" <<'MOCK'
 #!/bin/sh
 set -eu
@@ -232,6 +254,7 @@ make_install() {
   : > "$case_dir/compose.yaml"
   printf 'APP_IMAGE=ghcr.io/example/app:v1.9.0\nRELEASE_REPOSITORY=example/app\n' > "$case_dir/.env"
   printf '20|1000\n' > "$FIXTURES/schema"
+  rm -f "$FIXTURES/short_env"
   : > "$CALLS"
   TARGET=$2 INITIAL_TARGET=$2 DIGEST=$digest
   export TARGET INITIAL_TARGET DIGEST
@@ -244,11 +267,16 @@ write_release() { # VERSION FLOOR [DIGEST]: change the signed release without ch
     "$1" "$DIGEST" "$2" "$(printf '1%.0s' $(seq 40))" "$(printf 'c%.0s' $(seq 64))" > "$FIXTURES/manifest"
   openssl pkeyutl -sign -inkey "$FIXTURES/key.pem" -rawin -in "$FIXTURES/manifest" -out "$FIXTURES/manifest.sig"
 }
-update() { # EXPECTED_STATUS [NAME=VALUE]: update to the fixture's target
-  expected=$1; shift
+update_with() { # EXPECTED_STATUS ARGUMENTS [NAME=VALUE]: run update.sh with ARGUMENTS, split at spaces
+  expected=$1; arguments=$2; shift 2
   status=0
-  env "$@" sh "$case_dir/update.sh" "ghcr.io/example/app:$TARGET" > "$temporary/output" 2>&1 || status=$?
-  [ "$status" -eq "$expected" ] || { echo "Expected exit $expected, got $status: $*" >&2; exit 1; }
+  # shellcheck disable=SC2086
+  env "$@" sh "$case_dir/update.sh" $arguments > "$temporary/output" 2>&1 || status=$?
+  [ "$status" -eq "$expected" ] || { echo "Expected exit $expected, got $status: $arguments $*" >&2; exit 1; }
+}
+update() { # EXPECTED_STATUS [NAME=VALUE]: update to the fixture's target
+  update_expected=$1; shift
+  update_with "$update_expected" "ghcr.io/example/app:$TARGET" "$@"
 }
 said() { grep -q -- "$1" "$temporary/output" || { echo "Expected the output: $1" >&2; exit 1; }; }
 pinned() { grep -qx "APP_IMAGE=$1" "$case_dir/.env"; }
@@ -268,6 +296,43 @@ update 1 FAIL_AT=manifest
 said 'Could not download the signed release manifest and signature'
 said 'RELEASE_REPOSITORY'
 if grep -q 'stop app\|snapshot pre-upgrade\|up -d' "$CALLS"; then exit 1; fi
+
+# A registry tag can be moved: a release tag must be the pulled image's own version, here a signed v1.9.5 or an
+# unlabelled image under v1.10.0. Refused before anything stops, with or without --unsigned, with the v or without.
+make_install moved_tag v1.9.5 v1.9.0
+for arguments in ghcr.io/example/app:v1.10.0 '--unsigned ghcr.io/example/app:v1.10.0' ghcr.io/example/app:1.10.0 \
+  "ghcr.io/example/app:v1.10.0@$digest" ghcr.io/example/app:v01.10.0; do
+  for label in v1.9.5 development; do
+    before=$(sha256sum "$case_dir/.env")
+    update_with 1 "$arguments" TARGET="$label"
+    said "The image's version doesn't match the requested tag. Nothing was changed."
+    pinned ghcr.io/example/app:v1.9.0
+    [ "$before" = "$(sha256sum "$case_dir/.env")" ]
+    if grep -q ' stop app\|up -d' "$CALLS"; then echo "Stopped the app for a moved tag: $arguments" >&2; exit 1; fi
+  done
+done
+# The tag and the label agree and the manifest verifies: the update goes ahead as before.
+update_with 0 ghcr.io/example/app:v1.9.5
+pinned "ghcr.io/example/app:v1.9.5@$digest"
+
+# --unsigned never skips the checks of a labelled image.
+make_install unsigned_labelled v1.10.0 v1.9.0
+printf 'changed\n' >> "$FIXTURES/manifest"
+before=$(sha256sum "$case_dir/.env")
+update_with 1 '--unsigned ghcr.io/example/app:v1.10.0'
+said 'Invalid signed release manifest.'
+[ "$before" = "$(sha256sum "$case_dir/.env")" ]
+if grep -q ' stop app\|up -d' "$CALLS"; then echo 'Stopped the app for an unverified labelled image.' >&2; exit 1; fi
+# An image with no release version label installs only with --unsigned, unverified as before.
+make_install unlabelled v1.10.0 v1.9.0
+update_with 1 ghcr.io/example/app:v1.10.0-dev TARGET=development
+said 'This image has no release version label'
+said 'run ./update.sh --unsigned IMAGE. Nothing was changed.'
+pinned ghcr.io/example/app:v1.9.0
+if grep -q ' stop app\|up -d' "$CALLS"; then echo 'Stopped the app for an unlabelled image without --unsigned.' >&2; exit 1; fi
+update_with 0 '--unsigned ghcr.io/example/app:v1.10.0-dev' TARGET=development
+pinned ghcr.io/example/app:v1.10.0-dev
+no_guard
 
 for app_state in stopped restarting; do
   make_install "rollback_snapshot_$app_state" v1.10.0 v1.9.0
@@ -331,8 +396,14 @@ for app_state in stopped restarting; do
   cp "$case_dir/schema-compatibility.yaml" "$temporary/recovery_guard"
   cp "$case_dir/.schema-recovery" "$temporary/recovery_record"
   : > "$CALLS"
+  # The release's tag moved to an image without its label is a mismatch; an unlabelled image asked for by its own tag
+  # still needs a signed release, with or without --unsigned.
   update 1 APP_STATE="$app_state" TARGET=development
-  said 'Recovery requires v2.0.0'
+  said "The image's version doesn't match the requested tag. Nothing was changed."
+  for arguments in ghcr.io/example/app:v2.0.0-dev '--unsigned ghcr.io/example/app:v2.0.0-dev'; do
+    update_with 1 "$arguments" APP_STATE="$app_state" TARGET=development
+    said 'Recovery requires v2.0.0'
+  done
   cp "$FIXTURES/manifest" "$temporary/signed_manifest"
   printf 'changed\n' >> "$FIXTURES/manifest"
   update 1 APP_STATE="$app_state"
@@ -455,6 +526,82 @@ cp "$case_dir/.env" "$temporary/environment"
 update 1 FAIL_AT=before_migrating
 [ "$(sort "$case_dir/.env")" = "$(sort "$temporary/environment")" ]
 [ ! -e "$case_dir/schema-compatibility.yaml" ]
+
+# env_install takes a new .env only when every line but the named key's is there unchanged and in order.
+make_install env_install v2.0.0 v2.0.0
+printf 'COMPOSE_FILE=compose.yaml:compose.override.yaml\n' >> "$case_dir/.env"
+cp "$case_dir/.env" "$temporary/environment"
+pin='APP_IMAGE=ghcr.io/example/app:v1.9.0\n' repository='RELEASE_REPOSITORY=example/app\n'
+for next in '' "${pin}COMPOSE_FILE=compose.yaml\n" "${pin}RELEASE_REPOSITORY=example/other\nCOMPOSE_FILE=compose.yaml\n" \
+  "$pin${repository}EXTRA=1\n" "$repository$pin"; do
+  # shellcheck disable=SC2059
+  printf "$next" > "$case_dir/.env.test-next"
+  if installed env_install "$case_dir/.env.test-next" COMPOSE_FILE; then echo "Installed a .env that lost or changed a line: $next" >&2; exit 1; fi
+  [ ! -e "$case_dir/.env.test-next" ]
+  cmp "$case_dir/.env" "$temporary/environment"
+done
+for next in "$pin${repository}COMPOSE_FILE=compose.yaml:other.yaml\n" "$pin$repository" "${pin}COMPOSE_FILE=compose.yaml\n$repository"; do
+  # shellcheck disable=SC2059
+  printf "$next" > "$case_dir/.env.test-next"
+  chmod 0644 "$case_dir/.env.test-next"
+  installed env_install "$case_dir/.env.test-next" COMPOSE_FILE
+  # shellcheck disable=SC2059
+  printf "$next" | cmp - "$case_dir/.env"
+  [ "$(stat -c %a "$case_dir/.env")" = 600 ]
+done
+
+# A rewrite of .env cut short (the awk fixture keeps its first line) never replaces it, whatever the writer's exit
+# status. Without the fixture each rewrite gives the same .env as before.
+make_install short_restore v2.0.0 v2.0.0
+cp "$case_dir/.env" "$temporary/original"
+installed write_schema_guard v1.9.0 v1.10.0 -
+cp "$case_dir/.env" "$temporary/environment"
+for short_status in '' 1; do
+  printf '%s' "$short_status" > "$FIXTURES/short_env"
+  if installed restore_schema_guard; then echo 'Restored the guard over a cut-short .env.' >&2; exit 1; fi
+  cmp "$case_dir/.env" "$temporary/environment"
+  [ -f "$case_dir/schema-compatibility.yaml" ] && [ ! -e "$case_dir/.env.guard-next" ]
+done
+rm "$FIXTURES/short_env"
+installed restore_schema_guard
+cmp "$case_dir/.env" "$temporary/original"
+no_guard
+make_install short_guard v2.0.0 v2.0.0
+cp "$case_dir/.env" "$temporary/environment"
+: > "$FIXTURES/short_env"
+if installed write_schema_guard v1.9.0 v1.10.0 - 2> "$temporary/output"; then echo 'Wrote the guard over a cut-short .env.' >&2; exit 1; fi
+said 'Could not rewrite .env. Nothing was changed.'
+cmp "$case_dir/.env" "$temporary/environment"
+[ ! -e "$case_dir/.env.guard-next" ]
+# .env never got the guard, so taking it down needs no rewrite and works on the same full disk.
+installed restore_schema_guard
+cmp "$case_dir/.env" "$temporary/environment"
+no_guard
+rm "$FIXTURES/short_env"
+installed write_schema_guard v1.9.0 v1.10.0 -
+printf 'APP_IMAGE=ghcr.io/example/app:v1.9.0\nRELEASE_REPOSITORY=example/app\nCOMPOSE_FILE=compose.yaml:schema-compatibility.yaml\n' | cmp - "$case_dir/.env"
+# The pin: the update fails, .env keeps the previous pin and every other line, and the previous image starts again.
+make_install short_pin v1.10.0 v1.9.0
+update 1 SHORT_ENV_AT=health
+said 'Could not write .env; the update was not applied.'
+said 'Update failed; restarting the previous image.'
+pinned ghcr.io/example/app:v1.9.0
+grep -qx RELEASE_REPOSITORY=example/app "$case_dir/.env"
+[ "$(wc -l < "$case_dir/.env")" -eq 3 ] && [ ! -e "$case_dir/.env.next" ]
+served_previous
+# A failed attempt whose guard can't be taken down leaves the previous version stopped and its record in place; the
+# next run settles it and starts the previous version.
+make_install short_settle v2.0.0 v2.0.0
+update 1 FAIL_AT=before_migrating SHORT_ENV_AT=startup
+said 'Could not rewrite .env (is the disk full?), so v1.9.0 stays stopped. Free some space and run update.sh again.'
+[ -e "$case_dir/.schema-attempt" ] && [ -e "$case_dir/schema-compatibility.yaml" ]
+grep -qx 'COMPOSE_FILE=compose.yaml:schema-compatibility.yaml' "$case_dir/.env"
+if served_previous; then echo 'Started the previous image under the guard it could not take down.' >&2; exit 1; fi
+rm "$FIXTURES/short_env"
+update 1
+said 'interrupted'
+served_previous
+no_guard
 
 # A skipped minor crosses too: v1.9 to v1.11, whose floor is v1.10.0.
 make_install skipped_minor v1.11.0 v1.10.0
