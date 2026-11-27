@@ -316,6 +316,13 @@
       "when": 1795756831952,
       "tag": "0045_household_pin_lockout",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1795779645686,
+      "tag": "0046_household_pin_failed_at",
+      "breakpoints": true
     }
   ]
 }

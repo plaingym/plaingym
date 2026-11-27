@@ -149,6 +149,9 @@ export const householdListQuerySchema = paginationSchema.extend({ search: nameSc
 export const householdResponseSchema = z.strictObject({ data: householdSchema });
 /** `sharedPin` says another household in the gym has the same PIN, without naming it; the PIN is saved either way. */
 export const setHouseholdPinResponseSchema = z.strictObject({ data: householdSchema, sharedPin: z.boolean() });
+/** The end of the kiosk's wrong-PIN lock while it is in force, else null; the wrong-PIN count is never sent. */
+export const householdPinLockResponseSchema = z.strictObject({ data: z.strictObject({ lockedUntil: instantSchema.nullable() }) });
+export const clearHouseholdPinLockRequestSchema = z.strictObject({ revision: revisionSchema });
 export const householdListResponseSchema = listResponseSchema(householdSchema);
 export const householdBillingSettingsResponseSchema = z.strictObject({ data: householdBillingSettingsSchema });
 
@@ -249,6 +252,10 @@ export const membersContracts = {
     params: householdParamsSchema, body: updateHouseholdBillingSettingsRequestSchema, response: householdBillingSettingsResponseSchema },
   setHouseholdPin: { method: 'put', path: '/api/households/{householdId}/pin', permission: { kind: 'staff', capability: 'households.manage' },
     params: householdParamsSchema, body: setHouseholdPinRequestSchema, response: setHouseholdPinResponseSchema },
+  getHouseholdPinLock: { method: 'get', path: '/api/households/{householdId}/pin-lock', permission: { kind: 'staff', capability: 'households.manage' },
+    params: householdParamsSchema, response: householdPinLockResponseSchema },
+  clearHouseholdPinLock: { method: 'post', path: '/api/households/{householdId}/pin-lock/clear', permission: { kind: 'staff', capability: 'households.manage' },
+    params: householdParamsSchema, body: clearHouseholdPinLockRequestSchema, response: householdResponseSchema },
   listTags: { method: 'get', path: '/api/member-tags', permission: { kind: 'staff', capability: 'members.read' },
     query: paginationSchema, response: memberTagListResponseSchema },
   createTag: { method: 'post', path: '/api/member-tags', permission: { kind: 'staff', capability: 'tags.manage' },
@@ -300,6 +307,8 @@ export type SetHouseholdPinRequest = z.infer<typeof setHouseholdPinRequestSchema
 export type HouseholdListQuery = z.infer<typeof householdListQuerySchema>;
 export type HouseholdResponse = z.infer<typeof householdResponseSchema>;
 export type SetHouseholdPinResponse = z.infer<typeof setHouseholdPinResponseSchema>;
+export type HouseholdPinLockResponse = z.infer<typeof householdPinLockResponseSchema>;
+export type ClearHouseholdPinLockRequest = z.infer<typeof clearHouseholdPinLockRequestSchema>;
 export type HouseholdListResponse = z.infer<typeof householdListResponseSchema>;
 export type MemberTag = z.infer<typeof memberTagSchema>;
 export type CreateMemberTagRequest = z.infer<typeof createMemberTagRequestSchema>;

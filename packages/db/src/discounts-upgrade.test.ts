@@ -32,7 +32,7 @@ it('adds three empty discount tables to a populated database without changing ex
     const consent = { phone_e164: null, sms_notices_consent_at: null, sms_notices_consent_source: null };
     expect(after).toEqual(before.map(row => ({ ...row,
       gym: { ...row.gym, sms_config_encrypted: null, member_sms_enabled: false, sms_daily_cap: 1000, bank_debits_enabled: false },
-      household: { ...row.household, ...consent, pin_failed_count: 0, pin_locked_until: null },
+      household: { ...row.household, ...consent, pin_failed_count: 0, pin_locked_until: null, pin_failed_at: null },
       member: { ...row.member, ...consent, sms_announcements_consent_at: null, sms_announcements_consent_source: null },
       membership: { ...row.membership, scheduled_origin: null },
     })));

@@ -13,8 +13,10 @@ export const households = pgTable('households', {
   address: jsonb('address').notNull().default({}), billingDay: integer('billing_day').notNull().default(1),
   stripeCustomerId: text('stripe_customer_id'),
   pinHash: text('pin_hash'), familyDiscountBasisPoints: integer('family_discount_basis_points').notNull().default(0),
-  // Kiosk wrong-PIN guesses in a row, and the end of the lock they set; never sent to clients.
+  // Kiosk wrong-PIN guesses in a row, the end of the lock they set, and the time of the latest counted guess; never
+  // sent to clients.
   pinFailedCount: integer('pin_failed_count').notNull().default(0), pinLockedUntil: instant('pin_locked_until'),
+  pinFailedAt: instant('pin_failed_at'),
   ...revision(),
 }, (t) => [
   ...scoped('households', t), unique('households_gym_stripe_customer_key').on(t.gymId, t.stripeCustomerId),

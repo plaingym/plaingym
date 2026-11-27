@@ -16,24 +16,36 @@ members, and evaluates standing. A guess is checked against at most three
 households where a member's first or last name, or a word of the household
 name, starts with the search; a wider match
 goes to the front desk, and a first and last name narrows a common surname.
-When the PIN matches several of those households, the one with a member whose
-full name, or a household name, equals the search (ignoring case and spacing)
-is picked; two such exact matches, or none, go to the front desk.
+When the search names households exactly (a member's full name, or a household
+name, equals it, ignoring case and spacing), only one of those can be picked: the
+one whose PIN matches, so a guess through one family's name never checks in another
+family whose PIN it happens to match. A search that names none picks the only
+household whose PIN matches. Two named households whose PIN matches, or two matches
+with none named, go to the front desk.
 
 Each household also counts its wrong PINs in a row (`households.pin_failed_count`).
 A guess that was compared and picked no household counts as wrong on every one of
-its unlocked candidate households whose PIN it didn't match; a guess that matched no household or more than three
-counts nowhere. The candidate rows are locked in ID order while the guess is
-checked, so simultaneous guesses each count. The fifth wrong PIN in a row
+its unlocked candidate households whose PIN it didn't match. When the search names
+households exactly (a member's full name or the household name equals it), it counts
+only on those, so a guess at one family never counts against others whose names start
+the same, and a guess naming a locked household counts on no household. A guess that
+matched no household or more than three counts nowhere. The candidate rows are locked
+in ID order while the guess is checked, so simultaneous guesses each count. The count
+starts again after 15 minutes without a wrong PIN (`pinCountWindowMs`,
+`households.pin_failed_at`, the time of the latest counted wrong PIN; a count stored
+without one starts again at the next wrong PIN). The fifth wrong PIN in a row
 (`pinLockAfter`) locks that household's name-and-PIN check-in for 15 minutes
 (`pinLockMs`, `households.pin_locked_until`), starts its count again and writes a
 `household.pin_locked` audit event (system actor, `after.lockedUntil`). While it is
 locked even its right PIN gets the front-desk answer, changes no count, and spends
 the device limiter's budget like a wrong PIN. Its PIN is still compared, so it keeps
 its part in the tie rule: another household sharing that PIN is never picked in
-its place. A right PIN clears the count and an ended lock, and staff setting or clearing
-the PIN (`PUT /api/households/{id}/pin`) clears both. These writes never change the
-household's `revision`. Staff aren't shown the lock; QR check-in isn't affected.
+its place. A right PIN clears the count, its time and an ended lock, and staff setting or
+clearing the PIN (`PUT /api/households/{id}/pin`) clears all three. These kiosk writes never
+change the household's `revision`. Staff who manage households see a lock in force on the
+member profile's household panel (`GET /api/households/{id}/pin-lock`) and can clear it
+(`POST /api/households/{id}/pin-lock/clear`, `areas/members/README.md`); QR check-in isn't
+affected.
 PIN matches the name can't tell apart, invalid PINs, locked households,
 members outside the household, and failed checks receive the same neutral
 front-desk result. Lookup displays only first names, last initials, and optional

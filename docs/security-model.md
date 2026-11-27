@@ -154,8 +154,12 @@ pages.
   budget is audited and shown on the dashboard. Five wrong PINs in a row on one
   household lock that household's name-and-PIN check-in for 15 minutes, with the
   usual front-desk answer even for its right PIN (stored, so a restart doesn't
-  reset it); a right PIN or staff setting or clearing the PIN starts the count
-  again, and each lock is audited.
+  reset it). When a search names a household exactly, only that household can be
+  checked in and a wrong PIN counts only there, so guesses through one family's
+  name never reach another family's PIN uncounted. The count starts again after 15 minutes without a wrong PIN;
+  a right PIN or staff setting or clearing the PIN starts it again too, and each
+  lock is audited. Staff who manage households see a lock in force on the member's
+  profile and can clear it (audited).
 * **QR check-in codes** are per member, revocable, valid only in their own gym,
   and derived with the gym's own random key; only their hash is stored.
 * **Tests.** Every member-facing route has a cross-household test (household A's

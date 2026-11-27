@@ -14,7 +14,7 @@ import type { Principal, RequestEnvironment } from '../../../core/context.js';
 import { FakeUploads } from '../../../infra/storage/index.js';
 import { authorize } from '../../staff/auth.permissions.js';
 import { hashHouseholdPin } from '../../members/pin.js';
-import { createKioskCheckin, maxCandidateHouseholds, pinLockAfter, pinLockMs } from './checkin.js';
+import { createKioskCheckin, maxCandidateHouseholds, pinCountWindowMs, pinLockAfter, pinLockMs } from './checkin.js';
 import { createKioskCheckinRoutes } from './standing.routes.js';
 import { createStandingChecks } from './standing.js';
 import { createApp } from '../../../core/app.js';
@@ -182,13 +182,17 @@ describe('kiosk name and PIN check-in', () => {
       return { result, ids: ids(result), heard: heard.mock.calls[0]![0] as string };
     }
     const frontDesk = { status: 'see_front_desk' };
-    it('never removes the only PIN match: a surname finds its member when another household is named exactly that', async () => {
+    it('finds only a household the search names exactly, when it names one; the full name finds the other', async () => {
       const gymId = await gym();
       const ana = await home(gymId, 'Lopez', '1111', ['Ana', 'Lopez']);
       const maria = await home(gymId, 'Garcia', '2222', ['Maria', 'Lopez']);
-      expect(await lookup(gymId, 'Lopez', '2222')).toMatchObject({ ids: [maria.member.id], heard: 'verified' });
+      // "Lopez" names Ana's household exactly, so Maria's PIN there is a wrong guess, not Maria's check-in.
+      expect(await lookup(gymId, 'Lopez', '2222')).toMatchObject({ result: frontDesk, heard: 'compared' });
+      expect(await lookup(gymId, 'Maria Lopez', '2222')).toMatchObject({ ids: [maria.member.id], heard: 'verified' });
       expect(await lookup(gymId, 'Lopez', '1111')).toMatchObject({ ids: [ana.member.id], heard: 'verified' });
       expect(await lookup(gymId, 'Lopez', '3333')).toMatchObject({ result: frontDesk, heard: 'compared' });
+      // A search naming no household still finds the only PIN match.
+      expect(await lookup(gymId, 'Lop', '2222')).toMatchObject({ ids: [maria.member.id], heard: 'verified' });
     });
     it('breaks a tie between PIN matches with the household whose member or household name equals the search', async () => {
       const gymId = await gym();
@@ -226,8 +230,9 @@ describe('kiosk name and PIN check-in', () => {
       const gymId = await gym();
       const dan = await home(gymId, 'Smith', '1111', ['Dan', 'Smith']);
       const daniel = await home(gymId, 'Smithers', '2222', ['Daniel', 'Smithers']);
-      // The exact "Dan Smith" household doesn't hide Daniel, whose PIN is the only match.
-      expect(await lookup(gymId, 'Dan Smith', '2222')).toMatchObject({ ids: [daniel.member.id], heard: 'verified' });
+      // Daniel's PIN is still compared through the exact "Dan Smith", but only Dan's household can be found there.
+      expect(await lookup(gymId, 'Dan Smith', '2222')).toMatchObject({ result: frontDesk, heard: 'compared' });
+      expect(await lookup(gymId, 'Daniel Smithers', '2222')).toMatchObject({ ids: [daniel.member.id], heard: 'verified' });
       expect(await lookup(gymId, 'Dan Smith', '1111')).toMatchObject({ ids: [dan.member.id], heard: 'verified' });
       expect(await lookup(gymId, 'Dan', '2222')).toMatchObject({ ids: [daniel.member.id], heard: 'verified' });
       await home(gymId, 'Smithson', '3333', ['Danny', 'Smithson']); await home(gymId, 'Smithfield', '4444', ['Dana', 'Smithfield']);
@@ -431,7 +436,8 @@ describe('kiosk name and PIN check-in', () => {
 describe('a household\'s PIN lock after wrong guesses', () => {
   const frontDesk = { status: 'see_front_desk' };
   const lockState = async (id: string) => (await database.forGym(gymA, (tx) => tx.select({ count: households.pinFailedCount,
-    until: households.pinLockedUntil, revision: households.revision }).from(households).where(eq(households.id, id))))[0]!;
+    until: households.pinLockedUntil, failedAt: households.pinFailedAt, revision: households.revision })
+    .from(households).where(eq(households.id, id))))[0]!;
   const lockAudits = (id: string) => database.forGym(gymA, (tx) => tx.select().from(auditEvents)
     .where(and(eq(auditEvents.targetId, id), eq(auditEvents.action, 'household.pin_locked'))));
   const wrong = (home: { name: string }, times: number, checkins = service) =>
@@ -540,6 +546,93 @@ describe('a household\'s PIN lock after wrong guesses', () => {
     const home = await family(), before = (await lockState(home.id)).revision;
     await wrong(home, pinLockAfter);
     expect((await lockState(home.id)).revision).toBe(before);
+  });
+  it('counts a wrong guess only on the household a search names exactly, and on every candidate when it names none', async () => {
+    const tag = 'Ann' + uuidv7().slice(-6);
+    const lee = await family(gymA, `${tag} Lee`, '1111'), leeson = await family(gymA, `${tag} Leeson`, '2222');
+    const heard = vi.fn();
+    expect(await service.lookup(gymA, { name: lee.name, pin: '9999' }, heard)).toEqual(frontDesk);
+    expect(heard).toHaveBeenCalledExactlyOnceWith('compared');
+    expect(await lockState(lee.id)).toMatchObject({ count: 1, failedAt: clock.now() });
+    expect(await lockState(leeson.id)).toMatchObject({ count: 0, failedAt: null });
+    expect(await service.lookup(gymA, { name: tag, pin: '9999' })).toEqual(frontDesk);
+    expect(await lockState(lee.id)).toMatchObject({ count: 2 });
+    expect(await lockState(leeson.id)).toMatchObject({ count: 1 });
+  });
+  it('never finds another household through a search that names one exactly, and counts the guess on the named one', async () => {
+    const tag = 'Ann' + uuidv7().slice(-6);
+    const lee = await family(gymA, `${tag} Lee`, '1111'), leeson = await family(gymA, `${tag} Leeson`, '2222');
+    const heard = vi.fn();
+    expect(await service.lookup(gymA, { name: lee.name, pin: leeson.pin }, heard)).toEqual(frontDesk);
+    expect(heard).toHaveBeenCalledExactlyOnceWith('compared');
+    expect(await lockState(lee.id)).toMatchObject({ count: 1, failedAt: clock.now() });
+    expect(await lockState(leeson.id)).toMatchObject({ count: 0, until: null, failedAt: null });
+    // A search naming no household still finds the only PIN match.
+    const found = await service.lookup(gymA, { name: tag, pin: leeson.pin });
+    expect(found.status === 'select_member' && found.members.map((member) => member.id)).toEqual([leeson.parent.id, leeson.child.id]);
+  });
+  it('finds no other household through a named search when the named household\'s PIN is cleared meanwhile', async () => {
+    const tag = 'Ann' + uuidv7().slice(-6);
+    const lee = await family(gymA, `${tag} Lee`, '1111'), leeson = await family(gymA, `${tag} Leeson`, '2222');
+    // Staff clear the named household's PIN between the candidate query and the locked re-read.
+    const racing = createKioskCheckin({ scope: database.forGym, clock, uploadsFor, pinSecret: async (gymId) => {
+      await database.forGym(gymId, (tx) => tx.update(households).set({ pinHash: null }).where(eq(households.id, lee.id)));
+      return secrets.get(gymId)!;
+    } });
+    const heard = vi.fn();
+    expect(await racing.lookup(gymA, { name: lee.name, pin: leeson.pin }, heard)).toEqual(frontDesk);
+    expect(heard).toHaveBeenCalledExactlyOnceWith('compared');
+    expect(await lockState(leeson.id)).toMatchObject({ count: 0, until: null, failedAt: null });
+  });
+  it('counts on no household when the household a search names is locked', async () => {
+    const tag = 'Ann' + uuidv7().slice(-6);
+    const lee = await family(gymA, `${tag} Lee`, '1111'), leeson = await family(gymA, `${tag} Leeson`, '2222');
+    await wrong(lee, pinLockAfter);
+    expect(await lockState(lee.id)).toMatchObject({ count: 0, until: new Date(clock.now().getTime() + pinLockMs), failedAt: null });
+    expect(await lockState(leeson.id)).toMatchObject({ count: 0 });
+    const heard = vi.fn();
+    expect(await service.lookup(gymA, { name: lee.name, pin: '9999' }, heard)).toEqual(frontDesk);
+    expect(heard).toHaveBeenCalledExactlyOnceWith('compared');
+    expect(await lockState(leeson.id)).toMatchObject({ count: 0, failedAt: null });
+    // The other candidate's right PIN through the locked household's name finds nothing and changes nothing.
+    const right = vi.fn();
+    expect(await service.lookup(gymA, { name: lee.name, pin: leeson.pin }, right)).toEqual(frontDesk);
+    expect(right).toHaveBeenCalledExactlyOnceWith('compared');
+    expect(await lockState(leeson.id)).toMatchObject({ count: 0, until: null, failedAt: null });
+    expect(await lockState(lee.id)).toMatchObject({ count: 0, until: new Date(clock.now().getTime() + pinLockMs) });
+    expect(await lockAudits(lee.id)).toHaveLength(1);
+  });
+  it('starts the count again after 15 minutes without a wrong PIN, and not a millisecond before', async () => {
+    expect(pinCountWindowMs).toBe(15 * 60_000);
+    const quiet = timed(), home = await family();
+    await wrong(home, pinLockAfter - 1, quiet.checkins);
+    expect(await lockState(home.id)).toMatchObject({ count: pinLockAfter - 1, failedAt: quiet.own.now() });
+    quiet.own.advance(pinCountWindowMs);
+    await wrong(home, 1, quiet.checkins);
+    expect(await lockState(home.id)).toMatchObject({ count: 1, until: null, failedAt: quiet.own.now() });
+    const close = timed(), other = await family();
+    await wrong(other, pinLockAfter - 1, close.checkins);
+    close.own.advance(pinCountWindowMs - 1);
+    await wrong(other, 1, close.checkins);
+    expect(await lockState(other.id)).toMatchObject({ count: 0, until: new Date(close.own.now().getTime() + pinLockMs), failedAt: null });
+  });
+  it('starts a count stored without a time again at the next wrong PIN', async () => {
+    const home = await family();
+    await database.forGym(gymA, (tx) => tx.update(households).set({ pinFailedCount: pinLockAfter - 1, pinFailedAt: null }).where(eq(households.id, home.id)));
+    await wrong(home, 1);
+    expect(await lockState(home.id)).toMatchObject({ count: 1, until: null, failedAt: clock.now() });
+  });
+  it('clears the count, the lock end and the count\'s time on a right PIN', async () => {
+    const { own, checkins } = timed(), home = await family();
+    await wrong(home, 2, checkins);
+    expect(await lockState(home.id)).toMatchObject({ count: 2, failedAt: own.now() });
+    expect((await checkins.lookup(gymA, { name: home.name, pin: home.pin })).status).toBe('select_member');
+    expect(await lockState(home.id)).toMatchObject({ count: 0, until: null, failedAt: null });
+    await wrong(home, pinLockAfter, checkins);
+    own.advance(pinLockMs);
+    await database.forGym(gymA, (tx) => tx.update(households).set({ pinFailedAt: own.now() }).where(eq(households.id, home.id)));
+    expect((await checkins.lookup(gymA, { name: home.name, pin: home.pin })).status).toBe('select_member');
+    expect(await lockState(home.id)).toMatchObject({ count: 0, until: null, failedAt: null });
   });
 });
 

@@ -214,6 +214,10 @@ Migration `0045_household_pin_lockout.sql` adds `households.pin_failed_count` (n
 in a row for the household and the end of the lock they set. Existing households start at 0 with
 no lock.
 
+Migration `0046_household_pin_failed_at.sql` adds the nullable `households.pin_failed_at`, the
+time of the latest wrong PIN the kiosk counted for the household, so the count starts again once
+it is old. Existing households start without one; their next wrong PIN starts the count again.
+
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver

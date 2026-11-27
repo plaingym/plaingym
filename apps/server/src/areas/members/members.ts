@@ -77,7 +77,7 @@ export function createMembersService(options: MembersOptions = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const phoneCountry = (tx: Transaction, gymId: string, phones: readonly (string | null | undefined)[]) =>
     readPhoneCountry(phones, async () => (await readGymSettings(tx, gymId)).address.country);
-  const audit = (tx: Transaction, context: MutationContext, action: string, targetType: string, targetId: string, before?: Record<string, string>, after?: Record<string, string | boolean>) =>
+  const audit = (tx: Transaction, context: MutationContext, action: string, targetType: string, targetId: string, before?: Record<string, string | null>, after?: Record<string, string | boolean>) =>
     writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
       ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
       action, targetType, targetId, occurredAt: clock.now(), ...(before ? { before } : {}), ...(after ? { after } : {}) }); // No PII or PINs in the append-only log.
@@ -488,9 +488,29 @@ export function createMembersService(options: MembersOptions = {}) {
         const others = pin && secret ? await tx.select({ id: households.id, pinHash: households.pinHash }).from(households)
           .where(and(ne(households.id, id), isNotNull(households.pinHash))) : [];
         const sharedPin = others.some((other) => verifyHouseholdPin(secret!, context.gymId, other.id, pin!, other.pinHash));
-        const row = assertRevised(await tx.update(households).set({ pinHash, pinFailedCount: 0, pinLockedUntil: null, revision: guard.next }).where(and(eq(households.id, id), guard.matches)).returning(householdFields));
+        const row = assertRevised(await tx.update(households).set({ pinHash, pinFailedCount: 0, pinLockedUntil: null, pinFailedAt: null, revision: guard.next })
+          .where(and(eq(households.id, id), guard.matches)).returning(householdFields));
         await audit(tx, context, 'household.pin.updated', 'household', id);
         return { data: household(row, await phoneCountry(tx, context.gymId, [row.phone])), sharedPin };
+      });
+    },
+    /** The end of the kiosk's wrong-PIN lock while it is in force; the count itself never leaves the server. */
+    async getHouseholdPinLock(gymId: string, id: string): Promise<c.HouseholdPinLockResponse> {
+      return scope(gymId, async (tx) => {
+        const { lockedUntil } = missing((await tx.select({ lockedUntil: households.pinLockedUntil }).from(households).where(eq(households.id, id)))[0]);
+        return { data: { lockedUntil: lockedUntil && lockedUntil.getTime() > clock.now().getTime() ? lockedUntil.toISOString() : null } };
+      });
+    },
+    /** Lifts the kiosk's wrong-PIN lock and starts the count again; it succeeds when nothing was locked too. */
+    async clearHouseholdPinLock(context: MutationContext, id: string, input: c.ClearHouseholdPinLockRequest): Promise<c.HouseholdResponse> {
+      const { revision } = c.clearHouseholdPinLockRequestSchema.parse(input);
+      return scope(context.gymId, async (tx) => {
+        await getHouseholdRow(tx, id); const guard = revisionGuard(households.revision, revision);
+        const [stored] = await tx.select({ lockedUntil: households.pinLockedUntil }).from(households).where(eq(households.id, id));
+        const row = assertRevised(await tx.update(households).set({ pinFailedCount: 0, pinLockedUntil: null, pinFailedAt: null, revision: guard.next })
+          .where(and(eq(households.id, id), guard.matches)).returning(householdFields));
+        await audit(tx, context, 'household.pin_lock.cleared', 'household', id, { lockedUntil: stored?.lockedUntil?.toISOString() ?? null });
+        return { data: household(row, await phoneCountry(tx, context.gymId, [row.phone])) };
       });
     },
     async listTags(gymId: string, input: c.Pagination) {

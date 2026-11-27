@@ -25,6 +25,8 @@ export const maxCandidateHouseholds = 3;
 /** Wrong PINs in a row that lock a household's name-and-PIN check-in, and how long the lock lasts. */
 export const pinLockAfter = 5;
 export const pinLockMs = 15 * 60_000;
+/** A household's wrong-PIN count starts again after this long without a wrong PIN. */
+export const pinCountWindowMs = 15 * 60_000;
 /** Hears what one PIN guess came to; the kiosk limiter spends budget only on wrong PINs (`devices.auth.ts`). */
 export type PinChecked = (check: KioskPinCheck) => void;
 
@@ -42,7 +44,7 @@ export function createKioskCheckin(options: KioskCheckinOptions = {}) {
 
   /**
    * The one household whose PIN matches among households with a member or household name matching the search; when
-   * the PIN matches several, the one whose name equals the search. `pinChecked` hears whether the guess was compared, and whether it matched.
+   * some household's name equals the search, only such a household. `pinChecked` hears whether the guess was compared, and whether it matched.
    */
   async function findHousehold(gymId: string, name: string, pin: string, pinChecked?: PinChecked): Promise<string | null> {
     if (!options.pinSecret) throw new AppError('unavailable', 'Kiosk PIN check-in is not configured');
@@ -68,7 +70,8 @@ export function createKioskCheckin(options: KioskCheckinOptions = {}) {
     const { check, householdId } = await scope(gymId, async (tx): Promise<{ check: KioskPinCheck; householdId: string | null }> => {
       // Lock the candidates in ID order, so concurrent guesses at one household all count and never deadlock. The
       // PIN and lock are read again under the lock; a household whose PIN was cleared meanwhile isn't compared.
-      const locked = await tx.select({ id: households.id, pinHash: households.pinHash, pinFailedCount: households.pinFailedCount, pinLockedUntil: households.pinLockedUntil })
+      const locked = await tx.select({ id: households.id, pinHash: households.pinHash, pinFailedCount: households.pinFailedCount,
+        pinLockedUntil: households.pinLockedUntil, pinFailedAt: households.pinFailedAt })
         .from(households).where(and(inArray(households.id, candidates.map((row) => row.id)), isNotNull(households.pinHash)))
         .orderBy(asc(households.id)).for('update');
       // Every PIN cleared since the candidate query: nothing is compared.
@@ -77,26 +80,39 @@ export function createKioskCheckin(options: KioskCheckinOptions = {}) {
       // Locked households are compared too, so they still take part in the tie rule (a locked household never hands
       // its guess to another household sharing its PIN) and a guess does the same work whether or not one is locked.
       const matches = locked.filter((row) => verifyHouseholdPin(secret, gymId, row.id, pin, row.pinHash));
-      // An exact name breaks a tie between households whose PIN matches, so "a a" isn't lost to "asd asd" sharing
-      // its PIN; it never removes the only match. Two households still tied can't be told apart: never guess.
+      // A search naming households exactly aims at them: only a named household can be found, and a wrong guess counts
+      // only there, never on households whose names merely start the same. A guess at a named household can't check in
+      // another one whose PIN it happens to match, so guesses at an uncounted household never find it. A named
+      // household under a PIN lock counts too, so a guess at it counts on no other. Whether the search names a household
+      // comes from the candidates, so a named household whose PIN was cleared meanwhile still keeps the others unfound.
+      const named = locked.filter((row) => exactIds.has(row.id)), namesAny = exactIds.size > 0;
+      // With no household named, the only match is found. An exact name also breaks a tie between households whose
+      // PIN matches, so "a a" isn't lost to "asd asd" sharing its PIN. Two households still tied can't be told apart:
+      // never guess.
       const exactMatches = matches.filter((row) => exactIds.has(row.id));
-      const found = matches.length === 1 ? matches[0] : exactMatches.length === 1 ? exactMatches[0] : undefined;
+      const found = exactMatches.length === 1 ? exactMatches[0] : !namesAny && matches.length === 1 ? matches[0] : undefined;
       // A locked household's right PIN gets the front-desk answer, like a wrong PIN, and changes no count.
       if (found && !open.includes(found)) return { check: 'compared', householdId: null };
       // These writes leave `revision` alone: a kiosk guess must not make a staff save conflict.
       if (found) {
-        if (found.pinFailedCount !== 0 || found.pinLockedUntil) {
-          await tx.update(households).set({ pinFailedCount: 0, pinLockedUntil: null }).where(eq(households.id, found.id));
+        if (found.pinFailedCount !== 0 || found.pinLockedUntil || found.pinFailedAt) {
+          await tx.update(households).set({ pinFailedCount: 0, pinLockedUntil: null, pinFailedAt: null }).where(eq(households.id, found.id));
         }
         return { check: 'verified', householdId: found.id };
       }
-      // A wrong guess counts on every open household it was compared with; households whose PIN matched but tied keep theirs.
+      // A wrong guess counts on every open household it was compared with, or only on the named ones when the search
+      // names any; households whose PIN matched (tied, or not named) keep theirs.
       for (const row of open) {
-        if (matches.includes(row)) continue;
-        const count = row.pinFailedCount + 1;
-        if (count < pinLockAfter) { await tx.update(households).set({ pinFailedCount: count }).where(eq(households.id, row.id)); continue; }
+        if (matches.includes(row) || (namesAny && !named.includes(row))) continue;
+        // The count starts again after a quiet spell; a count stored without a time starts again too.
+        const recent = row.pinFailedAt !== null && now.getTime() - row.pinFailedAt.getTime() < pinCountWindowMs;
+        const count = (recent ? row.pinFailedCount : 0) + 1;
+        if (count < pinLockAfter) {
+          await tx.update(households).set({ pinFailedCount: count, pinFailedAt: now }).where(eq(households.id, row.id));
+          continue;
+        }
         const lockedUntil = new Date(now.getTime() + pinLockMs);
-        await tx.update(households).set({ pinFailedCount: 0, pinLockedUntil: lockedUntil }).where(eq(households.id, row.id));
+        await tx.update(households).set({ pinFailedCount: 0, pinLockedUntil: lockedUntil, pinFailedAt: null }).where(eq(households.id, row.id));
         await writeAudit(tx, { gymId, actorKind: 'system', action: 'household.pin_locked', targetType: 'household', targetId: row.id,
           occurredAt: now, after: { lockedUntil: lockedUntil.toISOString() } });
       }

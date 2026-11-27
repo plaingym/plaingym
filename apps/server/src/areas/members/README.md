@@ -362,8 +362,16 @@ PIN and answers `sharedPin: true`, never naming the other household, so the pane
 can warn that members with similar names may not be able to check in by name and
 PIN (the kiosk refuses a name and PIN that match two households). Clearing a PIN
 answers `sharedPin: false`. Setting or clearing a PIN also clears the kiosk's
-wrong-PIN count and lock for the household (`pin_failed_count`, `pin_locked_until`;
-`areas/kiosk/standing/README.md`), which no response carries.
+wrong-PIN count, its time and the lock for the household (`pin_failed_count`,
+`pin_failed_at`, `pin_locked_until`; `areas/kiosk/standing/README.md`).
+`GET /api/households/{id}/pin-lock` (`households.manage`) answers `lockedUntil`, the
+lock's end while it is in force and otherwise null, and nothing else; the panel's PIN
+form shows it as a warning with **Clear lock** when a PIN is set, and a lock read that
+fails shows nothing. `POST /api/households/{id}/pin-lock/clear` (`households.manage`,
+with the household's `revision`) starts the count again and lifts the lock, also when
+nothing was locked, advances the revision and writes `household.pin_lock.cleared`
+(`before.lockedUntil`, the stored end or null). No household response carries the
+count, its time or the lock.
 
 Photos are resized to at most 512 pixels on the client and re-encoded as JPEG
 pixels, dropping source metadata. The server bounds the request, accepts only

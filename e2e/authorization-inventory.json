@@ -290,6 +290,22 @@
     }
   },
   {
+    "method": "GET",
+    "path": "/api/households/{householdId}/pin-lock",
+    "permission": {
+      "kind": "staff",
+      "capability": "households.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/households/{householdId}/pin-lock/clear",
+    "permission": {
+      "kind": "staff",
+      "capability": "households.manage"
+    }
+  },
+  {
     "method": "DELETE",
     "path": "/api/households/{householdId}",
     "permission": {

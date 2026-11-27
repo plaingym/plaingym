@@ -18,6 +18,8 @@
   "pin": "New household PIN (4–8 digits)", "setPin": "Set PIN", "clearPin": "Clear PIN",
   "pinIsSet": "A PIN is set.", "pinNotSet": "No PIN is set.", "pinNew": "New PIN (4–8 digits)", "pinSaved": "PIN saved.", "pinCleared": "PIN cleared.",
   "pinShared": "Another household uses this PIN. Members with similar names may not be able to check in.",
+  "pinLocked": "Name-and-PIN check-in is locked until {time} after five wrong PINs. Members can still check in with their QR code or at the front desk.",
+  "clearPinLock": "Clear lock", "pinLockCleared": "Lock cleared.",
   "emergencyContacts": "Emergency contacts", "contact.name": "Contact name", "contact.phone": "Contact phone", "contact.email": "Contact email", "contact.relationship": "Relationship",
   "addContact": "Add emergency contact", "removeContact": "Remove contact", "medicalNotes": "Medical notes",
   "tags": "Tags", "allTags": "All tags", "manageTags": "Manage tags", "tagName": "Tag name", "color": "Color", "newTag": "New tag", "chooseTag": "Choose a tag", "addTag": "Add tag",

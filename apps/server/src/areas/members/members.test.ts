@@ -14,6 +14,7 @@ import { cardDetachedAction, detachJob } from '../billing/payments.mutations.js'
 import { createMemberPhotoJobs } from './members.jobs.js';
 import { createMemberPhotoService } from './photos.js';
 import { hashHouseholdPin, verifyHouseholdPin } from './pin.js';
+import { createKioskCheckin } from '../kiosk/standing/checkin.js';
 import { FakeUploads } from '../../infra/storage/index.js';
 import { FakePayments, type DetachOptions } from '../../infra/payments/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
@@ -265,6 +266,7 @@ async function requestFor(definition: ReturnType<typeof createMembersRoutes>[num
       : definition.path.endsWith('/anonymize') ? { revision: 1 }
       : definition.path.endsWith('/billing-settings') ? { revision: 1, billingDay: 31, familyDiscountBasisPoints: 0 }
       : definition.path.endsWith('/pin') ? { revision: 1, pin: '1234' }
+      : definition.path.endsWith('/pin-lock/clear') ? { revision: 1 }
       : definition.path.endsWith('/sms-consent') ? { revision: 1, consent: false, ...(definition.path.includes('/members/') ? { kind: 'notices' } : {}) }
       : definition.path.endsWith('/photo') ? { revision: 1, contentType: 'image/png', base64: png.toString('base64') }
       : definition.path.endsWith('/tags') ? { tagId: tag.id }
@@ -423,19 +425,75 @@ describe('members and households', () => {
     expect(verifyHouseholdPin(secretA, gymA, home.id, '1234', null)).toBe(false);
     expect(verifyHouseholdPin(secretA, gymA, home.id, 'bad', raw!.pin)).toBe(false);
   });
-  it('clears the kiosk wrong-PIN count and lock when staff set or clear the PIN', async () => {
+  it('clears the kiosk wrong-PIN count, its time and the lock when staff set or clear the PIN', async () => {
     const { home } = await routeFixture(gymA);
-    const lockState = () => database.forGym(gymA, (tx) => tx.select({ count: households.pinFailedCount, until: households.pinLockedUntil })
-      .from(households).where(eq(households.id, home.id)));
+    const lockState = () => database.forGym(gymA, (tx) => tx.select({ count: households.pinFailedCount, until: households.pinLockedUntil,
+      failedAt: households.pinFailedAt }).from(households).where(eq(households.id, home.id)));
     const lock = () => database.forGym(gymA, (tx) => tx.update(households)
-      .set({ pinFailedCount: 3, pinLockedUntil: new Date(clock.now().getTime() + 600_000) }).where(eq(households.id, home.id)));
+      .set({ pinFailedCount: 3, pinLockedUntil: new Date(clock.now().getTime() + 600_000), pinFailedAt: clock.now() }).where(eq(households.id, home.id)));
     await lock();
     const saved = await service.setHouseholdPin(context(), home.id, { revision: 1, pin: '4321' });
-    expect(await lockState()).toEqual([{ count: 0, until: null }]);
+    expect(await lockState()).toEqual([{ count: 0, until: null, failedAt: null }]);
     expect(saved.data).not.toHaveProperty('pinFailedCount'); expect(saved.data).not.toHaveProperty('pinLockedUntil');
+    expect(saved.data).not.toHaveProperty('pinFailedAt');
     await lock();
     await service.setHouseholdPin(context(), home.id, { revision: 2, pin: null });
-    expect(await lockState()).toEqual([{ count: 0, until: null }]);
+    expect(await lockState()).toEqual([{ count: 0, until: null, failedAt: null }]);
+  });
+  describe('the kiosk\'s wrong-PIN lock for staff', () => {
+    const lockState = async (id: string) => (await database.forGym(gymA, (tx) => tx.select({ count: households.pinFailedCount,
+      until: households.pinLockedUntil, failedAt: households.pinFailedAt, revision: households.revision }).from(households).where(eq(households.id, id))))[0]!;
+    const lockedHousehold = async () => {
+      const name = 'Lockclear ' + uuidv7().slice(-8), home = await factory('households', gymA, { name });
+      await factory('members', gymA, { householdId: home.id, firstName: 'Dana', lastName: name.split(' ')[0]!, status: 'active' });
+      await service.setHouseholdPin(context(), home.id, { revision: 1, pin: '2468' });
+      await database.forGym(gymA, (tx) => tx.update(households).set({ pinFailedCount: 2, pinFailedAt: clock.now(),
+        pinLockedUntil: new Date(clock.now().getTime() + 600_000) }).where(eq(households.id, home.id)));
+      return { ...home, name, revision: 2 };
+    };
+    it('answers the lock\'s end only while it is in force, and nothing else', async () => {
+      const home = await lockedHousehold(), until = new Date(clock.now().getTime() + 600_000);
+      const response = await send(staff('owner'), `/api/households/${home.id}/pin-lock`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('Cache-Control')).toBe('no-store');
+      expect(await response.json()).toEqual({ data: { lockedUntil: until.toISOString() } });
+      const own = new TestClock(until), later = createMembersService({ scope: database.forGym, clock: own });
+      expect(await later.getHouseholdPinLock(gymA, home.id)).toEqual({ data: { lockedUntil: null } });
+      own.advance(1);
+      expect(await later.getHouseholdPinLock(gymA, home.id)).toEqual({ data: { lockedUntil: null } });
+      const open = await factory('households', gymA);
+      expect(await service.getHouseholdPinLock(gymA, open.id)).toEqual({ data: { lockedUntil: null } });
+      await expect(service.getHouseholdPinLock(gymB, home.id)).rejects.toMatchObject({ code: 'not_found' });
+    });
+    it('clears the lock with the household\'s revision, audits it, and lets the right PIN check in again', async () => {
+      const home = await lockedHousehold(), until = new Date(clock.now().getTime() + 600_000);
+      const kiosk = createKioskCheckin({ scope: database.forGym, clock, pinSecret: async () => secretA });
+      expect(await kiosk.lookup(gymA, { name: home.name, pin: '2468' })).toEqual({ status: 'see_front_desk' });
+      const stale = await send(staff('owner'), `/api/households/${home.id}/pin-lock/clear`, 'POST', { revision: home.revision - 1 });
+      expect(stale.status).toBe(409);
+      expect(await lockState(home.id)).toMatchObject({ count: 2, until, revision: home.revision });
+      const response = await send(staff('owner'), `/api/households/${home.id}/pin-lock/clear`, 'POST', { revision: home.revision });
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(JSON.parse(text)).toMatchObject({ data: { id: home.id, pinSet: true, revision: home.revision + 1 } });
+      expect(text).not.toMatch(/pinFailed|pinLocked|lockedUntil|pinHash/);
+      expect(await lockState(home.id)).toEqual({ count: 0, until: null, failedAt: null, revision: home.revision + 1 });
+      const audits = await database.forGym(gymA, (tx) => tx.select().from(auditEvents)
+        .where(and(eq(auditEvents.targetId, home.id), eq(auditEvents.action, 'household.pin_lock.cleared'))));
+      expect(audits).toHaveLength(1);
+      expect(audits[0]).toMatchObject({ actorKind: 'user', actorUserId: userId, targetType: 'household', occurredAt: clock.now(),
+        before: { lockedUntil: until.toISOString() } });
+      expect((await kiosk.lookup(gymA, { name: home.name, pin: '2468' })).status).toBe('select_member');
+    });
+    it('succeeds on a household with no lock', async () => {
+      const home = await factory('households', gymA);
+      const cleared = await service.clearHouseholdPinLock(context(), home.id, { revision: 1 });
+      expect(cleared.data).toMatchObject({ id: home.id, revision: 2 });
+      const audits = await database.forGym(gymA, (tx) => tx.select().from(auditEvents)
+        .where(and(eq(auditEvents.targetId, home.id), eq(auditEvents.action, 'household.pin_lock.cleared'))));
+      expect(audits).toMatchObject([{ actorKind: 'system', before: { lockedUntil: null } }]);
+      await expect(service.clearHouseholdPinLock(context(gymB), home.id, { revision: 2 })).rejects.toMatchObject({ code: 'not_found' });
+    });
   });
   it('says whether a PIN is set, and when another household of the gym shares it, without naming it or returning a hash', async () => {
     // A fresh gym, so other tests' PINs can't count as shared.

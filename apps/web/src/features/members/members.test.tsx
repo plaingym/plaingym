@@ -14,6 +14,7 @@ import { MembersPage } from './page.js';
 import { HouseholdDetails, HouseholdForm } from './households.js';
 import { memberRequest } from './api.js';
 import { ApiError } from '../../lib/api.js';
+import { instantLabel } from '../../lib/instant.js';
 import { memberDeleteBlockedReason } from '@plaingym/shared/contracts';
 import type { Member } from '@plaingym/shared/contracts';
 import type { StaffRole } from '@plaingym/shared';
@@ -212,6 +213,72 @@ describe('member admin UI', () => {
     expect(await screen.findByText('PIN cleared.')).toBeDefined();
     expect(screen.queryByText(/Another household uses this PIN/)).toBeNull();
     expect(memberRequest).toHaveBeenCalledWith(expect.anything(), `/api/households/${homeId}/pin`, 'PUT', { revision: 1, pin: null });
+  });
+  describe('the kiosk\'s wrong-PIN lock', () => {
+    // Far ahead, so the notice never ends during a case that doesn't wait for it.
+    const lockPath = `/api/households/${homeId}/pin-lock`, until = '2099-01-15T18:45:00Z';
+    const notice = /Name-and-PIN check-in is locked until/;
+    /** The household with a PIN and the lock read answering `lock` (a throw for a failed read). */
+    const answer = (lock: () => { data: { lockedUntil: string | null } }, pinSet = true) => {
+      const fallback = vi.mocked(memberRequest).getMockImplementation()!;
+      vi.mocked(memberRequest).mockImplementation(async (schema, path, method, ...rest) => path === lockPath ? lock()
+        : path === `${lockPath}/clear` ? { data: household(pinSet) }
+        : path === `/api/households/${homeId}/pin` ? { data: household(pinSet), sharedPin: false }
+        : path.includes('/households/') && !path.endsWith('/billing-settings') && !path.includes('/portal-') ? { data: household(pinSet) } : fallback(schema, path, method, ...rest));
+    };
+    it('shows a lock in force with its end and clears it with the household\'s revision', async () => {
+      let lockedUntil: string | null = until;
+      answer(() => ({ data: { lockedUntil } }));
+      view(<HouseholdDetails householdId={homeId} gymId={homeId} pricing/>);
+      const shown = await screen.findByText(notice);
+      expect(shown.textContent).toBe(`Name-and-PIN check-in is locked until ${instantLabel(until, 'UTC')} after five wrong PINs. Members can still check in with their QR code or at the front desk.`);
+      expect(shown.closest('[data-variant]')?.getAttribute('data-variant')).toBe('warning');
+      lockedUntil = null;
+      fireEvent.click(screen.getByRole('button', { name: 'Clear lock' }));
+      expect((await screen.findByText('Lock cleared.')).getAttribute('role')).toBe('status');
+      expect(memberRequest).toHaveBeenCalledWith(expect.anything(), `${lockPath}/clear`, 'POST', { revision: 1 });
+      await waitFor(() => expect(screen.queryByText(notice)).toBeNull());
+      expect(screen.queryByRole('button', { name: 'Clear lock' })).toBeNull();
+    });
+    it('drops the notice when the lock ends, without a reload, and reads the lock again', async () => {
+      const soon = new Date(Date.now() + 1000).toISOString();
+      answer(() => ({ data: { lockedUntil: soon } }));
+      view(<HouseholdDetails householdId={homeId} gymId={homeId} pricing/>);
+      expect(await screen.findByText(notice)).toBeDefined();
+      const reads = () => vi.mocked(memberRequest).mock.calls.filter((call) => call[1] === lockPath).length, before = reads();
+      // The read still answers the ended time, as a cached answer would: the notice goes anyway.
+      await waitFor(() => expect(screen.queryByText(notice)).toBeNull(), { timeout: 3000 });
+      expect(screen.queryByRole('button', { name: 'Clear lock' })).toBeNull();
+      await waitFor(() => expect(reads()).toBeGreaterThan(before));
+      expect(screen.getByText('A PIN is set.')).toBeDefined();
+    });
+    it('shows no notice without a lock in force, and the PIN form works', async () => {
+      answer(() => ({ data: { lockedUntil: null } }));
+      view(<HouseholdDetails householdId={homeId} gymId={homeId} pricing/>);
+      expect(await screen.findByText('A PIN is set.')).toBeDefined();
+      await waitFor(() => expect(memberRequest).toHaveBeenCalledWith(expect.anything(), lockPath, 'GET', undefined, expect.anything()));
+      expect(screen.queryByText(notice)).toBeNull();
+      fireEvent.change(screen.getByLabelText('New PIN (4–8 digits)'), { target: { value: '1234' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Set PIN' }));
+      expect(await screen.findByText('PIN saved.')).toBeDefined();
+    });
+    it('reads no lock for a household without a PIN', async () => {
+      answer(() => ({ data: { lockedUntil: until } }), false);
+      view(<HouseholdDetails householdId={homeId} gymId={homeId} pricing/>);
+      expect(await screen.findByText('No PIN is set.')).toBeDefined();
+      expect(screen.queryByText(notice)).toBeNull();
+      expect(vi.mocked(memberRequest).mock.calls.some((call) => call[1] === lockPath)).toBe(false);
+    });
+    it('shows no notice when the lock read fails, and never blocks the PIN form', async () => {
+      answer(() => { throw new ApiError(500, 'internal'); });
+      view(<HouseholdDetails householdId={homeId} gymId={homeId} pricing/>);
+      expect(await screen.findByText('A PIN is set.')).toBeDefined();
+      await waitFor(() => expect(memberRequest).toHaveBeenCalledWith(expect.anything(), lockPath, 'GET', undefined, expect.anything()));
+      expect(screen.queryByText(notice)).toBeNull();
+      expect(screen.queryByRole('alert')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Clear PIN' }));
+      expect(await screen.findByText('PIN cleared.')).toBeDefined();
+    });
   });
   it('creates a household with the gym\'s country code joined to the typed phone', async () => {
     bootstrap(['admin'], 'CA');
