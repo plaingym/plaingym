@@ -32,6 +32,12 @@ gym, attempt number, job ID, and injected clock, and open their own short databa
 scopes. Jobs are at-least-once: after a crash or lost lease the handler can run
 again, so external effects must use idempotency keys. The lock token fences every
 heartbeat and acknowledgement so an old handler cannot overwrite its replacement.
+While a handler runs, its heartbeat renews the lease every third of the lease
+length. A renewal that throws (a dropped connection, say) is logged once per job
+run as `jobs.heartbeat_failed` and tried again on the next tick; the heartbeat
+stops, logging `jobs.lease_lost`, only when the lease is no longer this worker's:
+it has expired (another worker may claim the job) or another worker holds it.
+The handler itself gets no signal either way.
 Retries start at one second, double per failure, and are capped at one day.
 Unregistered job names stay pending for a worker that has their handlers. A
 job's `run_at` is when it is due; `finished_at` is when it succeeded or finally

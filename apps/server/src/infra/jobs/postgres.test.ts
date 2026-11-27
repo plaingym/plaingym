@@ -518,6 +518,120 @@ describe('worker leases, caps, and lifecycle', () => {
     } finally { held.resolve(); await active; }
     expect((await row(jobId)).status).toBe('succeeded');
   });
+  describe('heartbeat failures', () => {
+    /** A queue whose system database rejects the next `fail(n)` calls, as a dropped connection does, and counts every call. */
+    function flakyQueue() {
+      const state = { calls: 0, rejected: 0, failing: 0 };
+      const forSystem: typeof database.forSystem = (fn) => {
+        state.calls++;
+        if (state.failing > 0) { state.failing--; state.rejected++; return Promise.reject(new Error('connection dropped')); }
+        return database.forSystem(fn);
+      };
+      const q = new PostgresJobs({ database: { ...database, forSystem }, clock, leaseMs: 900 });
+      return { q, state, fail(n: number) { state.failing = n; } };
+    }
+    function capture() {
+      const lines: string[] = [], previous = setLogSink((line) => lines.push(line));
+      const events = (name: string) => lines.map((line) => JSON.parse(line) as { event: string; jobId?: string })
+        .filter((entry) => entry.event === name);
+      return { events, restore: () => setLogSink(previous) };
+    }
+    const firstLease = Date.parse('2026-01-01T00:00:00.900Z');
+
+    it('keeps renewing after a failed renewal so a second worker cannot reclaim the job', async () => {
+      const { q, state, fail } = flakyQueue(), q2 = queue({ leaseMs: 900 }), log = capture();
+      const started = latch(), held = latch();
+      q.handle('work', async () => { started.resolve(); await held.promise; });
+      q2.handle('work', async () => { throw new Error('must not run'); });
+      const { jobId } = await q.enqueue('work', {}, options);
+      const active = q.runNext();
+      try {
+        await started.promise; fail(1);
+        await until(async () => state.rejected === 1);
+        clock.advance(600);
+        await until(async () => (await row(jobId)).lockedUntil!.getTime() > firstLease);
+        clock.advance(400);
+        expect(await q2.runNext()).toBe(false);
+      } finally { held.resolve(); await active; log.restore(); }
+      expect(await row(jobId)).toMatchObject({ status: 'succeeded', attempts: 1 });
+      expect(log.events('jobs.heartbeat_failed')).toEqual([expect.objectContaining({ jobId, gymId: gymA })]);
+      expect(log.events('jobs.lease_lost')).toEqual([]);
+    });
+    it('logs one failure for renewals that fail in a row and renews on the next tick that reaches the database', async () => {
+      const { q, state, fail } = flakyQueue(), log = capture();
+      const started = latch(), held = latch();
+      q.handle('work', async () => { started.resolve(); await held.promise; });
+      const { jobId } = await q.enqueue('work', {}, options);
+      const active = q.runNext();
+      try {
+        await started.promise;
+        const before = state.calls; fail(2);
+        await until(async () => state.rejected === 2);
+        clock.advance(600);
+        await until(async () => (await row(jobId)).lockedUntil!.getTime() > firstLease);
+        // The two rejected ticks, then the third renewed.
+        expect(state.calls - before).toBeGreaterThanOrEqual(3);
+      } finally { held.resolve(); await active; log.restore(); }
+      expect(await row(jobId)).toMatchObject({ status: 'succeeded', attempts: 1 });
+      expect(log.events('jobs.heartbeat_failed')).toEqual([expect.objectContaining({ jobId })]);
+      expect(log.events('jobs.lease_lost')).toEqual([]);
+    });
+    it('keeps a final attempt running past its first lease after a failed renewal', async () => {
+      const { q, state, fail } = flakyQueue(), other = queue({ leaseMs: 900 }), log = capture();
+      const started = latch(), held = latch();
+      q.handle('work', async () => { started.resolve(); await held.promise; });
+      other.handle('work', async () => { throw new Error('must not run'); });
+      const { jobId } = await q.enqueue('work', {}, { ...options, maxAttempts: 1 });
+      const active = q.runNext();
+      try {
+        await started.promise; fail(1);
+        await until(async () => state.rejected === 1);
+        clock.advance(600);
+        await until(async () => (await row(jobId)).lockedUntil!.getTime() > firstLease);
+        clock.advance(400);
+        expect(await other.runNext()).toBe(false);
+        expect(await row(jobId)).toMatchObject({ status: 'running', attempts: 1, lastError: null });
+      } finally { held.resolve(); await active; log.restore(); }
+      expect(await row(jobId)).toMatchObject({ status: 'succeeded', attempts: 1, lastError: null });
+    });
+    it('stops renewing once the lease is lost and leaves the job to its next worker', async () => {
+      const { q, state } = flakyQueue(), q2 = queue({ leaseMs: 900 }), log = capture();
+      const started = latch(), held = latch(), replacementStarted = latch(), replacementHeld = latch();
+      let replacementAttempt: number | undefined;
+      q.handle('work', async () => { started.resolve(); await held.promise; });
+      q2.handle('work', async (_, c) => { replacementAttempt = c.attempt; replacementStarted.resolve(); await replacementHeld.promise; });
+      const { jobId } = await q.enqueue('work', {}, options);
+      const active = q.runNext();
+      let replacement: Promise<boolean> | undefined;
+      try {
+        await started.promise;
+        clock.advance(1001);
+        await until(async () => log.events('jobs.lease_lost').length > 0);
+        const calls = state.calls;
+        await delay(700);
+        expect(state.calls).toBe(calls);
+        expect(log.events('jobs.lease_lost')).toEqual([expect.objectContaining({ jobId, gymId: gymA })]);
+        expect(log.events('jobs.heartbeat_failed')).toEqual([]);
+        replacement = q2.runNext(); await replacementStarted.promise;
+        expect(replacementAttempt).toBe(2);
+        const current = await row(jobId);
+        held.resolve(); await active;
+        expect(await row(jobId)).toMatchObject({ status: 'running', attempts: 2, lockToken: current.lockToken });
+      } finally {
+        held.resolve(); replacementHeld.resolve(); await Promise.all([active, replacement]); log.restore();
+      }
+      expect(await row(jobId)).toMatchObject({ status: 'succeeded', attempts: 2 });
+    });
+    it('logs neither event for a handler that finishes within one tick', async () => {
+      const { q } = flakyQueue(), log = capture();
+      q.handle('work', async () => {});
+      const { jobId } = await q.enqueue('work', {}, options);
+      try { expect(await q.runNext()).toBe(true); await delay(400); } finally { log.restore(); }
+      expect(await row(jobId)).toMatchObject({ status: 'succeeded', attempts: 1 });
+      expect(log.events('jobs.heartbeat_failed')).toEqual([]);
+      expect(log.events('jobs.lease_lost')).toEqual([]);
+    });
+  });
   it('marks an expired final attempt failed instead of leaving it running forever', async () => {
     const q = queue({ leaseMs: 1000 }); const started = latch(), held = latch();
     q.handle('work', async () => { started.resolve(); await held.promise; });

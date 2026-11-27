@@ -311,20 +311,36 @@ export class PostgresJobs implements Jobs, JobRecovery {
       return claimed;
     });
   }
-  async #renew(row: Row): Promise<void> {
+  /** Extends this worker's live lease; `false` when no row matched: the lease expired or another worker holds it. */
+  async #renew(row: Row): Promise<boolean> {
     const now = this.clock.now();
-    await this.#database.forSystem(async (tx) => {
-      await tx.update(jobs).set({ lockedUntil: new Date(now.getTime() + this.#leaseMs) }).where(and(
-        eq(jobs.id, row.id), eq(jobs.lockToken, row.lockToken!), eq(jobs.status, 'running'), sql`${jobs.lockedUntil} > ${now.toISOString()}`));
+    return this.#database.forSystem(async (tx) => {
+      const renewed = await tx.update(jobs).set({ lockedUntil: new Date(now.getTime() + this.#leaseMs) }).where(and(
+        eq(jobs.id, row.id), eq(jobs.lockToken, row.lockToken!), eq(jobs.status, 'running'), sql`${jobs.lockedUntil} > ${now.toISOString()}`))
+        .returning({ id: jobs.id });
+      return renewed.length > 0;
     });
   }
   async #execute(row: Row): Promise<void> {
     const heartbeatAbort = new AbortController();
     const heartbeat = (async () => {
+      // A renewal that throws (a dropped connection) is retried on the next tick; only a lost lease ends the loop.
+      let reported = false;
       while (!heartbeatAbort.signal.aborted) {
         try { await delay(Math.max(1, Math.floor(this.#leaseMs / 3)), undefined, { signal: heartbeatAbort.signal }); }
         catch { return; }
-        if (!heartbeatAbort.signal.aborted) await this.#renew(row);
+        if (heartbeatAbort.signal.aborted) return;
+        try {
+          if (!await this.#renew(row)) {
+            logError('jobs.lease_lost', { jobId: row.id, gymId: row.gymId });
+            return;
+          }
+        } catch (error) {
+          if (!reported) {
+            reported = true;
+            logError('jobs.heartbeat_failed', { jobId: row.id, gymId: row.gymId }, error);
+          }
+        }
       }
     })();
     // Keep a rejection observed immediately; acknowledgement remains lease-fenced.
