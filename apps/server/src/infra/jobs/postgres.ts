@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { and, asc, eq, inArray, isNull, lt, notInArray, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
-import { advisoryLockNamespace, advisoryLocks, forGym, forSystem, isConnectionError, jobs, jobScheduleCursors, uuidv7 } from '@plaingym/db';
+import { advisoryLockNamespace, advisoryLocks, forGym, forSystem, isConnectionError, jobs, jobScheduleCursors, uuidv7, withStatementTimeout } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import type { JobStatsQuery, JobStats } from '../../core/interfaces/job-stats.js';
@@ -147,6 +147,12 @@ export class PostgresJobs implements Jobs, JobRecovery {
   readonly clock: Clock;
   readonly #cap: number;
   readonly #leaseMs: number;
+  /** The heartbeat's renewal interval, a third of the lease. */
+  readonly #tick: number;
+  /** How long one renewal may take, half a tick. */
+  readonly #renewLimit: number;
+  /** The wait before retrying a failed renewal, a tenth of a tick. */
+  readonly #retryWait: number;
   readonly #retryBaseMs: number;
   readonly #listGyms: PostgresJobsOptions['listGyms'];
   readonly #maxScheduled: number;
@@ -169,6 +175,9 @@ export class PostgresJobs implements Jobs, JobRecovery {
     this.clock = options.clock ?? systemClock;
     this.#cap = positive(options.perGymConcurrency ?? 1, 'perGymConcurrency');
     this.#leaseMs = positive(options.leaseMs ?? 30_000, 'leaseMs');
+    this.#tick = Math.max(1, Math.floor(this.#leaseMs / 3));
+    this.#renewLimit = Math.max(1, Math.floor(this.#tick / 2));
+    this.#retryWait = Math.max(1, Math.floor(this.#tick / 10));
     this.#retryBaseMs = positive(options.retryBaseMs ?? 1000, 'retryBaseMs');
     this.#maxScheduled = positive(options.maxScheduledPerTick ?? 100, 'maxScheduledPerTick');
     this.#listGyms = options.listGyms;
@@ -313,32 +322,72 @@ export class PostgresJobs implements Jobs, JobRecovery {
   }
   /** Extends this worker's live lease; `false` when no row matched: the lease expired or another worker holds it. */
   async #renew(row: Row): Promise<boolean> {
-    const now = this.clock.now();
     return this.#database.forSystem(async (tx) => {
+      // Read once the connection is ours, so a slow wait for one never extends the lease from a stale time.
+      const now = this.clock.now();
       const renewed = await tx.update(jobs).set({ lockedUntil: new Date(now.getTime() + this.#leaseMs) }).where(and(
         eq(jobs.id, row.id), eq(jobs.lockToken, row.lockToken!), eq(jobs.status, 'running'), sql`${jobs.lockedUntil} > ${now.toISOString()}`))
         .returning({ id: jobs.id });
       return renewed.length > 0;
     });
   }
+  /**
+   * One renewal, limited to `#renewLimit` both in the database (a statement timeout) and in real time (a timer, for a
+   * call that hangs before reaching it). An abort abandons a call still in flight at once; if the abandoned call commits
+   * later, it can extend the lease only while the row still has this worker's lock token, which an acknowledgement that
+   * writes clears.
+   */
+  async #boundedRenew(row: Row, signal: AbortSignal): Promise<boolean | 'aborted' | { failed: unknown }> {
+    if (signal.aborted) return 'aborted';
+    let timer: ReturnType<typeof setTimeout> | undefined, onAbort: (() => void) | undefined;
+    const call = withStatementTimeout(this.#renewLimit, () => this.#renew(row));
+    // A call the race left behind may still reject later; keep that rejection observed.
+    call.catch(() => undefined);
+    try {
+      return await Promise.race([
+        call.then((renewed) => renewed, (error: unknown) => ({ failed: error })),
+        new Promise<{ failed: unknown }>((resolve) => {
+          timer = setTimeout(() => resolve({ failed: new Error('Lease renewal timed out') }), this.#renewLimit);
+        }),
+        new Promise<'aborted'>((resolve) => {
+          onAbort = () => resolve('aborted');
+          signal.addEventListener('abort', onAbort, { once: true });
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      if (onAbort) signal.removeEventListener('abort', onAbort);
+    }
+  }
   async #execute(row: Row): Promise<void> {
     const heartbeatAbort = new AbortController();
     const heartbeat = (async () => {
-      // A renewal that throws (a dropped connection) is retried on the next tick; only a lost lease ends the loop.
-      let reported = false;
-      while (!heartbeatAbort.signal.aborted) {
-        try { await delay(Math.max(1, Math.floor(this.#leaseMs / 3)), undefined, { signal: heartbeatAbort.signal }); }
-        catch { return; }
-        if (heartbeatAbort.signal.aborted) return;
-        try {
-          if (!await this.#renew(row)) {
-            logError('jobs.lease_lost', { jobId: row.id, gymId: row.gymId });
-            return;
-          }
-        } catch (error) {
+      // Real time, not the injected clock: the loop waits in real time while the lease is written with the clock.
+      // Ticks count from the start of the last renewal that worked. A renewal that fails or times out (a dropped
+      // connection, a hung socket) is retried after `#retryWait`, sooner when the lease is nearly over; only a lost
+      // lease or the handler's end stops the loop.
+      const { signal } = heartbeatAbort;
+      let renewedAt = performance.now(), failing = false, reported = false;
+      while (!signal.aborted) {
+        const now = performance.now(), left = renewedAt + this.#leaseMs - now;
+        const wait = failing ? (left > 0 ? Math.min(this.#retryWait, left) : this.#retryWait) : renewedAt + this.#tick - now;
+        if (wait > 0) {
+          try { await delay(wait, undefined, { signal }); }
+          catch { return; }
+        }
+        if (signal.aborted) return;
+        const startedAt = performance.now();
+        const result = await this.#boundedRenew(row, signal);
+        if (result === 'aborted') return;
+        if (result === true) { renewedAt = startedAt; failing = false; }
+        else if (result === false) {
+          logError('jobs.lease_lost', { jobId: row.id, gymId: row.gymId });
+          return;
+        } else {
+          failing = true;
           if (!reported) {
             reported = true;
-            logError('jobs.heartbeat_failed', { jobId: row.id, gymId: row.gymId }, error);
+            logError('jobs.heartbeat_failed', { jobId: row.id, gymId: row.gymId }, result.failed);
           }
         }
       }

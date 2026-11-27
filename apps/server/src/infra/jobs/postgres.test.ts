@@ -42,8 +42,8 @@ function latch() {
   const promise = new Promise<void>((done) => { resolve = done; });
   return { promise, resolve };
 }
-async function until(predicate: () => Promise<boolean>) {
-  for (let n = 0; n < 300; n++) { if (await predicate()) return; await delay(10); }
+async function until(predicate: () => Promise<boolean>, tries = 300) {
+  for (let n = 0; n < tries; n++) { if (await predicate()) return; await delay(10); }
   throw new Error('Condition did not become true');
 }
 
@@ -534,9 +534,128 @@ describe('worker leases, caps, and lifecycle', () => {
       const lines: string[] = [], previous = setLogSink((line) => lines.push(line));
       const events = (name: string) => lines.map((line) => JSON.parse(line) as { event: string; jobId?: string })
         .filter((entry) => entry.event === name);
-      return { events, restore: () => setLogSink(previous) };
+      return { lines, events, restore: () => setLogSink(previous) };
     }
     const firstLease = Date.parse('2026-01-01T00:00:00.900Z');
+    /**
+     * A queue whose system database sends every call made while a handler runs (its renewals) through `script`, with
+     * the call's number from one, and records in real time when each started. The handler from `held()` marks the run.
+     */
+    function scriptedQueue(leaseMs: number, script: <T>(call: number, run: () => Promise<T>) => Promise<T> = (_, run) => run()) {
+      const state = { running: false, starts: [] as number[] };
+      const forSystem: typeof database.forSystem = (fn) => {
+        if (!state.running) return database.forSystem(fn);
+        const call = state.starts.push(performance.now());
+        return script(call, () => database.forSystem(fn));
+      };
+      const q = new PostgresJobs({ database: { ...database, forSystem }, clock, leaseMs });
+      const started = latch(), released = latch();
+      q.handle('work', async () => { state.running = true; started.resolve(); await released.promise; state.running = false; });
+      return { q, state, started, released };
+    }
+    const never = <T>() => new Promise<T>(() => {});
+    const since = (starts: readonly number[], from: number, to: number) => starts[to]! - starts[from]!;
+
+    it('retries a renewal that fails slowly long before the lease ends', async () => {
+      // A three-second lease: a tick of 1000 ms, renewals limited to 500 ms, retries after 100 ms.
+      const { q, state, started, released } = scriptedQueue(3000, (call, run) =>
+        call === 1 ? delay(1000).then(() => { throw new Error('connect timeout'); }) : run());
+      const log = capture();
+      const { jobId } = await q.enqueue('work', {}, options);
+      const active = q.runNext();
+      try {
+        await started.promise;
+        await until(async () => state.starts.length >= 2);
+        expect(since(state.starts, 0, 1)).toBeLessThanOrEqual(900);
+      } finally { released.resolve(); await active; log.restore(); }
+      expect(await row(jobId)).toMatchObject({ status: 'succeeded', attempts: 1 });
+      expect(log.events('jobs.heartbeat_failed')).toEqual([expect.objectContaining({ jobId })]);
+      expect(log.events('jobs.lease_lost')).toEqual([]);
+    });
+    it('retries two quick failures within a fraction of a tick and renews', async () => {
+      const { q, state, started, released } = scriptedQueue(3000, (call, run) =>
+        call <= 2 ? Promise.reject(new Error('connection dropped')) : run());
+      const log = capture();
+      const { jobId } = await q.enqueue('work', {}, options);
+      const active = q.runNext();
+      try {
+        await started.promise; clock.advance(1000);
+        await until(async () => (await row(jobId)).lockedUntil!.getTime() > Date.parse('2026-01-01T00:00:03Z'));
+        expect(since(state.starts, 0, 2)).toBeLessThan(600);
+        expect((await row(jobId)).lockedUntil).toEqual(new Date('2026-01-01T00:00:04Z'));
+      } finally { released.resolve(); await active; log.restore(); }
+      expect(log.events('jobs.heartbeat_failed')).toEqual([expect.objectContaining({ jobId })]);
+      expect(log.events('jobs.lease_lost')).toEqual([]);
+    });
+    it('acknowledges a job at once when its handler ends while a renewal hangs', async () => {
+      const { q, state, started, released } = scriptedQueue(3000, (call, run) => call === 1 ? never() : run());
+      const { jobId } = await q.enqueue('work', {}, options);
+      const active = q.runNext();
+      try {
+        await started.promise;
+        await until(async () => state.starts.length >= 1);
+      } finally { released.resolve(); }
+      expect(await Promise.race([active.then(() => 'acknowledged'), delay(500, 'still waiting')])).toBe('acknowledged');
+      expect(await row(jobId)).toMatchObject({ status: 'succeeded', attempts: 1, lockedUntil: null, lockToken: null });
+    });
+    it('gives up on a hung renewal in time to renew the lease while the handler goes on', async () => {
+      const { q, state, started, released } = scriptedQueue(3000, (call, run) => {
+        if (call === 1) { clock.advance(1000); return never(); }
+        return run();
+      });
+      const log = capture();
+      const { jobId } = await q.enqueue('work', {}, options);
+      const active = q.runNext();
+      try {
+        await started.promise;
+        await until(async () => state.starts.length >= 2);
+        expect(since(state.starts, 0, 1)).toBeLessThanOrEqual(900);
+        await until(async () => (await row(jobId)).lockedUntil!.getTime() > Date.parse('2026-01-01T00:00:03Z'));
+        expect((await row(jobId)).lockedUntil).toEqual(new Date('2026-01-01T00:00:04Z'));
+      } finally { released.resolve(); await active; log.restore(); }
+      expect(await row(jobId)).toMatchObject({ status: 'succeeded', attempts: 1 });
+      expect(log.events('jobs.heartbeat_failed')).toEqual([expect.objectContaining({ jobId })]);
+      expect(log.events('jobs.lease_lost')).toEqual([]);
+    });
+    it('counts ticks from the start of the last renewal, not from when it returned', async () => {
+      const { q, state, started, released } = scriptedQueue(3000, (_, run) => delay(300).then(run));
+      const log = capture();
+      const { jobId } = await q.enqueue('work', {}, options);
+      const active = q.runNext();
+      try {
+        await started.promise;
+        await until(async () => state.starts.length >= 3, 600);
+        expect(since(state.starts, 0, 2)).toBeLessThan(2400);
+      } finally { released.resolve(); await active; log.restore(); }
+      expect(await row(jobId)).toMatchObject({ status: 'succeeded', attempts: 1 });
+      expect(log.events('jobs.lease_lost')).toEqual([]);
+    });
+    it('extends the lease from the time read once the renewal has its connection', async () => {
+      // Only the first renewal reaches the database; the second starts once it has returned.
+      const { q, state, started, released } = scriptedQueue(900, (call, run) => {
+        if (call > 1) return never();
+        clock.advance(500);
+        return run();
+      });
+      const { jobId } = await q.enqueue('work', {}, options);
+      const active = q.runNext();
+      try {
+        await started.promise;
+        await until(async () => state.starts.length >= 2);
+        expect((await row(jobId)).lockedUntil).toEqual(new Date(Date.parse('2026-01-01T00:00:00.500Z') + 900));
+      } finally { released.resolve(); await active; }
+    });
+    it('renews once per tick with a healthy database and logs nothing', async () => {
+      const { q, state, started, released } = scriptedQueue(900);
+      const log = capture();
+      const { jobId } = await q.enqueue('work', {}, options);
+      const active = q.runNext();
+      try { await started.promise; await delay(1000); } finally { released.resolve(); await active; log.restore(); }
+      expect(state.starts.length).toBeGreaterThanOrEqual(3);
+      expect(state.starts.length).toBeLessThanOrEqual(4);
+      expect(log.lines).toEqual([]);
+      expect(await row(jobId)).toMatchObject({ status: 'succeeded', attempts: 1 });
+    });
 
     it('keeps renewing after a failed renewal so a second worker cannot reclaim the job', async () => {
       const { q, state, fail } = flakyQueue(), q2 = queue({ leaseMs: 900 }), log = capture();
@@ -557,7 +676,7 @@ describe('worker leases, caps, and lifecycle', () => {
       expect(log.events('jobs.heartbeat_failed')).toEqual([expect.objectContaining({ jobId, gymId: gymA })]);
       expect(log.events('jobs.lease_lost')).toEqual([]);
     });
-    it('logs one failure for renewals that fail in a row and renews on the next tick that reaches the database', async () => {
+    it('logs one failure for renewals that fail in a row and renews on the next try that reaches the database', async () => {
       const { q, state, fail } = flakyQueue(), log = capture();
       const started = latch(), held = latch();
       q.handle('work', async () => { started.resolve(); await held.promise; });
@@ -569,7 +688,7 @@ describe('worker leases, caps, and lifecycle', () => {
         await until(async () => state.rejected === 2);
         clock.advance(600);
         await until(async () => (await row(jobId)).lockedUntil!.getTime() > firstLease);
-        // The two rejected ticks, then the third renewed.
+        // The two rejected tries, each retried a tenth of a tick later, then the third renewed.
         expect(state.calls - before).toBeGreaterThanOrEqual(3);
       } finally { held.resolve(); await active; log.restore(); }
       expect(await row(jobId)).toMatchObject({ status: 'succeeded', attempts: 1 });
