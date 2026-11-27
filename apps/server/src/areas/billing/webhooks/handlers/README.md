@@ -2,11 +2,16 @@
 # Billing webhook handlers
 
 `registerBillingWebhookHandlers(inbox, { transitions, disputeAlerts?, scope?, clock? })` registers
-intent processing/success/failure/action-needed events, completed Checkout, successful setup,
+intent processing/success/failure/action-needed events, completed and expired Checkout, successful setup,
 manual and automatic payment-method updates, Charge refunds, refund lifecycle
 events, and dispute created/updated/closed events. Call it before starting the
 worker. Handlers retrieve current provider objects from verified references;
 unknown or ambiguous dependencies remain retryable.
+
+A Checkout session the provider now reports expired clears `checkoutSessionId`
+and `checkoutExpiresAt` of the open or past-due invoice that stores that exact
+session, under its lock, and audits `billing.webhook.checkout_expired`. A newer
+stored session, a paid invoice, a session still open, or a replay changes nothing.
 
 Intents use `applyChargeOutcome`; payment Checkout uses `cardSucceeded` without
 an attempt ID. Charge IDs come from `latestChargeId`. Both paths request

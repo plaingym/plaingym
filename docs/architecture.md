@@ -330,7 +330,10 @@ source of truth; Stripe is the processor. In outline:
   and never send again. Staff receipt resends send email only. Email and SMS have
   independent switches and outcomes.
   Owners and admins can void an open or past-due invoice with a reason once no
-  card attempt is pending or awaiting authentication and no Checkout is reserved.
+  card attempt is pending. The void first cancels an attempt awaiting
+  authentication and expires a reserved Checkout at Stripe, outside any
+  transaction, and refuses when either turns out paid or Stripe can't be reached.
+  An expired Checkout's webhook clears the invoice's session and reservation.
   Voiding revokes pay links and stops dunning and retries. A late card success is
   recorded as a duplicate and refunded, keeping the invoice void. Voiding changes
   no membership or future invoice; cancelling a membership leaves unpaid invoices owed.

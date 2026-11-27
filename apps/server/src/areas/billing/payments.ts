@@ -118,6 +118,43 @@ export function createPaymentService(options: PaymentOptions = {}) {
     ...mutations, getInvoice,
     async voidInvoice(context: MutationContext, invoiceId: string, input: c.VoidInvoiceRequest) {
       const request = c.voidInvoiceRequestSchema.parse(input);
+      const unpaid = (status: string) => ['open', 'past_due'].includes(status);
+      const loaded = await scope(context.gymId, async tx => {
+        const invoice = await loadInvoice(tx, invoiceId);
+        const attempts = await tx.select().from(paymentAttempts).where(eq(paymentAttempts.invoiceId, invoiceId)).orderBy(desc(paymentAttempts.attemptNumber));
+        return { invoice, pending: attempts.some(a => a.status === 'pending'), action: attempts.find(a => a.status === 'requires_action') };
+      });
+      // Release the provider work that blocks the void first, outside any transaction, as a cash payment does.
+      // A pending attempt is left for the transition to refuse, with no provider call.
+      if (unpaid(loaded.invoice.status) && !loaded.pending && (loaded.action || loaded.invoice.checkoutSessionId)) {
+        try {
+          const provider = await providerFor(context.gymId);
+          if (loaded.action) {
+            if (!loaded.action.paymentIntentId) paymentUnavailable('payments_unavailable', 'The action-needed payment must be reconciled first');
+            if (await releaseActionNeeded(context.gymId, loaded.action.paymentIntentId, provider, reconciliation, context) === 'paid')
+              paymentConflict('not_payable', 'Only unpaid invoices can be voided');
+          }
+          if (loaded.invoice.checkoutSessionId) {
+            const released = await releaseCheckout(context.gymId, invoiceId, loaded.invoice.checkoutSessionId, provider, reconciliation, scope, context);
+            if (released === 'paid') paymentConflict('not_payable', 'Only unpaid invoices can be voided');
+            if (released === 'changed') chargeSkipped('checkout_changed');
+          }
+        } catch (error) {
+          if (error instanceof AppError) throw error;
+          paymentUnavailable('payments_unavailable', 'Stripe is unavailable; the card or Checkout payment must be released before voiding');
+        }
+      }
+      // A reservation with no session has nothing to expire at the provider; a Checkout saving its session now fails that save.
+      await scope(context.gymId, async tx => {
+        const invoice = await loadInvoice(tx, invoiceId, true);
+        // A reservation already past its expiry doesn't block the void, so it is left as it is and not audited.
+        if (!unpaid(invoice.status) || invoice.checkoutSessionId || !invoice.checkoutExpiresAt || invoice.checkoutExpiresAt <= clock.now()) return;
+        if ((await tx.select({ id: paymentAttempts.id }).from(paymentAttempts).where(and(eq(paymentAttempts.invoiceId, invoiceId),
+          inArray(paymentAttempts.status, ['pending', 'requires_action']))).limit(1)).length) return;
+        await tx.update(invoices).set({ checkoutExpiresAt: null }).where(eq(invoices.id, invoiceId));
+        await catalogAudit(tx, context, clock, 'billing.checkout.reservation_cleared', 'invoice', invoiceId,
+          { checkoutExpiresAt: invoice.checkoutExpiresAt.toISOString() }, { checkoutExpiresAt: null });
+      });
       await transitions.voidInvoice(context, { ...request, invoiceId });
       return (await getInvoice(context.gymId, invoiceId)).invoice;
     },

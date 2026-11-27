@@ -107,7 +107,10 @@ route (`refunds.create`), supplying a nonblank reason of at most 1,000 character
 The transition locks the invoice and its pay links in Checkout's lock order,
 refuses any pending or authentication-needed attempt and any stored Checkout
 session or unexpired reservation, and audits `billing.invoice.voided` with the
-reason and before/after state. It revokes unused pay links in the same transaction.
+reason and before/after state. The payments service's `voidInvoice` releases an
+authentication-needed attempt and a reserved Checkout at Stripe, and clears a
+reservation with no session, before it calls the transition; other callers that
+released nothing still get these refusals. It revokes unused pay links in the same transaction.
 Link creation shares the invoice lock and refuses void invoices; a link created
 while voiding waited causes a conflict so staff can retry with that link locked.
 Repeating a completed void is ignored. It changes no membership or future bill;

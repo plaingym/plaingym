@@ -292,8 +292,10 @@ after the final chunk. Provider calls run outside database transactions, and eac
 chunk rechecks the customer link and test-to-live switch before storing cards.
 
 Voiding an unpaid invoice uses `refunds.create` (owner and admin only), with a
-required audited reason. It refuses a processing invoice, an unresolved payment
-attempt or a reserved Checkout. Voiding revokes the invoice's pay links and
+required audited reason. It refuses a processing invoice or a pending payment
+attempt. It first cancels an authentication-needed attempt and expires a reserved
+Checkout at Stripe, and refuses when either turns out paid or Stripe can't be
+reached, so an invoice whose payment succeeded is never voided. Voiding revokes the invoice's pay links and
 prevents further collection. A late Stripe success is recorded and refunded as a duplicate.
 
 ### Member capabilities

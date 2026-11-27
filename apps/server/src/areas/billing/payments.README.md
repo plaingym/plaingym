@@ -30,13 +30,16 @@ returns unavailable. Charges require billing enabled, an active saved method
 and no review hold or open dispute. A settling bank debit returns a processing
 attempt.
 
-Cash/check and runner collection share `releaseActionNeeded` and
-`releaseCheckout`. They cancel action-needed intents and expire open Checkout
+Cash/check, the staff void and runner collection share `releaseActionNeeded`
+and `releaseCheckout`. They cancel action-needed intents and expire open Checkout
 sessions outside transactions, applying outcomes through reconciliation and the
 invoice transitions. Reconciliation clears an expired Checkout reference under
 the invoice lock, so cash works immediately without a webhook. A cancellation or
 expiry that reveals success pays the invoice and refuses cash as already paid.
 Pending and processing attempts block cash. Unavailable Stripe blocks any required release.
+The `checkout.session.expired` webhook also clears the session and reservation of
+the open or past-due invoice that stores that exact session; an older session's
+event leaves a newer one in place.
 
 Owners and admins may release a review hold through the audited `release-hold`
 action, which clears `needsReview` under the invoice lock and records the staff
@@ -78,9 +81,16 @@ processing and is ignored.
 
 They may also void an open or past-due invoice through
 `POST /api/billing/invoices/{invoiceId}/void` (`refunds.create`) with a required
-reason. The transition refuses unresolved payment attempts and reserved Checkout,
-audits the reason, revokes pay links and stops dunning and retries. A late Stripe
-success is recorded as a duplicate and refunded. Voiding does not cancel a
+reason. The void first releases what blocks it, outside any transaction: it
+cancels an authentication-needed card attempt and expires a stored Checkout
+session at Stripe, and clears a reservation with no session under the invoice
+lock (audited `billing.checkout.reservation_cleared`). It refuses with
+`not_payable` when either release turns out paid (the invoice stays paid), with
+`checkout_changed` when the member restarted Checkout meanwhile, and with
+`payments_unavailable` (503) when Stripe can't be reached. A pending attempt
+still refuses with `pending_attempt` and no Stripe call. The transition itself
+refuses unresolved payment attempts and reserved Checkout, audits the reason,
+revokes pay links and stops dunning and retries. A late Stripe success is recorded as a duplicate and refunded. Voiding does not cancel a
 membership; cancelling a membership leaves unpaid invoices owed. See
 [invoice transitions](transitions/README.md).
 Any staff member with `payments.record` may record cash/check on a held invoice;

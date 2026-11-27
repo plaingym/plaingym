@@ -1192,6 +1192,101 @@ describe('one-off collection and payment durability', () => {
       .rejects.toMatchObject({ code: 'unavailable', details: { reason: ['payments_unavailable'] } });
     expect((await f.service.getInvoice(f.gymId, next.id)).payments).toHaveLength(0);
   });
+  const invoiceRow = async (f: Fixture, id = f.invoice.id) =>
+    (await db.forGym(f.gymId, tx => tx.select().from(invoices).where(eq(invoices.id, id))))[0]!;
+  const auditRows = async (f: Fixture, action: string) =>
+    (await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, action)))).filter(row => row.targetId === f.invoice.id);
+  const voidIt = (f: Fixture, service = f.service) => service.voidInvoice(f.context, f.invoice.id, { reason: 'Wrong invoice' });
+  /** A pay link the member opened and closed: the invoice stores its open session and a reservation 23 hours ahead. */
+  async function reservedCheckout(f: Fixture) {
+    const session = await f.provider.createCheckout({ mode: 'payment', customerId: 'cus_fixture', amount: 2500, currency: 'usd', invoiceId: f.invoice.id,
+      successUrl: origin + '/success', cancelUrl: origin + '/cancel', saveForOffSession: true, idempotencyKey: f.invoice.id + ':checkout' });
+    const checkoutExpiresAt = new Date(f.clock.now().getTime() + 23 * 3600_000);
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ checkoutSessionId: session.id, checkoutExpiresAt }).where(eq(invoices.id, f.invoice.id)));
+    return session;
+  }
+  async function actionNeeded(f: Fixture) {
+    f.provider.respondNextConfirmation('authentication_required'); await f.service.charge(f.context, f.invoice.id);
+    const attempt = (await db.forGym(f.gymId, tx => tx.select().from(paymentAttempts).where(eq(paymentAttempts.invoiceId, f.invoice.id))))[0]!;
+    expect(attempt.status).toBe('requires_action');
+    return attempt;
+  }
+  it('voids an invoice whose card attempt needs authentication after cancelling the attempt at Stripe', async () => {
+    const f = await fixture(), attempt = await actionNeeded(f);
+    const cancel = vi.spyOn(f.provider, 'cancelCharge');
+    expect(await voidIt(f)).toMatchObject({ status: 'void' });
+    expect(cancel).toHaveBeenCalledWith(attempt.paymentIntentId);
+    const [after] = await db.forGym(f.gymId, tx => tx.select().from(paymentAttempts).where(eq(paymentAttempts.id, attempt.id)));
+    expect(after?.status).toBe('failed');
+  });
+  it('refuses the void and keeps the invoice paid when the payer authenticated the card attempt first', async () => {
+    const f = await fixture(), attempt = await actionNeeded(f);
+    await f.provider.confirmCharge(attempt.paymentIntentId!, { idempotencyKey: 'payer_authenticated' });
+    await expect(voidIt(f)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['not_payable'] } });
+    const detail = await f.service.getInvoice(f.gymId, f.invoice.id);
+    expect(detail.invoice.status).toBe('paid'); expect(detail.payments).toHaveLength(1); expect(detail.payments[0]?.method).toBe('card');
+    expect(await auditRows(f, 'billing.invoice.voided')).toHaveLength(0);
+  });
+  it('refuses the void of an invoice with a pending card attempt without calling Stripe', async () => {
+    const f = await fixture(); f.provider.respondNextConfirmation('pending'); await f.service.charge(f.context, f.invoice.id);
+    await reservedCheckout(f);
+    const cancel = vi.spyOn(f.provider, 'cancelCharge'), expire = vi.spyOn(f.provider, 'expireCheckout');
+    await expect(voidIt(f)).rejects.toMatchObject({ details: { reason: ['pending_attempt'] } });
+    expect(cancel).not.toHaveBeenCalled(); expect(expire).not.toHaveBeenCalled();
+    expect((await invoiceRow(f)).status).toBe('open');
+  });
+  it('expires a reserved Checkout at Stripe, clears its reservation and voids', async () => {
+    const f = await fixture(), session = await reservedCheckout(f);
+    const expire = vi.spyOn(f.provider, 'expireCheckout');
+    expect(await voidIt(f)).toMatchObject({ status: 'void' });
+    expect(expire).toHaveBeenCalledWith(session.id);
+    expect(await invoiceRow(f)).toMatchObject({ status: 'void', checkoutSessionId: null, checkoutExpiresAt: null });
+  });
+  it('refuses the void and keeps the invoice paid when the reserved Checkout was paid by card', async () => {
+    const f = await fixture(), session = await reservedCheckout(f);
+    f.provider.completeCheckout(session.id);
+    await expect(voidIt(f)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['not_payable'] } });
+    expect((await invoiceRow(f)).status).toBe('paid');
+    expect(await auditRows(f, 'billing.invoice.voided')).toHaveLength(0);
+  });
+  it('clears a reservation that has no Checkout session without calling Stripe, then voids', async () => {
+    const f = await fixture(), checkoutExpiresAt = new Date(f.clock.now().getTime() + 23 * 3600_000);
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ checkoutExpiresAt }).where(eq(invoices.id, f.invoice.id)));
+    const cancel = vi.spyOn(f.provider, 'cancelCharge'), expire = vi.spyOn(f.provider, 'expireCheckout');
+    expect(await voidIt(f)).toMatchObject({ status: 'void' });
+    expect(cancel).not.toHaveBeenCalled(); expect(expire).not.toHaveBeenCalled();
+    const cleared = await auditRows(f, 'billing.checkout.reservation_cleared');
+    expect(cleared).toHaveLength(1);
+    expect(cleared[0]).toMatchObject({ before: { checkoutExpiresAt: checkoutExpiresAt.toISOString() }, after: { checkoutExpiresAt: null } });
+    expect(await invoiceRow(f)).toMatchObject({ status: 'void', checkoutExpiresAt: null });
+  });
+  it('voids past an expired reservation without clearing or auditing it', async () => {
+    const f = await fixture(), checkoutExpiresAt = new Date(f.clock.now().getTime() - 3600_000);
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ checkoutExpiresAt }).where(eq(invoices.id, f.invoice.id)));
+    expect(await voidIt(f)).toMatchObject({ status: 'void' });
+    expect(await auditRows(f, 'billing.checkout.reservation_cleared')).toHaveLength(0);
+    expect(await invoiceRow(f)).toMatchObject({ status: 'void', checkoutExpiresAt });
+  });
+  it('reports Stripe unavailable and voids nothing when the authentication attempt cannot be released', async () => {
+    const f = await fixture(); await actionNeeded(f);
+    const unavailable = createPaymentService({ ...f.options, paymentsFor: async () => null });
+    await expect(voidIt(f, unavailable)).rejects.toMatchObject({ code: 'unavailable', details: { reason: ['payments_unavailable'] } });
+    expect((await invoiceRow(f)).status).not.toBe('void');
+  });
+  it('voids a reserved Checkout once when two voids run at the same time', async () => {
+    const f = await fixture(); await reservedCheckout(f);
+    const results = await Promise.allSettled([voidIt(f), voidIt(f)]);
+    expect(results.some(r => r.status === 'fulfilled')).toBe(true);
+    for (const r of results) if (r.status === 'rejected') expect(r.reason).toMatchObject({ code: 'conflict' });
+    expect((await invoiceRow(f)).status).toBe('void');
+    expect(await auditRows(f, 'billing.invoice.voided')).toHaveLength(1);
+  });
+  it('answers a void of an already void invoice with no provider call', async () => {
+    const f = await fixture(); await voidIt(f);
+    const calls = (['cancelCharge', 'expireCheckout', 'readPaymentObject', 'findCharge'] as const).map(name => vi.spyOn(f.provider, name));
+    expect(await voidIt(f)).toMatchObject({ status: 'void' });
+    for (const call of calls) expect(call).not.toHaveBeenCalled();
+  });
   it('recovers the pending refund when a crash left its reason null', async () => {
     const f = await fixture(); await f.service.charge(f.context, f.invoice.id);
     const payment = (await f.service.getInvoice(f.gymId, f.invoice.id)).payments[0]!, refundId = uuidv7();

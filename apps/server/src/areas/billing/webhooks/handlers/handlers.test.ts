@@ -216,6 +216,46 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
       { after: { status: 'past_due', failureCode: 'canceled' } },
     ]);
   });
+  const paySession = (f: Fixture, key: string) => f.provider.createCheckout({ mode: 'payment', customerId: 'cus_fixture', invoiceId: f.invoice.id,
+    amount: 10000, currency: 'usd', saveForOffSession: true, idempotencyKey: key, successUrl: 'https://gym.invalid/ok', cancelUrl: 'https://gym.invalid/cancel' });
+  const reserve = (f: Fixture, checkoutSessionId: string, set: Partial<typeof invoices.$inferInsert> = {}) => db.forGym(f.gymId, tx => tx.update(invoices)
+    .set({ checkoutSessionId, checkoutExpiresAt: new Date(f.clock.now().getTime() + 23 * 3600_000), ...set }).where(eq(invoices.id, f.invoice.id)));
+  const expiredAudits = (rows: Awaited<ReturnType<Fixture['read']>>) => rows.audits.filter(row => row.action === 'billing.webhook.checkout_expired');
+  it('clears the session and reservation of the invoice storing an expired Checkout, once', async () => {
+    const f = await fixture('one_off'), session = await paySession(f, 'expired');
+    await reserve(f, session.id); await f.provider.expireCheckout(session.id);
+    const ref = { kind: 'checkout' as const, id: session.id };
+    await f.run('checkout.session.expired', ref);
+    const rows = await f.read();
+    expect(rows.invoice).toMatchObject({ status: 'open', checkoutSessionId: null, checkoutExpiresAt: null });
+    expect(expiredAudits(rows)).toMatchObject([{ targetId: f.invoice.id, after: { checkoutSessionId: null, expiredSessionId: session.id } }]);
+    await f.run('checkout.session.expired', ref);
+    expect(expiredAudits(await f.read())).toHaveLength(1);
+  });
+  it('leaves the newer Checkout of the invoice when an older session expires', async () => {
+    const f = await fixture('one_off'), older = await paySession(f, 'older'), newer = await paySession(f, 'newer');
+    await reserve(f, newer.id); await f.provider.expireCheckout(older.id);
+    const before = await f.read();
+    await f.run('checkout.session.expired', { kind: 'checkout', id: older.id });
+    const after = await f.read();
+    expect(after.invoice).toMatchObject({ checkoutSessionId: newer.id, checkoutExpiresAt: before.invoice.checkoutExpiresAt });
+    expect(expiredAudits(after)).toHaveLength(0);
+  });
+  it('changes nothing for a session Stripe still reports open, or an expired session on a paid invoice', async () => {
+    const f = await fixture('one_off'), session = await paySession(f, 'open');
+    await reserve(f, session.id);
+    const open = await f.read();
+    await f.run('checkout.session.expired', { kind: 'checkout', id: session.id });
+    expect(await f.read()).toEqual(open);
+    await reserve(f, session.id, { status: 'paid', paidAt: f.clock.now() }); await f.provider.expireCheckout(session.id);
+    const paid = await f.read();
+    await f.run('checkout.session.expired', { kind: 'checkout', id: session.id });
+    expect(await f.read()).toEqual(paid);
+    expect(paid.invoice).toMatchObject({ status: 'paid', checkoutSessionId: session.id });
+  });
+  it('handles the expired Checkout event', () => {
+    expect(billingWebhookTypes).toContain('checkout.session.expired');
+  });
   it.each([['cycle', 'past_due'], ['one_off', 'open']] as const)(
     'applies an already canceled bank Checkout to a %s invoice and ignores replay', async (kind, status) => {
       const f = await fixture(kind);

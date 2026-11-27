@@ -8,13 +8,14 @@ import type { BillingInvoiceTransitions } from '../../transitions/index.js';
 import type { ChargeOutcome, CheckoutSession, PaymentMetadata, Payments, PaymentObjectReference, Refund } from '../../../../infra/payments/index.js';
 import type { WebhookHandler, WebhookInbox } from '../inbox.js';
 import { applyChargeOutcome } from '../../transitions/outcomes.js';
+import { audit } from '../../transitions/store.js';
 import { createDisputeRefundWriter, type DisputeRefundOptions } from '../../disputes-refunds.js';
 import { createCardHandlers } from './methods.js';
 import { stripeWriteScope } from '../../stripe-writes.js';
 
 export const billingWebhookTypes = [
   'payment_intent.succeeded', 'payment_intent.payment_failed', 'payment_intent.requires_action', 'payment_intent.processing',
-  'checkout.session.completed', 'checkout.session.async_payment_succeeded', 'checkout.session.async_payment_failed',
+  'checkout.session.completed', 'checkout.session.expired', 'checkout.session.async_payment_succeeded', 'checkout.session.async_payment_failed',
   'setup_intent.succeeded', 'payment_method.updated', 'payment_method.automatically_updated',
   'charge.refunded', 'refund.created', 'refund.updated', 'refund.failed',
   'charge.dispute.created', 'charge.dispute.updated', 'charge.dispute.closed',
@@ -200,6 +201,19 @@ export function registerBillingWebhookHandlers(inbox: Pick<WebhookInbox, 'regist
         throw new Error('Invoice has another dispute; staff resolution required');
     } else if (current.kind === 'checkout') {
       const session = current.object;
+      if (session.status === 'expired') {
+        if (session.metadata.gymId !== gymId) throw new Error('Checkout gym mismatch');
+        if (session.mode !== 'payment') return;
+        // Only the invoice still storing this exact session loses its reservation; a newer session keeps its own.
+        await scope(gymId, async tx => {
+          const [invoice] = await tx.select().from(invoices).where(eq(invoices.checkoutSessionId, session.id)).for('update');
+          if (!invoice || !['open', 'past_due'].includes(invoice.status)) return;
+          await tx.update(invoices).set({ checkoutSessionId: null, checkoutExpiresAt: null }).where(eq(invoices.id, invoice.id));
+          await audit(tx, system(gymId), clock, 'billing.webhook.checkout_expired', 'invoice', invoice.id,
+            { checkoutSessionId: null, expiredSessionId: session.id });
+        });
+        return;
+      }
       if (session.status !== 'complete') return;
       if (session.metadata.gymId !== gymId) throw new Error('Checkout gym mismatch');
       if (session.mode === 'payment') {
