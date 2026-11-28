@@ -3,60 +3,60 @@
     "width": 1280,
     "height": 900,
     "light": [
-      "members-light-1x-acf4d3673042b554.webp",
-      "members-light-2x-97447fedba731822.webp"
+      "members-light-1x-a8ab86d91c090d89.webp",
+      "members-light-2x-d81329f1c5765008.webp"
     ],
     "dark": [
-      "members-dark-1x-75ab1c20993ebb87.webp",
-      "members-dark-2x-b62aec57ccae1389.webp"
+      "members-dark-1x-b5809985486ad609.webp",
+      "members-dark-2x-6a8c89ab32be6ea3.webp"
     ]
   },
   "ranks": {
     "width": 1280,
     "height": 900,
     "light": [
-      "ranks-light-1x-41d11f57dd1751cf.webp",
-      "ranks-light-2x-d14683cdd88fb0db.webp"
+      "ranks-light-1x-d4ee74be275565c5.webp",
+      "ranks-light-2x-e1f625a0fce0c1ce.webp"
     ],
     "dark": [
-      "ranks-dark-1x-657501e21a9b0032.webp",
-      "ranks-dark-2x-09ba79eb1a9b7cba.webp"
+      "ranks-dark-1x-54393932bac13682.webp",
+      "ranks-dark-2x-d7a8132e9b438666.webp"
     ]
   },
   "schedule": {
     "width": 1280,
     "height": 900,
     "light": [
-      "schedule-light-1x-9cf15a1ac4f09fb5.webp",
-      "schedule-light-2x-2f8fe56e1aece4e8.webp"
+      "schedule-light-1x-ceb2175ca08a18f5.webp",
+      "schedule-light-2x-3f9ebcebff1964b7.webp"
     ],
     "dark": [
-      "schedule-dark-1x-348f570f40b31fe1.webp",
-      "schedule-dark-2x-d9be280eb360caef.webp"
+      "schedule-dark-1x-17f0cb03013cdc91.webp",
+      "schedule-dark-2x-548c01b76a2a4acf.webp"
     ]
   },
   "kiosk": {
     "width": 768,
     "height": 900,
     "light": [
-      "kiosk-light-1x-c8d009aff9bab514.webp",
-      "kiosk-light-2x-878443562ecbc931.webp"
+      "kiosk-light-1x-1222aa1fe1e3354e.webp",
+      "kiosk-light-2x-bdb9bde38b3cf80b.webp"
     ],
     "dark": [
-      "kiosk-dark-1x-c8ee549a28c2406b.webp",
-      "kiosk-dark-2x-99c97c16c13801ce.webp"
+      "kiosk-dark-1x-df9f3b5d3e2929ce.webp",
+      "kiosk-dark-2x-7ad578613eb20f9e.webp"
     ]
   },
   "portal": {
     "width": 390,
     "height": 844,
     "light": [
-      "portal-light-1x-9024885f0cce9bf9.webp",
-      "portal-light-2x-63ad5ca4862917e4.webp"
+      "portal-light-1x-7e2b3d142649fc04.webp",
+      "portal-light-2x-ee2a2837ee22e90c.webp"
     ],
     "dark": [
-      "portal-dark-1x-38813572cc72cc3f.webp",
-      "portal-dark-2x-c68e7643347f4e9b.webp"
+      "portal-dark-1x-ddb93e28fec5fac7.webp",
+      "portal-dark-2x-741f06a53f423d71.webp"
     ]
   },
   "billing": {
@@ -67,7 +67,7 @@
       "billing-light-2x-df8e853ff278efa0.webp"
     ],
     "dark": [
-      "billing-dark-1x-5c33c75ca18619e7.webp",
+      "billing-dark-1x-6f61818eae870f85.webp",
       "billing-dark-2x-a692d03d36f9cb26.webp"
     ]
   },
@@ -99,24 +99,24 @@
     "width": 1280,
     "height": 900,
     "light": [
-      "reports-light-1x-6eeca258e66c2bfa.webp",
-      "reports-light-2x-267ca821f61b9e2b.webp"
+      "reports-light-1x-18329d04bb73730f.webp",
+      "reports-light-2x-0dad518960293c14.webp"
     ],
     "dark": [
-      "reports-dark-1x-4eec654fcc4d17f9.webp",
-      "reports-dark-2x-bbd3af526c26cf10.webp"
+      "reports-dark-1x-31d2e5a5bacd12d2.webp",
+      "reports-dark-2x-7b6d26f634e2a005.webp"
     ]
   },
   "server": {
     "width": 1280,
     "height": 490,
     "light": [
-      "server-light-1x-d34932618799fd49.webp",
-      "server-light-2x-412bdd1d8e544229.webp"
+      "server-light-1x-3a1b32ae4ea8ed6c.webp",
+      "server-light-2x-921b000aba48d1f8.webp"
     ],
     "dark": [
-      "server-dark-1x-87f9e5df76756af5.webp",
-      "server-dark-2x-42aec3f8e4e9dad3.webp"
+      "server-dark-1x-4ee706c68d3d6173.webp",
+      "server-dark-2x-1d029451d2b68e57.webp"
     ]
   }
 }
