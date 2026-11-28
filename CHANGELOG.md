@@ -6,6 +6,34 @@ and [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-28
+
+### Changed
+
+- The README and the demo guide link the public demo at tryplaingym.app, and the
+  install, self-hosting and README server requirements recommend at least 1 GB of RAM.
+- The README and the demo's product page show screenshots taken from 1.1.0.
+
+### Fixed
+
+- Updates and rollbacks, the nightly patch included, load an install's own Compose
+  files (`compose.override.yaml`, or the other files in `COMPOSE_FILE`), so settings
+  such as a custom packs mount are kept. An own file that sets the app's image is
+  refused by a manual update and skipped by the nightly run (`own_app_image`), and a
+  rollback whose start fails with own files tries once without them.
+- A failing sign-in lookup no longer writes the submitted email address to the console.
+  Such errors, and every 500 the sign-in routes answer, are logged as
+  `auth.handler_error` without the error's message.
+- The contributor agreement check can post its signing prompt on a pull request.
+
+### Upgrade notes
+
+- Migrations: none.
+- Rollback floor: 1.0.0.
+- Manual steps: none. The update installs the new deploy/update.sh and deploy/lib.sh
+  itself. An install that moved to 1.1.0 with the 1.0 updater moves PostgreSQL and
+  Caddy to 1.1's pinned images during this update.
+
 ## [1.1.0] - 2026-11-27
 
 ### Added
