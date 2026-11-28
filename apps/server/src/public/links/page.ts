@@ -153,5 +153,5 @@ export function linkPage({ data, state, portalClaim, keepCard, processing = fals
         h('h1', { class: 'text-2xl font-bold' }, text('completedTitle')),
         h('p', null, text(settling ? 'bankProcessing' : 'completed_' + (data?.purpose ?? 'onboarding'))),
         h('a', { class: button, href: '/portal' }, text('portalSignIn')))) : null,
-      ...['failed', 'conflict', 'retry', 'limited', 'customerMissing', 'busy', 'confirming', 'signatureRequired', 'incomplete', 'keepUnsigned', 'keepGone', 'done', 'doneBody', 'portalReady', 'portalEmailSent'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))))).toString();
+      ...['failed', 'conflict', 'retry', 'limited', 'customerMissing', 'busy', 'confirming', 'signatureRequired', 'incomplete', ...(kept ? ['keepUnsigned', 'keepGone'] : []), 'done', 'doneBody', 'portalReady', 'portalEmailSent'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))))).toString();
 }
