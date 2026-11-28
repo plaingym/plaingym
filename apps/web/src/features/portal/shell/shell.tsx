@@ -328,7 +328,7 @@ function AuthenticatedPortal() {
   const view = useRef(''), lastView = useRef('');
   // A view that replaces another may take the focused header or sidebar control with it, so the account menu takes the
   // focus. A view with no header leaves the mark for the next one. A control removed while its view stays (a closing menu's
-  // theme choice) is forgotten, so no later view moves the focus for it.
+  // theme choice) is forgotten at the next render of that view, so no view after it moves the focus for it.
   useLayoutEffect(() => {
     const changed = view.current !== lastView.current;
     lastView.current = view.current;

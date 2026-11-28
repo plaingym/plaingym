@@ -78,8 +78,8 @@ no menu. A second move by the server while a household is loading keeps that lay
 been read again.
 The **Account** button takes the focus only in the render in which a view change (another of the shell's views, or
 another page) removed the header or sidebar control that held it; a view with no header leaves that to the next one.
-A control removed without a view change, such as a theme choice in a closing menu, is forgotten. A link chosen in
-the phone menu leaves the focus on **Menu**.
+A control removed without a view change, such as a theme choice in a closing menu, is forgotten when the portal next
+renders that view. A link chosen in the phone menu leaves the focus on **Menu**.
 The root layout supplies the source-code footer.
 
 The home page summarizes the next booked, scheduled class within 30 days (not a
