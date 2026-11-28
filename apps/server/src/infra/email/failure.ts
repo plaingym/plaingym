@@ -99,3 +99,14 @@ export function emailServiceFailure(error: unknown, settings?: { port: number; s
   }
   return null;
 }
+
+/**
+ * A send the SMTP server refused for its recipient (at `RCPT TO`) or for its message (at `DATA`), and that isn't the
+ * sending service's failure (`emailServiceFailure`). Such a refusal proves the server accepted the connection, the
+ * login and the sender, so the gym's sending service worked. False for anything else, including an unknown outcome.
+ */
+export function emailRecipientRefusal(error: unknown): boolean {
+  if (!(error instanceof SmtpDeliveryError) || deliveryAcceptance(error) !== 'not_accepted' || emailServiceFailure(error) !== null) return false;
+  const { codes, commands } = readErrorFacts(error);
+  return (codes.has('EENVELOPE') && commands.has('RCPT TO')) || (codes.has('EMESSAGE') && commands.has('DATA'));
+}
