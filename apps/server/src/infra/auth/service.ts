@@ -336,10 +336,12 @@ export function createAuthService(options: AuthServiceOptions) {
               // The gym's sending service failed, whoever asked: Better Auth sends for every address, so this answer says
               // nothing about whether the address has an account, and a send the ceiling dropped above imitates it while
               // it is the gym's latest. The original error stays the (unsent) cause. A recipient or message refusal
-              // proves the service worked, so it ends the remembered failure as a success does.
+              // proves the service worked, so it ends the remembered failure as a success does. Its duration isn't
+              // recorded: a refusal costs no ceiling slot, so fast refusals could otherwise shorten the dropped wait.
               const failure = emailServiceFailure(error);
               if (failure === null) {
-                if (emailRecipientRefusal(error)) recordSend(gym.gymId, duration, null);
+                const record = recentSends.get(gym.gymId);
+                if (record && emailRecipientRefusal(error)) record.failedAt = null;
                 throw error;
               }
               recordSend(gym.gymId, duration, now());

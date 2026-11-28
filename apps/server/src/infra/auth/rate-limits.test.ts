@@ -563,9 +563,14 @@ describe('per-gym login-link ceiling', () => {
     const email = await linkUser(f);
     sender.next(80);
     expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(200);
-    // A rendering failure never reached the sending service; a recipient refusal is a send of its own (below).
+    // A rendering failure never reached the sending service; a recipient refusal only ends a remembered failure (below).
     sender.next(900, new Error('render'));
     expect((await f.askLink(address(), email)).status).toBe(500);
+    // Fast refusals cost no ceiling slot, so their durations never shorten the dropped request's wait.
+    for (let refusal = 0; refusal < 3; refusal++) {
+      sender.next(5, recipientRefused());
+      expect((await f.askLink(address(), email)).status).toBe(500);
+    }
     expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(200);
     expect(sender.pauses).toEqual([80]);
   });
@@ -692,7 +697,7 @@ describe('per-gym login-link ceiling', () => {
     expect(overWork).toEqual(linkedWork);
   });
 
-  it('never counts a linked reservation, and lets it neither change a window nor start one', async () => {
+  it('never counts a linked reservation: it may create an empty window, but never changes an existing one', async () => {
     const gymId = uuidv7(), rule = { window: 3600, max: 1 }, now = Date.now();
     expect(await reserveLoginLinkCeiling(database.system.db, gymId, rule, now, true)).toEqual({ retryAfter: null, reservation: null });
     const created = await ceilingRow(gymId);

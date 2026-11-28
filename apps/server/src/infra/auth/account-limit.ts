@@ -87,7 +87,10 @@ export async function consumeAccountAttempt(database: Database, path: string, em
   return (await reserveAccountAttempt(database, path, email, rule, now)).retryAfter;
 }
 
-/** Gives back only this window's successful password reservation; failures and interrupted requests keep their slot. */
+/**
+ * Gives back one reservation, only to the window it came from (its row ID, key and window end match), never below 0.
+ * Each caller decides when, such as a successful password sign-in or a login link the mail server provably never accepted.
+ */
 export async function releaseAccountAttempt(database: Database, reservation: AccountReservation): Promise<void> {
   await database.update(authRateLimit).set({ count: sql`${authRateLimit.count} - 1` }).where(and(
     eq(authRateLimit.id, reservation.id), eq(authRateLimit.key, reservation.key), eq(authRateLimit.lastRequest, reservation.resetAt), gt(authRateLimit.count, 0),
