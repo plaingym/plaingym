@@ -18,7 +18,8 @@ import { portalClaimCodeSchema } from '@plaingym/shared/contracts';
 import type { Auth, Session } from './index.js';
 import { passwordLogin, type AuthConfig } from './config.js';
 import { passwordAdapter } from './password.js';
-import { emailServiceFailure } from '../email/failure.js';
+import { emailRecipientRefusal, emailServiceFailure } from '../email/failure.js';
+import { deliveryAcceptance } from '../email/index.js';
 import { logError, logWarn } from '../../core/log.js';
 import { accountLimitedPaths, reserveAccountAttempt, releaseAccountAttempt, gymAddressStorage, signInLimits, loginLinkCeiling, reserveLoginLinkCeiling,
   type AccountReservation, type SignInRule } from './account-limit.js';
@@ -298,12 +299,16 @@ export function createAuthService(options: AuthServiceOptions) {
             // Only the public sign-in request counts toward the gym's ceiling, and only for an address the gym hasn't linked;
             // the links the app sends itself (`sendLoginLink`) carry no attempt ID. Over the ceiling nothing is sent, and
             // the request imitates the gym's recent real sends: it waits about their median time and answers 503 while the
-            // latest one failed with the sending service, so its answer matches a linked address's.
+            // latest one failed with the sending service, so its answer matches a linked address's. Every public request
+            // runs the linked check and the same two ceiling statements, a linked address's never changing the count.
             const attemptId = (ctx?.request?.headers ?? ctx?.headers)?.get(accountAttemptHeader);
             const publicRequest = attemptId != null && attempts.get(attemptId)?.path === '/sign-in/magic-link';
-            if (publicRequest && !await linked(email)) {
-              const result = await reserveLoginLinkCeiling(database(), gym.gymId, ceilingRule, now());
-              if (result.retryAfter !== null) {
+            let ceiling: AccountReservation | null = null;
+            if (publicRequest) {
+              const isLinked = await linked(email);
+              const result = await reserveLoginLinkCeiling(database(), gym.gymId, ceilingRule, now(), isLinked);
+              ceiling = result.reservation;
+              if (!isLinked && result.retryAfter !== null) {
                 const at = now();
                 if (at >= (ceilingLogged.get(gym.gymId) ?? 0)) {
                   ceilingLogged.set(gym.gymId, at + result.retryAfter * 1000);
@@ -324,12 +329,20 @@ export function createAuthService(options: AuthServiceOptions) {
               await options.sendMagicLink({ email: email.toLowerCase(), url, gymId: gym.gymId });
               recordSend(gym.gymId, elapsed() - started, null);
             } catch (error) {
+              const duration = elapsed() - started;
+              // A send that provably sent nothing gives its ceiling slot back (only to the window it came from); one
+              // whose outcome is unknown keeps it.
+              if (ceiling && deliveryAcceptance(error) === 'not_accepted') await releaseAccountAttempt(database(), ceiling).catch(() => undefined);
               // The gym's sending service failed, whoever asked: Better Auth sends for every address, so this answer says
               // nothing about whether the address has an account, and a send the ceiling dropped above imitates it while
-              // it is the gym's latest. The original error stays the (unsent) cause.
+              // it is the gym's latest. The original error stays the (unsent) cause. A recipient or message refusal
+              // proves the service worked, so it ends the remembered failure as a success does.
               const failure = emailServiceFailure(error);
-              if (failure === null) throw error;
-              recordSend(gym.gymId, elapsed() - started, now());
+              if (failure === null) {
+                if (emailRecipientRefusal(error)) recordSend(gym.gymId, duration, null);
+                throw error;
+              }
+              recordSend(gym.gymId, duration, now());
               // Better Auth logs an APIError by its message alone; name the class (never the reply or the address) here.
               logWarn('auth.magic_link_email_unavailable', { gymId: gym.gymId, failure });
               throw new APIError('SERVICE_UNAVAILABLE', { code: emailUnavailableCode, message: 'Email unavailable', cause: error });

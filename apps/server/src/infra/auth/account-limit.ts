@@ -41,10 +41,28 @@ export async function reserveAccountAttempt(database: Database, path: string, em
 /** At most this many login links an hour per gym to addresses with no staff role or household login there. */
 export const loginLinkCeiling: SignInRule = { window: 3600, max: 100 };
 
-/** Reserves one of the gym's login-link sends to unlinked addresses in its fixed window; refusals never extend it. */
-export async function reserveLoginLinkCeiling(database: Database, gymId: string, rule: SignInRule, now: number)
-  : Promise<{ retryAfter: null; reservation: AccountReservation } | { retryAfter: number; reservation: null }> {
-  return reserveWindow(database, `ceiling|login-link|${gymId}`, rule, now);
+/**
+ * Reserves one of the gym's login-link sends to unlinked addresses in its fixed window; refusals never extend it.
+ * Every call runs the same two statements, one upsert and then one read of the window's end, so a linked address's
+ * request (`linked`) does the same database work as an unlinked one's: its upsert inserts a row that holds no send and
+ * never changes an existing row, and it answers with no reservation and no wait.
+ */
+export async function reserveLoginLinkCeiling(database: Database, gymId: string, rule: SignInRule, now: number, linked = false)
+  : Promise<{ retryAfter: null; reservation: AccountReservation | null } | { retryAfter: number; reservation: null }> {
+  const key = `ceiling|login-link|${gymId}`, resetAt = now + rule.window * 1000, id = uuidv7();
+  const ended = sql`${authRateLimit.lastRequest} <= ${now}`;
+  const [row] = await database.insert(authRateLimit).values({ id, key, count: linked ? 0 : 1, lastRequest: resetAt })
+    .onConflictDoUpdate({ target: authRateLimit.key, set: {
+      id: sql`case when ${ended} then ${id}::uuid else ${authRateLimit.id} end`,
+      count: sql`case when ${ended} then 1 else ${authRateLimit.count} + 1 end`,
+      lastRequest: sql`case when ${ended} then ${resetAt}::bigint else ${authRateLimit.lastRequest} end`,
+    }, setWhere: linked ? sql`false` : sql`${ended} or ${authRateLimit.count} < ${rule.max}` })
+    .returning({ id: authRateLimit.id, key: authRateLimit.key, resetAt: authRateLimit.lastRequest });
+  const [current] = await database.select({ resetAt: authRateLimit.lastRequest }).from(authRateLimit).where(eq(authRateLimit.key, key));
+  if (linked) return { retryAfter: null, reservation: null };
+  if (row) return { retryAfter: null, reservation: row };
+  // A concurrent CLI reset may have removed the full window between the upsert and the read. Refuse conservatively.
+  return { retryAfter: Math.max(1, Math.ceil(((current?.resetAt ?? resetAt) - now) / 1000)), reservation: null };
 }
 
 async function reserveWindow(database: Database, key: string, rule: SignInRule, now: number)

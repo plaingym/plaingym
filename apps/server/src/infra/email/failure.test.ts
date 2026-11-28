@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { emailServiceFailure, smtpTestFailure } from './failure.js';
+import { emailRecipientRefusal, emailServiceFailure, smtpTestFailure } from './failure.js';
 import { DeliveryError } from './index.js';
 import { SmtpDeliveryError } from './smtp.js';
 
@@ -59,5 +59,25 @@ describe('the sending service\'s failures', () => {
     expect(emailServiceFailure(refused({ code: 'EENVELOPE', command: 'RCPT TO', responseCode: 553,
       response: '553 5.1.3 <bad@>: Invalid address syntax' }))).toBeNull();
     expect(emailServiceFailure(refused({ code: 'EENVELOPE', command: 'RCPT TO', responseCode: 553 }))).toBeNull();
+  });
+});
+
+describe('a recipient or message refusal', () => {
+  it('is a refusal at RCPT TO or DATA that is not the sending service\'s failure', () => {
+    expect(emailRecipientRefusal(refused({ code: 'EENVELOPE', command: 'RCPT TO', responseCode: 550 }))).toBe(true);
+    expect(emailRecipientRefusal(refused({ code: 'EMESSAGE', command: 'DATA', responseCode: 552 }))).toBe(true);
+  });
+  it('is not a service failure, a sender refused at RCPT TO, an unknown outcome or another error', () => {
+    expect(emailRecipientRefusal(refused({ code: 'EAUTH', responseCode: 535 }))).toBe(false);
+    const senderRefused = refused({ code: 'EENVELOPE', command: 'RCPT TO', responseCode: 553,
+      response: '553 5.7.1 <desk@gym.example>: Sender address rejected: not owned by user' });
+    expect(emailServiceFailure(senderRefused)).toBe('sender_refused');
+    expect(emailRecipientRefusal(senderRefused)).toBe(false);
+    expect(emailRecipientRefusal(new SmtpDeliveryError('unknown', 'SMTP delivery outcome is unknown',
+      { cause: { code: 'EENVELOPE', command: 'RCPT TO', responseCode: 550 } }))).toBe(false);
+    expect(emailRecipientRefusal(new Error('SMTP failed'))).toBe(false);
+    expect(emailRecipientRefusal(new DeliveryError('not_accepted', 'Another attempt is sending this email',
+      { cause: { code: 'EENVELOPE', command: 'RCPT TO', responseCode: 550 } }))).toBe(false);
+    expect(emailRecipientRefusal(refused({ code: 'EMESSAGE', command: 'MAIL FROM' }))).toBe(false);
   });
 });

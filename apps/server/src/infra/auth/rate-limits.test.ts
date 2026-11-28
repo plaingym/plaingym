@@ -8,7 +8,7 @@ import { authRateLimit, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { createAuthService, type AuthServiceOptions } from './service.js';
-import { clearAccountAttempts, gymAddressStorage, reserveAccountAttempt, releaseAccountAttempt, signInLimits } from './account-limit.js';
+import { clearAccountAttempts, gymAddressStorage, reserveAccountAttempt, releaseAccountAttempt, reserveLoginLinkCeiling, signInLimits } from './account-limit.js';
 import { accountDigest } from './account-limit-key.js';
 import { authConfig } from './config.js';
 import { sessionMiddleware } from './middleware.js';
@@ -489,14 +489,17 @@ describe('per-gym login-link ceiling', () => {
   it('answers a dropped link 503 like a linked address while the gym\'s sending service fails', async () => {
     const { sender, f } = await scriptedCeiling();
     const email = await linkUser(f);
-    sender.next(200, serviceDown());
+    // A failed send gives its slot back, so a sent link spends the ceiling and a linked address's send fails.
+    sender.next(200);
     const first = unlinked(f.gymId);
-    const sent = await f.askLink(address(), first), dropped = await f.askLink(address(), unlinked(f.gymId)), linked = await f.askLink(address(), email);
-    expect(statuses([sent, dropped, linked])).toEqual([503, 503, 503]);
+    expect((await f.askLink(address(), first)).status).toBe(200);
+    sender.next(200, serviceDown());
+    const failed = await f.askLink(address(), email), dropped = await f.askLink(address(), unlinked(f.gymId)), linked = await f.askLink(address(), email);
+    expect(statuses([failed, dropped, linked])).toEqual([503, 503, 503]);
     const [droppedBody, linkedBody] = [await dropped.text(), await linked.text()];
     expect(droppedBody).toBe(linkedBody);
     expect(JSON.parse(droppedBody)).toEqual(expect.objectContaining({ code: 'EMAIL_UNAVAILABLE' }));
-    expect(sender.sent).toEqual([first, email.toLowerCase()]);
+    expect(sender.sent).toEqual([first, email.toLowerCase(), email.toLowerCase()]);
   });
 
   it('waits the median of the gym\'s newest five sends', async () => {
@@ -533,8 +536,11 @@ describe('per-gym login-link ceiling', () => {
 
   it('imitates a failed send for five minutes', async () => {
     const { sender, f } = await scriptedCeiling();
+    const email = await linkUser(f);
+    sender.next(50);
+    expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(200);
     sender.next(50, serviceDown());
-    expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(503);
+    expect((await f.askLink(address(), email)).status).toBe(503);
     f.advance(299);
     expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(503);
     f.advance(1);
@@ -557,7 +563,8 @@ describe('per-gym login-link ceiling', () => {
     const email = await linkUser(f);
     sender.next(80);
     expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(200);
-    sender.next(900, recipientRefused());
+    // A rendering failure never reached the sending service; a recipient refusal is a send of its own (below).
+    sender.next(900, new Error('render'));
     expect((await f.askLink(address(), email)).status).toBe(500);
     expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(200);
     expect(sender.pauses).toEqual([80]);
@@ -581,13 +588,16 @@ describe('per-gym login-link ceiling', () => {
     const askOther = (email: string) => f.service.bind({ gymId: otherGym, origin: otherOrigin, clientIp: address() })
       .handler(new Request(new URL('/api/auth/sign-in/magic-link', otherOrigin), {
         method: 'POST', headers: { origin: otherOrigin, 'content-type': 'application/json' }, body: JSON.stringify({ email }) }));
+    const email = await linkUser(f);
+    sender.next(50);
+    expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(200);
     sender.next(50, serviceDown());
-    expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(503);
+    expect((await f.askLink(address(), email)).status).toBe(503);
     sender.next(50);
     expect((await askOther(unlinked(otherGym))).status).toBe(200);
     expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(503);
     expect((await askOther(unlinked(otherGym))).status).toBe(200);
-    expect(sender.sent).toHaveLength(2);
+    expect(sender.sent).toHaveLength(3);
   });
 
   it('never waits on a link to a linked address', async () => {
@@ -600,13 +610,135 @@ describe('per-gym login-link ceiling', () => {
     expect(sender.pauses).toEqual([]);
   });
 
+  const ceilingRow = async (gymId: string) => (await database.system.db.select({ id: authRateLimit.id, count: authRateLimit.count, resetAt: authRateLimit.lastRequest })
+    .from(authRateLimit).where(eq(authRateLimit.key, `ceiling|login-link|${gymId}`)))[0] ?? null;
+
+  it('gives the slot back when the sending service fails, so a later address is still sent', async () => {
+    const { sender, f } = await scriptedCeiling();
+    sender.next(50, serviceDown());
+    const response = await f.askLink(address(), unlinked(f.gymId));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual(expect.objectContaining({ code: 'EMAIL_UNAVAILABLE' }));
+    sender.next(50);
+    const second = unlinked(f.gymId);
+    expect((await f.askLink(address(), second)).status).toBe(200);
+    expect(sender.sent.at(-1)).toBe(second);
+    expect((await ceilingRow(f.gymId))?.count).toBe(1);
+  });
+
+  it('gives the slot back for a refused recipient, and keeps it for a send whose outcome is unknown', async () => {
+    const { sender, f } = await scriptedCeiling();
+    sender.next(50, recipientRefused());
+    expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(500);
+    expect((await ceilingRow(f.gymId))?.count).toBe(0);
+    sender.next(50, new SmtpDeliveryError('unknown', 'lost'));
+    expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(500);
+    expect((await ceilingRow(f.gymId))?.count).toBe(1);
+    sender.next(50);
+    expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(200);
+    expect(sender.sent).toHaveLength(2);
+  });
+
+  it('ends the remembered failure with a later recipient refusal, but not with a failure that never reached the service', async () => {
+    // A sent link spends the ceiling, the linked address's send fails with the service at T, and then at T+1 minute
+    // `after` runs before a dropped request.
+    const run = async (after: ((f: Awaited<ReturnType<typeof fixture>>, email: string, sender: ReturnType<typeof scripted>) => Promise<void>) | null) => {
+      const { sender, f } = await scriptedCeiling();
+      const email = await linkUser(f);
+      sender.next(40);
+      expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(200);
+      sender.next(40, serviceDown());
+      expect((await f.askLink(address(), email)).status).toBe(503);
+      f.advance(60);
+      await after?.(f, email, sender);
+      const dropped = await f.askLink(address(), unlinked(f.gymId));
+      expect(sender.sent.filter(sent => sent !== email.toLowerCase())).toHaveLength(1);
+      return dropped.status;
+    };
+    expect(await run(async (f, email, sender) => {
+      sender.next(40, recipientRefused());
+      expect((await f.askLink(address(), email)).status).toBe(500);
+    })).toBe(200);
+    expect(await run(null)).toBe(503);
+    expect(await run(async (f, email, sender) => {
+      sender.next(40, new Error('render'));
+      expect((await f.askLink(address(), email)).status).toBe(500);
+    })).toBe(503);
+  });
+
+  it('does the same database work for a linked address and an unlinked one, under the ceiling or over it', async () => {
+    const calls: string[] = [];
+    const db = database.system.db;
+    const recorded = new Set(['transaction', 'select', 'insert', 'update', 'delete', 'execute']);
+    const recording = new Proxy(db, { get(target, property) {
+      const value: unknown = Reflect.get(target, property, target);
+      if (typeof value !== 'function') return value;
+      const bound = (value as (...args: unknown[]) => unknown).bind(target);
+      return typeof property === 'string' && recorded.has(property) ? (...args: unknown[]) => { calls.push(property); return bound(...args); } : bound;
+    } });
+    const f = await fixture({ ...limits, database: () => recording });
+    const email = await linkUser(f);
+    const work = async (asked: string) => {
+      calls.length = 0;
+      expect((await f.askLink(address(), asked)).status).toBe(200);
+      return [...calls];
+    };
+    const under = unlinked(f.gymId);
+    const linkedWork = await work(email), underWork = await work(under), overWork = await work(unlinked(f.gymId));
+    expect(f.delivered).toEqual([email.toLowerCase(), under]);
+    // The linked check's transaction, then the ceiling's upsert and its read.
+    expect(linkedWork.slice(-3)).toEqual(['transaction', 'insert', 'select']);
+    expect(underWork).toEqual(linkedWork);
+    expect(overWork).toEqual(linkedWork);
+  });
+
+  it('never counts a linked reservation, and lets it neither change a window nor start one', async () => {
+    const gymId = uuidv7(), rule = { window: 3600, max: 1 }, now = Date.now();
+    expect(await reserveLoginLinkCeiling(database.system.db, gymId, rule, now, true)).toEqual({ retryAfter: null, reservation: null });
+    const created = await ceilingRow(gymId);
+    expect(created?.count).toBe(0);
+    const reserved = await reserveLoginLinkCeiling(database.system.db, gymId, rule, now + 1000);
+    expect(reserved.reservation).not.toBeNull();
+    expect(await ceilingRow(gymId)).toEqual({ ...created, count: 1 });
+    expect(await reserveLoginLinkCeiling(database.system.db, gymId, rule, now + 2000, true)).toEqual({ retryAfter: null, reservation: null });
+    expect(await ceilingRow(gymId)).toEqual({ ...created, count: 1 });
+    expect((await reserveLoginLinkCeiling(database.system.db, gymId, rule, now + 3000)).retryAfter).toBeGreaterThan(0);
+    // The window has ended: a linked call changes nothing, and the next unlinked call starts a new window.
+    const later = now + 3600_000;
+    await reserveLoginLinkCeiling(database.system.db, gymId, rule, later, true);
+    expect(await ceilingRow(gymId)).toEqual({ ...created, count: 1 });
+    const renewed = await reserveLoginLinkCeiling(database.system.db, gymId, rule, later);
+    expect(renewed.reservation?.resetAt).toBe(later + 3600_000);
+    const row = await ceilingRow(gymId);
+    expect(row).toEqual({ id: renewed.reservation?.id, count: 1, resetAt: later + 3600_000 });
+    expect(row?.id).not.toBe(created?.id);
+  });
+
+  it('keeps the ceiling exact for concurrent linked and unlinked requests', async () => {
+    const f = await ceiling(3);
+    const linkedEmails = await Promise.all(Array.from({ length: 6 }, async () => {
+      const user = await factory('authUser', f.gymId, { emailVerified: true });
+      await factory('staffRoles', f.gymId, { userId: user.id });
+      return user.email.toLowerCase();
+    }));
+    const unlinkedEmails = Array.from({ length: 6 }, () => unlinked(f.gymId));
+    const responses = await Promise.all([...linkedEmails, ...unlinkedEmails].map(email => f.askLink(address(), email)));
+    expect(new Set(statuses(responses))).toEqual(new Set([200]));
+    expect(f.delivered.filter(email => linkedEmails.includes(email)).sort()).toEqual([...linkedEmails].sort());
+    expect(f.delivered.filter(email => unlinkedEmails.includes(email))).toHaveLength(3);
+    expect((await ceilingRow(f.gymId))?.count).toBe(3);
+  });
+
   it('logs no email failure for a dropped 503, and the ceiling once per window without an address', async () => {
     const { sender, f } = await scriptedCeiling();
+    const email = await linkUser(f);
     const lines: string[] = [], previous = setLogSink(line => { lines.push(line); });
     const dropped = Array.from({ length: 2 }, () => unlinked(f.gymId));
     try {
+      sender.next(20);
+      expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(200);
       sender.next(20, serviceDown());
-      expect((await f.askLink(address(), unlinked(f.gymId))).status).toBe(503);
+      expect((await f.askLink(address(), email)).status).toBe(503);
       for (const email of dropped) expect((await f.askLink(address(), email)).status).toBe(503);
     } finally { setLogSink(previous); }
     expect(lines.filter(line => line.includes('auth.magic_link_email_unavailable'))).toHaveLength(1);
