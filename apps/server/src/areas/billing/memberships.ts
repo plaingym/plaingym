@@ -52,8 +52,9 @@ async function frozenBeforeActive(tx: Transaction, row: Row): Promise<boolean> {
 /**
  * The resumed due date of a frozen annual membership: its date moved later by the calendar days it was frozen (to
  * `owedFrom`, the scheduled resume date when the resume runs late), and never before `owedFrom`. A date given by
- * staff may be later than that, never earlier. A freeze made when a freeze still skipped a year moved the row's date
- * on; such a freeze resumes from the date its audit shows before it.
+ * staff may be later than that, never earlier than the later of the moved date and `owedFrom`, so a resume never
+ * bills a back-dated cycle. A date staff edited during the freeze is moved by the days frozen too. A freeze made when
+ * a freeze still skipped a year moved the row's date on; such a freeze resumes from the date its audit shows before it.
  */
 async function annualResumeDue(tx: Transaction, before: Row, timezone: string, owedFrom: string, requested?: string) {
   const frozenOn = before.frozenAt ? localDate(before.frozenAt, timezone) : null;
@@ -69,8 +70,10 @@ async function annualResumeDue(tx: Transaction, before: Row, timezone: string, o
   const base = skippedFrom !== null && skippedTo !== null && skippedTo > skippedFrom && before.nextDueOn >= skippedTo
     ? skippedFrom : before.nextDueOn;
   const shifted = addDays(base, days);
-  if (requested !== undefined && requested < shifted) refuse('resume_skips_cycle', 'Resume cannot bill before the old date plus the days frozen');
-  const due = requested ?? (shifted < owedFrom ? owedFrom : shifted);
+  const earliest = shifted < owedFrom ? owedFrom : shifted;
+  if (requested !== undefined && requested < earliest)
+    refuse('resume_skips_cycle', `Resume cannot bill before ${earliest}, the old date plus the days frozen and never before today`);
+  const due = requested ?? earliest;
   // A date given by staff is an edit (a leap-day clamp keeps the anniversary); a moved date moves the anniversary too.
   const original = before.anniversaryOn;
   const anniversaryOn = requested !== undefined || due === before.nextDueOn ? editedAnniversary(before, due)

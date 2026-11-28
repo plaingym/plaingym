@@ -385,15 +385,15 @@ describe('membership lifecycle against PostgreSQL', () => {
 
 describe('freezing an annual membership against PostgreSQL', () => {
   // Gym time is America/Vancouver: 20:00Z is noon there.
-  async function annual(nextDueOn = '2027-03-01', initialStatus: 'active' | 'trial' = 'active') {
+  async function annual(nextDueOn = '2027-03-01', initialStatus: 'active' | 'trial' = 'active', startsOn = '2027-02-01') {
     const gymId = uuidv7(); await factory('gyms', gymId, { currency: 'CAD', timezone: 'America/Vancouver' });
-    const clock = new TestClock('2027-02-01T20:00:00Z'), context = { gymId, actor: { kind: 'system' as const } };
+    const clock = new TestClock(`${startsOn}T20:00:00Z`), context = { gymId, actor: { kind: 'system' as const } };
     const home = await factory('households', gymId, { billingDay: 1 });
     const member = await factory('members', gymId, { householdId: home.id, status: initialStatus });
     const plan = await factory('plans', gymId, { interval: 'annual', amountCents: 120000 });
     const service = createMembershipService({ scope: db.forGym, clock, settings: createGymSettingsAccessor({ scope: db.forGym }) });
     const membership = await service.assign(context, { id: uuidv7(), memberId: member.id, householdId: home.id, planId: plan.id,
-      startsOn: '2027-02-01', nextDueOn, firstPeriod: 'next_billing_date', initialStatus,
+      startsOn, nextDueOn, firstPeriod: 'next_billing_date', initialStatus,
       ...(initialStatus === 'trial' ? { trialEndsOn: '2027-02-15' } : {}) });
     const read = async () => (await db.forGym(gymId, tx => tx.select().from(memberships).where(eq(memberships.id, membership.id))))[0]!;
     const frozenAt = async (now: string | Date, resumesOn?: string) => {
@@ -455,6 +455,28 @@ describe('freezing an annual membership against PostgreSQL', () => {
       expect(await f.read()).toMatchObject({ status: 'frozen', nextDueOn: '2027-03-01' });
     }
   });
+  // Past due when frozen: 2026-10-01 to 2026-11-27 is 57 days, so the shifted date 2026-10-28 is before today.
+  it.each([['2026-11-01', false], ['2026-11-26', false], ['2026-11-27', true], ['2026-12-01', true], [undefined, true]] as const)(
+    'never takes a staff resume date %s before today, even when the shifted date is earlier (%s)', async (nextDueOn, accepted) => {
+      const f = await annual('2026-09-01', 'active', '2026-08-01');
+      await f.frozenAt('2026-10-01T20:00:00Z');
+      const result = f.resume('2026-11-27T20:00:00Z', nextDueOn);
+      if (accepted) {
+        expect(await result).toMatchObject({ status: 'active', nextDueOn: nextDueOn ?? '2026-11-27' });
+      } else {
+        await expect(result).rejects.toMatchObject({ code: 'conflict', details: { reason: ['resume_skips_cycle'] } });
+        expect(await f.read()).toMatchObject({ status: 'frozen', nextDueOn: '2026-09-01' });
+      }
+    });
+  // A scheduled resume on 2026-11-20 run late on 2026-11-27: the 50 days frozen shift the date to 2026-10-21 only.
+  it.each([['2026-11-19', false], ['2026-11-20', true]] as const)(
+    'takes a late scheduled resume\'s date %s only from the scheduled resume date on (%s)', async (nextDueOn, accepted) => {
+      const f = await annual('2026-09-01', 'active', '2026-08-01');
+      await f.frozenAt('2026-10-01T20:00:00Z', '2026-11-20');
+      const result = f.resume('2026-11-27T20:00:00Z', nextDueOn);
+      if (accepted) expect(await result).toMatchObject({ status: 'active', nextDueOn });
+      else await expect(result).rejects.toMatchObject({ code: 'conflict', details: { reason: ['resume_skips_cycle'] } });
+    });
   it.each([['2028-03-01', '2027-03-15'], ['2029-03-01', '2027-03-15'], ['2027-06-01', '2027-06-15']])(
     'resumes a freeze made when a freeze skipped a year, with the row at %s, from the date before it', async (rowDueOn, resumedDueOn) => {
       const f = await annual();

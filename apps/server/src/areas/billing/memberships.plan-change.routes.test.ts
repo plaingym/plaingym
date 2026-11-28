@@ -7,7 +7,9 @@ import type { StaffRole } from '@plaingym/shared';
 import { createApp } from '../../app.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { authorize } from '../staff/auth.permissions.js';
+import { calculatePlanChange } from './invoicing/index.js';
 import { createMembershipService } from './memberships.js';
+import { pricing } from './runner/store.js';
 import { planSwitchedAction } from './memberships.plan-change.js';
 import { createMembershipRoutes } from './memberships.routes.js';
 import { createTransitionEffects } from './transitions/effects.js';
@@ -414,6 +416,48 @@ describe('switch now refusals', () => {
     // The membership billed for March can still upgrade.
     expect((await early.switchNow(upgrade.id)).status).toBe(200);
     for (const f of [overdue, resumed, early]) expect((await f.switchInvoices()).length).toBe(f === early ? 1 : 0);
+  });
+  /**
+   * An annual membership billed on 1 March 2026 (due 1 March 2027), frozen on 10 February 2027 and resumed on 24 February:
+   * the resume moves its date and its paid year by the 14 days frozen, to 15 March.
+   */
+  async function resumedAnnual() {
+    const f = await setup({ interval: 'annual', amount: 120_000, now: '2026-03-01T17:00:00Z', dueOn: '2026-03-01',
+      startsOn: '2025-03-01', anniversaryOn: '2026-03-01', on: '2027-02-10T20:00:00Z' });
+    const cycle = (await f.read()).invoices.find(invoice => invoice.kind === 'cycle' && invoice.dueOn === '2026-03-01')!;
+    expect(cycle.status).not.toBe('void');
+    const frozen = await f.service.freeze(f.staff, { membershipId: f.membership.id, revision: (await f.row()).revision, resumesOn: null });
+    f.clock.set('2027-02-24T20:00:00Z');
+    await f.service.activate(f.staff, { membershipId: frozen.id, revision: frozen.revision });
+    expect(await f.row()).toMatchObject({ status: 'active', nextDueOn: '2027-03-15', anniversaryOn: '2027-03-15' });
+    f.clock.set('2027-02-25T20:00:00Z');
+    return { f, cycle, premium: await f.newPlan({ interval: 'annual', amountCents: 130_000 }) };
+  }
+  it('prorates an annual upgrade after a resume over the moved period against the cycle bill before it', async () => {
+    const { f, premium } = await resumedAnnual();
+    const row = await f.row(), membership = await f.service.get(f.gymId, f.membership.id);
+    const home = (await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, f.home.id))))[0]!;
+    const expected = calculatePlanChange({ ...pricing(home, row.currency), membership, changeOn: '2027-02-25', annualAnchorOn: '2027-03-15',
+      newPlan: { id: premium.id, amountCents: 130_000, currency: row.currency, interval: 'annual', description: premium.name, taxRates: [] } });
+    expect(expected).toMatchObject({ periodStartsOn: '2026-03-15', periodEndsOn: '2027-03-15', billedDays: 18, periodDays: 365 });
+    expect(expected.invoice!.amountCents).toBeGreaterThan(0);
+    expect((await f.preview(premium.id)).body.data).toMatchObject({ kind: 'upgrade', proration: { periodStartsOn: '2026-03-15',
+      periodEndsOn: '2027-03-15', billedDays: 18, periodDays: 365, totalCents: expected.invoice!.amountCents } });
+    const switched = await f.switchNow(premium.id);
+    expect(switched.status, JSON.stringify(switched.body)).toBe(200);
+    expect((await f.switchInvoices()).map(invoice => invoice.amountCents)).toEqual([expected.invoice!.amountCents]);
+    expect(await f.row()).toMatchObject({ planId: premium.id, amountCents: 130_000, nextDueOn: '2027-03-15' });
+  });
+  it('still refuses an annual upgrade after a resume when the date was edited since or the cycle bill is void', async () => {
+    const edited = await resumedAnnual();
+    const patched = await edited.f.call('PATCH', edited.f.path(), { revision: (await edited.f.row()).revision, nextDueOn: '2027-03-20' });
+    expect(patched.status, JSON.stringify(patched.body)).toBe(200);
+    refused(await edited.f.preview(edited.premium.id), 'period_not_billed');
+    refused(await edited.f.switchNow(edited.premium.id), 'period_not_billed');
+    const voided = await resumedAnnual();
+    await db.forGym(voided.f.gymId, tx => tx.update(invoices).set({ status: 'void' }).where(eq(invoices.id, voided.cycle.id)));
+    refused(await voided.f.switchNow(voided.premium.id), 'period_not_billed');
+    for (const { f } of [edited, voided]) expect(await f.switchInvoices()).toEqual([]);
   });
   it('blocks a downgrade before the commitment ends unless the request carries an override reason, which no response or audit holds', async () => {
     const f = await setup(), basic = await f.newPlan({ amountCents: 8_000 });

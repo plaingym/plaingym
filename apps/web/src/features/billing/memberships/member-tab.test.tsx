@@ -63,25 +63,35 @@ it('resumes a monthly membership with a required date defaulting to, and no earl
   const input = screen.getByLabelText('Next billing date', { selector: 'input[name="date"]' });
   expect(input).toMatchObject({ required: true, value: '2026-12-01', min: '2026-12-01' });
 });
-it('resumes an annual membership with an optional blank date, sending only its revision', async () => {
-  const frozen = { ...membership, interval: 'annual' as const, status: 'frozen' as const, frozenAt: createdAt, nextDueOn: '2027-03-01' };
+// The panel's today is 26 October 2026 in Vancouver (createdAt is 00:30Z on the 27th).
+it.each([
+  { name: 'frozen today', frozenAt: createdAt, nextDueOn: '2027-03-01', resumesOn: null, earliest: '2027-03-01', label: 'Mar 1, 2027' },
+  // Frozen 2026-10-06 (local), 20 days to today: 2027-03-01 moves to 2027-03-21.
+  { name: 'frozen 20 days', frozenAt: '2026-10-06T19:00:00Z', nextDueOn: '2027-03-01', resumesOn: null, earliest: '2027-03-21', label: 'Mar 21, 2027' },
+  // Past due when frozen on 2026-09-10: 2026-09-01 moved by 46 days is 2026-10-17, before today.
+  { name: 'past due', frozenAt: '2026-09-10T19:00:00Z', nextDueOn: '2026-09-01', resumesOn: null, earliest: '2026-10-26', label: 'Oct 26, 2026' },
+  // A scheduled resume on 2026-10-20 run late: the 40 days to it move 2026-09-01 to 2026-10-11, before that date.
+  { name: 'late scheduled', frozenAt: '2026-09-10T19:00:00Z', nextDueOn: '2026-09-01', resumesOn: '2026-10-20', earliest: '2026-10-20', label: 'Oct 20, 2026' },
+])('resumes an annual membership ($name) with an optional blank date from its earliest date, sending only its revision', async scenario => {
+  const frozen = { ...membership, interval: 'annual' as const, status: 'frozen' as const, frozenAt: scenario.frozenAt, nextDueOn: scenario.nextDueOn, resumesOn: scenario.resumesOn };
   const client = start('admin', { row: frozen });
   fireEvent.click(await screen.findByRole('button', { name: 'Resume' }));
-  expect(screen.getByText('Leave the date blank to move the next billing date later by the number of days frozen. Choose a date only to bill later than that.')).toBeDefined();
+  expect(screen.getByText(`Leave the date blank to bill on ${scenario.label}, the old date moved by the days frozen. Choose a date only to bill later than that.`)).toBeDefined();
   expect(screen.queryByText('Choose the next billing date. The skipped cycle will stay skipped.')).toBeNull();
   const input = screen.getByLabelText('Next billing date', { selector: 'input[name="date"]' });
-  expect(input).toMatchObject({ required: false, value: '', min: '' });
+  expect(input).toMatchObject({ required: false, value: '', min: scenario.earliest });
   save();
   await waitFor(() => expect(client.call).toHaveBeenCalledWith('resumeMembership', { revision: 1 }, { membershipId: membership.id }));
 });
-it('sends a chosen annual resume date and explains its refusal in days frozen', async () => {
-  const frozen = { ...membership, interval: 'annual' as const, status: 'frozen' as const, frozenAt: createdAt, nextDueOn: '2027-03-01' };
+it('sends a chosen annual resume date and names the earliest date in its refusal', async () => {
+  const frozen = { ...membership, interval: 'annual' as const, status: 'frozen' as const, frozenAt: '2026-10-06T19:00:00Z', nextDueOn: '2027-03-01' };
   const client = start('admin', { row: frozen, call: async () => { throw new ApiError(409, 'conflict', ['resume_skips_cycle']); } });
   fireEvent.click(await screen.findByRole('button', { name: 'Resume' }));
-  fireEvent.change(screen.getByLabelText('Next billing date', { selector: 'input[name="date"]' }), { target: { value: '2027-03-05' } });
+  // The form's minimum keeps out an earlier date; the server can still refuse one (a day turned meanwhile, say).
+  fireEvent.change(screen.getByLabelText('Next billing date', { selector: 'input[name="date"]' }), { target: { value: '2027-03-25' } });
   save();
-  expect(await screen.findByText("The next billing date can't be earlier than the old date plus the days frozen.")).toBeDefined();
-  expect(client.call).toHaveBeenCalledWith('resumeMembership', { revision: 1, nextDueOn: '2027-03-05' }, { membershipId: membership.id });
+  expect(await screen.findByText("The next billing date can't be earlier than Mar 21, 2027.")).toBeDefined();
+  expect(client.call).toHaveBeenCalledWith('resumeMembership', { revision: 1, nextDueOn: '2027-03-25' }, { membershipId: membership.id });
 });
 it('keeps the monthly skipped-cycle refusal text', async () => {
   start('admin', { row: { ...membership, status: 'frozen', frozenAt: createdAt, nextDueOn: '2026-12-01' },

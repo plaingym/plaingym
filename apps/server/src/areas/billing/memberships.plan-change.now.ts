@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, desc, eq, gt, gte, inArray, lt } from 'drizzle-orm';
 import { auditEvents, type households, invoiceLineItems, invoices, memberships, plans, type Transaction } from '@plaingym/db';
-import type * as c from '@plaingym/shared/contracts';
+import * as c from '@plaingym/shared/contracts';
 import { addDays, monthStart, nextMonth } from '@plaingym/shared/time';
 import { calculatePlanChange, currentPeriodStart, type CalculatedInvoice, type PlanChangeResult } from './invoicing/index.js';
 import { isOffDay } from './invoicing/calendar.js';
+import { calendarDaysBetween } from './memberships.calendar.js';
 import { cycleConflictAction, pricing } from './runner/store.js';
 import { planSwitchedAction, refuse, switchTerms, type PlanSwitchedNowAudit } from './memberships.plan-change.js';
 import { priceDiscount, switchDiscount } from './discounts/apply.js';
@@ -25,12 +26,33 @@ export function checkNow(row: Row, plan: Plan, today: string) {
   if (row.nextDueOn < today) refuse('period_not_billed', 'The membership\'s current period hasn\'t been billed yet');
 }
 const notBilled = () => refuse('period_not_billed', 'The current period wasn\'t billed at the membership\'s price');
+const auditDate = (value: unknown) => {
+  const date = (value as { nextDueOn?: unknown } | null | undefined)?.nextDueOn;
+  return typeof date === 'string' && c.dateSchema.safeParse(date).success ? date : null;
+};
+/**
+ * The days an annual membership's resume moved its due date (and so its billed period) later: its latest activation
+ * resumed a freeze and set the row's current due date. A monthly membership, or a date edited since, answers 0.
+ */
+async function resumeShift(tx: Transaction, row: Row): Promise<number> {
+  if (row.interval !== 'annual') return 0;
+  const [resume] = await tx.select({ before: auditEvents.before, after: auditEvents.after }).from(auditEvents).where(and(
+    eq(auditEvents.action, 'billing.membership.activated'), eq(auditEvents.targetId, row.id)))
+    .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
+  if ((resume?.before as { status?: unknown } | null | undefined)?.status !== 'frozen') return 0;
+  const from = auditDate(resume?.before), to = auditDate(resume?.after);
+  if (from === null || to === null || to !== row.nextDueOn) return 0;
+  const shift = calendarDaysBetween(from, to);
+  return shift > 0 ? shift : 0;
+}
 type PriceSnapshot = { amountCents?: unknown } | null;
 /**
  * The upgrade's proration for the days left in the current period, or null when none are left (the switch falls on the
  * due date). The current period must have been billed to the membership at its current price: a membership line for
  * it on a cycle, cycle-conflict or first-period invoice that isn't void or fully refunded, with no staff price edit since billing.
- * An earlier switch supplies updated terms, but cannot establish that the period was billed. Otherwise (a freeze resumed early, a trial
+ * An earlier switch supplies updated terms, but cannot establish that the period was billed. An annual resume moved
+ * the period later by the days frozen, so the cycle bill due up to that shift before the period's start bills it.
+ * Otherwise (a monthly freeze resumed early, a trial
  * activated early, a first period left to the next billing date, an imported membership, a refunded period, a price
  * edited mid-period) the days left weren't paid at the current price, and the switch is refused rather than charging
  * a difference against them. The proration adds the new plan's taxes to the difference, which is exact only when both
@@ -49,12 +71,14 @@ export async function prorateNow(tx: Transaction, home: Household, row: Row, mem
     ...(row.anniversaryOn === null ? {} : { annualAnchorOn: row.anniversaryOn }) };
   // The due date's own day is the earliest possible start: February 28 can follow January 28 through 31.
   const earliestStart = currentPeriodStart(terms, item);
+  // An annual resume moved the paid period later by the days frozen, so its cycle bill is due up to that shift earlier.
+  const shift = await resumeShift(tx, row);
   const candidates = await tx.select({ id: invoices.id, issuedAt: invoices.createdAt, kind: invoices.kind,
     dueOn: invoices.dueOn, status: invoices.status, planId: invoiceLineItems.planId, amountCents: invoiceLineItems.billedUnitAmountCents,
     discount: invoiceLineItems.billedDiscount }).from(invoiceLineItems)
     .innerJoin(invoices, and(eq(invoices.gymId, invoiceLineItems.gymId), eq(invoices.id, invoiceLineItems.invoiceId)))
     .where(and(eq(invoiceLineItems.membershipId, row.id), eq(invoiceLineItems.kind, 'membership'),
-      gte(invoices.dueOn, earliestStart), lt(invoices.dueOn, row.nextDueOn)))
+      gte(invoices.dueOn, addDays(earliestStart, -shift)), lt(invoices.dueOn, row.nextDueOn)))
     .orderBy(desc(invoices.dueOn), desc(invoices.createdAt), desc(invoices.id));
   const usable = candidates.filter(bill => !['draft', 'void', 'refunded'].includes(bill.status));
   if (!usable.length) notBilled();
@@ -79,7 +103,7 @@ export async function prorateNow(tx: Transaction, home: Household, row: Row, mem
   const billedPeriodStartsOn = ambiguous
     ? usable.find(bill => cycleBill(bill) && bill.dueOn <= previousEnd)?.dueOn : undefined;
   const periodStartsOn = currentPeriodStart(terms, item, billedPeriodStartsOn);
-  const bills = usable.filter(bill => bill.dueOn >= periodStartsOn);
+  const bills = usable.filter(bill => bill.dueOn >= addDays(periodStartsOn, -shift));
   if (!bills.some(bill => cycleBill(bill) || (bill.dueOn === row.startsOn && !switchInvoices.has(bill.id)))) notBilled();
   const from = today > membership.startsOn ? today : membership.startsOn;
   // Only this precondition denotes an unbilled period (for example, a freeze resumed early).

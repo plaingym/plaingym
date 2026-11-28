@@ -132,7 +132,7 @@ resume date when the date job runs late. For example, a membership due 2027-03-0
 frozen on 2027-02-10 and resumed on 2027-02-24 is next due 2027-03-15. A date
 already past when resumed becomes the resume date (the scheduled one, if late), and
 the anniversary moves with the date. Staff may choose a later date when resuming,
-never an earlier one (`resume_skips_cycle`). A membership frozen when an annual
+never an earlier one nor one before the resume date (`resume_skips_cycle`). A membership frozen when an annual
 freeze still skipped a year resumes from the date it had before that freeze.
 
 Monthly dates retain the

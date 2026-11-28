@@ -2,7 +2,7 @@
 import { useState, type FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
-import { localDate } from '@plaingym/shared/time';
+import { addDays, localDate } from '@plaingym/shared/time';
 import { calendarDateLabel } from '../../../lib/instant.js';
 import type { Membership, MembershipSwitchResult, MembershipDiscountSelection, Plan } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../../app/context.js';
@@ -40,10 +40,30 @@ const staleCancellationRefusals = new Set(['membership_changed', ...staleMembers
 const staleRefusals = new Set(['household_billing_date', 'household_join_date', ...staleMembershipRefusals]);
 type Action = 'activateMembership' | 'freezeMembership' | 'resumeMembership' | 'cancelMembership' | 'updateMembership' | 'cancelMembershipSwitch';
 type PlanRefresh = { before: Plan[]; after: Plan[] };
+/** The gym's today and time zone, once the shell has loaded them. */
+type GymDay = { today: string; timezone: string };
+/** Whole calendar days from one date to another, negative when `to` is earlier: plain dates, no instants or offsets. */
+function calendarDays(from: string, to: string) {
+  const day = (date: string) => Date.UTC(Number(date.slice(0, 4)), Number(date.slice(5, 7)) - 1, Number(date.slice(8))) / 86_400_000;
+  return day(to) - day(from);
+}
+/**
+ * The earliest next billing date a frozen annual membership resumes to today, as the server works it out: its date
+ * moved later by the days frozen (to the scheduled resume date when the resume runs late), and never before that day.
+ * A freeze made before freezes kept the annual date resumes on the server from an earlier date its audit holds.
+ */
+function annualResumeEarliest(row: Membership, { today, timezone }: GymDay) {
+  const owedFrom = row.resumesOn !== null && row.resumesOn < today ? row.resumesOn : today;
+  const frozenOn = row.frozenAt === null ? owedFrom : localDate(new Date(row.frozenAt), timezone);
+  const shifted = addDays(row.nextDueOn, Math.max(0, calendarDays(frozenOn, owedFrom)));
+  return shifted < owedFrom ? owedFrom : shifted;
+}
 export function MembershipPanel({ gymId, memberId, manage, client = billingClient, discounts, now }: {
   gymId: string; memberId: string; manage: boolean; client?: BillingClient; discounts?: DiscountClient | undefined; now?: Date;
 }) {
   const bootstrap = useBootstrap();
+  const gymDay: GymDay | null = bootstrap.data
+    ? { today: localDate(now ?? new Date(), bootstrap.data.gym.timezone), timezone: bootstrap.data.gym.timezone } : null;
   const cache = useQueryClient(), key = ['billing', gymId, 'memberships'];
   const plansKey = ['billing', gymId, 'plans'];
   const [busy, setBusy] = useState(false), [reloading, setReloading] = useState(false), [message, setMessage] = useState(''), [reminder, setReminder] = useState(false);
@@ -84,9 +104,11 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
         }
         const code = error.status === 409 && error.reason.find(reason => Object.hasOwn(refusalText, reason));
         if (code) {
-          // An annual resume may bill no earlier than its old date plus the days frozen.
-          const annual = code === 'resume_skips_cycle' && rows.data?.find(row => row.id === membershipId)?.interval === 'annual';
-          setMessage(text(annual ? 'refusal_resume_before_frozen_days' : refusalText[code]!));
+          // An annual resume may bill no earlier than its old date plus the days frozen, and never before today.
+          const resumed = code === 'resume_skips_cycle' ? rows.data?.find(row => row.id === membershipId) : undefined;
+          setMessage(resumed?.interval === 'annual' && gymDay
+            ? text('refusal_resume_before_frozen_days', { date: calendarDateLabel(annualResumeEarliest(resumed, gymDay)) })
+            : text(refusalText[code]!));
           setReloading(true);
           let refresh: PlanRefresh | undefined;
           if (code === 'plan_inactive') {
@@ -119,7 +141,7 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
     {rows.isError && <Alert variant="error" role="alert">{text('error')} <Button variant="outline" onClick={() => void rows.refetch()}>{text('retry')}</Button></Alert>}
     {rows.data?.length === 0 && <p className="rounded-lg border p-4 text-muted-foreground">{text('empty')}</p>}
     {plans.isError && <Alert variant="error" role="alert">{text('error')} <Button variant="outline" onClick={() => void plans.refetch()}>{text('retry')}</Button></Alert>}
-    <ul className="space-y-3">{rows.data?.map(row => <MembershipCard key={row.id} row={row} plans={plans.data ?? []} plansReady={plans.isSuccess} manage={manage} busy={busy} mutate={mutate}
+    <ul className="space-y-3">{rows.data?.map(row => <MembershipCard key={row.id} row={row} plans={plans.data ?? []} plansReady={plans.isSuccess} manage={manage} busy={busy} mutate={mutate} gymDay={gymDay}
       gymId={gymId} discounts={discounts} client={client} reload={reload} changed={result => { setReminder(true); setMessage(text(result.invoiceId ? 'planChangedInvoice' : 'planChanged')); void reload(); }}/>)}</ul>
     {manage && <>
       {(setup.isPending || plans.isPending || bootstrap.isPending) && <p role="status">{text('loading')}</p>}
@@ -199,8 +221,8 @@ function AssignmentForm({ catalog, memberId, householdId, today, billingDate, bu
     </fieldset>}
   </form>;
 }
-function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, reload, changed, gymId, discounts }: {
-  row: Membership; plans: Plan[]; plansReady: boolean; manage: boolean; busy: boolean;
+function MembershipCard({ row, plans, plansReady, manage, busy, mutate, gymDay, client, reload, changed, gymId, discounts }: {
+  row: Membership; plans: Plan[]; plansReady: boolean; manage: boolean; busy: boolean; gymDay: GymDay | null;
   mutate: (operation: Action, input: unknown, membershipId: string, refused?: (reason: string) => void) => Promise<boolean>;
   client: BillingClient; reload: () => Promise<void>; changed: (result: MembershipSwitchResult) => void;
   gymId: string; discounts?: DiscountClient | undefined;
@@ -214,6 +236,8 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
   const plan = plans.find(item => item.id === row.planId);
   // A freeze skips no annual billing date; its resume moves the date by the days frozen.
   const annual = row.interval === 'annual';
+  // The earliest date an annual resume takes; until the gym's day is known, an annual Resume waits for it.
+  const resumeEarliest = annual && row.status === 'frozen' && gymDay ? annualResumeEarliest(row, gymDay) : null;
   const scheduled = row.scheduledPlanId && row.scheduledAmountCents !== null && row.scheduledInterval && row.scheduledOn
     ? { plan: plans.find(item => item.id === row.scheduledPlanId), price: money(row.scheduledAmountCents, row.currency), interval: text(row.scheduledInterval), on: calendarDateLabel(row.scheduledOn) } : null;
   const priceOnly = !!scheduled && row.scheduledPlanId === row.planId;
@@ -267,7 +291,7 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
         {plansReady && <Button variant="outline" onClick={() => { setChanging(true); setConfirmUndo(false); }}>{text('changePlan')}</Button>}
         <Button variant="outline" onClick={() => { setAction('edit'); setConfirm(false); setFormError(''); setBase(row); }}>{text('editPrice')}</Button>
         {['active', 'trial'].includes(row.status) && <Button variant="outline" onClick={() => { setAction('freeze'); setConfirm(false); }}>{text('freeze')}</Button>}
-        {row.status === 'frozen' && <Button variant="outline" onClick={() => { setAction('resume'); setConfirm(false); }}>{text('resume')}</Button>}
+        {row.status === 'frozen' && <Button variant="outline" disabled={annual && !resumeEarliest} onClick={() => { setAction('resume'); setConfirm(false); }}>{text('resume')}</Button>}
         <Button variant="outline" onClick={() => { setConfirm(true); setAction(null); }}>{text('cancel')}</Button>
       </div>
       {confirm && <div className="space-y-2"><p>{text('confirmCancel')}</p><div className="flex flex-col gap-2 sm:flex-row"><Button onClick={async () => { if (await mutate('cancelMembership', { revision: row.revision }, row.id, closeStaleCancel)) setConfirm(false); }}>{text('confirm')}</Button><Button variant="outline" onClick={() => setConfirm(false)}>{text('back')}</Button></div></div>}
@@ -280,8 +304,10 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
         <div className="flex flex-col gap-2 sm:flex-row"><Button type="submit">{text('save')}</Button><Button variant="outline" onClick={() => setAction(null)}>{text('back')}</Button></div>
       </form>}
       {(action === 'freeze' || action === 'resume') && <form onSubmit={event => void submit(event)} className="space-y-3">
-        <p className="text-sm text-muted-foreground">{text(action === 'freeze' ? annual ? 'freezeHelpAnnual' : 'freezeHelp' : annual ? 'resumeHelpAnnual' : 'resumeHelp', { date: calendarDateLabel(row.nextDueOn) })}</p>
-        <Label className="block min-w-0">{text(action === 'freeze' ? 'resumesOn' : 'nextDueOn')}<Input type="date" name="date" required={action === 'resume' && !annual} {...(action === 'resume' && !annual ? { min: row.nextDueOn, defaultValue: row.nextDueOn } : {})}/></Label>
+        <p className="text-sm text-muted-foreground">{text(action === 'freeze' ? annual ? 'freezeHelpAnnual' : 'freezeHelp' : annual ? 'resumeHelpAnnual' : 'resumeHelp',
+          { date: calendarDateLabel(action === 'resume' && resumeEarliest ? resumeEarliest : row.nextDueOn) })}</p>
+        <Label className="block min-w-0">{text(action === 'freeze' ? 'resumesOn' : 'nextDueOn')}<Input type="date" name="date" required={action === 'resume' && !annual}
+          {...(action === 'resume' && !annual ? { min: row.nextDueOn, defaultValue: row.nextDueOn } : action === 'resume' && resumeEarliest ? { min: resumeEarliest } : {})}/></Label>
         <div className="flex flex-col gap-2 sm:flex-row"><Button type="submit">{text('save')}</Button><Button variant="outline" onClick={() => setAction(null)}>{text('back')}</Button></div>
       </form>}
     </fieldset>}

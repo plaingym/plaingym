@@ -61,11 +61,19 @@ date (`household_join_date`), or an existing household that must use its next
 billing date (`household_billing_date`). Other reasons are a status that
 prevents activation or freezing (`membership_status`), an already cancelled
 membership (`membership_cancelled`), resuming before the billing date the
-freeze skipped, or for an annual membership before its old date plus the days
-frozen (`resume_skips_cycle`), and a freeze resume date that isn't in
-the future (`resume_not_future`). The membership tab gives staff a message
+freeze skipped, or for an annual membership before the later of its old date
+plus the days frozen and today (or the scheduled resume date, when the resume
+runs late) (`resume_skips_cycle`), and a freeze resume date that isn't in
+the future (`resume_not_future`). A next billing date that staff edit while an annual
+membership is frozen is moved by the days frozen when it resumes, like the date it
+replaced. The
+membership tab gives staff a message
 for each reason and reloads membership data after `household_join_date`,
-`household_billing_date`, `membership_status`, or `membership_cancelled`.
+`household_billing_date`, `membership_status`, or `membership_cancelled`. Its
+annual resume form names that earliest date and takes none before it, working it
+out from the membership's date, freeze time and scheduled resume date; for a
+freeze made before freezes kept the annual date, which resumes from the date its
+audit shows, the form can show a later date than the server takes.
 
 ## Member status
 
@@ -218,7 +226,11 @@ date has run (the next due date is not before the gym's local today) and, for an
 upgrade with days left, when a membership line for this membership sits on a
 cycle or first-period invoice that isn't void or fully refunded and is due within
 the current period, and no staff price edit has changed
-the membership's price since the first such invoice was issued. A freeze resumed
+the membership's price since the first such invoice was issued. An annual resume
+moves the paid period later by the days frozen: while the due date is still the one
+the resume set, the cycle bill due up to that many days before the period's start
+counts as billing it, and an upgrade prorates the days left of the moved period
+(one year before the moved date to the moved date). A monthly freeze resumed
 early, a trial activated early, a first period left to the next billing date, an
 imported membership, a refunded period or a price edited mid-period leaves the days
 left unpaid at the current price: an upgrade now is refused rather than charged a
