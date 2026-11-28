@@ -27,7 +27,8 @@ Use a demo to evaluate the software, to train staff before launch, or to
 show it to your board. Don't use it for your real gym: sandboxes are throwaway, and
 demo mode is a separate kind of install.
 
-If you only want to *try* the software, you don't need your own demo; if you want to
+If you only want to *try* the software, you don't need your own demo: use the public
+one at [tryplaingym.app](https://tryplaingym.app). If you want to
 rehearse your own gym's setup instead, install normally ([install.md](install.md)) and
 use a test Stripe key ([going-live.md](going-live.md#1-try-it-in-test-mode-optional)).
 

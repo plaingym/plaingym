@@ -15,7 +15,7 @@ the hosting company for it, and nobody else can see the gym's data.
   that manages its DNS (often the registrar, or Cloudflare). The gym will live at a
   name under it, such as `gym.example.org`.
 * **A virtual private server (VPS)** from any hosting company: Ubuntu 24.04 or 26.04 LTS,
-  amd64 or arm64, 2 GB of RAM recommended, and a public IPv4 address. When you create it,
+  amd64 or arm64, at least 1 GB of RAM, and a public IPv4 address. When you create it,
   choose the Ubuntu image and note the server's IP address and how you log in (a password,
   or an SSH key you add on the provider's page).
 * **An email address** for the certificate authority (Let's Encrypt) to warn you before a

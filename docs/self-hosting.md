@@ -12,8 +12,8 @@ For building images and the installer's internals, see
 
 ## What you need
 
-* **A server**: Ubuntu 24.04 or 26.04 LTS, amd64 or arm64, with 2 GB of RAM
-  recommended. The whole stack runs on 1 GB with swap (see the memory notes in
+* **A server**: Ubuntu 24.04 or 26.04 LTS, amd64 or arm64, with at least 1 GB of
+  RAM. The whole stack runs on 1 GB with swap (see the memory notes in
   [`deploy/README.md`](../deploy/README.md)). The installer adds 1 GB of swap if
   none is active.
 * **A hostname** such as `gym.example.org`, with an A record (and an AAAA record,

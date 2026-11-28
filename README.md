@@ -11,7 +11,7 @@ Run your gym on your terms, with your data on your own server.</p>
 <a href="https://github.com/plaingym/plaingym/actions/workflows/ci.yml"><img src="https://github.com/plaingym/plaingym/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
 </p>
 
-[Install](docs/install.md) · [Try the demo](docs/demo.md) · [Documentation](docs/README.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
+[Install](docs/install.md) · [Try the demo](https://tryplaingym.app) · [Documentation](docs/README.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
 
 </div>
 
@@ -25,8 +25,9 @@ Run your gym on your terms, with your data on your own server.</p>
 </p>
 
 > [!NOTE]
-> PlainGym 1.0.0 is the first stable release. Patch releases (1.0.Z) carry fixes only
-> and installs apply them each night, with rollback ([versioning](docs/versioning.md)).
+> PlainGym has been stable since 1.0.0; see the [changelog](CHANGELOG.md) for the
+> current release. Patch releases (x.y.Z) carry fixes only and installs apply them each
+> night, with rollback ([versioning](docs/versioning.md)).
 
 ## Why PlainGym
 
@@ -189,7 +190,7 @@ and for Muay Thai and functional fitness.
 
 ## Get started
 
-You need a domain name, a small Ubuntu server (2 GB of RAM recommended) and about 30
+You need a domain name, a small Ubuntu server (at least 1 GB of RAM) and about 30
 minutes. The [install guide](docs/install.md) assumes you have never run a server before.
 
 | Step | What you do | Guide |
@@ -209,10 +210,10 @@ After that the server mostly runs itself: see [what happens each night](docs/upd
 
 ## Try the demo
 
-The [sandbox demo](docs/demo.md) runs a sample gym on your computer or a server. Look
-around the shared showcase, then make a private copy and switch between owner, coach and
-student without creating an account. Copies are deleted within 24 hours, and billing
-uses Stripe test mode.
+Try it at [tryplaingym.app](https://tryplaingym.app). Look around the shared showcase,
+then make a private copy and switch between owner, coach and student without creating
+an account. Copies are deleted within 24 hours, and billing uses Stripe test mode. To
+run the same [sandbox demo](docs/demo.md) on your own computer or server, see its guide.
 
 ## How it works
 
