@@ -56,7 +56,9 @@ new enum value safe: the previous release must already tolerate it. Stage the
 reader change in an earlier release when necessary.
 
 Repo compliance runs `scripts/release/check-rollback.mjs BASE HEAD` against only
-SQL migrations added since the branch's merge base with `main`. It flags an
+SQL migrations added since the branch's merge base with `next` (`main` while
+there is no `next`), or, on a push to `main` or `next`, since the branch's
+previous head. It flags an
 `ALTER TABLE` that adds a `NOT NULL` or `PRIMARY KEY` column without a non-null
 `DEFAULT` (including `DEFAULT (NULL)` and a cast `NULL`), or adds a `NOT NULL` or `PRIMARY KEY`
 constraint to existing columns. New identity, generated and `serial` columns fill
