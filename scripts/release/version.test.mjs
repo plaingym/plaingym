@@ -26,8 +26,12 @@ test('source archives have an unknown development identity', () => {
     const supplied = { APP_BUILD_VERSION: '1.2.0', APP_BUILD_REVISION: 'a'.repeat(40) };
     assert.deepEqual(buildInfo(cwd, supplied), { version: '1.2.0', commit: 'a'.repeat(40) });
     assert.deepEqual(buildInfo(cwd, { APP_BUILD_VERSION: '1.2.0+unknown', APP_BUILD_REVISION: 'unknown' }), { version: '1.2.0+unknown', commit: 'unknown' });
+    // A nightly prerelease's image, and its dry run's.
+    for (const version of ['1.3.0-nightly.4', '1.3.0-nightly.4+0.gabc1234'])
+      assert.deepEqual(buildInfo(cwd, { ...supplied, APP_BUILD_VERSION: version }), { version, commit: 'a'.repeat(40) });
     for (const env of [{ APP_BUILD_VERSION: '1.2.0' }, { APP_BUILD_REVISION: 'a'.repeat(40) },
-      { ...supplied, APP_BUILD_VERSION: '' }, { ...supplied, APP_BUILD_REVISION: '' }])
+      { ...supplied, APP_BUILD_VERSION: '' }, { ...supplied, APP_BUILD_REVISION: '' },
+      { ...supplied, APP_BUILD_VERSION: '1.3.0-beta.1' }, { ...supplied, APP_BUILD_VERSION: '1.3.0-nightly.0' }])
       assert.throws(() => buildInfo(cwd, env), /Supply both/);
     git(['init', '-b', 'main'], cwd);
     assert.throws(() => buildInfo(cwd, {})); // A broken/empty repository must not masquerade as an archive.

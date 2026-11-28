@@ -3,9 +3,9 @@ name: Release
 # A signed vX.Y.Z tag builds the image natively for amd64 and arm64, smoke-tests both, pushes one multi-arch image
 # to GHCR and creates the GitHub release with its signed release manifest, the deploy archive that manifest lists, and
 # the release's bootstrap.sh (deploy/README.md, "Releases"). The Prerelease workflow (prerelease.yml) calls this one
-# with `prerelease: true` to publish main's commit as a v0.Y.Z prerelease with the same steps, signed with the
-# prerelease key (deploy/README.md, "Prereleases"). Every other run is a dry run of the same steps that publishes
-# nothing: the images go to a registry on the runner and the manifest is signed with a throwaway key.
+# with `prerelease: true`; its run on main publishes next's head as a vX.Y.0-nightly.N prerelease with the same steps,
+# signed with the prerelease key (deploy/README.md, "Prereleases"). Every other run is a dry run of the same steps that
+# publishes nothing: the images go to a registry on the runner and the manifest is signed with a throwaway key.
 on:
   push:
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
@@ -20,7 +20,7 @@ on:
   workflow_call:
     inputs:
       prerelease:
-        description: Publish main's commit as a nightly prerelease; any other ref gets a dry run of it.
+        description: On main, publish next's head as a nightly prerelease; any other ref gets a dry run of its own commit.
         type: boolean
         required: true
 permissions:
@@ -46,6 +46,8 @@ jobs:
       # A prerelease, only from main (prerelease.yml).
       prerelease: ${{ steps.prerelease.outputs.publish }}
       previous: ${{ steps.prerelease.outputs.previous }}
+      # The commit built: next's head for a prerelease run on main, the run's own commit otherwise.
+      commit: ${{ steps.prerelease.outputs.commit || github.sha }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -91,15 +93,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
-        # The version comes from the earlier v* tags and the migrations diff; nothing is committed. Only main
-        # publishes, and only when it moved since the previous prerelease and CI and Repo compliance passed on it.
+        # The version comes from the v* tags; nothing is committed. Only a run on main publishes, and it plans next's
+        # head: only when next moved since the previous nightly and CI and Repo compliance passed on that head.
         run: |
           set -euo pipefail
-          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          # A missing next is no error: the plan then skips. A failure to look is not an answer.
+          next_status=0; git ls-remote --exit-code --heads origin refs/heads/next >/dev/null || next_status=$?
+          if [ "$next_status" -eq 0 ]; then
+            git fetch --no-tags origin '+refs/heads/next:refs/remotes/origin/next'
+          elif [ "$next_status" -eq 2 ]; then
+            git update-ref -d refs/remotes/origin/next
+          else
+            echo '::error::Could not check whether next exists.'; exit 1
+          fi
           node scripts/release/prerelease.mjs plan > "$RUNNER_TEMP/plan.txt"
           cat "$RUNNER_TEMP/plan.txt"
           if grep -qx 'publish=true' "$RUNNER_TEMP/plan.txt"; then
-            sh deploy/release/check-tag.sh "$(sed -n 's/^version=//p' "$RUNNER_TEMP/plan.txt")" "$GITHUB_SHA" --prerelease
+            sh deploy/release/check-tag.sh "$(sed -n 's/^version=//p' "$RUNNER_TEMP/plan.txt")" "$(sed -n 's/^commit=//p' "$RUNNER_TEMP/plan.txt")" --prerelease
           fi
           cat "$RUNNER_TEMP/plan.txt" >> "$GITHUB_OUTPUT"
       - name: Test the release scripts
@@ -121,12 +131,15 @@ jobs:
     timeout-minutes: 30
     env:
       VERSION: ${{ needs.prepare.outputs.build_version }}
+      COMMIT: ${{ needs.prepare.outputs.commit }}
       IMAGE: plaingym:${{ needs.prepare.outputs.image_tag }}-${{ matrix.arch }}
       PUBLISHING: ${{ needs.prepare.outputs.publish == 'true' || needs.prepare.outputs.prerelease == 'true' }}
       # The AGPL source link names the release tag; a dry run names its commit.
-      SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}/tree/${{ (needs.prepare.outputs.publish == 'true' || needs.prepare.outputs.prerelease == 'true') && needs.prepare.outputs.version || github.sha }}
+      SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}/tree/${{ (needs.prepare.outputs.publish == 'true' || needs.prepare.outputs.prerelease == 'true') && needs.prepare.outputs.version || needs.prepare.outputs.commit }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24.22.1
@@ -139,7 +152,7 @@ jobs:
           file: deploy/Dockerfile
           build-args: |
             SOURCE_URL=${{ env.SOURCE_URL }}
-            REVISION=${{ github.sha }}
+            REVISION=${{ env.COMMIT }}
             VERSION=${{ env.VERSION }}
           tags: ${{ env.IMAGE }}
           load: true
@@ -149,7 +162,7 @@ jobs:
         run: |
           test "$(docker image inspect "$IMAGE" --format '{{.Architecture}}')" = "${{ matrix.arch }}"
           test "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" = "$VERSION"
-          test "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$GITHUB_SHA"
+          test "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$COMMIT"
       - name: Test the production stack
         # An empty SOURCE_URL, as .env.example leaves it, serves the link baked into the image.
         env:
@@ -195,6 +208,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-image-*
@@ -210,6 +225,7 @@ jobs:
         # writes, tags or release assets are used, and neither signing key is in reach.
         env:
           VERSION: ${{ needs.prepare.outputs.build_version }}
+          COMMIT: ${{ needs.prepare.outputs.commit }}
           PRERELEASE: ${{ inputs.prerelease && 'true' || '' }}
         shell: bash
         run: |
@@ -230,7 +246,7 @@ jobs:
           fi
           # shellcheck disable=SC2086
           sh deploy/release/publish.sh --registry localhost:5000 --name plaingym/app --insecure $mode \
-            --version "$VERSION" --revision "$GITHUB_SHA" --migrations packages/db/src/migrations \
+            --version "$VERSION" --revision "$COMMIT" --migrations packages/db/src/migrations \
             --rollback-floor "$floor" \
             --archive "amd64=$RUNNER_TEMP/images/release-image-amd64.tar" --archive "arm64=$RUNNER_TEMP/images/release-image-arm64.tar" \
             --key "$RUNNER_TEMP/key.pem" --public-key "$RUNNER_TEMP/public.pem" --repository "$GITHUB_REPOSITORY" --out "$RUNNER_TEMP/release"
@@ -307,6 +323,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          ref: ${{ needs.prepare.outputs.commit }}
           # The notes list the commits since the previous prerelease tag.
           fetch-depth: 0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -325,6 +342,8 @@ jobs:
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           PREVIOUS: ${{ needs.prepare.outputs.previous }}
+          # next's head, which the plan picked and check-tag.sh confirmed is on next.
+          COMMIT: ${{ needs.prepare.outputs.commit }}
           PRERELEASE_SIGNING_KEY: ${{ secrets.PRERELEASE_SIGNING_KEY }}
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -353,10 +372,10 @@ jobs:
             if [ "$inspect_status" -eq 0 ]; then
               image=$(docker buildx imagetools inspect "$ref" --format '{{json .Image}}') || { echo "::error::Could not read the revision of $ref."; exit 1; }
               revisions=$(printf '%s\n' "$image" | tr -d '[:space:]' | grep -o '"org.opencontainers.image.revision":"[^"]*"' | sort -u || true)
-              expected=$(printf '"org.opencontainers.image.revision":"%s"' "$GITHUB_SHA")
+              expected=$(printf '"org.opencontainers.image.revision":"%s"' "$COMMIT")
               if [ "$revisions" != "$expected" ]; then
                 echo "::error::$ref already exists for another commit; nothing was published."
-                found=$(printf '%s\n' "$revisions" | grep -vF "\"$GITHUB_SHA\"" | sed -n '1s/.*"org.opencontainers.image.revision":"\([^"]*\)".*/\1/p' || true)
+                found=$(printf '%s\n' "$revisions" | grep -vF "\"$COMMIT\"" | sed -n '1s/.*"org.opencontainers.image.revision":"\([^"]*\)".*/\1/p' || true)
                 echo "::error::An earlier night pushed $VERSION's images for commit ${found:-unknown} but stopped before creating its release. Re-run that night's Prerelease run, or delete the package versions tagged $image_tag, $image_tag-amd64 and $image_tag-arm64 (the repository's Packages, app), then run Prerelease again."
                 exit 1
               fi
@@ -376,14 +395,14 @@ jobs:
             echo '::error::PRERELEASE_SIGNING_KEY is the release key.'; exit 1
           fi
           sh deploy/release/publish.sh --prerelease --registry ghcr.io --name "$owner/app" \
-            --version "$VERSION" --revision "$GITHUB_SHA" --migrations packages/db/src/migrations \
+            --version "$VERSION" --revision "$COMMIT" --migrations packages/db/src/migrations \
             --rollback-floor "$floor" \
             --archive "amd64=$RUNNER_TEMP/images/release-image-amd64.tar" --archive "arm64=$RUNNER_TEMP/images/release-image-arm64.tar" \
             --key "$RUNNER_TEMP/key.pem" --public-key deploy/prerelease-signing.pem --repository "$GITHUB_REPOSITORY" --out "$RUNNER_TEMP/release"
-          node scripts/release/prerelease.mjs notes "$PREVIOUS" "$GITHUB_SHA" "$floor" > "$RUNNER_TEMP/release/notes.md"
-          # Creating the prerelease creates its tag on this commit; nothing is pushed to a branch. Without bootstrap.sh,
+          node scripts/release/prerelease.mjs notes "$PREVIOUS" "$COMMIT" "$floor" > "$RUNNER_TEMP/release/notes.md"
+          # Creating the prerelease creates its tag on next's head; nothing is pushed to a branch. Without bootstrap.sh,
           # whose embedded key would install a prerelease-trusting server, and never marked latest.
-          gh release create "$VERSION" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+          gh release create "$VERSION" -R "$GITHUB_REPOSITORY" --target "$COMMIT" --prerelease --latest=false \
             --title "$VERSION (prerelease)" --notes-file "$RUNNER_TEMP/release/notes.md" \
             "$RUNNER_TEMP/release/release-manifest.txt" "$RUNNER_TEMP/release/release-manifest.txt.sig" \
             "$RUNNER_TEMP/release/plaingym-deploy-$VERSION.tar.gz"

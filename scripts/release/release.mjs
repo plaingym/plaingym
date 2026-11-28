@@ -8,9 +8,16 @@ import { git, releasePattern, root } from './version.mjs';
 import { checkCommits } from './check-commits.mjs';
 import { checkMigrations } from './check-migrations.mjs';
 
+/** Orders vX.Y.Z releases and vX.Y.0-nightly.N prereleases: a nightly sorts above every vX.(Y-1).* release and below
+ * vX.Y.0, and the nightlies of one minor by N as a number. */
 export function compare(a, b) {
-  const left = a.replace(/^v/, '').split('.').map(Number), right = b.replace(/^v/, '').split('.').map(Number);
-  return left[0] - right[0] || left[1] - right[1] || left[2] - right[2];
+  const key = (value) => {
+    const [release = '', nightly] = value.replace(/^v/, '').split('-nightly.');
+    const [major, minor, patch] = release.split('.').map(Number);
+    return [major, minor, patch, nightly === undefined ? 1 : 0, nightly === undefined ? 0 : Number(nightly)];
+  };
+  const left = key(a), right = key(b);
+  return left[0] - right[0] || left[1] - right[1] || left[2] - right[2] || left[3] - right[3] || left[4] - right[4];
 }
 export function proposal(previous, messages, migrations) {
   if (!previous) return '1.0.0';
@@ -112,7 +119,8 @@ export function release({ cwd = process.cwd(), version: explicit, notesFile, rol
   git(['fetch', 'origin', '--prune', '--tags'], cwd, { timeout: 600_000, interactive: true });
   const head = run('rev-parse', 'HEAD');
   if (head !== run('rev-parse', `refs/remotes/origin/${branch}`)) throw new Error(`The branch ${branch} is not level with origin`);
-  // The nightly v0.Y.Z prereleases (deploy/README.md, "Prereleases") are not releases: 1.0.0 is the first one.
+  // Prereleases (deploy/README.md, "Prereleases": the v0.Y.Z ones before 1.0.0, and vX.Y.0-nightly.N tags, which
+  // releasePattern leaves out) are not releases: 1.0.0 is the first one.
   const tags = run('tag', '--merged', 'HEAD', '--list', 'v*').split('\n')
     .filter((tag) => releasePattern.test(tag.slice(1)) && compare(tag, '1.0.0') >= 0).sort((a, b) => compare(b, a));
   const previous = tags[0];

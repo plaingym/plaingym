@@ -45,25 +45,28 @@ test('a prerelease keeps the previous one as its floor only when that image pass
   const smoked = [];
   const passes = async (image, previous) => { smoked.push([image, previous]); };
   const fails = async () => { throw new Error('schema mismatch'); };
-  assert.equal(await prereleaseFloor('plaingym:new', 'v0.5.0', undefined, { smoke: () => assert.fail('no previous to run'), log }), 'v0.5.0');
+  assert.equal(await prereleaseFloor('plaingym:new', 'v1.1.0-nightly.1', undefined, { smoke: () => assert.fail('no previous to run'), log }), 'v1.1.0-nightly.1');
   assert.match(logs.pop(), /first prerelease/);
-  assert.equal(await prereleaseFloor('plaingym:new', 'v0.5.1', 'v0.5.0', { smoke: passes, log }), 'v0.5.0');
-  assert.deepEqual(smoked, [['plaingym:new', 'v0.5.0']]);
-  // A failure, including one pulling the previous image, only raises the floor to the release itself.
-  assert.equal(await prereleaseFloor('plaingym:new', 'v0.6.0', 'v0.5.1', { smoke: fails, log }), 'v0.6.0');
-  assert.match(logs.pop(), /^::warning::v0\.5\.1 did not pass on v0\.6\.0's schema \(schema mismatch\)/);
-  for (const [tag, previous] of [['v1.0.0', undefined], ['v0.6.0', 'v1.0.0'], ['0.6.0', undefined], ['v0.6.0+0.gabc1234', undefined]])
-    await assert.rejects(prereleaseFloor('plaingym:new', tag, previous, { smoke: passes, log }), /v0\.Y\.Z/);
+  assert.equal(await prereleaseFloor('plaingym:new', 'v1.1.0-nightly.2', 'v1.1.0-nightly.1', { smoke: passes, log }), 'v1.1.0-nightly.1');
+  // The previous nightly may be of the minor before, once that minor is released and merged into next.
+  assert.equal(await prereleaseFloor('plaingym:new', 'v1.2.0-nightly.1', 'v1.1.0-nightly.9', { smoke: passes, log }), 'v1.1.0-nightly.9');
+  assert.deepEqual(smoked, [['plaingym:new', 'v1.1.0-nightly.1'], ['plaingym:new', 'v1.1.0-nightly.9']]);
+  // A failure, including one pulling the previous image, only raises the floor to the nightly itself.
+  assert.equal(await prereleaseFloor('plaingym:new', 'v1.1.0-nightly.3', 'v1.1.0-nightly.2', { smoke: fails, log }), 'v1.1.0-nightly.3');
+  assert.match(logs.pop(), /^::warning::v1\.1\.0-nightly\.2 did not pass on v1\.1\.0-nightly\.3's schema \(schema mismatch\)/);
+  for (const [tag, previous] of [['v1.0.0', undefined], ['v0.5.1', undefined], ['v0.6.0', 'v0.5.1'], ['v1.1.0-nightly.2', 'v0.5.1'],
+    ['v1.1.0-nightly.2', 'v1.1.0'], ['1.1.0-nightly.2', undefined], ['v1.1.0-nightly.2+0.gabc1234', undefined], ['v1.1.1-nightly.1', undefined]])
+    await assert.rejects(prereleaseFloor('plaingym:new', tag, previous, { smoke: passes, log }), /vX\.Y\.0-nightly\.N/);
 });
 
 test('an interrupted pull is rethrown instead of raising the floor', async () => {
   const logs = [];
   const log = (line) => logs.push(line);
   const interrupted = Object.assign(new Error('pull'), { status: 130 });
-  await assert.rejects(prereleaseFloor('plaingym:new', 'v0.6.0', 'v0.5.1', { smoke: async () => { throw interrupted; }, log }),
+  await assert.rejects(prereleaseFloor('plaingym:new', 'v1.1.0-nightly.3', 'v1.1.0-nightly.2', { smoke: async () => { throw interrupted; }, log }),
     (error) => error === interrupted);
   assert.deepEqual(logs, []);
-  assert.equal(await prereleaseFloor('plaingym:new', 'v0.6.0', 'v0.5.1', { smoke: () => { throw new Error('schema mismatch'); }, log }), 'v0.6.0');
+  assert.equal(await prereleaseFloor('plaingym:new', 'v1.1.0-nightly.3', 'v1.1.0-nightly.2', { smoke: () => { throw new Error('schema mismatch'); }, log }), 'v1.1.0-nightly.3');
   assert.match(logs.pop(), /did not pass/);
 });
 
@@ -108,9 +111,9 @@ if (args[0] === 'worktree' && args[1] === 'add') {
   fs.writeFileSync(path.join(args[3], 'deploy/test/smoke.mjs'), ${JSON.stringify(harness)});
 }
 if (args[0] === 'worktree' && args[1] === 'remove') fs.rmSync(args[3], { recursive: true, force: true });`);
-  for (const [removal, status, floor] of [[0, 0, 'floor=v0.5.1\n'], [130, 130, '']]) {
+  for (const [removal, status, floor] of [[0, 0, 'floor=v1.1.0-nightly.2\n'], [130, 130, '']]) {
     rmSync(pulled, { force: true });
-    const result = spawnSync(process.execPath, [fileURLToPath(new URL('./previous-minor.mjs', import.meta.url)), 'plaingym:new', 'v0.6.0', '--prerelease', 'v0.5.1'], {
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL('./previous-minor.mjs', import.meta.url)), 'plaingym:new', 'v1.1.0-nightly.3', '--prerelease', 'v1.1.0-nightly.2'], {
       encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL',
       env: { ...process.env, PATH: `${directory}${delimiter}${process.env.PATH}`, STUB_REMOVAL_STATUS: String(removal) },
     });
@@ -139,7 +142,7 @@ if (${JSON.stringify(name)} === 'docker' && args[0] === 'pull') {
 }
 `, { mode: 0o755 });
   }
-  const child = spawn(process.execPath, [fileURLToPath(new URL('./previous-minor.mjs', import.meta.url)), 'plaingym:new', 'v0.6.0', '--prerelease', 'v0.5.1'], {
+  const child = spawn(process.execPath, [fileURLToPath(new URL('./previous-minor.mjs', import.meta.url)), 'plaingym:new', 'v1.1.0-nightly.3', '--prerelease', 'v1.1.0-nightly.2'], {
     detached: true, stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, PATH: `${directory}${delimiter}${process.env.PATH}` },
   });

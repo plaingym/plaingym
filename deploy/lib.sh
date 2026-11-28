@@ -31,6 +31,9 @@ env_install() {
 }
 image_name_pattern='^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?(/[a-z0-9][a-z0-9._-]*)+$'
 version_pattern='^v(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$'
+# A nightly prerelease of next (deploy/README.md, "Prereleases"): vX.Y.0-nightly.N, which sorts above every vX.(Y-1).*
+# release and below vX.Y.0. Only a manifest signed for the prerelease channel may carry one.
+nightly_version_pattern='^v(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.0-nightly\.([1-9][0-9]{0,5})$'
 valid_image_name() { printf '%s\n' "$1" | grep -Eq "$image_name_pattern"; }
 # The only PostgreSQL and Caddy images a release may name: major 18 on the default variant, and Caddy 2 on Alpine,
 # each by digest (docs/update-reference.md, "PostgreSQL and Caddy images").
@@ -109,9 +112,30 @@ compose_exec() {
 valid_version() {
   printf '%s\n' "$1" | grep -Eq "$version_pattern"
 }
-version_at_least() { # VERSION FLOOR (release versions only)
-  valid_version "$1" && valid_version "$2" || return 1
-  awk -v version="${1#v}" -v floor="${2#v}" 'BEGIN { split(version, v, "."); split(floor, f, "."); for (i=1;i<=3;i++) { if (v[i]+0 > f[i]+0) exit 0; if (v[i]+0 < f[i]+0) exit 1 } exit 0 }'
+# A version a release or a nightly prerelease is published as.
+valid_published_version() {
+  valid_version "$1" || printf '%s\n' "$1" | grep -Eq "$nightly_version_pattern"
+}
+version_order() { # A B: prints -1, 0 or 1 as A sorts below, with or above B (releases and nightly prereleases)
+  valid_published_version "$1" && valid_published_version "$2" || return 1
+  # A release X.Y.Z sorts as (X, Y, Z, 1, 0) and a nightly X.Y.0-nightly.N as (X, Y, 0, 0, N); each number has at
+  # most six digits, so the zero-padded keys compare as strings.
+  awk -v a="${1#v}" -v b="${2#v}" '
+    function key(version,   at, nightly, release, fields) {
+      at = index(version, "-nightly.")
+      if (at) { nightly = substr(version, at + 9) + 0; version = substr(version, 1, at - 1); release = 0 }
+      else { nightly = 0; release = 1 }
+      split(version, fields, ".")
+      return sprintf("%07d.%07d.%07d.%d.%07d", fields[1], fields[2], fields[3], release, nightly)
+    }
+    BEGIN {
+      left = key(a); right = key(b)
+      if (left < right) print -1; else if (left > right) print 1; else print 0
+    }'
+}
+version_at_least() { # VERSION FLOOR (releases and nightly prereleases)
+  version_order_result=$(version_order "$1" "$2") || return 1
+  [ "$version_order_result" -ge 0 ]
 }
 default_rollback_floor() { # Legacy format-1 manifests only; publishers must supply an explicit floor.
   base=${1#v}; base=${base%%+*}
@@ -120,7 +144,7 @@ default_rollback_floor() { # Legacy format-1 manifests only; publishers must sup
 }
 installed_version() {
   label=$(docker image inspect "$1" --format '{{index .Config.Labels "org.opencontainers.image.version"}}' 2>/dev/null) || return 1
-  if valid_version "v${label#v}"; then printf 'v%s\n' "${label#v}"; else printf '%s\n' "$label"; fi
+  if valid_published_version "v${label#v}"; then printf 'v%s\n' "${label#v}"; else printf '%s\n' "$label"; fi
 }
 # An append-only local record: UTC time, version, immutable image ID, outcome, rollback floor, snapshot ID.
 history_record() { # VERSION IMAGE_ID OUTCOME FLOOR SNAPSHOT
@@ -219,8 +243,11 @@ restore_schema_guard() { # The guard as keep_schema_guard found it, or none, wit
   env_install "$ROOT/.env.guard-next" COMPOSE_FILE || return 1
   rm -f "$ROOT/schema-compatibility.yaml"
 }
-write_schema_guard() { # FLOOR RELEASE SNAPSHOT; only verified values reach Compose, never shell source.
-  if ! valid_version "$1" || ! valid_version "$2"; then fail 'Invalid schema compatibility state.'; fi
+write_schema_guard() { # FLOOR RELEASE SNAPSHOT [CHANNEL]; only verified values reach Compose, never shell source.
+  # A nightly floor or release only from a manifest signed for the prerelease channel (CHANNEL prerelease).
+  guard_valid=valid_version
+  [ "${4:-}" != prerelease ] || guard_valid=valid_published_version
+  if ! "$guard_valid" "$1" || ! "$guard_valid" "$2"; then fail 'Invalid schema compatibility state.'; fi
   printf '%s\n' "$3" | grep -Eq '^([a-f0-9-]{36}|-)$' || fail 'Invalid pre-upgrade snapshot identifier.'
   guard_floor=
   if [ -f "$ROOT/schema-compatibility.yaml" ]; then
@@ -269,12 +296,16 @@ manifest_check() { # MANIFEST VERSION
   [ "$(wc -c < "$1")" -le 4096 ] || return 1
   # Every line is key=value without spaces or carriage returns, and no key repeats.
   awk '!/^[a-z0-9._\/-]+=[!-~]+$/ { bad = 1 } { sub(/=.*/, ""); if (seen[$0]++) bad = 1 } END { exit bad }' "$1" || return 1
+  # A nightly prerelease's version (before any dry run's build metadata) and floor only with channel=prerelease.
+  manifest_valid=valid_version
+  [ "$(manifest_value "$1" channel)" != prerelease ] || manifest_valid=valid_published_version
+  manifest_base=${2%%+*}
+  case "$manifest_base" in *-nightly.*) "$manifest_valid" "v${manifest_base#v}" || return 1 ;; esac
   case "$(manifest_value "$1" format)" in
     plaingym-release-manifest/1) ;;
     plaingym-release-manifest/2)
       floor=$(manifest_value "$1" rollback_floor)
-      valid_version "$floor" || return 1
-      manifest_base=${2%%+*}
+      "$manifest_valid" "$floor" || return 1
       version_at_least "v${manifest_base#v}" "$floor" || return 1 ;;
     *) return 1 ;;
   esac

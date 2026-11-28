@@ -47,5 +47,11 @@ test('End-to-end reuses a push run, or a dispatch whose report job passed', () =
 test('release and upgrade run on next; the other workflows keep their triggers', () => {
   for (const file of ['release.yml', 'upgrade.yml']) assert.ok(pushBranches(read(file)).includes('next'), file);
   assert.deepEqual(pushBranches(read('image-scan.yml')), ['task/**']);
-  for (const file of ['prerelease.yml', 'advisories.yml', 'cla.yml']) assert.ok(!read(file).includes('next'), file);
+  // Only their triggers: the text elsewhere may name next (the Prerelease workflow plans next's head).
+  for (const file of ['prerelease.yml', 'advisories.yml', 'cla.yml']) {
+    const text = read(file);
+    const push = block(onBlock(text), '  push:');
+    if (!push.some((entry) => entry.startsWith('    branches:'))) continue;
+    assert.ok(!pushBranches(text).includes('next'), file);
+  }
 });

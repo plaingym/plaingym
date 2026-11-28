@@ -7,8 +7,11 @@ PlainGym uses [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html),
 The root `package.json` is the product version. Every workspace package is private
 and has that same version; packages are not released separately. The current
 version is `1.0.0`, the first public stable release. Before it, `main` was published
-as nightly `v0.Y.Z` prereleases, signed with their own key; none is published after it
-(`deploy/README.md`, "Prereleases").
+as nightly `v0.Y.Z` prereleases. Since then the head of `next` is published each night
+as `vX.(Y+1).0-nightly.N`, a prerelease of the minor after the newest stable release
+`vX.Y.Z` merged into `next`, signed with the prerelease key (`deploy/README.md`,
+"Prereleases"). A nightly sorts above every `vX.Y.*` release and below `vX.(Y+1).0`;
+the nightlies of one minor sort by `N` as a number.
 
 ## Compatibility from 1.0
 
@@ -187,9 +190,11 @@ therefore add a table, a column or such a view, but tightening a table the previ
 `scripts/release/version.mjs` reads Git before building. A clean release tag yields
 `1.2.0`; fourteen commits later it yields `1.2.0+14.gabc1234`. Local changes append
 `.dirty`. With no reachable release tag, including a clone without tags, it yields
-`<package version>+0.g<sha>`. The nightly prerelease tags (`v0.Y.Z`, `deploy/README.md`,
-"Prereleases") are release tags too: a commit three after `v0.5.1` yields
-`0.5.1+3.gabc1234`. Outside a Git repository, such as a source archive, it
+`<package version>+0.g<sha>`. The `v0.Y.Z` prerelease tags from before 1.0 are release
+tags too: a commit three after `v0.5.1` yields `0.5.1+3.gabc1234`. The nightly
+`vX.Y.0-nightly.N` tags (`deploy/README.md`, "Prereleases") are not: a nightly's image
+gets its version from the Prerelease workflow (`APP_BUILD_VERSION=1.2.0-nightly.4`, or
+`1.2.0-nightly.4+0.gabc1234` for a dry run). Outside a Git repository, such as a source archive, it
 yields `<package version>+unknown` with the commit `unknown`; setting only one of
 `APP_BUILD_VERSION` and `APP_BUILD_REVISION` is an error. CI checkouts calculating
 this identity fetch full history and tags. Server and browser bundles embed the same

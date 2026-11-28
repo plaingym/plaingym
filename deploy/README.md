@@ -5,10 +5,11 @@
 The separate [demo deployment](demo/README.md) provides a read-only showcase and
 private copies from a serialized seed pool. Its default pool size is five and
 private copies expire after two idle hours, with a hard 24-hour lifetime.
-The demo follows signed prereleases and stable releases of its running major
-version each night, installing missed versions in order. Its
-`DEMO_RELEASE_CHANNEL=stable` option follows only the newest stable patch or
-minor release. It uses its own timer, separate prerelease and stable trust keys,
+The demo follows the signed nightly prereleases of `next` (`vX.Y.0-nightly.N`,
+see [Prereleases](#prereleases)) and the stable releases of its running major
+version each night, installing missed versions in order and never moving to a
+lower version. Its `DEMO_RELEASE_CHANNEL=stable` option follows only the newest
+stable patch or minor release. It uses its own timer, separate prerelease and stable trust keys,
 and the same release verification helpers as self-hosted installs.
 See [demo automatic updates](demo/README.md#automatic-release-updates).
 
@@ -983,55 +984,76 @@ released=2026-11-03T12:00:00Z
 
 ### Prereleases
 
-The **Prerelease** workflow (`.github/workflows/prerelease.yml`) publishes `main` as a
-nightly prerelease at 05:30 UTC, and on a manual run. It calls the Release workflow with
-`prerelease: true`, so the build on both architectures, the smoke tests, `publish.sh` and
-the GitHub release are the same steps a release runs. Prereleases exist for trying out the
-latest changes, not for a gym's live data.
+The **Prerelease** workflow (`.github/workflows/prerelease.yml`) publishes the head of
+`next` as a nightly prerelease at 05:30 UTC, and on a manual run on `main`. The run, its
+workflow files and the `prerelease-main` environment stay on `main`; it calls the Release
+workflow with `prerelease: true`, which plans `next`'s head and checks out that commit, so
+the build on both architectures, the smoke tests, `publish.sh` and the GitHub release are
+the same steps a release runs. Prereleases exist for trying out the latest changes, not
+for a gym's live data.
 
-* **When it publishes.** Only on `main`, only when `main` moved since the previous
-  prerelease, and only when **CI** and **Repo compliance** passed on that commit (a
-  Markdown-only commit, which **CI** skips, counts from the nearest earlier commit it ran
-  on, as for `pnpm release`). Otherwise the run builds and publishes nothing and says why.
-  A manual run on any other branch is a dry run of the same version with build metadata:
-  it builds, smoke-tests and signs with a throwaway key, and publishes nothing.
-* **Versions.** Plain `v0.Y.Z`, so every release check applies unchanged.
-  `scripts/release/prerelease.mjs` takes the version from the existing tags and the
-  migrations, and commits nothing: the first prerelease is the minor after the root
-  `package.json` version, each later one the next patch when `packages/db/src/migrations`
-  is unchanged since the previous prerelease, else the next minor. `release/check-tag.sh
-  --prerelease` checks it as for a release (a patch keeps the migrations of the latest
-  earlier tag of its minor), on `main`, without the `package.json` match. After the first
-  stable release, no prerelease is published.
-* **Its own key.** `release/publish.sh --prerelease` signs the manifest with the
-  `PRERELEASE_SIGNING_KEY` secret of the `prerelease-main` environment, which only `main`
-  can use, after checking it against `deploy/prerelease-signing.pem`. It refuses the
-  release key for a prerelease and the prerelease key for a release, and writes
-  `channel=prerelease` into the signed manifest. `RELEASE_SIGNING_KEY` stays in the
-  `release` environment, which only release tags can use. Installs trust only
-  `release-signing.pem`, so they refuse a prerelease's manifest; the updater and the
-  admin's update check also skip prereleases in GitHub's list of releases. The
+* **When it publishes.** Only from the run on `main`, only when `next` moved since the
+  newest nightly merged into it, and only when **CI** and **Repo compliance** passed on
+  `next`'s head (a Markdown-only commit, which **CI** skips, counts from the nearest
+  earlier commit it ran on, as for `pnpm release`). It also builds nothing when there is
+  no `next` branch, or when the minor release the nightly would come before
+  (`vX.(Y+1).0`) is out but not yet merged into `next`: merge `main` into `next` first.
+  Each skip says why. A manual run on any other branch is a dry run of that branch's own
+  commit, with build metadata (`X.Y.0-nightly.N+0.g<commit>`): it builds, smoke-tests and
+  signs with a throwaway key, and publishes nothing.
+* **Versions.** `vX.(Y+1).0-nightly.N`, a semantic-version prerelease of the next minor,
+  where `vX.Y.Z` is the newest stable release (at or above `v1.0.0`) merged into `next`.
+  A patch on `release/X.Y` isn't merged into `next` and doesn't change `X.Y`. `N` is one
+  above the highest existing `vX.(Y+1).0-nightly.N` tag, starting at 1 for each minor. A
+  nightly sorts above every `vX.Y.*` release and below `vX.(Y+1).0`, and the nightlies of
+  one minor by `N` as a number: `v1.0.9`, `v1.1.0-nightly.1`, `v1.1.0-nightly.10`,
+  `v1.1.0`, `v1.1.1`, `v1.2.0-nightly.1`. `scripts/release/prerelease.mjs` takes the
+  version from the existing tags and commits nothing. `release/check-tag.sh --prerelease`
+  accepts only that form, on a commit on `next` as origin has it; a release tag is always
+  `vX.Y.Z`, without a suffix. The `v0.Y.Z` prereleases from before `v1.0.0` stay as they
+  are.
+* **Its own key.** `release/publish.sh --prerelease` accepts only a nightly version and
+  signs the manifest with the `PRERELEASE_SIGNING_KEY` secret of the `prerelease-main`
+  environment, which only `main` can use, after checking it against
+  `deploy/prerelease-signing.pem`. It refuses the release key for a prerelease and the
+  prerelease key for a release, and writes `channel=prerelease` into the signed manifest;
+  the installs' manifest check accepts a nightly version or rollback floor only with that
+  channel. `RELEASE_SIGNING_KEY` stays in the `release` environment, which only release
+  tags can use. Installs trust only `release-signing.pem`, so they refuse a prerelease's
+  manifest; `update.sh` takes only `vX.Y.Z` versions as signed releases, and the updater
+  and the admin's update check skip prereleases in GitHub's list of releases. The
   prerelease's deploy archive carries the prerelease public key as its
   `release-signing.pem`, so a server installed from it trusts prerelease manifests only,
-  never a release's. Its automatic updates skip prereleases, so it installs a later
-  prerelease only through an explicit `update.sh ghcr.io/OWNER/app:v0.Y.Z`.
-* **Rollback floor.** The build runs the previous prerelease's image, with its own smoke
-  test, on the database the new image migrated (`release/previous-minor.mjs --prerelease`).
-  When it passes, the previous prerelease is the floor; otherwise, and for the first
-  prerelease, the prerelease itself.
-* **What is published.** `ghcr.io/OWNER/app:v0.Y.Z` (and its `-amd64` and `-arm64`
-  images), and a GitHub release marked as a prerelease, never as latest, with
-  `release-manifest.txt`, its signature and `plaingym-deploy-v0.Y.Z.tar.gz`, but no
-  `bootstrap.sh`. Creating the release creates the `v0.Y.Z` tag on the commit; nothing
-  is committed or pushed to a branch, and a version that is already tagged or released
-  is never pushed again. Its notes say what it is, its migrations and rollback floor,
-  and list the commits since the previous prerelease. A tag created this way doesn't
-  start the Release workflow's tag run.
-* **A night that stops after pushing images.** If a run pushes `ghcr.io/OWNER/app:v0.Y.Z`
-  but fails before creating the release, later runs that plan the same version refuse it,
-  naming the commit the images carry. Re-run that night's run (it publishes the same
-  commit; its build files are kept 3 days, so after that re-run all its jobs), or delete
-  the three package versions tagged `v0.Y.Z`, `v0.Y.Z-amd64` and `v0.Y.Z-arm64`, then
-  run **Prerelease** again. A run stopped while uploading its release files also leaves
-  a draft release, which is refused until it is deleted; its images are already pushed,
-  so then recover as above.
+  never a release's, and its updater doesn't move to a later nightly by itself or by
+  name.
+* **Rollback floor.** The build runs the previous nightly's image (the newest nightly
+  merged into `next`), with its own smoke test, on the database the new image migrated
+  (`release/previous-minor.mjs --prerelease`). When it passes, the previous nightly is the
+  floor; otherwise, and for the first nightly, the nightly itself.
+* **What is published.** `ghcr.io/OWNER/app:vX.Y.0-nightly.N` (and its `-amd64` and
+  `-arm64` images), and a GitHub release marked as a prerelease, never as latest, with
+  `release-manifest.txt`, its signature and `plaingym-deploy-vX.Y.0-nightly.N.tar.gz`, but
+  no `bootstrap.sh`. Creating the release creates the `vX.Y.0-nightly.N` tag on `next`'s
+  head; nothing is committed or pushed to a branch, and a version that is already tagged
+  or released is never pushed again. Its notes say what it is, its migrations and
+  rollback floor, and list the commits since the previous nightly. A tag created this way
+  doesn't start the Release workflow's tag run.
+* **The last 14 kept.** After each run on `main`, whether or not it published, the
+  workflow's `prune` job (`scripts/release/prune-nightlies.mjs`) keeps the 14 highest
+  nightlies (published releases GitHub marks as prereleases, with a
+  `vX.Y.0-nightly.N` tag) and deletes each older one's GitHub release and tag, and each
+  `ghcr.io/OWNER/app` package version whose tags all belong to those deleted nightlies
+  (`TAG`, `TAG-amd64`, `TAG-arm64`). It never deletes a stable release, tag or image, a
+  draft, or a `v0.Y.Z` prerelease. A failed delete doesn't stop the others; the job then
+  fails. Deleting needs the repository's tag rulesets to leave `refs/tags/v*-nightly.*`
+  to the workflow, and the `app` package to give this repository's Actions the Admin
+  role.
+* **A night that stops after pushing images.** If a run pushes
+  `ghcr.io/OWNER/app:vX.Y.0-nightly.N` but fails before creating the release, later runs
+  that plan the same version refuse it, naming the commit the images carry. Re-run that
+  night's run (it publishes the same commit; its build files are kept 3 days, so after
+  that re-run all its jobs), or delete the three package versions tagged
+  `vX.Y.0-nightly.N`, `vX.Y.0-nightly.N-amd64` and `vX.Y.0-nightly.N-arm64`, then run
+  **Prerelease** again. A run stopped while uploading its release files also leaves a
+  draft release, which is refused until it is deleted; its images are already pushed, so
+  then recover as above.

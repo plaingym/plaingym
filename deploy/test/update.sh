@@ -125,4 +125,36 @@ for arguments in '' '--now' 'example:v1.0.1 example:v1.0.2' '--patch extra' '--u
   case $arguments in --unsigned*) grep -q '^Usage: ./update.sh \[--unsigned\] IMAGE' "$temporary/output" ;; esac
 done
 [ ! -s "$CALLS" ]
-echo 'PASS: coordinated snapshot, pull before capture, publication, startup/health failures, rollback, lock, version pinning, unlabelled images only with --unsigned.'
+
+# A nightly prerelease's version and floor (vX.Y.0-nightly.N) pass manifest_check only in a manifest signed for the
+# prerelease channel; a release's manifest passes with or without it, as before.
+manifest_case() { # VERSION FLOOR CHANNEL
+  { printf 'format=plaingym-release-manifest/2\nversion=%s\nimage=ghcr.io/example/app\ndigest=sha256:%s\nrollback_floor=%s\n' \
+      "$1" "$(printf 'a%.0s' $(seq 64))" "$2"
+    [ -z "$3" ] || printf 'channel=%s\n' "$3"
+    printf 'revision=%s\nmigrations=sha256:%s\n' "$(printf 'c%.0s' $(seq 40))" "$(printf 'd%.0s' $(seq 64))"; } > "$temporary/manifest.txt"
+  (ROOT=$temporary; . "$source_dir/lib.sh"; manifest_check "$temporary/manifest.txt" "$1")
+}
+manifest_case v1.2.0-nightly.1 v1.2.0-nightly.1 prerelease
+manifest_case v1.2.0-nightly.2 v1.1.3 prerelease
+manifest_case v1.2.3 v1.2.0 ''
+manifest_case v1.2.3 v1.2.0 prerelease
+refuse_manifest() { if manifest_case "$@"; then echo "manifest_check accepted: $*" >&2; exit 1; fi; }
+refuse_manifest v1.2.0-nightly.1 v1.2.0-nightly.1 ''
+refuse_manifest v1.2.0-nightly.1 v1.1.3 ''
+refuse_manifest v1.2.0 v1.2.0-nightly.1 ''
+refuse_manifest v1.2.0-nightly.1 v1.2.0 prerelease
+refuse_manifest v1.2.1-nightly.1 v1.2.0 prerelease
+refuse_manifest v1.2.0-beta.1 v1.2.0 prerelease
+# The schema guard takes a nightly floor and release only for the prerelease channel.
+make_install nightly-guard
+(ROOT=$case_dir; . "$source_dir/lib.sh"; write_schema_guard v1.2.0-nightly.1 v1.2.0-nightly.2 - prerelease)
+grep -qx "      SCHEMA_ROLLBACK_FLOOR: 'v1.2.0-nightly.1'" "$case_dir/schema-compatibility.yaml"
+grep -qx "      SCHEMA_RELEASE: 'v1.2.0-nightly.2'" "$case_dir/schema-compatibility.yaml"
+rm "$case_dir/schema-compatibility.yaml"
+if (ROOT=$case_dir; . "$source_dir/lib.sh"; write_schema_guard v1.2.0-nightly.1 v1.2.0-nightly.2 -) 2> "$temporary/output"; then
+  echo 'Wrote a nightly schema guard without the prerelease channel.' >&2; exit 1
+fi
+grep -q 'Invalid schema compatibility state' "$temporary/output"
+[ ! -e "$case_dir/schema-compatibility.yaml" ]
+echo 'PASS: coordinated snapshot, pull before capture, publication, startup/health failures, rollback, lock, version pinning, unlabelled images only with --unsigned, nightly manifests and schema guards only on the prerelease channel.'

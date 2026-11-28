@@ -22,11 +22,17 @@ demo_refuse() {
   demo_auto_finish skipped "$1"
 }
 
-# GitHub prereleases use plain v0.Y.Z tags. Their signed channel must agree with
-# GitHub's flag; the flag selects exactly one trust key, never a fallback key.
+# GitHub prereleases are nightly vX.Y.0-nightly.N tags (before v1.0, plain v0.Y.Z ones); a nightly tag
+# counts only when GitHub marks it prerelease. The signed channel must agree with GitHub's flag; the flag
+# selects exactly one trust key, never a fallback key. Versions order as (X, Y, Z, 1, 0) for a release and
+# (X, Y, 0, 0, N) for a nightly, so a nightly sorts above every vX.(Y-1).* release and below vX.Y.0.
 demo_select_release() { # CURRENT RELEASES_JSON CHANNEL [EXPLICIT_TAG]
   python3 -c 'import json,re,sys
-current=tuple(map(int,sys.argv[1][1:].split("."))) if sys.argv[1] else None
+def parse(tag):
+    if re.fullmatch(sys.argv[3],tag): return tuple(map(int,tag[1:].split(".")))+(1,0)
+    nightly=re.fullmatch(sys.argv[6],tag)
+    return (int(nightly.group(1)),int(nightly.group(2)),0,0,int(nightly.group(3))) if nightly else None
+current=parse(sys.argv[1]) if sys.argv[1] else None
 releases=json.load(open(sys.argv[2]))
 requested=sys.argv[5]
 if requested and isinstance(releases,dict): releases=[releases]
@@ -34,17 +40,19 @@ if not isinstance(releases,list) or any(not isinstance(r,dict) for r in releases
 choices={}
 for release in releases:
     tag=release.get("tag_name")
-    if release.get("draft") or not isinstance(tag,str) or not re.fullmatch(sys.argv[3],tag): continue
+    if release.get("draft") or not isinstance(tag,str): continue
+    version=parse(tag)
+    if version is None: continue
     kind="prerelease" if release.get("prerelease") else "stable"
-    version=tuple(map(int,tag[1:].split(".")))
+    if version[3]==0 and kind!="prerelease": continue
     if requested:
         if tag!=requested: continue
     elif version[0]!=current[0] or version<=current or (sys.argv[4]=="stable" and kind!="stable"): continue
-    if version in choices and choices[version]!=kind: raise ValueError("Conflicting release channels")
-    choices[version]=kind
+    if version in choices and choices[version][0]!=kind: raise ValueError("Conflicting release channels")
+    choices[version]=(kind,tag)
 if choices:
     version=(max if sys.argv[4]=="stable" else min)(choices)
-    print("v"+".".join(map(str,version)),choices[version])' "$1" "$2" "$version_pattern" "$3" "${4:-}"
+    print(choices[version][1],choices[version][0])' "$1" "$2" "$version_pattern" "$3" "${4:-}" "$nightly_version_pattern"
 }
 
 demo_release_context() {
@@ -169,7 +177,7 @@ demo_explicit_release() {
 
 demo_auto_run() {
   from_version=$(installed_version "$current" || true)
-  valid_version "$from_version" && [ "$from_version" != v0.0.0 ] || demo_auto_finish skipped version_unknown
+  valid_published_version "$from_version" && [ "$from_version" != v0.0.0 ] || demo_auto_finish skipped version_unknown
   channel=$(read_env DEMO_RELEASE_CHANNEL); channel=${channel:-prerelease}
   case "$channel" in stable|prerelease) ;; *) demo_auto_finish skipped invalid_release_channel ;; esac
   demo_release_context

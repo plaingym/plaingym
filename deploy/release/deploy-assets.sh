@@ -35,8 +35,8 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 printf '%s\n' "$revision" | grep -Eq '^[a-f0-9]{40}$' || fail 'Use --revision with a full commit SHA.'
-# A release version, or a dry run's version with build metadata.
-printf '%s\n' "$version" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+(\+[A-Za-z0-9.-]+)?$' || fail "Invalid --version: $version"
+# A release or nightly prerelease version (vX.Y.0-nightly.N), or a dry run's version with build metadata.
+printf '%s\n' "$version" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+(-nightly\.[1-9][0-9]*)?(\+[A-Za-z0-9.-]+)?$' || fail "Invalid --version: $version"
 valid_repository "$repository" || fail "Invalid --repository: $repository"
 [ -f "$public" ] || fail "Missing --public-key: $public"
 [ -n "$out" ] || fail 'Give --out.'

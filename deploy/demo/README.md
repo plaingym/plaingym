@@ -162,9 +162,12 @@ refresh described below. The timer fires hourly with up to 50 minutes of random
 delay; it acts once between 02:00 and 05:00 in `DEMO_UPDATE_TIMEZONE` (default
 `America/New_York`). It does not catch up outside that window.
 
-By default the demo follows published prereleases and stable releases with the
-running image's major version. It installs the **next** newer version, then the
-next, in order while each update succeeds and the nightly window remains open.
+By default the demo follows published nightly prereleases of `next` and stable
+releases with the running image's major version. It installs the **next** newer
+version, then the next, in order while each update succeeds and the nightly window
+remains open, and never moves to a lower version: a demo on `v1.1.1` takes
+`v1.2.0-nightly.1`, each later nightly in turn, then `v1.2.0`, never an older
+stable release.
 `DEMO_RELEASE_CHANNEL=stable` applies the newest eligible stable patch **or
 minor** release as a single update. The updater reads release pages until the
 end of the history or the 1,000-entry safety cap, on both channels. When the cap
@@ -172,8 +175,10 @@ is reached and the running release was among them, it chooses from those entries
 (a newer version created before all of them isn't seen); when the running
 release isn't among them, it skips with `running_release_not_listed`. A new
 major requires an explicit operator update.
-Tags and image labels use plain `vX.Y.Z`,
-including nightly `v0.Y.Z` prereleases; development/bundle labels are skipped.
+Tags and image labels are `vX.Y.Z` for releases and `vX.Y.0-nightly.N` for nightly
+prereleases (`deploy/README.md`, "Prereleases"), which sort above every `vX.(Y-1).*`
+release and below `vX.Y.0`. A nightly tag counts only when GitHub marks its release as
+a prerelease. Development/bundle labels are skipped.
 Set these host-only options in the root-only installed `.env`:
 
 | Setting | Default | Meaning |
@@ -244,7 +249,7 @@ already-checked and disabled runs are quiet. No gym email configuration is neede
 For an explicit published app image, one command on the server is sufficient:
 
 ```sh
-sudo /opt/plaingym-demo/update.sh ghcr.io/plaingym/app:v0.2.1
+sudo /opt/plaingym-demo/update.sh ghcr.io/plaingym/app:v1.2.0-nightly.3
 ```
 
 This is also the one-time switch from a bundle image to nightly prereleases:
@@ -252,7 +257,8 @@ substitute the newest published prerelease's actual tag. Refresh the demo bundle
 first to install these scripts and both public keys. The update installs the
 deploy files from that release's archive, so pick a prerelease that already
 includes this updater: an older one would put back an updater that ignores
-prereleases. Explicit `IMAGE:vX.Y.Z` updates without `--bundle` always look up
+nightly prereleases. Explicit `IMAGE:vX.Y.Z` and `IMAGE:vX.Y.0-nightly.N` updates
+without `--bundle` always look up
 the published signed release for that tag. They perform the same signature,
 channel, archive, digest, label and Caddy checks as automatic updates, then pin
 the signed digest. Another image name is refused with `image_mismatch`.

@@ -34,7 +34,7 @@ case "$#:${1:-}:${2:-}" in
   *) fail "$usage" ;;
 esac
 signed_release=false
-if [ "$automatic" = false ] && [ -z "$bundle" ] && valid_version "${1##*:}"; then signed_release=true; fi
+if [ "$automatic" = false ] && [ -z "$bundle" ] && valid_published_version "${1##*:}"; then signed_release=true; fi
 if [ "$automatic" = true ] || [ "$signed_release" = true ]; then
   # shellcheck source=deploy/demo/auto-update.sh
   . "$ROOT/auto-update.sh"

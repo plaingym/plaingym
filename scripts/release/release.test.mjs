@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { git, root } from './version.mjs';
-import { release, proposal, changelogSection, insertSection, pushPathFilter, skippedByFilter, unreleasedNotes } from './release.mjs';
+import { compare, release, proposal, changelogSection, insertSection, pushPathFilter, skippedByFilter, unreleasedNotes } from './release.mjs';
 import { expectedSourceLocation, repositoryRoot } from '../../deploy/test/source-link.mjs';
 
 const pinnedNodeImage = /(?<![\w-])node:[^\s"'`@]+-bookworm-slim@sha256:[0-9a-f]{64}/g;
@@ -38,6 +38,21 @@ test('proposal follows fix, feature, migration and breaking changes', () => {
   assert.equal(proposal('v1.2.3', ['fix: health'], true), '1.3.0');
   assert.equal(proposal('v1.2.3', ['fix!: require a setting'], false), '2.0.0');
   assert.equal(proposal('v1.2.3', ['fix: health\n\nBREAKING CHANGE: require a setting'], false), '2.0.0');
+});
+
+test('a nightly prerelease sorts above the releases before its minor and below the minor itself', () => {
+  const ordered = ['v1.0.9', 'v1.1.0-nightly.1', 'v1.1.0-nightly.2', 'v1.1.0-nightly.10', 'v1.1.0', 'v1.1.1', 'v1.2.0-nightly.1'];
+  for (const [index, version] of ordered.entries()) {
+    assert.equal(compare(version, version), 0, version);
+    for (const later of ordered.slice(index + 1)) {
+      assert.ok(compare(version, later) < 0, `${version} < ${later}`);
+      assert.ok(compare(later, version) > 0, `${later} > ${version}`);
+    }
+  }
+  assert.deepEqual([...ordered].reverse().sort(compare), ordered);
+  // A leading v doesn't matter, and plain releases keep their order.
+  assert.equal(compare('1.1.0-nightly.3', 'v1.1.0-nightly.3'), 0);
+  assert.ok(compare('v1.10.0', 'v1.9.9') > 0 && compare('v2.0.0', 'v1.99.0-nightly.1') > 0);
 });
 
 test('changelog extraction and patch insertion preserve Unreleased and version order', () => {

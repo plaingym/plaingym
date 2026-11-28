@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 name: Prerelease
-# A nightly v0.Y.Z prerelease of main, built, smoke-tested and published by the Release workflow's own steps and
-# signed with the prerelease key (deploy/README.md, "Prereleases"). It publishes only when main moved since the
-# previous prerelease and CI and Repo compliance passed on that commit; otherwise it builds and publishes nothing.
-# A manual run on any other branch is a dry run that signs with a throwaway key and reaches neither signing key.
+# A nightly vX.Y.0-nightly.N prerelease of next's head, built, smoke-tested and published by the Release workflow's
+# own steps and signed with the prerelease key (deploy/README.md, "Prereleases"). The run on main publishes, only when
+# next moved since the previous nightly and CI and Repo compliance passed on next's head; otherwise it builds and
+# publishes nothing. It then keeps the last 14 nightlies and deletes older ones. A manual run on any other branch is
+# a dry run of that branch's own commit that signs with a throwaway key and reaches neither signing key.
 on:
   schedule:
     - cron: '30 5 * * *'
@@ -15,7 +16,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   scheduled-failure:
-    needs: [prerelease]
+    needs: [prerelease, prune]
     if: >-
       ${{ !cancelled() && github.event_name == 'schedule' && github.ref == 'refs/heads/main' &&
           (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
@@ -50,3 +51,24 @@ jobs:
     secrets: inherit
     with:
       prerelease: true
+  prune:
+    # Keep the last 14 nightly prereleases: delete older nightly releases, their tags and their images, never a stable
+    # release, a draft or an earlier v0.Y.Z prerelease. Runs whether or not tonight's nightly published.
+    needs: [prerelease]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+      - name: Delete nightlies older than the last 14
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release/prune-nightlies.mjs "$GITHUB_REPOSITORY"

@@ -21,7 +21,8 @@ export function git(args, cwd = root, { raw = false, timeout = 120_000, interact
 export function buildInfo(cwd = root, env = process.env) {
   if (env.APP_BUILD_VERSION || env.APP_BUILD_REVISION) {
     const archive = /^\d+\.\d+\.\d+\+unknown$/.test(env.APP_BUILD_VERSION ?? '') && env.APP_BUILD_REVISION === 'unknown';
-    if (!archive && (!/^\d+\.\d+\.\d+(?:\+[0-9A-Za-z.-]+)?$/.test(env.APP_BUILD_VERSION ?? '') || !/^[a-f0-9]{40}$/.test(env.APP_BUILD_REVISION ?? '')))
+    // A release, a nightly prerelease (X.Y.0-nightly.N), or either with a dry run's build metadata.
+    if (!archive && (!/^\d+\.\d+\.\d+(?:-nightly\.[1-9]\d*)?(?:\+[0-9A-Za-z.-]+)?$/.test(env.APP_BUILD_VERSION ?? '') || !/^[a-f0-9]{40}$/.test(env.APP_BUILD_REVISION ?? '')))
       throw new Error('Supply both APP_BUILD_VERSION and the full APP_BUILD_REVISION');
     return { version: env.APP_BUILD_VERSION ?? '', commit: env.APP_BUILD_REVISION ?? '' };
   }

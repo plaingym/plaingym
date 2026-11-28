@@ -2,9 +2,37 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Demo channel separation, ordered catch-up and the explicit bundle switch."""
 import json
+import os
 from pathlib import Path
+import subprocess
+import tempfile
+import unittest
 
-from test_auto_update import DIGEST, IMAGE, UpdateFixture
+from test_auto_update import DEPLOY, DIGEST, IMAGE, UpdateFixture
+
+ORDER = ["v1.0.9", "v1.1.0-nightly.1", "v1.1.0-nightly.2", "v1.1.0-nightly.10", "v1.1.0", "v1.1.1", "v1.2.0-nightly.1"]
+
+
+@unittest.skipUnless(os.name == "posix", "The demo updater's selection runs in bash.")
+class SelectionOrderTests(unittest.TestCase):
+    def select(self, current, releases, channel="prerelease"):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "releases.json"
+            path.write_text(json.dumps(releases))
+            result = subprocess.run(["bash", "-c", '. "$1/lib.sh"; . "$1/demo/auto-update.sh"; demo_select_release "$2" "$3" "$4"',
+                                     "bash", str(DEPLOY), current, str(path), channel], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.split()
+
+    def test_releases_and_nightlies_are_taken_in_one_order(self):
+        releases = [{"tag_name": tag, "prerelease": "nightly" in tag} for tag in reversed(ORDER)]
+        for current, following in zip(ORDER, ORDER[1:]):
+            with self.subTest(current=current):
+                self.assertEqual(self.select(current, releases)[0], following)
+        self.assertEqual(self.select(ORDER[-1], releases), [])
+        # The stable channel takes the newest release of the major, from a release or a nightly.
+        for current in ("v1.0.9", "v1.1.0-nightly.10"):
+            self.assertEqual(self.select(current, releases, "stable"), ["v1.1.1", "stable"])
 
 
 class PrereleaseTests(UpdateFixture):
@@ -353,3 +381,90 @@ class PrereleaseTests(UpdateFixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("up_to_date; from=v0.1.0 to=- reason=-", self.status())
         self.assertEqual(self.calls().count("/releases?per_page=100"), 1)
+
+
+class NightlyTests(UpdateFixture):
+    """Nightly vX.Y.0-nightly.N prereleases sort above every vX.(Y-1).* release and below vX.Y.0."""
+
+    def setUp(self):
+        super().setUp()
+        self.original = self.initial
+
+    def running(self, tag, channel="prerelease"):
+        self.initial = self.original.replace("v1.2.3", tag).replace("DEMO_RELEASE_CHANNEL=stable\n", f"DEMO_RELEASE_CHANNEL={channel}\n")
+        (self.root / ".env").write_text(self.initial)
+
+    def release(self, tag, prerelease=False, floor="v1.0.0"):
+        self.publish(tag, prerelease=prerelease, floor=floor)
+        self.keep_release()
+
+    def updated(self, result):
+        return [line.split(" to=")[1].split()[0] for line in result.stdout.splitlines()
+                if line.startswith("Demo release update: updated;")]
+
+    def patch_and_nightlies(self):
+        self.release("v1.1.1")
+        self.release("v1.2.0-nightly.1", prerelease=True, floor="v1.1.0")
+        self.release("v1.2.0-nightly.2", prerelease=True, floor="v1.2.0-nightly.1")
+        self.tags([{"tag_name": "v1.2.0-nightly.2", "prerelease": True}, {"tag_name": "v1.2.0-nightly.1", "prerelease": True},
+                   "v1.1.1", "v1.1.0", {"tag_name": "v0.9.0", "prerelease": True}])
+
+    def test_prerelease_channel_takes_the_patch_then_each_nightly_in_order(self):
+        self.running("v1.1.0")
+        self.patch_and_nightlies()
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.updated(result), ["v1.1.1", "v1.2.0-nightly.1", "v1.2.0-nightly.2"])
+        self.assertIn("updated; from=v1.2.0-nightly.1 to=v1.2.0-nightly.2", self.status())
+        self.assertIn(f"APP_IMAGE={IMAGE}:v1.2.0-nightly.2@{DIGEST}", (self.root / ".env").read_text())
+        # Nothing newer: up to date on the nightly, never back to v1.1.1 or a v0.* prerelease.
+        again = self.run_update()
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertIn("up_to_date; from=v1.2.0-nightly.2", self.status())
+
+    def test_stable_channel_takes_only_the_newest_release(self):
+        self.running("v1.1.0", channel="stable")
+        self.patch_and_nightlies()
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.updated(result), ["v1.1.1"])
+        self.assertIn(f"APP_IMAGE={IMAGE}:v1.1.1@{DIGEST}", (self.root / ".env").read_text())
+
+    def test_a_nightly_waits_for_its_minor_and_never_takes_an_older_release(self):
+        self.running("v1.2.0-nightly.2")
+        self.release("v1.1.2", floor="v1.1.0")
+        self.tags(["v1.1.2", {"tag_name": "v1.2.0-nightly.2", "prerelease": True}, "v1.1.0"])
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("up_to_date; from=v1.2.0-nightly.2 to=- reason=-", self.status())
+        self.assertNotIn("version_unknown", self.status())
+        self.release("v1.2.0", floor="v1.1.0")
+        self.tags(["v1.2.0", "v1.1.2", {"tag_name": "v1.2.0-nightly.2", "prerelease": True}])
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.updated(result), ["v1.2.0"])
+        self.assertIn("updated; from=v1.2.0-nightly.2 to=v1.2.0", self.status())
+
+    def test_another_major_and_an_unmarked_nightly_are_skipped(self):
+        self.running("v1.2.0-nightly.2")
+        self.release("v1.2.0-nightly.3", floor="v1.1.0")
+        self.tags([{"tag_name": "v2.0.0-nightly.1", "prerelease": True}, {"tag_name": "v1.2.0-nightly.3", "prerelease": False},
+                   {"tag_name": "v1.2.0-nightly.2", "prerelease": True}, {"tag_name": "v1.2.0-nightly.01", "prerelease": True},
+                   {"tag_name": "v1.2.1-nightly.1", "prerelease": True}, {"tag_name": "v1.3.0-rc.1", "prerelease": True}])
+        for channel in ("prerelease", "stable"):
+            with self.subTest(channel=channel):
+                self.running("v1.2.0-nightly.2", channel=channel)
+                (self.root / "auto-update.state").unlink(missing_ok=True)
+                result = self.run_update()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("up_to_date; from=v1.2.0-nightly.2 to=- reason=-", self.status())
+        self.assertNotIn("release-manifest", self.calls())
+
+    def test_explicit_nightly_update_verifies_with_the_prerelease_key(self):
+        self.running("v1.1.0", channel="stable")
+        self.release("v1.2.0-nightly.1", prerelease=True, floor="v1.1.0")
+        self.tags([{"tag_name": "v1.2.0-nightly.1", "prerelease": True}])
+        result = self.run_update(f"{IMAGE}:v1.2.0-nightly.1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"APP_IMAGE={IMAGE}:v1.2.0-nightly.1@{DIGEST}", (self.root / ".env").read_text())
+        self.assertIn("/releases/download/v1.2.0-nightly.1/release-manifest.txt", self.calls())

@@ -973,9 +973,10 @@ the running image's. The same signed manifest names the PostgreSQL and Caddy ima
 the update moves to, pulled by digest and limited to PostgreSQL 18 and Caddy 2
 (`docs/update-reference.md`, "PostgreSQL and Caddy images"). It reads only tag names from GitHub's list of releases; the
 signed manifest decides what is installed (`deploy/README.md`, "Automatic patch
-updates" and "Releases"). Nightly prereleases of `main` are signed with a separate
-prerelease key that only `main`'s prerelease job can use, so an install that trusts
-`release-signing.pem` refuses them (`deploy/README.md`, "Prereleases").
+updates" and "Releases"). Nightly prereleases of `next` are signed with a separate
+prerelease key that only the prerelease job of the run on `main` can use, so an install
+that trusts `release-signing.pem` refuses them, and the manifest check accepts a nightly
+version only with the signed `channel=prerelease` (`deploy/README.md`, "Prereleases").
 
 ## Demo mode
 

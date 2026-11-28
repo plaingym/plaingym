@@ -222,6 +222,15 @@ class AutoUpdateTests(UpdateFixture):
         self.assertEqual(self.run_update().returncode, 0)
         self.assertIn("to=v1.2.4", self.status())
 
+    def test_installed_version_names_releases_and_nightlies_with_their_tag(self):
+        for pin, expected in ((f"{IMAGE}:v1.2.0-nightly.2", "v1.2.0-nightly.2"), (f"{IMAGE}:v1.2.4@{DIGEST}", "v1.2.4"),
+                              (f"{IMAGE}:v1.2.0-beta.1", "1.2.0-beta.1")):
+            with self.subTest(pin=pin):
+                result = subprocess.run(["bash", "-c", '. "$1/lib.sh"; installed_version "$2"', "bash", str(self.root), pin],
+                                        env=self.env, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, expected + "\n")
+
     def test_major_only_is_up_to_date(self):
         self.tags(["v2.0.0", "v1.2.3"])
         self.assertEqual(self.run_update().returncode, 0)

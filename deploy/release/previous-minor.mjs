@@ -6,7 +6,7 @@ import {
   smokePreviousImage, removeImage, withPreviousTree, holdInterrupts, interruptExitCode, childInterruptCode, checkInterrupt,
   gitChild, runChild, SmokeInterrupted,
 } from './previous-smoke.mjs';
-import { chooseFloor } from '../../scripts/release/prerelease.mjs';
+import { chooseFloor, nightlyPattern } from '../../scripts/release/prerelease.mjs';
 
 /** Shallow release checkouts need the previous release's source tag, not its full history. */
 export async function withFetchedPreviousTree(previous, operation, cwd = process.cwd(), runGit = gitChild) {
@@ -58,12 +58,12 @@ export async function smokePublished(image, previous, repository, run = runChild
 }
 
 /**
- * A prerelease's rollback floor (scripts/release/prerelease.mjs, chooseFloor): the previous prerelease when its image
- * passes the smoke test on the schema this release migrated to, else the release itself. A failure only raises the
- * floor, so it is reported as a warning rather than stopping the prerelease.
+ * A nightly prerelease's rollback floor (scripts/release/prerelease.mjs, chooseFloor): the previous nightly when its
+ * image passes the smoke test on the schema this nightly migrated to, else the nightly itself. A failure only raises
+ * the floor, so it is reported as a warning rather than stopping the prerelease.
  */
 export async function prereleaseFloor(image, tag, previous, { smoke = smokePublished, log = console.log } = {}) {
-  if (!/^v0\.\d+\.\d+$/.test(tag ?? '') || (previous && !/^v0\.\d+\.\d+$/.test(previous))) throw new Error('Prerelease versions are v0.Y.Z');
+  if (!nightlyPattern.test(tag ?? '') || (previous && !nightlyPattern.test(previous))) throw new Error('Prerelease versions are vX.Y.0-nightly.N');
   if (!previous) {
     log(`::notice::${tag} is the first prerelease; it is its own rollback floor.`);
     return chooseFloor(tag, previous, false);

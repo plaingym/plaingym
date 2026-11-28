@@ -6,22 +6,24 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { git, root } from './version.mjs';
-import { chooseFloor, planOutputs, planPrerelease, prereleaseNotes, prereleaseVersion } from './prerelease.mjs';
+import { chooseFloor, nightlyPattern, planOutputs, planPrerelease, prereleaseNotes, prereleaseVersion } from './prerelease.mjs';
 
-test('the first prerelease follows package.json, later ones a patch, or a minor when migrations changed', () => {
-  assert.equal(prereleaseVersion({ product: '0.4.0', migrationsChanged: false }), 'v0.5.0');
-  assert.equal(prereleaseVersion({ previous: 'v0.5.0', product: '0.4.0', migrationsChanged: false }), 'v0.5.1');
-  assert.equal(prereleaseVersion({ previous: 'v0.5.3', product: '0.4.0', migrationsChanged: true }), 'v0.6.0');
-  // A breaking change doesn't bump the major before v1.0: only the migrations decide.
-  assert.equal(prereleaseVersion({ previous: 'v0.9.9', product: '0.4.0', migrationsChanged: true }), 'v0.10.0');
-  assert.throws(() => prereleaseVersion({ product: '1.0.0', migrationsChanged: false }), /0\.x/);
-  assert.throws(() => prereleaseVersion({ previous: 'v1.2.0', product: '0.4.0', migrationsChanged: false }), /0\.x/);
+test('a nightly is the next minor after the base release, numbered on from every existing nightly of that minor', () => {
+  assert.equal(prereleaseVersion({ base: 'v1.0.3', tags: [] }), 'v1.1.0-nightly.1');
+  assert.equal(prereleaseVersion({ base: 'v1.0.3', tags: ['v1.1.0-nightly.1', 'v1.1.0-nightly.9', 'v1.1.0-nightly.10', 'v1.0.3'] }), 'v1.1.0-nightly.11');
+  // Other minors' nightlies, malformed ones and releases don't count.
+  assert.equal(prereleaseVersion({ base: 'v1.1.0', tags: ['v1.1.0-nightly.7', 'v1.2.0-nightly.01', 'v1.2.1-nightly.4', 'v1.2.0', ''] }), 'v1.2.0-nightly.1');
+  assert.equal(prereleaseVersion({ base: 'v2.9.0', tags: ['v2.10.0-nightly.2'] }), 'v2.10.0-nightly.3');
+  for (const base of ['v0.9.0', 'v1.1.0-nightly.1', '1.0.0', 'v1.0']) assert.throws(() => prereleaseVersion({ base, tags: [] }), /Not a release/);
+  for (const tag of ['v1.1.0-nightly.1', 'v0.1.0-nightly.12']) assert.match(tag, nightlyPattern);
+  for (const tag of ['v1.1.1-nightly.1', 'v1.1.0-nightly.0', 'v1.1.0-nightly.01', 'v01.1.0-nightly.1', 'v1.1.0', 'v1.1.0-nightly.1+0.gabc1234'])
+    assert.doesNotMatch(tag, nightlyPattern);
 });
 
 test('the rollback floor is the previous prerelease only when its image passed on the new schema', () => {
-  assert.equal(chooseFloor('v0.5.1', 'v0.5.0', true), 'v0.5.0');
-  assert.equal(chooseFloor('v0.6.0', 'v0.5.1', false), 'v0.6.0');
-  assert.equal(chooseFloor('v0.5.0', undefined, true), 'v0.5.0');
+  assert.equal(chooseFloor('v1.1.0-nightly.2', 'v1.1.0-nightly.1', true), 'v1.1.0-nightly.1');
+  assert.equal(chooseFloor('v1.1.0-nightly.3', 'v1.1.0-nightly.2', false), 'v1.1.0-nightly.3');
+  assert.equal(chooseFloor('v1.1.0-nightly.1', undefined, true), 'v1.1.0-nightly.1');
 });
 
 function fixture() {
@@ -31,7 +33,7 @@ function fixture() {
   for (const [key, value] of [['user.name', 'Release'], ['user.email', 'release@example.test'], ['commit.gpgsign', 'false'], ['tag.gpgsign', 'false']]) run('config', key, value);
   const write = (path, content) => { mkdirSync(dirname(join(directory, path)), { recursive: true }); writeFileSync(join(directory, path), content); };
   const commit = (message) => { run('add', '-A'); run('commit', '-q', '-m', message); return run('rev-parse', 'HEAD'); };
-  write('package.json', '{\n  "version": "0.4.0"\n}\n');
+  write('package.json', '{\n  "version": "1.0.0"\n}\n');
   write('packages/db/src/migrations/0000_first.sql', 'create table a ();\n');
   write('apps/server/src/app.ts', 'one\n');
   commit('feat: first');
@@ -48,64 +50,101 @@ function fakeGh(ran) {
 }
 const green = [['CI'], ['Repo compliance']];
 
-test('main publishes only a commit that moved since the previous prerelease and passed CI and Repo compliance', () => {
+test('main publishes next\'s head as the next nightly only when next moved and CI and Repo compliance passed on it', () => {
   const f = fixture();
   try {
     const ran = new Map();
     const plan = (ref = 'refs/heads/main') => planPrerelease({ cwd: f.directory, ref, repo: 'example/app', gh: fakeGh(ran) });
-    const first = f.run('rev-parse', 'HEAD');
+    const next = (commit) => f.run('update-ref', 'refs/remotes/origin/next', commit);
+    // v1.0.0 on main; v1.0.3 on release/1.0, which next never merges; next two commits past v1.0.0; main one past it.
+    f.run('tag', 'v1.0.0');
+    f.run('checkout', '-q', '-b', 'release/1.0');
+    f.write('apps/server/src/app.ts', 'patched\n');
+    f.commit('fix: patched');
+    f.run('tag', 'v1.0.3');
+    f.run('checkout', '-q', '-b', 'next', 'v1.0.0');
+    f.write('apps/server/src/app.ts', 'two\n');
+    f.commit('feat: two');
+    f.write('apps/server/src/app.ts', 'three\n');
+    const head = f.commit('feat: three');
+    next(head);
+    f.run('checkout', '-q', 'main');
+    f.write('README.md', 'main only\n');
+    const mainOnly = f.commit('docs: main only');
     // CI not green: failed, still running, or missing. Nothing is built or published.
     for (const runs of [[['CI', 'failure'], ['Repo compliance']], [['CI'], ['Repo compliance', null, 'in_progress']], [['CI']]]) {
-      ran.set(first, runs);
+      ran.set(head, runs);
       const result = plan();
       assert.equal(result.publish, false); assert.equal(result.build, false);
       assert.match(result.reason, /has not passed.*nothing is published/);
-      assert.equal(planOutputs(result), 'build=false\npublish=false\nprevious=');
+      assert.equal(planOutputs(result), `build=false\npublish=false\nprevious=\ncommit=${head}`);
     }
-    ran.set(first, green);
-    const published = plan();
-    assert.deepEqual([published.version, published.buildVersion, published.publish, published.build, published.previous], ['v0.5.0', '0.5.0', true, true, undefined]);
-    assert.equal(planOutputs(published), 'build=true\npublish=true\nprevious=\nversion=v0.5.0\nbuild_version=0.5.0\nimage_tag=0.5.0');
-    // The previous prerelease is the tag GitHub creates on main's commit.
-    f.run('tag', 'v0.5.0');
-    const nothing = plan();
-    assert.equal(nothing.build, false); assert.equal(nothing.publish, false);
-    assert.match(nothing.reason, /not moved since v0\.5\.0/);
-    // A code change without a migration is the next patch.
-    f.write('apps/server/src/app.ts', 'two\n');
-    const fix = f.commit('fix: two');
-    ran.set(fix, green);
-    assert.equal(plan().version, 'v0.5.1');
+    ran.set(head, green);
+    // The plan is next's head, not main's (HEAD here), from the newest release merged into next.
+    const first = plan();
+    assert.deepEqual([first.version, first.buildVersion, first.publish, first.build, first.previous, first.base, first.commit],
+      ['v1.1.0-nightly.1', '1.1.0-nightly.1', true, true, undefined, 'v1.0.0', head]);
+    assert.notEqual(first.commit, mainOnly);
+    assert.equal(planOutputs(first), `build=true\npublish=true\nprevious=\ncommit=${head}\nversion=v1.1.0-nightly.1\nbuild_version=1.1.0-nightly.1\nimage_tag=1.1.0-nightly.1`);
+    // Any other ref is a dry run of that ref's own commit, with build metadata, that never publishes and needs no CI.
+    f.run('checkout', '-q', '-b', 'task/r1-x', head);
+    f.write('apps/server/src/app.ts', 'task\n');
+    const task = f.commit('fix: task');
+    const dry = planPrerelease({ cwd: f.directory, ref: 'refs/heads/task/r1-x', repo: 'example/app', gh: () => assert.fail('no CI lookup') });
+    assert.deepEqual([dry.version, dry.publish, dry.build, dry.commit], ['v1.1.0-nightly.1', false, true, task]);
+    assert.equal(dry.buildVersion, `1.1.0-nightly.1+0.g${task.slice(0, 7)}`);
+    assert.match(planOutputs(dry), new RegExp(`^image_tag=1\\.1\\.0-nightly\\.1_0\\.g${task.slice(0, 7)}$`, 'm'));
+    f.run('checkout', '-q', 'next');
+    // The previous nightly is the tag GitHub creates on next's head; a new commit is the next number.
+    f.run('tag', 'v1.1.0-nightly.1', head);
+    assert.match(plan().reason, /^next has not moved since v1\.1\.0-nightly\.1\.$/);
+    f.write('apps/server/src/app.ts', 'four\n');
+    const fourth = f.commit('fix: four');
+    next(fourth);
+    ran.set(fourth, green);
+    const second = plan();
+    assert.deepEqual([second.version, second.previous, second.publish], ['v1.1.0-nightly.2', 'v1.1.0-nightly.1', true]);
     // A Markdown-only commit, which CI's path filter skips, is covered by CI on the code before it; Repo compliance
-    // has no path filter and must have run on the commit itself.
+    // has no path filter and must have run on the commit itself. CI isn't looked for past the previous nightly.
     f.write('docs/guide.md', 'guide\n');
     const docs = f.commit('docs: guide');
+    next(docs);
     ran.set(docs, [['Repo compliance']]);
+    assert.equal(plan().version, 'v1.1.0-nightly.2');
     assert.equal(plan().publish, true);
-    ran.set(fix, [['CI', 'failure'], ['Repo compliance']]);
+    ran.set(fourth, [['CI', 'failure'], ['Repo compliance']]);
     assert.match(plan().reason, /CI has not passed/);
-    ran.set(fix, green);
-    f.run('tag', 'v0.5.1');
-    // A migration since the previous prerelease is the next minor.
-    f.write('packages/db/src/migrations/0001_second.sql', 'alter table a add b int;\n');
-    const migration = f.commit('fix: column');
-    ran.set(migration, green);
-    const minor = plan();
-    assert.equal(minor.version, 'v0.6.0'); assert.equal(minor.previous, 'v0.5.1'); assert.equal(minor.migrationsChanged, true);
+    ran.set(fourth, green);
     // A failing lookup is an error, not a quiet "not green".
     assert.throws(() => planPrerelease({ cwd: f.directory, ref: 'refs/heads/main', repo: 'example/app', gh: () => { throw new Error('HTTP 502'); } }), /HTTP 502/);
-    // Any other ref is a dry run of the same version, with build metadata, that never publishes and needs no CI.
-    ran.clear();
-    const dry = plan('refs/heads/task/r1-x');
-    assert.deepEqual([dry.version, dry.publish, dry.build], ['v0.6.0', false, true]);
-    assert.equal(dry.buildVersion, `0.6.0+0.g${migration.slice(0, 7)}`);
-    assert.match(planOutputs(dry), /^image_tag=0\.6\.0_0\.g[a-f0-9]{7}$/m);
-    // After the first stable release, nothing is published as a prerelease.
-    f.run('tag', 'v1.0.0');
-    f.write('apps/server/src/app.ts', 'three\n');
-    ran.set(f.commit('fix: three'), green);
-    assert.match(plan().reason, /v1\.0\.0 is a stable release/);
+    f.run('tag', 'v1.1.0-nightly.2', docs);
+    assert.match(plan().reason, /^next has not moved since v1\.1\.0-nightly\.2\.$/);
     assert.equal(plan().build, false);
+    // No next branch: nothing to plan.
+    f.run('update-ref', '-d', 'refs/remotes/origin/next');
+    assert.deepEqual(plan(), { build: false, publish: false, reason: 'No next branch.' });
+    assert.equal(planOutputs(plan()), 'build=false\npublish=false\nprevious=\ncommit=');
+    // v1.1.0 released on main but not merged into next: a nightly would sort below it, so none is built.
+    f.write('apps/server/src/app.ts', 'five\n');
+    const fifth = f.commit('fix: five');
+    next(fifth);
+    ran.set(fifth, green);
+    f.run('tag', 'v1.1.0', mainOnly);
+    const unmerged = plan();
+    assert.deepEqual([unmerged.build, unmerged.publish], [false, false]);
+    assert.equal(unmerged.reason, 'v1.1.0 is released but not merged into next; merge main into next.');
+    // Merged into next, v1.1.0 is the base: the next minor's first nightly, after the previous minor's nightlies.
+    f.run('merge', '-q', '--no-ff', '-m', 'Merge main into next', 'main');
+    const merge = f.run('rev-parse', 'HEAD');
+    next(merge);
+    ran.set(merge, green);
+    const minor = plan();
+    assert.deepEqual([minor.version, minor.base, minor.previous, minor.publish], ['v1.2.0-nightly.1', 'v1.1.0', 'v1.1.0-nightly.2', true]);
+    // CI failed on the head: nothing is published.
+    ran.set(merge, [['CI', 'failure'], ['Repo compliance']]);
+    const failed = plan();
+    assert.deepEqual([failed.build, failed.publish], [false, false]);
+    assert.match(failed.reason, /CI has not passed/);
   } finally { f.cleanup(); }
 });
 
@@ -113,22 +152,23 @@ test('the notes say what a prerelease is and list the commits since the previous
   const f = fixture();
   try {
     const first = f.run('rev-parse', 'HEAD');
-    const opening = prereleaseNotes({ cwd: f.directory, commit: first, floor: 'v0.5.0' });
-    assert.match(opening, /Nightly prerelease of `main` at [a-f0-9]{40}/);
+    const opening = prereleaseNotes({ cwd: f.directory, commit: first, floor: 'v1.1.0-nightly.1' });
+    assert.match(opening, /Nightly prerelease of `next` at [a-f0-9]{40}/);
     assert.match(opening, /prerelease-signing\.pem/);
-    assert.match(opening, /Migrations: first prerelease\./);
-    assert.match(opening, /Rollback floor: v0\.5\.0\./);
-    assert.match(opening, /First prerelease\./);
-    f.run('tag', 'v0.5.0');
+    assert.match(opening, /Migrations: first nightly prerelease\./);
+    assert.match(opening, /Rollback floor: v1\.1\.0-nightly\.1\./);
+    assert.match(opening, /First nightly prerelease\./);
+    f.run('tag', 'v1.1.0-nightly.1');
     f.write('apps/server/src/app.ts', 'two\n');
     const fix = f.commit('fix: two');
-    const patch = prereleaseNotes({ cwd: f.directory, previous: 'v0.5.0', commit: fix, floor: 'v0.5.0' });
-    assert.match(patch, /### Commits since v0\.5\.0\n\n- fix: two \([a-f0-9]{7}\)\n/);
+    const patch = prereleaseNotes({ cwd: f.directory, previous: 'v1.1.0-nightly.1', commit: fix, floor: 'v1.1.0-nightly.1' });
+    assert.match(patch, /### Commits since v1\.1\.0-nightly\.1\n\n- fix: two \([a-f0-9]{7}\)\n/);
     assert.doesNotMatch(patch, /feat: first/);
-    assert.match(patch, /Migrations: none since v0\.5\.0\./);
+    assert.match(patch, /Migrations: none since v1\.1\.0-nightly\.1\./);
     f.write('packages/db/src/migrations/0001_second.sql', 'alter table a add b int;\n');
     const migration = f.commit('feat: column');
-    assert.match(prereleaseNotes({ cwd: f.directory, previous: 'v0.5.0', commit: migration, floor: 'v0.6.0' }), /Migrations: yes, since v0\.5\.0/);
+    assert.match(prereleaseNotes({ cwd: f.directory, previous: 'v1.1.0-nightly.1', commit: migration, floor: 'v1.1.0-nightly.3' }),
+      /Migrations: yes, since v1\.1\.0-nightly\.1/);
   } finally { f.cleanup(); }
 });
 
@@ -155,8 +195,8 @@ test('each signing key is reachable only from its own job, and no workflow write
   assert.match(nightly, /^ {4}if: inputs\.prerelease && .*github\.ref == 'refs\/heads\/main'/m);
   assert.match(nightly, /publish\.sh --prerelease .*/);
   assert.match(nightly, /--public-key deploy\/prerelease-signing\.pem/);
-  assert.match(nightly, /gh release create "\$VERSION" .*--target "\$GITHUB_SHA" --prerelease --latest=false/);
-  // The dry run has no secrets, and nothing commits, pushes a branch or moves a ref.
+  assert.match(nightly, /gh release create "\$VERSION" .*--target "\$COMMIT" --prerelease --latest=false/);
+  // The dry run has no secrets, and nothing commits, pushes a branch or moves a ref on GitHub.
   assert.doesNotMatch(job(release, 'dry-run'), /secrets\./);
   for (const text of [release, prerelease]) assert.doesNotMatch(text, /git (?:push|commit|tag )|git\/refs/);
   // release.yml takes no secrets from its caller; prerelease.yml's one call inherits them (see its comment).
@@ -166,6 +206,41 @@ test('each signing key is reachable only from its own job, and no workflow write
   assert.match(prerelease, /^ {4}uses: \.\/\.github\/workflows\/release\.yml\n {4}secrets: inherit\n {4}with:\n {6}prerelease: true$/m);
   assert.equal([...prerelease.matchAll(/^\s*secrets:/gm)].length, 1);
   assert.doesNotMatch(prerelease, /secrets\./);
+  // The pruning job holds no secret and no environment, and deletes only what its own two permissions allow.
+  const prune = job(prerelease, 'prune');
+  assert.match(prune, /^ {4}permissions:\n {6}contents: write\n {6}packages: write\n {4}steps:/m);
+  assert.match(prune, /^ {4}needs: \[prerelease\]$/m);
+  assert.match(prune, /^ {4}if: \$\{\{ !cancelled\(\) && github\.ref == 'refs\/heads\/main' \}\}$/m);
+  assert.doesNotMatch(prune, /environment:|secrets/);
+  assert.match(prune, /node scripts\/release\/prune-nightlies\.mjs "\$GITHUB_REPOSITORY"/);
+});
+
+test('a prerelease run on main builds and publishes next\'s head, the commit its plan picked', () => {
+  const release = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8');
+  const prepare = job(release, 'prepare');
+  // The plan sees next as origin has it, and its commit is the one every later job checks out and labels.
+  assert.ok(prepare.includes("git fetch --no-tags origin '+refs/heads/next:refs/remotes/origin/next'"));
+  assert.match(prepare, /next_status=0; git ls-remote --exit-code --heads origin refs\/heads\/next >\/dev\/null \|\| next_status=\$\?/);
+  assert.match(prepare, /^ {6}commit: \$\{\{ steps\.prerelease\.outputs\.commit \|\| github\.sha \}\}$/m);
+  assert.match(prepare, /check-tag\.sh "\$\(sed -n 's\/\^version=\/\/p' "\$RUNNER_TEMP\/plan\.txt"\)" "\$\(sed -n 's\/\^commit=\/\/p' "\$RUNNER_TEMP\/plan\.txt"\)" --prerelease/);
+  const nightly = job(release, 'publish-prerelease');
+  assert.match(nightly, /^ {4}environment: prerelease-main$/m);
+  assert.match(nightly, /^ {4}if: inputs\.prerelease && needs\.prepare\.outputs\.prerelease == 'true' && github\.ref == 'refs\/heads\/main'$/m);
+  for (const name of ['build', 'dry-run', 'publish-prerelease']) {
+    const text = job(release, name);
+    assert.doesNotMatch(text, /github\.sha|GITHUB_SHA/, name);
+    const checkouts = text.match(/^ {6}- uses: actions\/checkout@.*\n(?: {8}.*\n)*/gm) ?? [];
+    assert.ok(checkouts.length > 0, `${name} checks out`);
+    for (const checkout of checkouts) assert.match(checkout, /^ {10}ref: \$\{\{ needs\.prepare\.outputs\.commit \}\}$/m, name);
+  }
+  const build = job(release, 'build');
+  assert.match(build, /^ {6}COMMIT: \$\{\{ needs\.prepare\.outputs\.commit \}\}$/m);
+  assert.match(build, /REVISION=\$\{\{ env\.COMMIT \}\}/);
+  assert.match(build, /image\.revision"\}\}'\)" = "\$COMMIT"/);
+  assert.match(build, /&& needs\.prepare\.outputs\.version \|\| needs\.prepare\.outputs\.commit \}\}$/m);
+  assert.match(job(release, 'dry-run'), /--revision "\$COMMIT"/);
+  assert.match(nightly, /--revision "\$COMMIT"/);
+  assert.match(nightly, /prerelease\.mjs notes "\$PREVIOUS" "\$COMMIT" "\$floor"/);
 });
 
 test('the prerelease publish refuses lookup errors, existing releases and image tags from another commit', () => {
@@ -192,7 +267,7 @@ test('the prerelease publish refuses lookup errors, existing releases and image 
   for (const suffix of ['', '-amd64', '-arm64']) assert.match(nightly, new RegExp(`"ghcr\\.io/\\$owner/app:\\$image_tag${suffix}"`));
   // imagetools' `json` template pretty-prints, so the label is only compact after whitespace is stripped.
   assert.match(nightly, /tr -d '\[:space:\]'.*org\.opencontainers\.image\.revision/);
-  assert.match(nightly, /org\.opencontainers\.image\.revision.*\$GITHUB_SHA/);
+  assert.match(nightly, /org\.opencontainers\.image\.revision.*\$COMMIT/);
   const conflict = nightly.indexOf('already exists for another commit; nothing was published.');
   const recovery = nightly.indexOf("::error::An earlier night pushed $VERSION's images for commit");
   assert.ok(conflict >= 0 && recovery > conflict, 'the recovery message follows the image conflict');
@@ -233,21 +308,21 @@ test('the prerelease image guard accepts missing manifests and refuses a credent
   const directory = mkdtempSync(join(tmpdir(), 'prerelease-image-guard-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   writeFileSync(join(directory, 'docker'), '#!/bin/sh\nprintf "%s\\n" "$DOCKER_INSPECT_ERROR" >&2\nexit 1\n', { mode: 0o755 });
-  const script = 'export PATH="$PWD:$PATH" RUNNER_TEMP="$PWD"\nowner=x\nimage_tag=v0.3.0\n' + loop[0];
+  const script = 'export PATH="$PWD:$PATH" RUNNER_TEMP="$PWD"\nowner=x\nimage_tag=v1.1.0-nightly.3\n' + loop[0];
 
   for (const [stderr, status] of [
     ['manifest unknown', 0],
-    ['no such manifest: ghcr.io/x/app:v0.3.0', 0],
+    ['no such manifest: ghcr.io/x/app:v1.1.0-nightly.3', 0],
     ['error getting credentials - err: exec: "docker-credential-x": executable file not found in $PATH', 1],
   ]) {
     const result = spawnSync('bash', ['-euo', 'pipefail', '-c', script], {
       cwd: directory,
-      env: { ...process.env, DOCKER_INSPECT_ERROR: stderr, GITHUB_SHA: 'current-commit' },
+      env: { ...process.env, DOCKER_INSPECT_ERROR: stderr, COMMIT: 'current-commit' },
       encoding: 'utf8',
       timeout: 5_000,
     });
     assert.ifError(result.error);
     assert.equal(result.status, status, stderr);
-    if (status === 1) assert.match(result.stdout, /Could not check whether ghcr\.io\/x\/app:v0\.3\.0 exists/);
+    if (status === 1) assert.match(result.stdout, /Could not check whether ghcr\.io\/x\/app:v1\.1\.0-nightly\.3 exists/);
   }
 });

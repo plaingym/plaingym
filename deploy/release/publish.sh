@@ -4,17 +4,18 @@
 # sign it, and check it the way installs do (deploy/README.md, "Releases"). The release workflow runs it against
 # GHCR for a tag, and against a registry on the runner with a throwaway key for a dry run.
 #
-#   publish.sh --registry HOST[:PORT] --name OWNER/app --version vX.Y.Z --revision COMMIT --migrations DIR
+#   publish.sh --registry HOST[:PORT] --name OWNER/app --version VERSION --revision COMMIT --migrations DIR
 #              --archive amd64=FILE [--archive arm64=FILE] --key PRIVATE.pem --public-key PUBLIC.pem --repository OWNER/REPO
-#              --out DIR --rollback-floor vX.Y.Z [--insecure] [--prerelease]
+#              --out DIR --rollback-floor VERSION [--insecure] [--prerelease]
 #
 # Each archive is a `docker save` of an image labelled with the version and revision. The output directory gets
 # the four assets of the GitHub release: release-manifest.txt, release-manifest.txt.sig, and from deploy-assets.sh the
 # deploy archive the manifest lists with its SHA-256 (plaingym-deploy-VERSION.tar.gz) and the release's bootstrap.sh.
 #
-# --prerelease publishes a nightly prerelease of main (deploy/README.md, "Prereleases"): a v0.Y.Z version whose signed
-# manifest says channel=prerelease. It refuses the release key (release-signing.pem), so installs that trust only
-# that key refuse the prerelease; a release, in turn, refuses the prerelease key (prerelease-signing.pem).
+# A release is vX.Y.Z. --prerelease publishes a nightly prerelease of next (deploy/README.md, "Prereleases"): a
+# vX.Y.0-nightly.N version whose signed manifest says channel=prerelease. It refuses the release key
+# (release-signing.pem), so installs that trust only that key refuse the prerelease; a release, in turn, refuses the
+# prerelease key (prerelease-signing.pem). A dry run on a local test registry adds build metadata to either.
 set -eu
 umask 077
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -50,14 +51,24 @@ while [ "$#" -gt 0 ]; do
     *) fail "Unknown argument: $1" ;;
   esac
 done
-if ! valid_version "$version"; then
+version_base=${version%%+*}
+# A prerelease is a nightly, and only a prerelease may be one. Checked first, so neither key choice nor a dry run's
+# build metadata can carry the other kind of version.
+if [ -n "$prerelease" ]; then
+  printf '%s\n' "v${version_base#v}" | grep -Eq "$nightly_version_pattern" || fail 'A prerelease is a vX.Y.0-nightly.N version.'
+elif ! valid_version "v${version_base#v}"; then
+  fail 'Use --version vX.Y.Z (or build metadata for a local dry run); give --prerelease for a vX.Y.0-nightly.N prerelease.'
+fi
+if [ "$version" != "v${version_base#v}" ]; then
   if [ "$insecure" != --insecure ] || ! printf '%s\n' "$registry" | grep -Eq '^localhost:[0-9]+$'; then fail 'Development releases may only use an insecure local test registry.'; fi
-  printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\+[A-Za-z0-9.-]+$' || fail 'Use --version vX.Y.Z (or build metadata for a local dry run).'
+  printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-nightly\.[1-9][0-9]*)?\+[A-Za-z0-9.-]+$' || fail 'Use --version vX.Y.Z (or build metadata for a local dry run).'
 fi
 registry_tag=$(printf '%s' "$version" | tr '+' '_')
 [ -n "$rollback_floor" ] || fail 'Give --rollback-floor explicitly (deploy/release/rollback-floor.txt records the release decision).'
-version_base=${version%%+*}
-version_at_least "v${version_base#v}" "$rollback_floor" || fail 'Invalid --rollback-floor.'
+# Only a prerelease's floor may be a nightly, as manifest_check accepts it only with channel=prerelease.
+floor_valid=valid_version
+[ -z "$prerelease" ] || floor_valid=valid_published_version
+"$floor_valid" "$rollback_floor" && version_at_least "v${version_base#v}" "$rollback_floor" || fail 'Invalid --rollback-floor.'
 printf '%s\n' "$revision" | grep -Eq '^[a-f0-9]{40}$' || fail 'Use --revision with a full commit SHA.'
 for path in "$migrations" "$key" "$public"; do [ -e "$path" ] || fail "Missing --migrations, --key or --public-key: $path"; done
 if [ -z "$out" ] || [ -z "$archives" ]; then fail 'Give --out and at least one --archive.'; fi
@@ -67,7 +78,6 @@ valid_repository "$repository" || fail "Use --repository OWNER/REPO, the reposit
 # The release and prerelease keys are never interchangeable: compare the committed public keys' bodies.
 key_body() { sed '/^-----/d' "$1" | tr -d '\r\n'; }
 if [ -n "$prerelease" ]; then
-  case "${version_base#v}" in 0.*) ;; *) fail 'A prerelease is a v0.Y.Z version.' ;; esac
   [ -f "$ROOT/release-signing.pem" ] || fail "Missing $ROOT/release-signing.pem, which a prerelease must not be signed with."
   [ "$(key_body "$public")" != "$(key_body "$ROOT/release-signing.pem")" ] || fail 'A prerelease is never signed with the release key (release-signing.pem).'
 elif [ -f "$ROOT/prerelease-signing.pem" ] && [ "$(key_body "$public")" = "$(key_body "$ROOT/prerelease-signing.pem")" ]; then

@@ -753,9 +753,9 @@ test('an interrupted migration-floor read is not taken for an older commit', () 
 test('an interrupted prerelease smoke is rethrown instead of raising the floor', async () => {
   const logs = [];
   const interrupted = () => { throw new SmokeInterrupted(130); };
-  await assert.rejects(prereleaseFloor('plaingym:new', 'v0.6.0', 'v0.5.1', { smoke: interrupted, log: line => logs.push(line) }),
+  await assert.rejects(prereleaseFloor('plaingym:new', 'v1.1.0-nightly.3', 'v1.1.0-nightly.2', { smoke: interrupted, log: line => logs.push(line) }),
     error => error instanceof SmokeInterrupted && error.exitCode === 130);
-  assert.equal(await prereleaseFloor('plaingym:new', 'v0.6.0', 'v0.5.1', { smoke: () => { throw new Error('schema mismatch'); }, log: line => logs.push(line) }), 'v0.6.0');
+  assert.equal(await prereleaseFloor('plaingym:new', 'v1.1.0-nightly.3', 'v1.1.0-nightly.2', { smoke: () => { throw new Error('schema mismatch'); }, log: line => logs.push(line) }), 'v1.1.0-nightly.3');
   assert.match(logs.at(-1), /did not pass/);
 });
 
