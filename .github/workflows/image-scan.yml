@@ -107,9 +107,14 @@ jobs:
       - name: List every high and critical advisory
         id: list
         run: |
+          rc=0
           docker run --rm -v "$RUNNER_TEMP:/scan" "$TRIVY_IMAGE" image --input /scan/image.tar \
             --cache-dir /scan/trivy-cache --scanners vuln --severity HIGH,CRITICAL \
-            --no-progress --skip-version-check
+            --no-progress --skip-version-check || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::Trivy could not scan $LABEL (exit $rc); this is a scan error, not an advisory."
+            exit 1
+          fi
       - name: Fail on fixable high advisories
         if: steps.list.outcome == 'success'
         run: |
@@ -172,7 +177,12 @@ jobs:
           done
           # A task branch or pull request only lists, so a pair it can't read never fails it.
           case "$EVENT_NAME" in
-            schedule | workflow_dispatch) exit "$failed" ;;
+            schedule | workflow_dispatch)
+              if [ "$failed" -ne 0 ]; then
+                echo "::error::Trivy could not list every image and platform; this is a scan error, not an advisory."
+                exit 1
+              fi
+              ;;
           esac
       - name: Fail on fixable high advisories
         if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && steps.list.outcome == 'success'

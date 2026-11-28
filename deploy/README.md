@@ -139,9 +139,8 @@ the default branch's, and Image checks builds on `main` and `next` only when it
 finds no passing run for the same commit (it normally reuses the integration
 branch's result on `next`, and `next`'s on `main`), so the scan's weekly run on
 `main` is what seeds both architectures' caches for new branches. The pnpm store
-mount is a cache mount, not a
-layer, so the GitHub cache does not hold it; a changed lockfile downloads its
-packages again, as on a fresh runner today. Image checks export only runtime-stage
+mount is a cache mount, not a layer, so the GitHub cache does not hold it; a
+changed lockfile downloads its packages again, as on a fresh runner today. Image checks export only runtime-stage
 layers (`mode=min`), retaining the pinned apt installation without exporting
 intermediate source and dependency layers on every push. The weekly scan retains
 all stages (`mode=max`), so a fallback to its cache can also reuse dependency
