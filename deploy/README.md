@@ -134,11 +134,12 @@ image scan use the GitHub Actions cache backend (`type=gha`) for the Dockerfile'
 layers, through Docker's `setup-buildx-action` and `build-push-action`: the
 backend needs a BuildKit container builder and the cache service's token, which
 only an action receives. The scope is one per architecture (`image-amd64`,
-`image-arm64`); the scan shares `image-amd64`. A branch reads its own cache and
-the default branch's, and Image checks builds on `main` and `next` only when it finds no
-passing run for the same commit (it normally reuses the integration branch's
-result on `next`, and `next`'s on `main`), so the scan's weekly run on `main` is what seeds the amd64 cache for
-new branches. The pnpm store mount is a cache mount, not a
+`image-arm64`); the scan shares both. A branch reads its own cache and
+the default branch's, and Image checks builds on `main` and `next` only when it
+finds no passing run for the same commit (it normally reuses the integration
+branch's result on `next`, and `next`'s on `main`), so the scan's weekly run on
+`main` is what seeds both architectures' caches for new branches. The pnpm store
+mount is a cache mount, not a
 layer, so the GitHub cache does not hold it; a changed lockfile downloads its
 packages again, as on a fresh runner today. Image checks export only runtime-stage
 layers (`mode=min`), retaining the pinned apt installation without exporting
@@ -209,17 +210,26 @@ The **Image scan** workflow builds the runtime image every Monday, on demand, an
 for `task/**` pushes and pull requests that change the Dockerfile, the runtime
 package script or pins, `compose.yaml`, either exceptions file, or the scan
 workflow itself, and scans it with Trivy (run from its image, pinned by digest).
-The run lists every high and critical advisory, excepted ones too. A high
-advisory with a fixed version fails it unless `deploy/trivy-ignore.yaml` excepts
-it, and a critical one with a fixed version fails in a step of its own whatever
-that file says. A pin refresh usually resolves a failure. Advisories without a
-fix are listed for review but don't fail the run.
+Its `scan` job builds and scans the image for `linux/amd64` and `linux/arm64`,
+each on its own native runner and sharing Image checks' cache scope for that
+architecture. The run lists every high and critical advisory, excepted ones too.
+A high advisory with a fixed version fails it unless `deploy/trivy-ignore.yaml`
+excepts it, and a critical one with a fixed version fails in a step of its own
+whatever that file says. A pin refresh usually resolves a failure. Advisories
+without a fix are listed for review but don't fail the run.
 
 Its `infrastructure` job scans the `linux/amd64` and `linux/arm64` variants of
 the PostgreSQL and Caddy images `compose.yaml` pins, by reference, the same way;
 it fails on a fixable advisory only on the weekly and manual runs (a task branch
 or pull request only lists them), and moving a pin to a fixed image reaches
 installs with the next release.
+
+A failure of Trivy itself (a registry or database fault) fails a weekly or manual
+run as a scan error, not an advisory; the `scan` job fails on one in any run.
+Rerun once the fault has passed. In the `infrastructure` job, a task branch's or
+pull request's listing warns about an image and platform it can't read and never
+fails on it. The steps that fail on advisories run only after the listing
+worked.
 
 `deploy/trivy-ignore.yaml` holds the reviewed exceptions: each entry names the
 advisory, the package or binary it covers, why it doesn't apply or can't be

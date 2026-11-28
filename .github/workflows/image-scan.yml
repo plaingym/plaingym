@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 name: Image scan
 # Pinned packages don't notice advisories published after a release. This builds the runtime image
-# and scans it with Trivy (run from its image, pinned by digest). Every high and critical finding,
-# fixed or not, excepted or not, is listed in the run log for review. A high advisory that has a
-# fixed version fails the run unless deploy/trivy-ignore.yaml lists it; a critical one with a fixed
-# version fails it unless deploy/trivy-ignore-critical.yaml lists it. The infrastructure job scans
-# both platforms (amd64 and arm64) of the PostgreSQL and Caddy images deploy/compose.yaml pins the
-# same way, failing on advisories only on the weekly and manual runs.
+# for both platforms (amd64 and arm64), each on its own native runner, and scans it with Trivy (run
+# from its image, pinned by digest). Every high and critical finding, fixed or not, excepted or not,
+# is listed in the run log for review. A high advisory that has a fixed version fails the run unless
+# deploy/trivy-ignore.yaml lists it; a critical one with a fixed version fails it unless
+# deploy/trivy-ignore-critical.yaml lists it. The infrastructure job scans both platforms of the
+# PostgreSQL and Caddy images deploy/compose.yaml pins the same way, failing on advisories only on
+# the weekly and manual runs. Trivy exits 3 for advisories; any other failure (a registry or database
+# fault) is reported as a scan error.
 on:
   schedule:
     - cron: '17 6 * * 1'
@@ -35,7 +37,6 @@ concurrency:
   cancel-in-progress: true
 env:
   TRIVY_IMAGE: aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
-  IMAGE: plaingym:v0.0.0-scan
 jobs:
   scheduled-failure:
     needs: [scan, infrastructure]
@@ -60,8 +61,18 @@ jobs:
             const { reportScheduledFailure } = await import('${{ github.workspace }}/scripts/release/scheduled-failure.mjs');
             await reportScheduledFailure({ github, context, failed: true });
   scan:
-    runs-on: ubuntu-24.04
+    name: scan (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: amd64, runner: ubuntu-24.04}
+          - {arch: arm64, runner: ubuntu-24.04-arm}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    env:
+      IMAGE: plaingym:v0.0.0-scan-${{ matrix.arch }}
+      LABEL: the runtime image (${{ matrix.arch }})
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -72,9 +83,9 @@ jobs:
           node-version-file: .nvmrc
       - name: Compute the build version
         run: echo "VERSION=$(node scripts/release/version-cli.mjs)" >> "$GITHUB_ENV"
-      # Shares the amd64 cache scope with Image checks (deploy/README.md). Image checks builds on main only when no
-      # passing run exists for the commit, so the weekly run on main is what leaves a cache that every other branch
-      # can start from.
+      # Shares each architecture's cache scope with Image checks (deploy/README.md). Image checks builds on main only
+      # when no passing run exists for the commit, so the weekly run on main is what leaves a cache that every other
+      # branch can start from.
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - name: Build the runtime image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
@@ -87,26 +98,42 @@ jobs:
             REVISION=${{ github.sha }}
           tags: ${{ env.IMAGE }}
           load: true
-          cache-from: type=gha,scope=image-amd64
-          cache-to: type=gha,scope=image-amd64,mode=max,ignore-error=true
+          cache-from: type=gha,scope=image-${{ matrix.arch }}
+          cache-to: type=gha,scope=image-${{ matrix.arch }},mode=max,ignore-error=true
+      - name: Check the built architecture
+        run: test "$(docker image inspect "$IMAGE" --format '{{.Architecture}}')" = "${{ matrix.arch }}"
       - name: Save the image for the scan
         run: docker save "$IMAGE" -o "$RUNNER_TEMP/image.tar"
       - name: List every high and critical advisory
+        id: list
         run: |
           docker run --rm -v "$RUNNER_TEMP:/scan" "$TRIVY_IMAGE" image --input /scan/image.tar \
             --cache-dir /scan/trivy-cache --scanners vuln --severity HIGH,CRITICAL \
             --no-progress --skip-version-check
       - name: Fail on fixable high advisories
+        if: steps.list.outcome == 'success'
         run: |
+          rc=0
           docker run --rm -v "$RUNNER_TEMP:/scan" -v "$PWD/deploy:/policy:ro" "$TRIVY_IMAGE" image --input /scan/image.tar \
             --cache-dir /scan/trivy-cache --scanners vuln --severity HIGH --ignorefile /policy/trivy-ignore.yaml \
-            --ignore-unfixed --exit-code 1 --skip-db-update --no-progress --skip-version-check
+            --ignore-unfixed --exit-code 3 --skip-db-update --no-progress --skip-version-check || rc=$?
+          case "$rc" in
+            0) ;;
+            3) echo "::error::Fixable high advisories in $LABEL; see the list above."; exit 1 ;;
+            *) echo "::error::Trivy could not scan $LABEL (exit $rc); this is a scan error, not an advisory."; exit 1 ;;
+          esac
       - name: Fail on fixable critical advisories
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.list.outcome == 'success' }}
         run: |
+          rc=0
           docker run --rm -v "$RUNNER_TEMP:/scan" -v "$PWD/deploy:/policy:ro" "$TRIVY_IMAGE" image --input /scan/image.tar \
             --cache-dir /scan/trivy-cache --scanners vuln --severity CRITICAL --ignorefile /policy/trivy-ignore-critical.yaml \
-            --ignore-unfixed --exit-code 1 --skip-db-update --no-progress --skip-version-check
+            --ignore-unfixed --exit-code 3 --skip-db-update --no-progress --skip-version-check || rc=$?
+          case "$rc" in
+            0) ;;
+            3) echo "::error::Fixable critical advisories in $LABEL; see the list above."; exit 1 ;;
+            *) echo "::error::Trivy could not scan $LABEL (exit $rc); this is a scan error, not an advisory."; exit 1 ;;
+          esac
   # The PostgreSQL and Caddy images installs run, which update.sh moves to with each release (docs/update-reference.md).
   # Trivy reads each from its registry by the pinned reference. A task branch or pull request only lists advisories.
   infrastructure:
@@ -125,38 +152,63 @@ jobs:
           printf '%s\n' "$caddy_image" | grep -Eq "$caddy_image_pattern"
           printf 'POSTGRES_IMAGE=%s\nCADDY_IMAGE=%s\n' "$postgres_image" "$caddy_image" >> "$GITHUB_ENV"
       - name: List every high and critical advisory
+        id: list
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
+          failed=0
           for image in "$POSTGRES_IMAGE" "$CADDY_IMAGE"; do
             for platform in linux/amd64 linux/arm64; do
               echo "Scanning $image ($platform)"
+              rc=0
               docker run --rm -v "$RUNNER_TEMP:/scan" "$TRIVY_IMAGE" image "$image" --platform "$platform" \
                 --cache-dir /scan/trivy-cache --scanners vuln --severity HIGH,CRITICAL \
-                --no-progress --skip-version-check
+                --no-progress --skip-version-check || rc=$?
+              if [ "$rc" -ne 0 ]; then
+                echo "::warning::Could not list advisories for $image ($platform) (Trivy exit $rc)."
+                failed=1
+              fi
             done
           done
+          # A task branch or pull request only lists, so a pair it can't read never fails it.
+          case "$EVENT_NAME" in
+            schedule | workflow_dispatch) exit "$failed" ;;
+          esac
       - name: Fail on fixable high advisories
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && steps.list.outcome == 'success'
         run: |
           status=0
           for image in "$POSTGRES_IMAGE" "$CADDY_IMAGE"; do
             for platform in linux/amd64 linux/arm64; do
               echo "Scanning $image ($platform)"
+              rc=0
               docker run --rm -v "$RUNNER_TEMP:/scan" -v "$PWD/deploy:/policy:ro" "$TRIVY_IMAGE" image "$image" --platform "$platform" \
                 --cache-dir /scan/trivy-cache --scanners vuln --severity HIGH --ignorefile /policy/trivy-ignore.yaml \
-                --ignore-unfixed --exit-code 1 --skip-db-update --no-progress --skip-version-check || status=1
+                --ignore-unfixed --exit-code 3 --skip-db-update --no-progress --skip-version-check || rc=$?
+              case "$rc" in
+                0) ;;
+                3) echo "::error::Fixable high advisories in $image ($platform); see the list above."; status=1 ;;
+                *) echo "::error::Trivy could not scan $image ($platform) (exit $rc); this is a scan error, not an advisory."; status=1 ;;
+              esac
             done
           done
           exit "$status"
       - name: Fail on fixable critical advisories
-        if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+        if: ${{ !cancelled() && steps.list.outcome == 'success' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
         run: |
           status=0
           for image in "$POSTGRES_IMAGE" "$CADDY_IMAGE"; do
             for platform in linux/amd64 linux/arm64; do
               echo "Scanning $image ($platform)"
+              rc=0
               docker run --rm -v "$RUNNER_TEMP:/scan" -v "$PWD/deploy:/policy:ro" "$TRIVY_IMAGE" image "$image" --platform "$platform" \
                 --cache-dir /scan/trivy-cache --scanners vuln --severity CRITICAL --ignorefile /policy/trivy-ignore-critical.yaml \
-                --ignore-unfixed --exit-code 1 --skip-db-update --no-progress --skip-version-check || status=1
+                --ignore-unfixed --exit-code 3 --skip-db-update --no-progress --skip-version-check || rc=$?
+              case "$rc" in
+                0) ;;
+                3) echo "::error::Fixable critical advisories in $image ($platform); see the list above."; status=1 ;;
+                *) echo "::error::Trivy could not scan $image ($platform) (exit $rc); this is a scan error, not an advisory."; status=1 ;;
+              esac
             done
           done
           exit "$status"
