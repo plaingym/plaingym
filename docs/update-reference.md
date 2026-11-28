@@ -116,8 +116,8 @@ one, to the pin `compose.yaml` had when the file was written, and lists it in `C
 ordinary `docker compose` commands use it too. A fresh install has neither until an update
 first tries to move an image: both are written once the new images pass their checks, before
 anything stops, and stay if that update then fails. Once they exist, change an image by editing `.env`, not the image lines
-of `compose.yaml`; an update says so when a service's image line in `compose.yaml` differs from
-the image `.env` names for it. If an update is cut off while PostgreSQL or Caddy may run another
+of `compose.yaml`; an update says so when a service's image line in `compose.yaml` changed since
+`infrastructure-images.yaml` was written and differs from the image `.env` names for it. If an update is cut off while PostgreSQL or Caddy may run another
 image than `.env` names (`.infrastructure-update` in the install directory), the next run starts
 both on the images `.env` names before anything else. If they don't start while an automatic
 update's marker is there, that failure is reported once, as `failed rollback_failed`, and each

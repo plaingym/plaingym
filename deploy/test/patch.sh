@@ -1144,6 +1144,9 @@ done
 [ "$(line_of ' node /app/deploy/healthcheck.mjs')" -lt "$(line_of "60 caddy IMAGE=configured POSTGRES_IMAGE=unset CADDY_IMAGE=$C1")" ]
 [ "$(line_of "image rm $(infra_digest 3)")" -gt "$(line_of '60 caddy IMAGE')" ]
 grep '^image rm ' "$CALLS" | tail -n 1 | grep -q "^image rm $(infra_digest 6) "
+# After it only the pulled-image list's checks run.
+awk -v rm="image rm $(infra_digest 6) " 'index($0, rm) == 1 { after = 1; next }
+  after && index($0, "image inspect ") != 1 { bad = 1 } END { exit bad }' "$CALLS"
 # Both pulled images run now, so the record keeps them.
 printf '%s\n' "$(infra_digest 4)" "$(infra_digest 7)" | cmp -s - "$case_dir/infrastructure-pulled.txt"
 never "$restored"
@@ -1430,5 +1433,17 @@ for notice_case in edited unedited pinned unpinned; do
   cmp -s "$temporary/compose-before" "$case_dir/compose.yaml"
   override_text postgres caddy | cmp -s - "$case_dir/infrastructure-images.yaml"
 done
+# A line naming an image of the install's own keeps that service out of the rewritten override, so compose.yaml
+# decides it from then on: no notice says .env does.
+make_install infra-notice-own-image
+override_text postgres caddy > "$case_dir/infrastructure-images.yaml"
+printf 'COMPOSE_FILE=compose.yaml:infrastructure-images.yaml\nPOSTGRES_IMAGE=%s\n' "$P1" >> "$case_dir/.env"
+sed -i "s#^    image: $P0\$#    image: postgres:18-local#" "$case_dir/compose.yaml"
+with_images "$P1" "$C1"
+expect_status 0 --patch --now
+recorded "--result updated --from v1.2.3 --to v1.2.5"
+grep -qxF 'compose.yaml names its own image for postgres, so it stays as it is.' "$temporary/output"
+if grep -qF 'decides its image' "$temporary/output"; then echo 'A notice for an image of the install'\''s own' >&2; exit 1; fi
+override_text caddy | cmp -s - "$case_dir/infrastructure-images.yaml"
 
 echo 'PASS: patch selection, signature, digest and migration checks, setting off, skipped snapshot, rollback, window, pending results; signed host generations, tampering, partial failure, interruption and rollback; PostgreSQL and Caddy image updates, checks, restores and the marker, pulled images that never ran, a failed restore after a killed automatic update, and an edited compose.yaml image line.'

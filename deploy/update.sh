@@ -500,11 +500,15 @@ prune_infrastructure_pulled() {
   mv "$ROOT/infrastructure-pulled.txt.next" "$ROOT/infrastructure-pulled.txt"
 }
 # Once .env names a service's image, the override gives it that image and compose.yaml's image line does nothing. Says
-# so when that line changed since the override was written; it changes no file.
+# so when that line changed since the override was written; it changes no file. A line infrastructure_plan treats as
+# the install's own image gets its own message there, and a rewritten override leaves that service to compose.yaml.
 infrastructure_pin_notice() {
   [ -f "$ROOT/infrastructure-images.yaml" ] || return 0
   for infra_service in postgres caddy; do
-    case "$infra_service" in postgres) infra_variable=POSTGRES_IMAGE ;; *) infra_variable=CADDY_IMAGE ;; esac
+    case "$infra_service" in
+      postgres) infra_variable=POSTGRES_IMAGE; infra_pattern=$postgres_image_pattern ;;
+      *) infra_variable=CADDY_IMAGE; infra_pattern=$caddy_image_pattern ;;
+    esac
     infra_pin=$(read_env "$infra_variable")
     infra_written=$(compose_image "$ROOT/infrastructure-images.yaml" "$infra_service") || infra_written=
     infra_written=${infra_written#*:-}
@@ -512,6 +516,7 @@ infrastructure_pin_notice() {
     infra_base=$(compose_image "$ROOT/compose.yaml" "$infra_service") || infra_base=
     [ -n "$infra_pin" ] && [ -n "$infra_written" ] && [ -n "$infra_base" ] || continue
     [ "$infra_base" != "$infra_written" ] && [ "$infra_base" != "$infra_pin" ] || continue
+    printf '%s\n' "$infra_base" | grep -Eq "$infra_pattern" || continue
     echo "compose.yaml names $infra_base for $infra_service, but $infra_variable in .env decides its image ($infra_pin). To change it, edit $infra_variable in .env."
   done
 }
