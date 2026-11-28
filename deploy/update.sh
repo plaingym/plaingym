@@ -216,6 +216,7 @@ cleanup() {
         prune_images || true; prune_host_history || true
         infrastructure_prune "$infra_postgres" "$infra_postgres_before"
         infrastructure_prune "$infra_caddy" "$infra_caddy_before"
+        prune_infrastructure_pulled || true
       fi
     else
       history_record "$to_version" "$target_id" "$attempt_end" "$target_floor" "$snapshot"
@@ -384,6 +385,7 @@ own_app_image() {
 # Sets infra_postgres and infra_caddy to the images to move to, and pulls and checks them before anything stops.
 # Returns 2 when an image can't be pulled, and 1 when one fails its check or the Compose files can't be written.
 infrastructure_plan() { # MANIFEST
+  infrastructure_pin_notice
   infra_postgres=
   infra_caddy=
   [ -n "$(manifest_value "$1" postgres_image)" ] || return 0
@@ -416,8 +418,8 @@ infrastructure_plan() { # MANIFEST
     esac
   done
   [ -n "$infra_postgres$infra_caddy" ] || return 0
-  if [ -n "$infra_postgres" ]; then docker pull "$infra_postgres" || return 2; fi
-  if [ -n "$infra_caddy" ]; then docker pull "$infra_caddy" || return 2; fi
+  if [ -n "$infra_postgres" ]; then docker pull "$infra_postgres" || return 2; remember_infrastructure_image "$infra_postgres"; fi
+  if [ -n "$infra_caddy" ]; then docker pull "$infra_caddy" || return 2; remember_infrastructure_image "$infra_caddy"; fi
   if [ -n "$infra_postgres" ]; then
     docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --pull never \
       --entrypoint postgres "$infra_postgres" --version | grep -Eq '^postgres \(PostgreSQL\) 18\.' || return 1
@@ -463,6 +465,74 @@ infrastructure_prune() { # NEW_IMAGE BEFORE_ID: after a successful update, the i
   [ -n "$1" ] && [ -n "$2" ] || return 0
   [ "$(docker image inspect "$1" --format '{{.Id}}' 2>/dev/null || true)" != "$2" ] || return 0
   remove_image "$2" || true
+}
+# Each PostgreSQL or Caddy image an update pulled is listed once in infrastructure-pulled.txt, so a later successful
+# update removes one that never ran (its update failed, and a later release names others). Recording never fails one.
+remember_infrastructure_image() { # IMAGE
+  infra_pulled_id=$(docker image inspect "$1" --format '{{.Id}}' 2>/dev/null) || return 0
+  printf '%s\n' "$infra_pulled_id" | grep -Eq '^sha256:[a-f0-9]{64}$' || return 0
+  if [ -f "$ROOT/infrastructure-pulled.txt" ] && grep -qxF "$infra_pulled_id" "$ROOT/infrastructure-pulled.txt"; then return 0; fi
+  { printf '%s\n' "$infra_pulled_id" >> "$ROOT/infrastructure-pulled.txt"; } 2>/dev/null \
+    || echo 'Could not record the pulled PostgreSQL or Caddy image for later cleanup.' >&2
+}
+# After a successful update, each listed image goes unless .env or compose.yaml names it; one Docker refuses to remove
+# (a container uses it) stays listed, so a later update tries again. Never forced.
+prune_infrastructure_pulled() {
+  [ -f "$ROOT/infrastructure-pulled.txt" ] || return 0
+  infra_keep=
+  for infra_named in "$(read_env POSTGRES_IMAGE)" "$(read_env CADDY_IMAGE)" \
+    "$(compose_image "$ROOT/compose.yaml" postgres)" "$(compose_image "$ROOT/compose.yaml" caddy)"; do
+    [ -n "$infra_named" ] || continue
+    infra_named_id=$(docker image inspect "$infra_named" --format '{{.Id}}' 2>/dev/null) || continue
+    infra_keep=$(printf '%s\n%s' "$infra_keep" "$infra_named_id")
+  done
+  : > "$ROOT/infrastructure-pulled.txt.next" || return 1
+  while IFS= read -r infra_pulled_id || [ -n "$infra_pulled_id" ]; do
+    printf '%s\n' "$infra_pulled_id" | grep -Eq '^sha256:[a-f0-9]{64}$' || continue
+    ! grep -qxF "$infra_pulled_id" "$ROOT/infrastructure-pulled.txt.next" || continue
+    if ! printf '%s\n' "$infra_keep" | grep -qxF "$infra_pulled_id"; then
+      remove_image "$infra_pulled_id" || true
+      docker image inspect "$infra_pulled_id" >/dev/null 2>&1 || continue
+    fi
+    printf '%s\n' "$infra_pulled_id" >> "$ROOT/infrastructure-pulled.txt.next" \
+      || { rm -f "$ROOT/infrastructure-pulled.txt.next"; return 1; }
+  done < "$ROOT/infrastructure-pulled.txt"
+  mv "$ROOT/infrastructure-pulled.txt.next" "$ROOT/infrastructure-pulled.txt"
+}
+# Once .env names a service's image, the override gives it that image and compose.yaml's image line does nothing. Says
+# so when that line changed since the override was written; it changes no file.
+infrastructure_pin_notice() {
+  [ -f "$ROOT/infrastructure-images.yaml" ] || return 0
+  for infra_service in postgres caddy; do
+    case "$infra_service" in postgres) infra_variable=POSTGRES_IMAGE ;; *) infra_variable=CADDY_IMAGE ;; esac
+    infra_pin=$(read_env "$infra_variable")
+    infra_written=$(compose_image "$ROOT/infrastructure-images.yaml" "$infra_service") || infra_written=
+    infra_written=${infra_written#*:-}
+    infra_written=${infra_written%\}}
+    infra_base=$(compose_image "$ROOT/compose.yaml" "$infra_service") || infra_base=
+    [ -n "$infra_pin" ] && [ -n "$infra_written" ] && [ -n "$infra_base" ] || continue
+    [ "$infra_base" != "$infra_written" ] && [ "$infra_base" != "$infra_pin" ] || continue
+    echo "compose.yaml names $infra_base for $infra_service, but $infra_variable in .env decides its image ($infra_pin). To change it, edit $infra_variable in .env."
+  done
+}
+# The restore after a run killed outright failed. With an automatic update's marker this is that update's failed
+# rollback: report it once, as the in-flight block reports its own failed start, and each later run tries again.
+infrastructure_restore_failed() {
+  infra_message='PostgreSQL or Caddy did not start on the images .env names. Fix the error above and run update.sh again.'
+  [ -f "$INFLIGHT" ] || fail "$infra_message"
+  read -r from_version to_version down_at left_by < "$INFLIGHT" || true
+  valid_version "$from_version" || from_version=-
+  valid_version "$to_version" || to_version=-
+  [ "${left_by:-}" != rollback_failed ] || fail "$infra_message"
+  patch=true
+  requested_rollback=false
+  work=$(mktemp -d)
+  send_pending || true
+  echo "$infra_message" >&2
+  inflight_mark rollback_failed
+  if [ "$from_version" = - ] || [ "$to_version" = - ]; then exit 1; fi
+  count_failure
+  finish failed rollback_failed 1
 }
 
 # --- Automatic patch updates (--patch) ---------------------------------------------------------------------
@@ -736,7 +806,7 @@ host_recover || fail 'Could not recover host files from an interrupted update.'
 # first. The blocks below then start the pinned app as before.
 if [ -f "$INFRA" ]; then
   echo 'An earlier update stopped while changing PostgreSQL or Caddy; starting the images .env names.' >&2
-  infrastructure_restore || fail 'PostgreSQL or Caddy did not start on the images .env names. Fix the error above and run update.sh again.'
+  infrastructure_restore || infrastructure_restore_failed
   rm -f "$INFRA"
 fi
 

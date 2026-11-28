@@ -673,8 +673,10 @@ Each night, in order, the updater:
    keeps an image a container uses or that other names refer to, and an entry
    whose image stays (or whose removal times out) stays on the stack until a later
    update removes it. The PostgreSQL and Caddy images the update replaced are
-   removed the same way. No global image prune runs, and images the updater didn't
-   record are untouched.
+   removed the same way, and so are those an earlier update pulled and never ran
+   (listed in `infrastructure-pulled.txt`) unless `.env` or `compose.yaml` names
+   them. No global image prune runs, and images the updater didn't record are
+   untouched.
 
 The journal line for each result names what happened: "updated from v1.2.3 to
 v1.2.4", "up to date (v1.2.4; no newer patch)", "failed, rollback_failed (from
@@ -689,7 +691,11 @@ run tries to start the pinned image again until it runs. The failure is reported
 once; once the pinned image runs, the recovery is reported with the time the app
 stopped. A run killed while PostgreSQL or Caddy may run another image than `.env`
 names leaves `.infrastructure-update`, and the next run of any kind first starts
-both on the images `.env` names. Its log is in the journal: `journalctl -u plaingym-update`.
+both on the images `.env` names; if they don't start after an automatic update
+was killed, that is reported once as `failed rollback_failed` and each hourly run
+tries again. Once `.env` names a PostgreSQL or Caddy image, an edited image line
+in `compose.yaml` does nothing, and the update says so. Its log is in the
+journal: `journalctl -u plaingym-update`.
 
 ### Rotating the encryption key
 

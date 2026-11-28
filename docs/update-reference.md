@@ -103,7 +103,10 @@ major 18 and that the database's recorded collation version matches the new imag
 recreated once the new app is healthy, and must keep running for ten seconds without a
 restart. Any failure, of these or of the app, puts both services back on their previous
 images, then starts the previous app. After a successful update the image each service ran
-before is removed, never forced.
+before is removed, never forced. Each image an update pulls is listed in
+`infrastructure-pulled.txt` in the install directory, so one that never ran (its update failed,
+and a later release names others) is removed the same way after the next successful update,
+unless `.env` or `compose.yaml` names it.
 
 The images an install runs are in `.env`, as `POSTGRES_IMAGE` and `CADDY_IMAGE`, written in
 the same rename as `APP_IMAGE`: the app and both images change together or not at all.
@@ -113,9 +116,12 @@ one, to the pin `compose.yaml` had when the file was written, and lists it in `C
 ordinary `docker compose` commands use it too. A fresh install has neither until an update
 first tries to move an image: both are written once the new images pass their checks, before
 anything stops, and stay if that update then fails. Once they exist, change an image by editing `.env`, not the image lines
-of `compose.yaml`. If an update is cut off while PostgreSQL or Caddy may run another image than
-`.env` names (`.infrastructure-update` in the install directory), the next run starts both on
-the images `.env` names before anything else.
+of `compose.yaml`; an update says so when a service's image line in `compose.yaml` differs from
+the image `.env` names for it. If an update is cut off while PostgreSQL or Caddy may run another
+image than `.env` names (`.infrastructure-update` in the install directory), the next run starts
+both on the images `.env` names before anything else. If they don't start while an automatic
+update's marker is there, that failure is reported once, as `failed rollback_failed`, and each
+hourly run tries again.
 
 Two kinds of install keep their images, and each update says so in its output. One with
 Compose files of its own (`compose.override.yaml` in the install directory, or a

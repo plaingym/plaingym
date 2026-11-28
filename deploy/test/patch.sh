@@ -1143,7 +1143,9 @@ done
 [ "$(line_of 'server_version_num')" -lt "$(line_of " 90 app IMAGE=$target")" ]
 [ "$(line_of ' node /app/deploy/healthcheck.mjs')" -lt "$(line_of "60 caddy IMAGE=configured POSTGRES_IMAGE=unset CADDY_IMAGE=$C1")" ]
 [ "$(line_of "image rm $(infra_digest 3)")" -gt "$(line_of '60 caddy IMAGE')" ]
-tail -n 1 "$CALLS" | grep -q "^image rm $(infra_digest 6) "
+grep '^image rm ' "$CALLS" | tail -n 1 | grep -q "^image rm $(infra_digest 6) "
+# Both pulled images run now, so the record keeps them.
+printf '%s\n' "$(infra_digest 4)" "$(infra_digest 7)" | cmp -s - "$case_dir/infrastructure-pulled.txt"
 never "$restored"
 # Before the swap writes the schema guard, a Compose call loads compose.yaml and then the override.
 grep ' stop app' "$CALLS" | grep -q -- "-f $case_dir/compose.yaml -f $case_dir/infrastructure-images.yaml stop app"
@@ -1335,4 +1337,98 @@ never "pull $C1"; never '60 caddy'
 grep " 90 app IMAGE=" "$CALLS" | grep -q -- "-f $case_dir/compose.yaml -f $case_dir/schema-compatibility.yaml -f $case_dir/infrastructure-images.yaml up "
 printf '[{"tag_name": "v2.0.0"}, {"tag_name":"v1.3.0"},\n {"tag_name": "v1.2.5"}, {"tag_name": "v1.2.4"}, {"tag_name": "v1.2.3"}]\n' > "$FIXTURES/releases.json"
 
-echo 'PASS: patch selection, signature, digest and migration checks, setting off, skipped snapshot, rollback, window, pending results; signed host generations, tampering, partial failure, interruption and rollback; PostgreSQL and Caddy image updates, checks, restores and the marker.'
+# An update that fails after pulling its images lists them, and removes none. The next successful update, to other
+# images, removes the one that never ran and keeps those .env or compose.yaml names.
+make_install infra-pulled
+with_images "$P1" "$C1"
+expect_status 1 FAIL_AT=health --patch --now
+recorded "--result rolled_back --reason health_check_failed --from v1.2.3 --to v1.2.5 --failures 1"
+printf '%s\n' "$(infra_digest 4)" "$(infra_digest 7)" | cmp -s - "$case_dir/infrastructure-pulled.txt"
+never "image rm $(infra_digest 4)"; never "image rm $(infra_digest 7)"
+write_manifest v1.2.5
+with_images "$P2" "$C1"
+: > "$CALLS"
+expect_status 0 --patch --now
+recorded "--result updated --from v1.2.3 --to v1.2.5"
+grep -qx "POSTGRES_IMAGE=$P2" "$case_dir/.env" && grep -qx "CADDY_IMAGE=$C1" "$case_dir/.env"
+[ "$(grep -c "^image rm $(infra_digest 4) " "$CALLS")" -eq 1 ]
+never "image rm $(infra_digest 5)"; never "image rm $(infra_digest 7)"
+# Exactly the listed images still on disk.
+printf '%s\n' "$(infra_digest 7)" "$(infra_digest 5)" | cmp -s - "$case_dir/infrastructure-pulled.txt"
+
+# A listed image compose.yaml names stays; an invalid line and a repeated ID leave the list without another removal.
+make_install infra-pulled-kept
+printf '%s\n' "$(infra_digest 3)" not-an-id "$(infra_digest 4)" "$(infra_digest 3)" "$(infra_digest 4)" > "$case_dir/infrastructure-pulled.txt"
+expect_status 0 --patch --now
+recorded "--result updated --from v1.2.3 --to v1.2.5"
+never "image rm $(infra_digest 3)"; never 'image rm not-an-id'
+[ "$(grep -c "^image rm $(infra_digest 4) " "$CALLS")" -eq 1 ]
+printf '%s\n' "$(infra_digest 3)" | cmp -s - "$case_dir/infrastructure-pulled.txt"
+# A --rollback run removes nothing and leaves the list as it was.
+printf '%s\n' "$(infra_digest 5)" >> "$case_dir/infrastructure-pulled.txt"
+cp "$case_dir/infrastructure-pulled.txt" "$temporary/pulled-before"
+: > "$CALLS"
+expect_status 0 CURRENT_LABEL=v1.2.5 --rollback
+never 'image rm '
+cmp -s "$temporary/pulled-before" "$case_dir/infrastructure-pulled.txt"
+
+# A list that can't be written never fails the update.
+make_install infra-pulled-unwritable
+with_images "$P1" "$C1"
+mkdir "$case_dir/infrastructure-pulled.txt"
+expect_status 0 --patch --now
+recorded "--result updated --from v1.2.3 --to v1.2.5"
+grep -qxF 'Could not record the pulled PostgreSQL or Caddy image for later cleanup.' "$temporary/output"
+[ -d "$case_dir/infrastructure-pulled.txt" ]
+
+# An automatic update killed outright while changing PostgreSQL or Caddy, whose restore then fails: its rollback failed,
+# reported once, and both markers stay. A later run whose restore works reports the recovery.
+make_install infra-marker-inflight
+: > "$case_dir/.infrastructure-update"
+printf 'v1.2.3 v1.2.5 2026-11-20T03:00:00Z -\n' > "$case_dir/.auto-update.inflight"
+expect_status 1 FAIL_AT=infra_restore --patch
+recorded '--result failed --reason rollback_failed --from v1.2.3 --to v1.2.5 --failures 1'
+[ "$(wc -l < "$RECORDS")" -eq 1 ]
+grep -qxF 'PostgreSQL or Caddy did not start on the images .env names. Fix the error above and run update.sh again.' "$temporary/output"
+[ "$(awk '{ print $4 }' "$case_dir/.auto-update.inflight")" = rollback_failed ]
+[ -e "$case_dir/.infrastructure-update" ]
+never ' 90 app'
+expect_status 1 FAIL_AT=infra_restore --patch
+[ "$(wc -l < "$RECORDS")" -eq 1 ]
+[ -e "$case_dir/.infrastructure-update" ] && [ -e "$case_dir/.auto-update.inflight" ]
+never ' 90 app'
+: > "$CALLS"
+expect_status 1 --patch
+head -n 1 "$CALLS" | grep -q -- "$restored"
+[ ! -e "$case_dir/.infrastructure-update" ] && [ ! -e "$case_dir/.auto-update.inflight" ]
+recorded '--result rolled_back --reason rollback_failed --from v1.2.3 --to v1.2.5 --failures 1 --down-at 2026-11-20T03:00:00Z'
+# Without an automatic update's marker the failed restore only says so.
+make_install infra-marker-restore
+: > "$case_dir/.infrastructure-update"
+expect_status 1 FAIL_AT=infra_restore --patch
+grep -qxF 'PostgreSQL or Caddy did not start on the images .env names. Fix the error above and run update.sh again.' "$temporary/output"
+[ ! -s "$RECORDS" ]
+[ -e "$case_dir/.infrastructure-update" ]
+
+# compose.yaml's image line edited once .env names the image: the update says .env decides, once, and changes no file.
+notice="compose.yaml names $P2 for postgres, but POSTGRES_IMAGE in .env decides its image ($P1). To change it, edit POSTGRES_IMAGE in .env."
+for notice_case in edited unedited pinned unpinned; do
+  make_install "infra-notice-$notice_case"
+  override_text postgres caddy > "$case_dir/infrastructure-images.yaml"
+  printf 'COMPOSE_FILE=compose.yaml:infrastructure-images.yaml\n' >> "$case_dir/.env"
+  [ "$notice_case" = unpinned ] || printf 'POSTGRES_IMAGE=%s\n' "$P1" >> "$case_dir/.env"
+  case "$notice_case" in unedited) edited=$P0 ;; pinned) edited=$P1 ;; *) edited=$P2 ;; esac
+  sed -i "s#^    image: $P0\$#    image: $edited#" "$case_dir/compose.yaml"
+  cp "$case_dir/compose.yaml" "$temporary/compose-before"
+  expect_status 0 --patch --now
+  recorded "--result updated --from v1.2.3 --to v1.2.5"
+  if [ "$notice_case" = edited ]; then
+    [ "$(grep -cxF "$notice" "$temporary/output")" -eq 1 ]
+  elif grep -qF 'decides its image' "$temporary/output"; then
+    echo "A notice without an edited image line: $notice_case" >&2; exit 1
+  fi
+  cmp -s "$temporary/compose-before" "$case_dir/compose.yaml"
+  override_text postgres caddy | cmp -s - "$case_dir/infrastructure-images.yaml"
+done
+
+echo 'PASS: patch selection, signature, digest and migration checks, setting off, skipped snapshot, rollback, window, pending results; signed host generations, tampering, partial failure, interruption and rollback; PostgreSQL and Caddy image updates, checks, restores and the marker, pulled images that never ran, a failed restore after a killed automatic update, and an edited compose.yaml image line.'
