@@ -98,6 +98,8 @@ export function linkBrowser() {
     if (!response.ok) throw new Error('request failed');
     const updated = new DOMParser().parseFromString(await response.text(), 'text/html');
     if (!activePage) return;
+    // The link was completed meanwhile (another tab or a card confirmation): show it done, not a refusal.
+    if (updated.body.dataset.state === 'alreadyDone') { done(); return; }
     if (updated.querySelector('[data-keep-card]')) { say('keepUnsigned'); return; }
     keep.remove();
     say('keepGone');

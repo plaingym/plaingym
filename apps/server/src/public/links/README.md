@@ -235,9 +235,10 @@ route that takes a body field (the other two refuse one with 400). The link
 completes only once every waiver is signed, and the method is checked again
 under the link lock, with no provider call; otherwise the link stays open
 (`areas/links/campaigns.README.md`) and the page reads itself again: when it
-still offers the method it says `keepUnsigned` (sign the documents above, then
+still offers the method it says `keepUnsigned` (sign the documents below, then
 keep again); when it no longer does, it removes the keep button and says
-`keepGone` (use a different card).
+`keepGone` (use a different card); when it finds the link completed meanwhile,
+it shows the completed message.
 
 ## Composition
 

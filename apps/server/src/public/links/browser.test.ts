@@ -154,6 +154,17 @@ it('removes the keep button and says so when a refused keep finds the method no 
   expect(document.querySelector('[data-keep-card]')).toBeNull();
   expect(document.querySelector('[data-checkout]')).not.toBeNull();
 });
+it('shows the link done when a refused keep finds it completed meanwhile', async () => {
+  const f = fixture('onboarding'); f.location.href = 'https://gym.test/l/token';
+  document.body.insertAdjacentHTML('beforeend', cardPanel);
+  f.fetch.mockResolvedValueOnce(new Response(JSON.stringify({ data: { completed: false } })))
+    .mockResolvedValueOnce(new Response('<body data-state="alreadyDone"><main><h1>Already done</h1></main></body>'));
+  linkBrowser(); await vi.advanceTimersByTimeAsync(0);
+  document.querySelector<HTMLButtonElement>('[data-keep-card]')!.click(); await vi.advanceTimersByTimeAsync(0);
+  expect(f.fetch).toHaveBeenCalledTimes(2);
+  expect(document.querySelector('h1')?.textContent).toBe('You are all set');
+  expect(f.feedback.textContent).not.toBe('keepGone');
+});
 it('says failed when the page read after a refused keep fails', async () => {
   const f = fixture('onboarding'); f.location.href = 'https://gym.test/l/token';
   document.body.insertAdjacentHTML('beforeend', cardPanel);
