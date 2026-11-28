@@ -428,9 +428,9 @@ the person's own.
     no household login in the gym, so one client can't turn the gym's mail server
     on strangers. Addresses linked to the gym are never counted or refused, and
     the links the app sends itself (the first owner, a portal claim, a join's
-    sign-in link) aren't counted. Every public request runs the same database
-    statements, the linked check and two on the ceiling's row, a linked
-    address's never changing the count. A send the mail server provably never
+    sign-in link) aren't counted. Every public request runs the linked check and
+    the same two statements on the ceiling's row, a linked address's never
+    changing the count. A send the mail server provably never
     accepted gives its slot back; one whose outcome is unknown, or one held
     back for a suppressed address, keeps it. Past the ceiling nothing is sent,
     and the
@@ -449,7 +449,8 @@ the person's own.
     failure is imitated only for 5 minutes after it; the wait is capped at
     2 seconds, so a slower mail server still answers later for a linked
     address; a failed send to an unlinked address gives its slot back with one
-    more statement; and each app process keeps its own record.
+    more statement; the linked check runs one query for a staff address and two
+    for any other; and each app process keeps its own record.
 * **Resets.** Staff may reset the password only of users whose roles are all below
   their own (a member who is also staff counts as staff). Only an owner may change
   or revoke an existing admin role, so an admin cannot demote a peer to reset

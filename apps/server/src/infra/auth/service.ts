@@ -221,7 +221,10 @@ export function createAuthService(options: AuthServiceOptions) {
       // Each HTTP password or login-link call through this binding, under the random ID `handler` sends in the internal
       // attempt header. Its own entry holds its own reservation, so concurrent calls never release each other's.
       const attempts = new Map<string, AccountAttempt>();
-      /** Whether an identity with this address has a staff role or a household login in this gym. */
+      /**
+       * Whether an identity with this address has a staff role or a household login in this gym. A staff address is
+       * answered after one query, any other after two.
+       */
       async function linked(email: string): Promise<boolean> {
         const address = email.toLowerCase();
         return scopedDatabase(database()).forGym(gym.gymId, async (tx) => {
