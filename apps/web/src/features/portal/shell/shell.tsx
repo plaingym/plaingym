@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode, type Ref } from 'react';
 import { Link, Navigate, Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
 import { onlineManager, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { canMember, type NavigationEntry } from '@plaingym/shared';
@@ -8,6 +8,7 @@ import { AccountMenu, useDismiss } from '../../../app/account-menu.js';
 import { useMenuCovers } from '../../../app/menu-covers.js';
 import { bootstrapKey, useBootstrap, useShellServices } from '../../../app/context.js';
 import { sessionName } from '../../../app/identity.js';
+import { useAfterMount } from '../../../lib/after-mount.js';
 import { createRegistries } from '../../../lib/registries.js';
 import { createJsonTransport } from '../../../lib/api.js';
 import { parseResponse } from '../../../lib/response.js';
@@ -206,7 +207,8 @@ export function PortalLayout({ name, person, scope, entries, children, notices, 
       {entries.length > 0 && <nav ref={nav} id="portal-navigation" data-portal-chrome aria-label={text('navigation')} style={open && menuTop !== undefined ? { top: capTop ?? menuTop, maxHeight: `max(calc(100dvh - ${menuTop}px - 3rem), calc(4.25rem + 1px))` } : undefined}
         className={`${open ? `fixed inset-x-0 ${capTop === undefined ? 'z-20' : 'z-40'} block overflow-y-auto overscroll-contain bg-background shadow-lg` : 'hidden'} border-b border-border p-3
           md:sticky md:top-[var(--portal-header-height)] md:bottom-auto md:block md:max-h-[calc(100dvh-var(--portal-header-height))] md:w-56 md:shrink-0 md:self-start md:overflow-y-auto md:border-b-0 md:border-r md:shadow-none`}>
-        <ul className="space-y-1">{entries.map(entry => <li key={entry.id}><Link to={entry.href} onClick={() => setOpen(false)} className="flex min-h-11 items-center rounded-md px-3 hover:bg-muted" activeOptions={{ exact: true }} activeProps={{ className: 'bg-muted font-semibold', 'aria-current': 'page' }}>{t(entry.labelKey)}</Link></li>)}</ul>
+        {/* A link chosen in the phone menu is hidden as the menu closes, so the focus goes back to the Menu button. */}
+        <ul className="space-y-1">{entries.map(entry => <li key={entry.id}><Link to={entry.href} onClick={() => { setOpen(false); if (open) menuButton.current?.focus(); }} className="flex min-h-11 items-center rounded-md px-3 hover:bg-muted" activeOptions={{ exact: true }} activeProps={{ className: 'bg-muted font-semibold', 'aria-current': 'page' }}>{t(entry.labelKey)}</Link></li>)}</ul>
       </nav>}
       {/* The page the open panel covers takes no focus or presses. */}
       <main id="main-content" inert={open} className="min-w-0 flex-1 px-4 py-6 sm:px-6">{!online && <Alert>{text('offline')}</Alert>}{notices}{failure}{children}</main>
@@ -224,6 +226,12 @@ function PortalLoading() {
     return () => { window.removeEventListener('online', update); window.removeEventListener('offline', update); };
   }, []);
   return <>{!online && <div className="px-4 pt-6 sm:px-6"><Alert>{text('offline')}</Alert></div>}<div className="px-4 py-6 sm:px-6"><LoadingState /></div></>;
+}
+/** The failed-load view's sign-out status. It mounts empty, so one that mounts during a sign-out is still announced. */
+function FailedSignOutStatus({ ref, pending }: { ref: Ref<HTMLParagraphElement>; pending: boolean }) {
+  const shown = useAfterMount();
+  // Empty and no sign-out being sent, it takes no room.
+  return <p ref={ref} role="status" className={pending ? 'text-sm text-muted-foreground' : 'sr-only'}>{pending && shown && t('shell/shell:signingOut')}</p>;
 }
 function AuthenticatedPortal() {
   const bootstrap = useBootstrap(), services = useShellServices(), cache = useQueryClient(), navigate = useNavigate();
@@ -316,11 +324,18 @@ function AuthenticatedPortal() {
     document.addEventListener('focusin', remember); document.addEventListener('pointerdown', forget, true);
     return () => { document.removeEventListener('focusin', remember); document.removeEventListener('pointerdown', forget, true); };
   }, []);
+  // The view on screen, as the branch that renders it and the pathname, and the one the last commit showed.
+  const view = useRef(''), lastView = useRef('');
   // A view that replaces another may take the focused header or sidebar control with it, so the account menu takes the
-  // focus. A view with no header leaves the mark for the next one.
+  // focus. A view with no header leaves the mark for the next one. A control removed while its view stays (a closing menu's
+  // theme choice) is forgotten, so no later view moves the focus for it.
   useLayoutEffect(() => {
-    if (!chromeFocus.current || chromeFocus.current.isConnected || document.activeElement !== document.body) return;
-    document.querySelector<HTMLElement>('[data-portal-chrome] [aria-controls="account-menu"]')?.focus();
+    const changed = view.current !== lastView.current;
+    lastView.current = view.current;
+    if (!chromeFocus.current || chromeFocus.current.isConnected) return;
+    const account = document.querySelector<HTMLElement>('[data-portal-chrome] [aria-controls="account-menu"]');
+    if (changed) { if (document.activeElement === document.body) account?.focus(); }
+    else if (account) chromeFocus.current = null;
   });
   // The failed-load view's status, present only while that view is on screen.
   const failedStatus = useRef<HTMLParagraphElement>(null);
@@ -338,18 +353,25 @@ function AuthenticatedPortal() {
   const signOutError = signOut.isError && <Alert variant="error" focusOnReveal className="mb-4">{text('signOutFailed')}</Alert>;
   // A retry or a household choice puts that message away. A sign-out still being sent is left alone, so its failure is told.
   const clearSignOutError = () => { if (signOut.isError) signOut.reset(); };
-  // The status is mounted with the view, so a sign-out sent from here is announced, and a retry waits for it. Empty, it takes no room.
-  const failed = (retry: () => void) => <Page className="px-4 py-6 sm:px-6"><ErrorState message={text('failed')} onRetry={() => { clearSignOutError(); retry(); }} retryDisabled={signOut.isPending} /><Button onClick={() => signOut.mutate()} disabled={signOut.isPending}>{text('signOut')}</Button><p ref={failedStatus} role="status" className={signOut.isPending ? 'text-sm text-muted-foreground' : 'sr-only'}>{signOut.isPending && t('shell/shell:signingOut')}</p>{signOutError}</Page>;
+  // The status is mounted with the view, so a sign-out sent from here is announced, and a retry waits for it.
+  const failed = (retry: () => void) => {
+    view.current = 'failed|' + pathname;
+    return <Page className="px-4 py-6 sm:px-6"><ErrorState message={text('failed')} onRetry={() => { clearSignOutError(); retry(); }} retryDisabled={signOut.isPending} /><Button onClick={() => signOut.mutate()} disabled={signOut.isPending}>{text('signOut')}</Button><FailedSignOutStatus ref={failedStatus} pending={signOut.isPending} />{signOutError}</Page>;
+  };
   // A loading step keeps the portal layout while a sign-out is being sent or after it failed, so the account menu and its status
   // stay mounted and the failure is told above the loading state.
-  const loading = () => signOut.isPending || signOut.isError
-    ? <PortalLayout name={bootstrap.data!.gym.name} person={person} entries={[]} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending} account={!!current} failure={signOutError}><LoadingState /></PortalLayout>
-    : <PortalLoading />;
+  const loading = () => {
+    view.current = 'loading|' + pathname;
+    return signOut.isPending || signOut.isError
+      ? <PortalLayout name={bootstrap.data!.gym.name} person={person} entries={[]} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending} account={!!current} failure={signOutError}><LoadingState /></PortalLayout>
+      : <PortalLoading />;
+  };
   if (households.isPending || choose.isPending) return loading();
   // A list load that fails while the portal has lists to show keeps it up, like the bootstrap: every key follows the lists.
   if (households.isError && !households.data) return failed(() => void households.refetch());
   if (!current) {
     if (!households.data.households.length) return failed(() => void households.refetch());
+    view.current = 'picker|' + pathname;
     return <PortalLayout name={bootstrap.data.gym.name} person={person} entries={[]} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending} notices={<PortalRecoveryNotice />} failure={signOutError}>
       <HouseholdPicker households={households.data.households} onChoose={id => { clearSignOutError(); choose.mutate(id); }} pending={choose.isPending || signOut.isPending} failed={choose.isError} />
     </PortalLayout>;
@@ -366,6 +388,7 @@ function AuthenticatedPortal() {
     {context.isError && !households.isFetching && <ErrorState message={text('failed')} onRetry={() => { clearSignOutError(); void households.refetch(); void context.refetch(); }} />}
     <PortalRecoveryNotice />
   </>;
+  view.current = 'portal|' + pathname;
   return <PortalLayout name={bootstrap.data.gym.name} person={person} scope={context.data.role} entries={portalNavigation(createRegistries().portalNav.all(), context.data.role, bootstrap.data.gym.enabledModules)} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending} switcher={switcher} notices={notices} failure={signOutError} account>
     {choose.isError && <Alert variant="error">{text('chooseFailed')}</Alert>}<Outlet key={current} />
   </PortalLayout>;

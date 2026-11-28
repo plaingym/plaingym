@@ -699,6 +699,38 @@ describe('portal check-in code', () => {
     await waitFor(() => expect(retry.isConnected).toBe(false));
     expect(document.activeElement).toBe(keep());
   });
+  /** Fails a replacement and the read after it, then starts the dialog's retry with a read the test answers itself. */
+  const retryHeld = async () => {
+    const user = userEvent.setup(); page();
+    await user.click(await screen.findByRole('button', { name: 'Replace this code' }));
+    client.regenerateCheckin.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    client.checkinCode.mockRejectedValueOnce(new ApiError(500, 'request_failed'));
+    await user.click(replace());
+    const retry = await within(screen.getByRole('dialog')).findByRole('button', { name: 'Try again' }) as HTMLButtonElement;
+    await waitFor(() => expect(retry.disabled).toBe(false));
+    let fail!: () => void;
+    client.checkinCode.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = () => reject(new ApiError(500, 'request_failed')); }));
+    await user.click(retry);
+    await waitFor(() => expect(retry.disabled).toBe(true));
+    return { retry, fail: () => act(async () => fail()) };
+  };
+  it("gives the dialog's retry the focus back when the read fails again", async () => {
+    const { retry, fail } = await retryHeld();
+    dropFocus();
+    await fail();
+    await waitFor(() => expect(retry.disabled).toBe(false));
+    expect(retry.isConnected).toBe(true);
+    expect(document.activeElement).toBe(retry);
+  });
+  it('leaves the focus on another dialog control when the read fails again', async () => {
+    const { retry, fail } = await retryHeld();
+    act(() => keep().focus());
+    await fail();
+    await waitFor(() => expect(retry.disabled).toBe(false));
+    // The effects of the failed read have run once this settles.
+    await act(async () => undefined);
+    expect(document.activeElement).toBe(keep());
+  });
   it('puts the focus on the replace button when a members read drops the member of the open dialog', async () => {
     client.checkinCode.mockImplementation(async (memberId: string) => answer({ memberId, code, version: 1, revision: 4 }));
     const user = userEvent.setup(); page();

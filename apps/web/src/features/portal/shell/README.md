@@ -68,13 +68,18 @@ portal. Signing out clears the query cache before returning to login. While the
 sign-out is being sent, the household picker and the header switcher can't be used.
 A household the server opens meanwhile loads inside the portal, so the **Account**
 menu keeps its **Signing out…** status; the failed-load view says it is signing
-out, and its **Try again** waits until the sign-out fails. A load still running
+out, and its **Try again** waits until the sign-out fails. Either status, when it
+mounts during a sign-out, is empty at first and fills a moment (100 ms) after it
+appears, so that it is announced. A load still running
 when the sign-out fails says so above the loading state, and while the sign-out is
 being sent a failed load isn't read again by a window focus or reconnect. A portal
 with no section to list (the household picker, or a household still loading) has
 no menu. A second move by the server while a household is loading keeps that layout until the household lists have
 been read again.
-The **Account** button takes the focus when a view change removes the header or sidebar control that held it.
+The **Account** button takes the focus only in the render in which a view change (another of the shell's views, or
+another page) removed the header or sidebar control that held it; a view with no header leaves that to the next one.
+A control removed without a view change, such as a theme choice in a closing menu, is forgotten. A link chosen in
+the phone menu leaves the focus on **Menu**.
 The root layout supplies the source-code footer.
 
 The home page summarizes the next booked, scheduled class within 30 days (not a

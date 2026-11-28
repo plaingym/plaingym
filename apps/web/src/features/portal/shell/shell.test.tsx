@@ -11,6 +11,7 @@ import { bootstrapKey, ShellServicesContext } from '../../../app/context.js';
 import { createAppRouter } from '../../../app/router.js';
 import type { ShellServices } from '../../../app/services.js';
 import { themeStorageKey } from '../../../lib/theme.js';
+import { portalHouseholdsKey, portalLoginKey } from '../household/api.js';
 import { portalNavigation } from './shell.js';
 
 // Keep shell request-order assertions independent of home summaries, covered in home.test.tsx and End-to-end.
@@ -18,6 +19,7 @@ vi.mock('./home.js', () => ({ PortalHome: () => <h1>Welcome to your member porta
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   onlineManager.setOnline(true);
@@ -1128,6 +1130,128 @@ it.each(['a link', 'the Menu button'] as const)('moves the focus from %s to Acco
   await waitFor(() => expect(loadingInside()).not.toBeNull());
   expect(screen.queryByRole('navigation', { name: 'Member navigation' })).toBeNull();
   expect(document.activeElement).toBe(account);
+});
+/** From here the test moves `setTimeout` itself, so it can tell a status's first moment from the ones after it. */
+const holdTimers = () => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+const advance = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
+/** Has the household lists name no household at all, which shows the failed-load view; the returned call undoes it. */
+function emptyLists(f: ReturnType<typeof portal>) {
+  const answer = f.fetcher.getMockImplementation()!;
+  f.fetcher.mockImplementation(async (path, init) => path === '/api/portal/households' ? Response.json({ data: { current: null, households: [] } }) : answer(path, init));
+  return () => { f.fetcher.mockImplementation(answer); };
+}
+it('mounts the failed-load view\'s status empty during a sign-out and fills it 100 ms later', async () => {
+  const f = portal(ids.first), user = userEvent.setup();
+  f.signOut.mockImplementation(() => new Promise(() => undefined));
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  await user.click(accountButton());
+  await user.click(screen.getByRole('button', { name: 'Sign out' }));
+  await screen.findByText('Signing out…');
+  emptyLists(f);
+  holdTimers();
+  act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+  // The view appears within a few milliseconds of the read, so its status is still in its first moment.
+  for (let passed = 0; passed < 20 && !screen.queryByText(/couldn.t load your portal/); passed++) await advance(1);
+  expect(screen.getByText(/couldn.t load your portal/)).toBeDefined();
+  expect(screen.queryByRole('banner')).toBeNull();
+  const status = screen.getByRole('status');
+  expect(status.textContent).toBe('');
+  await advance(50);
+  expect(status.textContent).toBe('');
+  await advance(50);
+  expect(screen.getByRole('status')).toBe(status);
+  expect(status.textContent).toBe('Signing out…');
+});
+it('fills the status at once for a sign-out sent from a failed-load view already on screen', async () => {
+  const f = portal(ids.first);
+  const answer = f.fetcher.getMockImplementation()!;
+  f.fetcher.mockImplementation(async (path, init) => path === '/api/portal/households' ? new Response(null, { status: 500 }) : answer(path, init));
+  f.signOut.mockImplementation(() => new Promise(() => undefined));
+  await screen.findByText(/couldn.t load your portal/);
+  const status = screen.getByRole('status');
+  await act(() => new Promise<void>(resolve => { setTimeout(resolve, 150); }));
+  holdTimers();
+  act(() => screen.getByRole('button', { name: 'Sign out' }).click());
+  // Only long enough for the mutation's own notice, far short of the 100 ms a newly mounted status waits.
+  await advance(1);
+  expect(status.textContent).toBe('Signing out…');
+});
+const menuToggle = () => screen.getByRole('button', { name: 'Menu' });
+it.each(['the page already open', 'another page'] as const)('leaves the focus on Menu after a phone-menu link chosen with the keyboard (%s)', async page => {
+  const f = portal(ids.first), user = userEvent.setup();
+  f.signOut.mockImplementation(() => new Promise(() => undefined));
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  await user.click(accountButton());
+  await user.click(screen.getByRole('button', { name: 'Sign out' }));
+  await screen.findByText('Signing out…');
+  act(() => menuToggle().focus());
+  await user.keyboard('{Enter}');
+  const links = within(screen.getByRole('navigation', { name: 'Member navigation' })).getAllByRole('link');
+  expect(document.activeElement).toBe(links[0]);
+  if (page === 'another page') await user.tab();
+  expect(document.activeElement).toBe(links[page === 'another page' ? 1 : 0]);
+  await user.keyboard('{Enter}');
+  await waitFor(() => expect(f.router.state.location.pathname).toBe(links[page === 'another page' ? 1 : 0]!.getAttribute('href')));
+  expect(menuToggle().getAttribute('aria-expanded')).toBe('false');
+  expect(document.activeElement).toBe(menuToggle());
+  // A later view change takes the header's Menu button and the sidebar away, so Account takes the focus.
+  await moveWithContextHeld(f);
+  await waitFor(() => expect(loadingInside()).not.toBeNull());
+  expect(screen.queryByRole('navigation', { name: 'Member navigation' })).toBeNull();
+  expect(document.activeElement).toBe(accountButton());
+});
+it('leaves the focus on the link of the sidebar, which no phone menu holds, when it is chosen', async () => {
+  portal(ids.first);
+  const user = userEvent.setup();
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  act(() => sidebarLink().focus());
+  await user.keyboard('{Enter}');
+  await settled();
+  expect(document.activeElement).toBe(sidebarLink());
+});
+it('forgets a theme choice that a closing account menu removed with no view change', async () => {
+  const f = portal(ids.first), user = userEvent.setup();
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  await act(() => f.router.navigate({ to: '/portal/account' }));
+  await user.click(accountButton());
+  await user.click(screen.getByRole('radio', { name: 'Light' }));
+  expect(document.activeElement).toBe(screen.getByRole('radio', { name: 'Light' }));
+  // Browser Back changes the page first; the menu then closes and removes the focused choice.
+  await act(async () => { f.router.history.back(); });
+  await waitFor(() => expect(screen.queryByRole('radio')).toBeNull());
+  expect(document.activeElement).toBe(document.body);
+  // The lists answer with a new name, so the portal renders again in the same view.
+  const answer = f.fetcher.getMockImplementation()!;
+  f.fetcher.mockImplementation(async (path, init) => path !== '/api/portal/households' ? answer(path, init)
+    : Response.json({ data: { current: ids.first, households: [{ householdId: ids.first, name: 'Alder household', role: 'payer' }, { householdId: ids.second, name: 'Cedar household', role: 'member' }] } }));
+  await act(() => f.cache.refetchQueries({ queryKey: portalHouseholdsKey(portalLoginKey(ids.user, ids.user)) }));
+  await screen.findByRole('option', { name: 'Cedar household' });
+  await settled();
+  expect(document.activeElement).toBe(document.body);
+  // The choice is forgotten, so a later view change moves no focus either.
+  f.fetcher.mockImplementation(answer);
+  const held = await moveWithContextHeld(f);
+  await waitFor(() => expect(screen.queryByRole('banner')).toBeNull());
+  await act(async () => held.settle());
+  await waitFor(() => expect(identity()).toBe('Noa Second · Member'));
+  expect(document.activeElement).toBe(document.body);
+});
+it('keeps the mark through the failed-load view for the next view with a header', async () => {
+  const f = portal(ids.first);
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  const switcher = screen.getByRole('combobox');
+  act(() => switcher.focus());
+  const restore = emptyLists(f);
+  await focusAgain();
+  await screen.findByText(/couldn.t load your portal/);
+  expect(switcher.isConnected).toBe(false);
+  // The same view rendered again, with no header to look in, leaves the mark too.
+  await focusAgain();
+  expect(document.activeElement).toBe(document.body);
+  restore();
+  await focusAgain();
+  await screen.findByRole('heading', { name: 'Welcome to your member portal' });
+  await waitFor(() => expect(document.activeElement).toBe(accountButton()));
 });
 it.each(['never answers', 'fails'] as const)('pads the first load, which has no portal layout around it, when the bootstrap %s', async load => {
   vi.stubGlobal('scrollTo', vi.fn());

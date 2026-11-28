@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'rea
 import { Link, useRouterState } from '@tanstack/react-router';
 import { Button } from '../components/ui/button.js';
 import { ChevronDownIcon, UserIcon } from '../components/ui/icons.js';
+import { useAfterMount } from '../lib/after-mount.js';
 import { t } from '../lib/i18n.js';
 import { applyThemeChoice, readThemeChoice, setThemeChoice, syncThemeChoiceFromStorage, themeChoices, themeStorageKey, type ThemeChoice as ThemeChoiceValue } from '../lib/theme.js';
 
@@ -61,6 +62,7 @@ export function AccountMenu({ accountPath, identity, onSignOut, signingOut }:
   const pathname = useRouterState({ select: (router) => router.location.pathname });
   useEffect(close, [close, pathname]);
   useDismiss(open, close, refs, trigger);
+  const shown = useAfterMount();
   return <div className="relative ml-auto">
     <Button ref={trigger} variant="ghost" className="min-w-11 px-2 sm:px-3" aria-expanded={open} aria-controls="account-menu" onClick={() => setOpen(!open)}>
       <UserIcon /><span className="sr-only sm:not-sr-only">{t('shell/shell:account')}</span><ChevronDownIcon className="hidden size-4 sm:block" />
@@ -74,9 +76,10 @@ export function AccountMenu({ accountPath, identity, onSignOut, signingOut }:
       {open && <ThemeChoice choice={theme} onChoose={chooseTheme} />}
       <Button variant="ghost" className="w-full justify-start" onClick={() => { close(); trigger.current?.focus(); onSignOut(); }} disabled={signingOut}>{t('shell/shell:signOut')}</Button>
     </div>
-    {/* The closed menu hides its disabled Sign out, so the wait shows here. Always mounted, so that it is announced. */}
+    {/* The closed menu hides its disabled Sign out, so the wait shows here. Always mounted, and empty at first even when the
+        menu mounts during a sign-out, so that it is announced. */}
     <p role="status" className={signingOut && !open ? 'pointer-events-none absolute right-0 top-full z-40 mt-1 w-max max-w-[calc(100vw-2rem)] rounded-md border border-border bg-card px-3 py-2 text-sm text-card-foreground shadow-lg' : 'sr-only'}>
-      {signingOut && !open && t('shell/shell:signingOut')}
+      {signingOut && !open && shown && t('shell/shell:signingOut')}
     </p>
   </div>;
 }
