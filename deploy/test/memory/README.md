@@ -3,8 +3,8 @@
 
 The **Memory** workflow (`.github/workflows/memory.yml`) runs a whole self-hosted deployment and
 fails when it uses more memory than the budget, or when anything is killed for memory. It runs on
-every integration branch and push to `main`, nightly, and on demand. It also measures
-each push to a task branch whose changes against `main` touch `apps/server/src/infra/pdf/`,
+every integration branch and push to `next` and `main`, nightly, and on demand. It also measures
+each push to a task branch whose changes against `next` (or `main` while there is no `next`) touch `apps/server/src/infra/pdf/`,
 `areas/waivers/`, `core/rate-limit*` (under `apps/server/src/`), `deploy/`, or the Memory
 workflow, so the branch's latest head is measured even when its newest push changed other files.
 Other task pushes skip the measurement job. Markdown-only pushes skip the workflow.

@@ -135,9 +135,9 @@ layers, through Docker's `setup-buildx-action` and `build-push-action`: the
 backend needs a BuildKit container builder and the cache service's token, which
 only an action receives. The scope is one per architecture (`image-amd64`,
 `image-arm64`); the scan shares `image-amd64`. A branch reads its own cache and
-the default branch's, and Image checks builds on `main` only when it finds no
+the default branch's, and Image checks builds on `main` and `next` only when it finds no
 passing run for the same commit (it normally reuses the integration branch's
-result), so the scan's weekly run on `main` is what seeds the amd64 cache for
+result on `next`, and `next`'s on `main`), so the scan's weekly run on `main` is what seeds the amd64 cache for
 new branches. The pnpm store mount is a cache mount, not a
 layer, so the GitHub cache does not hold it; a changed lockfile downloads its
 packages again, as on a fresh runner today. Image checks export only runtime-stage
@@ -815,9 +815,10 @@ node deploy/test/smoke.mjs IMAGE
 
 Use `pnpm release` (or `pnpm release 1.0.0` for the first public release) to prepare
 the version bump, reviewed changelog section, and signed annotated tag. It checks
-the branch, origin, CI and signing configuration first and never pushes. Patches
-come from `release/X.Y`; their changelog section is also committed on `main` without
-bumping `main`'s version. See [the versioning guide](../docs/versioning.md).
+the branch, origin, CI and signing configuration first and never pushes. Minors are
+made on `next`; patches come from `release/X.Y`, and their changelog section is also
+committed on `next` without bumping its version. A minor's tag is pushed after `next`
+is promoted to `main`. See [the versioning guide](../docs/versioning.md).
 
 The installer starts `version-history.tsv`; the updater appends tab-separated UTC
 time, version, immutable local image digest, outcome, rollback floor and snapshot

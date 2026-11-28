@@ -230,7 +230,7 @@ at least a minor, and other changes propose a patch. An explicit version cannot 
 lower than that proposal, and a patch cannot include migrations. With nothing new,
 the command does nothing.
 
-Before editing files it requires a clean tree, `main` for a minor/major or
+Before editing files it requires a clean tree, `next` for a minor/major or
 `release/X.Y` for a patch, equality with origin after fetching, successful **CI**,
 **Repo compliance**, and **Image checks** runs for that exact commit, and configured
 tag signing (`user.signingkey`, or SSH signing with `gpg.format=ssh`). A workflow whose
@@ -241,9 +241,14 @@ A fork can set `git config plaingym.repository OWNER/REPO`. It also refuses a
 version that has reached a removal date in `scripts/release/removal-deadlines.json`
 while the file named there still holds that code.
 
+A minor or major release is made on `next`: push `next`, promote it to `main` once
+every check passed on that commit, then push the tag (the Release workflow publishes
+a minor only from a commit on `main`). A patch's changelog section is committed on
+`next` and reaches `main` with the next promotion.
+
 For a patch, first get that exact commit checked on an `integration/**` branch,
 then fast-forward and push `release/X.Y` to it. The CI workflows run on integration
-branches and `main`; pushing a release branch alone does not run those checks.
+branches, `next` and `main`; pushing a release branch alone does not run those checks.
 
 The command opens release notes in Git's configured editor. Review the summary,
 migrations, rollback floor and manual host-file steps. The first release needs a
@@ -260,8 +265,8 @@ attached, so it can ask for the signing key's passphrase. The command then reads
 tag back: when it carries no SSH, OpenPGP or X.509 signature (Git can exit successfully with an
 unsigned tag when the signer couldn't run), it deletes the tag and the release commit
 and stops, so fix the signing setup and run it again. A patch also adds the same section
-to `main` in `docs: changelog for vX.Y.Z`, without changing `main`'s package versions.
-Its main checkout must be clean and level with origin too. Review both branches and
+to `next` in `docs: changelog for vX.Y.Z`, without changing `next`'s package versions.
+Its `next` checkout must be clean and level with origin too. Review both branches and
 the tag, then push the refs printed by the command. The Release workflow takes its
 GitHub release notes from that exact changelog section.
 

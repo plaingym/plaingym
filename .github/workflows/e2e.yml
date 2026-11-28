@@ -6,7 +6,7 @@ name: End-to-end
 # A push that changes Markdown files only skips it; the nightly run still covers main.
 on:
   push:
-    branches: [main, 'task/**', 'integration/**']
+    branches: [main, next, 'task/**', 'integration/**']
     paths-ignore: ['**/*.md']
   schedule:
     - cron: '17 6 * * *'
@@ -61,9 +61,12 @@ jobs:
       - id: matrix
         run: node e2e/ci.mjs matrix
   reuse:
-    # main only receives fast-forwards of integration branches whose CI passed, so the same commit has
-    # already been checked: reuse that run's result instead of repeating it. Any lookup failure checks again.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # next receives only fast-forwards of integration branches whose checks passed, and main only fast-forwards
+    # to next commits the maintainer promoted once every check passed on them, so the same commit has already
+    # been checked: reuse that run's result instead of repeating it. Any lookup failure checks again.
+    # A successful push run counts, and so does a successful dispatch whose report job passed; a UX dispatch
+    # skips the suite and its report job, so it never counts.
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -74,9 +77,19 @@ jobs:
       - id: lookup
         env:
           GH_TOKEN: ${{ github.token }}
+          RUNS: 'repos/${{ github.repository }}/actions/workflows/e2e.yml/runs?head_sha=${{ github.sha }}&status=success'
         run: |
-          count="$(gh api "repos/${{ github.repository }}/actions/workflows/e2e.yml/runs?head_sha=${{ github.sha }}&status=success" \
+          count="$(gh api "$RUNS" \
             --jq '[.workflow_runs[] | select(.event == "push" and .id != ${{ github.run_id }})] | length' || echo 0)"
+          if [ "$count" = 0 ]; then
+            dispatches="$(gh api "$RUNS" \
+              --jq '.workflow_runs[] | select(.event == "workflow_dispatch" and .id != ${{ github.run_id }}) | .id' || true)"
+            for id in $dispatches; do
+              reports="$(gh api "repos/${{ github.repository }}/actions/runs/$id/jobs?per_page=100" \
+                --jq '[.jobs[] | select(.name == "report" and .conclusion == "success")] | length' || echo 0)"
+              if [ "$reports" -gt 0 ]; then count=1; break; fi
+            done
+          fi
           if [ "$count" -gt 0 ]; then echo passed=true; else echo passed=false; fi >> "$GITHUB_OUTPUT"
   e2e:
     needs: [reuse, shards]

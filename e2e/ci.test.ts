@@ -1,9 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import { changedSpecs, fileFilters, reportTests, shardFiles, shardNumbers, verifyShards } from './ci.mjs';
+import { changedSpecs, changedSpecsBase, fileFilters, reportTests, shardFiles, shardNumbers, verifyShards } from './ci.mjs';
 
 describe('browser CI selection and completeness', () => {
+  it('compares task branches with next when origin has it, else with main', () => {
+    const asked: string[] = [];
+    expect(changedSpecsBase((ref: string) => (asked.push(ref), true))).toBe('origin/next');
+    expect(asked).toEqual(['refs/remotes/origin/next']);
+    expect(changedSpecsBase(() => false)).toBe('origin/main');
+  });
+
   it('selects only specs in the default suite, including new names from a rename', () => {
     expect(changedSpecs(['e2e/specs/new.spec.ts', 'e2e/multi/isolation.spec.ts', 'e2e/support.ts',
       'e2e/ux-pass/browsers.spec.ts', 'e2e/specs/ux-pass.spec.ts', 'e2e/specs/vm.spec.ts', 'apps/web/a.spec.ts']))

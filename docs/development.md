@@ -217,8 +217,9 @@ the parser and resolver in `scripts/test-imports.ts`.
 Verification includes docs specs from Vitest's own discovery
 in the same test run as the selected tests (or the full suite).
 End-to-end skips Markdown-only pushes too, and still runs nightly, as does the **Memory** workflow, which measures the whole
-stack against its memory budget (`deploy/test/memory/README.md`). On a push to `main`, CI reuses a passing run of the same
-commit (from its integration branch) instead of repeating it.
+stack against its memory budget (`deploy/test/memory/README.md`). On a push to `main` or `next`, each workflow reuses a
+passing run of the same commit (on `next` from its integration branch, on `main` from `next`) instead of repeating it.
+**CI** and **Repo compliance** can also be started by hand.
 Scheduled runs of **Dependency advisories**, **End-to-end**, **Image scan**,
 **Memory**, and **Prerelease** on `main` open a GitHub issue when a job fails or
 times out. The issue has the label

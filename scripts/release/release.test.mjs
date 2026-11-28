@@ -105,7 +105,7 @@ test('a release accepts the nearest checked commit only across commits the workf
     refused(/CI has not passed/);
     // The walk stops at the previous release: nothing before it counts for this one.
     ran.set(unchecked, [['Repo compliance'], ['CI'], ['Image checks']]);
-    f.run('reset', '--hard', 'v1.1.0'); f.run('push', '--force', 'origin', 'HEAD:main');
+    f.run('reset', '--hard', 'v1.1.0'); f.run('push', '--force', 'origin', 'HEAD:next');
     f.write('docs/guide.md', 'other\n'); f.commit('feat: other'); f.publishFixture();
     ran.set(head(), [['Repo compliance']]); ran.delete(f.run('rev-parse', 'v1.1.0^{commit}'));
     refused(/CI has not passed/);
@@ -191,6 +191,8 @@ function fixture() {
   write('packages/db/src/migrations/0000_first.sql', 'create table example ();\n');
   commit('feat: first');
   run('clone', '--bare', cwd, origin); run('remote', 'add', 'origin', origin); run('fetch', 'origin');
+  // Releases are made on next, which starts at main's commit.
+  run('checkout', '-b', 'next'); run('push', 'origin', 'next');
   const gh = (args) => {
     assert.deepEqual(args.slice(0, 5), ['run', 'list', '-R', 'example/app', '--commit']);
     assert.equal(args[5].length, 40);
@@ -202,30 +204,41 @@ function fixture() {
   return { temporary, cwd, origin, run, write, commit, options, publishFixture, close: () => rmSync(temporary, { recursive: true, force: true }) };
 }
 
-test('real first release, signed tag, no push, explicit minor, and patch changelog back on main', () => {
+test('real first release, signed tag, no push, explicit minor, and patch changelog back on next', () => {
   const f = fixture();
   try {
-    const originHead = git(['rev-parse', 'main'], f.origin);
+    const originHead = git(['rev-parse', 'next'], f.origin), mainHead = f.run('rev-parse', 'main');
     assert.equal(release({ ...f.options, version: '1.0.0' }).version, '1.0.0');
-    assert.equal(f.run('log', '-1', '--format=%s'), 'chore(release): v1.0.0');
+    assert.equal(f.run('log', '-1', '--format=%s', 'next'), 'chore(release): v1.0.0');
+    assert.equal(f.run('rev-parse', 'main'), mainHead);
     assert.equal(f.run('cat-file', '-t', 'v1.0.0'), 'tag');
     f.run('verify-tag', 'v1.0.0');
-    assert.equal(git(['rev-parse', 'main'], f.origin), originHead);
+    assert.equal(git(['rev-parse', 'next'], f.origin), originHead);
+    assert.equal(git(['rev-parse', 'main'], f.origin), mainHead);
     assert.equal(git(['tag', '--list'], f.origin), '');
     assert.match(readFileSync(join(f.cwd, 'CHANGELOG.md'), 'utf8'), /The first release/);
     f.publishFixture();
     assert.equal(release(f.options), null);
     f.write('feature', 'new\n'); f.commit('feat: new feature'); f.publishFixture();
     assert.equal(release({ ...f.options, version: '1.2.0' }).version, '1.2.0');
+    assert.equal(f.run('log', '-1', '--format=%s', 'next'), 'chore(release): v1.2.0');
+    assert.equal(f.run('rev-parse', 'main'), mainHead);
     f.publishFixture();
     f.run('checkout', '-b', 'release/1.2'); f.run('push', 'origin', 'release/1.2');
     f.write('fix', 'fixed\n'); f.commit('fix: correct health'); f.publishFixture();
-    const mainVersion = f.run('show', 'main:package.json');
+    // The patch changelog goes on next, which must be level with origin first.
+    f.run('branch', '-f', 'next', 'next~1');
+    const before = f.run('rev-parse', 'HEAD');
+    assert.throws(() => release(f.options), /next must be level with origin/);
+    assert.equal(f.run('rev-parse', 'HEAD'), before); assert.equal(f.run('tag', '--list', 'v1.2.1'), '');
+    f.run('branch', '-f', 'next', 'origin/next');
+    const nextVersion = f.run('show', 'next:package.json');
     assert.equal(release(f.options).version, '1.2.1');
     f.run('verify-tag', 'v1.2.1');
-    assert.equal(f.run('show', 'main:package.json'), mainVersion);
-    assert.equal(f.run('log', '-1', '--format=%s', 'main'), 'docs: changelog for v1.2.1');
-    assert.equal(changelogSection(f.run('show', 'main:CHANGELOG.md'), '1.2.1'), changelogSection(f.run('show', 'HEAD:CHANGELOG.md'), '1.2.1'));
+    assert.equal(f.run('show', 'next:package.json'), nextVersion);
+    assert.equal(f.run('log', '-1', '--format=%s', 'next'), 'docs: changelog for v1.2.1');
+    assert.equal(changelogSection(f.run('show', 'next:CHANGELOG.md'), '1.2.1'), changelogSection(f.run('show', 'HEAD:CHANGELOG.md'), '1.2.1'));
+    assert.equal(f.run('rev-parse', 'main'), mainHead);
     assert.equal(git(['tag', '--list', 'v1.2.1'], f.origin), '');
     assert.equal(f.run('status', '--porcelain'), '');
   } finally { f.close(); }
@@ -260,8 +273,10 @@ test('preflight refusals leave the repository unchanged', () => {
       unchanged(() => release({ ...f.options, gh: (args) => JSON.stringify(JSON.parse(f.options.gh(args)).filter((run) => run.workflowName !== name)) }), new RegExp(name));
     }
     f.run('checkout', '-b', 'task/example'); f.run('push', 'origin', 'task/example');
-    unchanged(() => release(f.options), /released on main/);
+    unchanged(() => release(f.options), /released on next/);
     f.run('checkout', 'main');
+    unchanged(() => release(f.options), /must be released on next/);
+    f.run('checkout', 'next');
     f.write('fix', 'fix'); f.commit('fix: pending');
     unchanged(() => release(f.options), /level with origin/);
     f.publishFixture(); release(f.options); f.publishFixture();

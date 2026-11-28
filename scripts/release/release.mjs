@@ -129,7 +129,7 @@ export function release({ cwd = process.cwd(), version: explicit, notesFile, rol
   const isPatch = patch > 0;
   if (isPatch && (!previous || previous.replace(/^v/, '').split('.').slice(0, 2).join('.') !== `${major}.${minor}` || migrations))
     throw new Error('A patch must follow its existing minor and must not contain migrations');
-  const requiredBranch = isPatch ? `release/${major}.${minor}` : 'main';
+  const requiredBranch = isPatch ? `release/${major}.${minor}` : 'next';
   if (branch !== requiredBranch) throw new Error(`${version} must be released on ${requiredBranch}`);
   if (run('tag', '--list', `v${version}`)) throw new Error(`v${version} already exists`);
   const removals = listed ?? JSON.parse(readFileSync(new URL('./removal-deadlines.json', import.meta.url), 'utf8')).removals;
@@ -155,12 +155,12 @@ export function release({ cwd = process.cwd(), version: explicit, notesFile, rol
   if (!repo || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) throw new Error('Cannot determine the GitHub repository from origin (or plaingym.repository)');
   // Never past the previous release: the first commit with no parent to compare stops the walk too.
   assertWorkflowsPassed({ cwd, repo, head, gh, limit: previous ? run('rev-parse', `${previous}^{commit}`) : run('rev-list', '--max-parents=0', 'HEAD').split('\n')[0] });
-  let mainPath;
+  let nextPath;
   if (isPatch) {
-    if (run('rev-parse', 'main') !== run('rev-parse', 'origin/main')) throw new Error('main must be level with origin before adding the patch changelog');
-    const worktree = run('worktree', 'list', '--porcelain').split('\n\n').find((entry) => entry.split('\n').includes('branch refs/heads/main'));
-    mainPath = worktree?.split('\n')[0]?.replace(/^worktree /, '');
-    if (mainPath && git(['status', '--porcelain'], mainPath)) throw new Error('The main worktree must be clean');
+    if (run('rev-parse', 'next') !== run('rev-parse', 'origin/next')) throw new Error('next must be level with origin before adding the patch changelog');
+    const worktree = run('worktree', 'list', '--porcelain').split('\n\n').find((entry) => entry.split('\n').includes('branch refs/heads/next'));
+    nextPath = worktree?.split('\n')[0]?.replace(/^worktree /, '');
+    if (nextPath && git(['status', '--porcelain'], nextPath)) throw new Error('The next worktree must be clean');
   }
   let floor = rollbackFloor;
   if (!floor && isPatch) floor = run('show', `${previous}:deploy/release/rollback-floor.txt`).trim();
@@ -202,8 +202,8 @@ export function release({ cwd = process.cwd(), version: explicit, notesFile, rol
     throw new Error('Keep the migration facts and changed host-file instructions in the upgrade notes');
   const section = `## [${version}] - ${new Date().toISOString().slice(0, 10)}\n\n${notes}\n`;
   const changelog = insertSection(readFileSync(changelogPath, 'utf8'), section, true);
-  let mainChangelog;
-  if (isPatch) mainChangelog = insertSection(run('show', 'main:CHANGELOG.md'), section);
+  let nextChangelog;
+  if (isPatch) nextChangelog = insertSection(run('show', 'next:CHANGELOG.md'), section);
   // Every preflight and both changelogs are checked before modifying a working file.
   for (const path of manifests) {
     const file = join(cwd, path), manifest = JSON.parse(readFileSync(file, 'utf8'));
@@ -234,16 +234,19 @@ export function release({ cwd = process.cwd(), version: explicit, notesFile, rol
   let createdWorktree = false;
   try {
     if (isPatch) {
-      if (!mainPath) {
-        mainPath = join(cwd, '.worktrees', `release-notes-${version}`);
-        run('worktree', 'add', mainPath, 'main'); createdWorktree = true;
+      if (!nextPath) {
+        nextPath = join(cwd, '.worktrees', `release-notes-${version}`);
+        run('worktree', 'add', nextPath, 'next'); createdWorktree = true;
       }
-      writeFileSync(join(mainPath, 'CHANGELOG.md'), mainChangelog);
-      git(['add', '--', 'CHANGELOG.md'], mainPath);
-      git(['commit', '-m', `docs: changelog for v${version}`], mainPath, { timeout: 600_000, interactive: true });
+      writeFileSync(join(nextPath, 'CHANGELOG.md'), nextChangelog);
+      git(['add', '--', 'CHANGELOG.md'], nextPath);
+      git(['commit', '-m', `docs: changelog for v${version}`], nextPath, { timeout: 600_000, interactive: true });
     }
-  } finally { if (createdWorktree) run('worktree', 'remove', mainPath); }
-  log(`Created v${version}. Nothing was pushed. Review, then push main${isPatch ? `, ${branch}` : ''} and refs/tags/v${version}.`);
+  } finally { if (createdWorktree) run('worktree', 'remove', nextPath); }
+  // A patch's tag must be on its release branch, a minor's on main (deploy/release/check-tag.sh --branches).
+  log(isPatch
+    ? `Created v${version}. Nothing was pushed. Review, then push next, ${branch} and refs/tags/v${version}.`
+    : `Created v${version}. Nothing was pushed. Review, then push next; promote next to main once every check passed on its head, then push refs/tags/v${version}.`);
   return { version, floor, section };
 }
 

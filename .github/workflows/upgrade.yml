@@ -2,7 +2,7 @@
 name: Upgrade
 on:
   push:
-    branches: [main, 'task/**', 'integration/**']
+    branches: [main, next, 'task/**', 'integration/**']
     tags: ['v*']
     paths: ['e2e/upgrade/**', 'packages/db/**', 'deploy/container/**', 'deploy/compose.yaml', 'apps/server/src/core/secrets*', 'apps/server/src/cli/restore*', 'deploy/postgres/**', 'deploy/Dockerfile', 'apps/server/src/areas/health/**', '.github/workflows/upgrade.yml']
   pull_request:

@@ -2,8 +2,9 @@
 name: Repo compliance
 on:
   push:
-    branches: [main, 'task/**', 'integration/**']
+    branches: [main, next, 'task/**', 'integration/**']
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -55,9 +56,10 @@ jobs:
             context.ref = 'refs/heads/main';
             console.log(await reportScheduledFailure({ github, context, failed: true, dryRun: true }));
   reuse:
-    # main only receives fast-forwards of integration branches whose CI passed, so the same commit has
-    # already been checked: reuse that run's result instead of repeating it. Any lookup failure checks again.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # next receives only fast-forwards of integration branches whose checks passed, and main only fast-forwards
+    # to next commits the maintainer promoted once every check passed on them, so the same commit has already
+    # been checked: reuse that run's result instead of repeating it. Any lookup failure checks again.
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

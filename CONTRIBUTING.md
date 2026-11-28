@@ -25,9 +25,9 @@ Before your first pull request can be merged, you sign our [Contributor License 
 
 ## Branches and Pull Requests
 
-* `main` is the only long-lived branch. Fork the repository, branch from `main`, and open your pull request against `main`.
+* Changes land on `next` first. `main` moves only when the maintainer promotes a `next` commit to it, after every check passed on that commit. Fork the repository, branch from `next`, and open your pull request against `next`.
 * Keep each pull request small and focused on one change.
-* Pull requests are squash-merged, so the PR title becomes the commit message on `main`. Write it as a conventional commit (`feat: …`, `fix: …`).
+* Pull requests are squash-merged, so the PR title becomes the commit message on `next`. Write it as a conventional commit (`feat: …`, `fix: …`).
 
 ## Before You Open a Pull Request
 

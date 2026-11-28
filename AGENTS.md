@@ -147,7 +147,7 @@ Prefer Web-standard APIs (`fetch`, `Request`/`Response`, WebCrypto, Web Streams)
 ---
 
 ## 4. Pull Requests & AI Contributions
-* **Branches.** `main` is the only long-lived branch. Work on a short-lived branch from `main`, focused on one change. Each change lands on `main` as one squashed conventional commit, after type checking, lint, and tests pass. Outside contributions arrive as pull requests against `main`.
+* **Branches.** Changes land on `next` first; `main` moves only when the maintainer promotes a `next` commit to it, after every check passed on that commit. Work on a short-lived branch from `next`, focused on one change. Each change lands on `next` as one squashed conventional commit, after type checking, lint, and tests pass. Outside contributions arrive as pull requests against `next`.
 * **Keep the docs current.** Every change that lands on `main` leaves the documentation true. When a change alters what a page in `docs/` (see [`docs/README.md`](docs/README.md)), the root `README.md`, `deploy/README.md`, or a module README next to the code says (a setting, environment variable, route surface, permission, setup or deploy step, security rule, or behavior a README describes), update that page in the same commit. Reviewers check this before landing, and a change that leaves a page wrong isn't done. Docs describe only what exists on `main`.
 * **Contributor License Agreement.** Contributors keep their copyright and sign [`CLA.md`](CLA.md) once, by replying to the CLA check on their pull request, before their first pull request is merged; the CLA check must pass. No copyright assignment. See `CONTRIBUTING.md`.
 * Ensure all TypeScript code passes strict type checking: `pnpm check-types` (`tsc --noEmit`).

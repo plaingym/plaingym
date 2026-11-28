@@ -158,6 +158,11 @@ export function shardFiles(report, count = shardNumbers().length, durations = fi
   return shards.map(shard => shard.lines);
 }
 
+/** Task branches start from next, so compare with it when it exists; before next exists, with main. */
+export function changedSpecsBase(hasRef) {
+  return hasRef('refs/remotes/origin/next') ? 'origin/next' : 'origin/main';
+}
+
 function collect(args = []) {
   // Collection only; this never starts browsers or needs the Compose stack's credentials.
   const output = execFileSync(process.execPath, ['node_modules/@playwright/test/cli.js', 'test', '--list', '--reporter=json', ...args],
@@ -178,11 +183,20 @@ function main(command) {
   if (command === 'matrix') {
     appendFileSync(process.env.GITHUB_OUTPUT, `shards=${JSON.stringify(shardNumbers())}\n`);
   } else if (command === 'changed-specs') {
-    const names = execFileSync('git', ['diff', '--name-only', '--diff-filter=ACMRT', '-z', 'origin/main...HEAD', '--', 'e2e/'],
-      { cwd: resolve(directory, '..'), encoding: 'utf8', timeout: 30_000 }).split('\0').filter(Boolean);
+    const root = resolve(directory, '..');
+    const base = changedSpecsBase(ref => {
+      try {
+        execFileSync('git', ['rev-parse', '--verify', '--quiet', ref], { cwd: root, stdio: 'ignore', timeout: 30_000 });
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    const names = execFileSync('git', ['diff', '--name-only', '--diff-filter=ACMRT', '-z', `${base}...HEAD`, '--', 'e2e/'],
+      { cwd: root, encoding: 'utf8', timeout: 30_000 }).split('\0').filter(Boolean);
     const files = changedSpecs(names);
     appendFileSync(process.env.GITHUB_OUTPUT, `changed=${files.length > 0}\nfiles=${JSON.stringify(files)}\n`);
-    console.log(`Changed specs against the main merge base: ${JSON.stringify(files)}`);
+    console.log(`Changed specs against the ${base} merge base: ${JSON.stringify(files)}`);
   } else if (command === 'run-changed') {
     const filters = fileFilters(JSON.parse(process.env.E2E_CHANGED_SPECS ?? '[]'));
     // The fixture initializes setup through the API; do not add unrelated dependency specs.

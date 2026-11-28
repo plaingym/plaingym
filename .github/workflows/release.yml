@@ -9,7 +9,7 @@ name: Release
 on:
   push:
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
-    branches: [main, 'integration/**']
+    branches: [main, next, 'integration/**']
     # Path filters don't apply to tag pushes: every release tag runs.
     paths:
       - '.github/workflows/release*.yml'

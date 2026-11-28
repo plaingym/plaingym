@@ -2,7 +2,7 @@
 name: Image checks
 on:
   push:
-    branches: [main, 'integration/**']
+    branches: [main, next, 'integration/**']
     paths:
       - 'deploy/**'
       - 'apps/**'
@@ -25,9 +25,10 @@ concurrency:
   cancel-in-progress: true
 jobs:
   reuse:
-    # main only receives fast-forwards of integration branches whose CI passed, so the same commit has
-    # already been checked: reuse that run's result instead of repeating it. Any lookup failure checks again.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # next receives only fast-forwards of integration branches whose checks passed, and main only fast-forwards
+    # to next commits the maintainer promoted once every check passed on them, so the same commit has already
+    # been checked: reuse that run's result instead of repeating it. Any lookup failure checks again.
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -162,7 +163,7 @@ jobs:
           retention-days: 3
   manifest:
     needs: native
-    # A skipped reuse job (every run except a push to main) would otherwise skip this job as well.
+    # A skipped reuse job (every run except a push to main or next) would otherwise skip this job as well.
     if: ${{ !cancelled() && needs.native.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10

@@ -10,6 +10,6 @@ test('task memory checks cover PDF, waiver, rate-limit and deployment changes', 
     'apps/server/src/index.ts', 'apps/server/src/app.ts', 'apps/server/src/infra/jobs/worker.ts'])
     assert.equal(needsMemory('refs/heads/task/example', ['docs/guide.md', file]), true, file);
   assert.equal(needsMemory('refs/heads/task/example', ['apps/web/src/components/button.tsx', 'docs/guide.md']), false);
-  for (const ref of ['refs/heads/main', 'refs/heads/integration/example'])
+  for (const ref of ['refs/heads/main', 'refs/heads/next', 'refs/heads/integration/example'])
     assert.equal(needsMemory(ref, ['apps/web/src/components/button.tsx']), true);
 });

@@ -57,13 +57,14 @@ Merged-report runtime errors are reported with their details separately from col
 
 On `task/**` pushes, an independent `changed-specs-test` job runs only new or
 changed default-suite specs, plus specs transitively importing a changed helper under `e2e/specs` or
-`e2e/multi`, against the merge base with `main`, on its own fresh
+`e2e/multi`, against the merge base with `next` (or `main` while there is no `next`), on its own fresh
 stack. It does not delay the shards and is skipped when there are no such specs
 (deleted files and the opt-in VM/UX specs are excluded). Its separate artifact is
 `e2e-changed-specs`. A `ux_pass` dispatch runs one UX stack, including its browser
 projects, in its own concurrency group so it and a push run can finish together.
-On `main`, a successful **push** run of this workflow on the same commit allows
-the suite to be reused; a UX dispatch never qualifies.
+On `main` and `next`, a successful push run of this workflow on the same commit, or a
+successful dispatch whose `report` job passed, allows the suite to be reused; a UX
+dispatch never qualifies.
 
 The runner archives **committed HEAD** and builds it with `deploy/Dockerfile`.
 Commit application fixes before running. `E2E_IMAGE=<tag-or-digest>` reuses an
