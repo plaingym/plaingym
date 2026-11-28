@@ -1327,13 +1327,13 @@ describe('one-off collection and payment durability', () => {
     expect(await invoiceRow(f)).toMatchObject({ status: 'open', checkoutSessionId: 'cs_replaced' });
     expect((await f.service.getInvoice(f.gymId, f.invoice.id)).payments).toHaveLength(0);
   });
-  it('never releases an invoice the race left paid: void and cash refuse as today', async () => {
+  it('never releases an invoice the race left paid: the void refuses as not payable and cash as already paid', async () => {
     const f = await fixture(); await reservedCheckout(f); webhookRace(f, 'paid');
-    await expect(voidIt(f)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['checkout_changed'] } });
+    await expect(voidIt(f)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['not_payable'] } });
     expect(await auditRows(f, 'billing.invoice.voided')).toHaveLength(0);
     await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'open' }).where(eq(invoices.id, f.invoice.id)));
     await reservedCheckout(f); webhookRace(f, 'paid');
-    await expect(cashIt(f)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['checkout_changed'] } });
+    await expect(cashIt(f)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['already_paid'] } });
     const detail = await f.service.getInvoice(f.gymId, f.invoice.id);
     expect(detail.invoice.status).toBe('paid'); expect(detail.payments).toHaveLength(0);
   });

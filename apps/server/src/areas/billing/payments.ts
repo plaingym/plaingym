@@ -65,6 +65,20 @@ export async function requireCollectible(tx: Transaction, invoice: typeof invoic
     inArray(paymentAttempts.status, ['pending', 'processing', 'requires_action']))).limit(1)).length) chargeSkipped('pending_attempt');
 }
 const notProcessing = () => paymentConflict('not_processing', 'Invoice is no longer waiting for a bank debit');
+/** The invoice's latest processing intent when the sweep flagged it for checking, else null. */
+async function flaggedDebit(tx: Transaction, row: typeof invoices.$inferSelect): Promise<string | null> {
+  const latest = (await processingIntents(tx, row.id)).at(-1);
+  if (latest === undefined) return null;
+  const findings = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
+    eq(auditEvents.targetType, 'invoice'), eq(auditEvents.targetId, row.id), eq(auditEvents.action, checkoutReviewAction)));
+  return findings.some(event => (event.after as { paymentIntentId?: unknown } | null)?.paymentIntentId === latest) ? latest : null;
+}
+/** Stripe rejected the gym's key itself (rolled or revoked). */
+const rejectedKey = (error: unknown) => {
+  if (typeof error !== 'object' || error === null) return false;
+  const { type, statusCode } = error as { type?: unknown; statusCode?: unknown };
+  return type === 'StripeAuthenticationError' || statusCode === 401;
+};
 const presentAttempt = (r: typeof paymentAttempts.$inferSelect) => c.paymentAttemptSchema.parse({
   id: r.id, createdAt: r.createdAt.toISOString(), invoiceId: r.invoiceId, attemptNumber: r.attemptNumber,
   amountCents: r.amountCents, currency: r.currency, status: r.status, declineCode: r.declineCode,
@@ -109,7 +123,8 @@ export function createPaymentService(options: PaymentOptions = {}) {
       const paid = await tx.select().from(payments).where(eq(payments.invoiceId, id)).orderBy(asc(payments.id));
       const returned = await tx.select({ refund: refunds }).from(refunds).innerJoin(payments, eq(payments.id, refunds.paymentId))
         .where(eq(payments.invoiceId, id)).orderBy(asc(refunds.id));
-      return c.invoiceDetailSchema.parse({ invoice: presentInvoice(row),
+      const debitFlagged = row.status === 'processing' && (await flaggedDebit(tx, row)) !== null;
+      return c.invoiceDetailSchema.parse({ invoice: presentInvoice(row), debitFlagged,
         lineItems: lines.map(({ gymId: _gym, createdAt, ...line }) => ({ ...line, createdAt: createdAt.toISOString() })),
         payments: paid.map(presentPayment), refunds: returned.map(r => presentRefund(r.refund)) });
     });
@@ -192,34 +207,40 @@ export function createPaymentService(options: PaymentOptions = {}) {
     /**
      * Stops waiting for a Checkout bank debit the sweep flagged for checking. Stripe is read after the click, and only an
      * intent it reports failed or cancelled releases the invoice; nothing is written to Stripe. A debit that failed on an
-     * unusable bank account also revokes that saved method, only when the intent's metadata names this invoice. Refusals:
-     * no Stripe key saved is `debit_unconfigured`; a read Stripe refuses for a lasting reason is `debit_unreadable`; an
-     * outage (or a provider lookup that throws) is `payments_unavailable`; an intent held for another gym, with no gym tag,
-     * or naming another invoice is `debit_mismatch`; an intent Stripe has no record of under the current key is
-     * `debit_unknown`, which can't be released here.
+     * unusable bank account also revokes that saved method, only when the intent's metadata names this invoice and its
+     * customer is the household's. Refusals: no Stripe key saved is `debit_unconfigured`; a read Stripe refuses for a
+     * lasting reason, a rejected key included, is `debit_unreadable`; an outage (or a provider lookup that throws, which
+     * is logged) is `payments_unavailable`; an intent held for another gym, with no gym tag, or naming another invoice is
+     * `debit_mismatch`; an intent Stripe has no record of under the current key is `debit_unknown`, which can't be
+     * released here; a release that loses to a new bank debit is `debit_not_stuck`.
      */
     async releaseProcessing(context: MutationContext, invoiceId: string) {
-      const paymentIntentId = await scope(context.gymId, async tx => {
+      const { paymentIntentId, customerId } = await scope(context.gymId, async tx => {
         const row = await loadInvoice(tx, invoiceId, true);
         if (row.status !== 'processing') notProcessing();
-        const latest = (await processingIntents(tx, row.id)).at(-1);
-        const findings = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
-          eq(auditEvents.targetType, 'invoice'), eq(auditEvents.targetId, row.id), eq(auditEvents.action, checkoutReviewAction)));
-        if (latest === undefined || !findings.some(event => (event.after as { paymentIntentId?: unknown } | null)?.paymentIntentId === latest))
-          paymentConflict('debit_not_stuck', 'This bank debit has not been flagged for checking');
-        return latest;
+        const latest = await flaggedDebit(tx, row);
+        if (latest === null) paymentConflict('debit_not_stuck', 'This bank debit has not been flagged for checking');
+        const household = await loadHousehold(tx, row.householdId);
+        return { paymentIntentId: latest, customerId: household.stripeCustomerId };
       });
       const unavailable = () => paymentUnavailable('payments_unavailable', 'Stripe is unavailable; check the bank debit again shortly');
+      const unreadable = (error: unknown) => {
+        logError('billing.processing_release.unreadable', { gymId: context.gymId, invoiceId }, error);
+        return paymentConflict('debit_unreadable', 'Stripe refused to read this debit with the current key');
+      };
       let provider: Payments | null | undefined;
       try { provider = await options.paymentsFor?.(context.gymId); }
-      catch { return unavailable(); }
+      catch (error) {
+        logError('billing.processing_release.provider_failed', { gymId: context.gymId, invoiceId }, error);
+        return unavailable();
+      }
       if (!provider) paymentConflict('debit_unconfigured', 'No Stripe key is saved; the bank debit cannot be checked');
       let current: ChargeOutcome;
       try { current = await provider.findCharge({ kind: 'charge', id: paymentIntentId }); }
       catch (error) {
-        if (isProviderOutage(error)) return unavailable();
-        logError('billing.processing_release.unreadable', { gymId: context.gymId, invoiceId }, error);
-        return paymentConflict('debit_unreadable', 'Stripe refused to read this debit with the current key');
+        // A rejected or rolled key fails every read the same way until it is replaced, so it is no passing outage.
+        if (isProviderOutage(error) && !rejectedKey(error)) return unavailable();
+        return unreadable(error);
       }
       if (current.status === 'unknown') {
         if (current.notForGym) paymentConflict('debit_mismatch', "Stripe's record of this debit does not match this invoice");
@@ -237,8 +258,14 @@ export function createPaymentService(options: PaymentOptions = {}) {
       }
       const released = await transitions.releaseProcessing(context, { invoiceId, paymentIntentId, code: current.code,
         ...(current.code === 'payment_method_unusable' && current.paymentMethodId && current.metadata.invoiceId === invoiceId
+          && customerId !== null && current.customerId === customerId
           ? { paymentMethodId: current.paymentMethodId } : {}) });
-      if (released.outcome === 'ignored') notProcessing();
+      if (released.outcome === 'ignored') {
+        // A new bank debit that started meanwhile leaves the invoice processing again, on a debit not yet flagged.
+        const now = await scope(context.gymId, tx => loadInvoice(tx, invoiceId));
+        if (now.status === 'processing') paymentConflict('debit_not_stuck', 'This bank debit has not been flagged for checking');
+        notProcessing();
+      }
       return scope(context.gymId, async tx => presentInvoice(await loadInvoice(tx, invoiceId)));
     },
     async listInvoices(gymId: string, input: unknown) {

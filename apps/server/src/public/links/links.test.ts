@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
-import { auditEvents, invoices, waiverSignatures, waiverTemplates, uuidv7 } from '@plaingym/db';
+import { auditEvents, invoices, signedLinks, waiverSignatures, waiverTemplates, uuidv7 } from '@plaingym/db';
 import { createTranslator } from '@plaingym/shared';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -506,6 +506,20 @@ describe('signed-link pages through production registrations', () => {
     expect((await f.links.resolve(f.gymId, f.link.token)).status).toBe('active');
     expect(await (await f.request(f.path + '/complete', 'POST', { keepCard: true })).json()).toEqual({ data: { completed: true } });
     expect((await f.links.resolve(f.gymId, f.link.token)).status).toBe('used');
+  });
+  it('shows the used page with 200 when the onboarding link was completed while its page rendered', async () => {
+    const f = await fixture('onboarding');
+    await factory('paymentMethods', f.gymId, { householdId: f.household.id, isDefault: true, last4: '4242' });
+    const real = f.checkout.keepableCard;
+    // The webhook completes the link between the page's link check and its keep offer.
+    vi.spyOn(f.checkout, 'keepableCard').mockImplementationOnce(async (gymId, linkId) => {
+      await db.forGym(gymId, tx => tx.update(signedLinks).set({ usedAt: f.clock.now() }).where(eq(signedLinks.id, linkId)));
+      return real(gymId, linkId);
+    });
+    const response = await f.app().request('/l/' + f.link.token), text = await response.text();
+    expect(response.status).toBe(200);
+    expect(text).toContain('data-state="alreadyDone"'); expect(text).toContain('Already done');
+    expect(text).not.toContain('data-keep-card');
   });
   it('refuses keepCard on the update-card and pay-invoice complete routes', async () => {
     for (const purpose of ['update_card', 'pay_invoice'] as const) {

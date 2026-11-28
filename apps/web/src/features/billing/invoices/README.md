@@ -59,13 +59,16 @@ without it, staff pick a catalog charge type. When the gym has no active charge 
 void and review-release controls use `refunds.create`. Voiding an open or past-due
 invoice requires a reason and explains that dunning, retries and pay links stop,
 while memberships and future invoices stay as they are. Pending card or Checkout
-payments must be resolved first. A processing invoice offers the same staff
+payments must be resolved first. A processing invoice whose bank debit the sweep
+flagged (the detail's `debitFlagged`) offers the same staff
 **Stop waiting for this bank debit**: the server checks Stripe first and makes the
 invoice collectible again only when the flagged debit failed or was cancelled;
 a refusal (debit still open, paid, processing or not flagged, or Stripe
 unreachable or with no record of the debit, no Stripe key saved, or a key that
 can't read it) shows its reason in the form; a debit Stripe has no record of
-can't be released here. Server routes enforce the same permissions. A
+can't be released here. After a release the page says so, and says when the
+household has no active default payment method left (a failed debit on an
+unusable account removes that bank account). Server routes enforce the same permissions. A
 failed charge reports that the invoice remains open; unresolved outcomes tell
 staff to check the invoice before collecting another payment. A refund that
 comes back failed or canceled shows an error above the invoice saying nothing was

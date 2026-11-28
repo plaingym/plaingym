@@ -127,6 +127,20 @@ describe('runner review regression cases with PostgreSQL', () => {
     expect(await f.runner.charge(f.gymId, bill.id)).toEqual({ status: 'skipped', reason: 'checkout_changed' });
     expect((await f.read()).attempts.filter(row => row.invoiceId === bill.id)).toHaveLength(0);
   });
+  it('skips as not payable when a payment landed between the Checkout expiry and the read', async () => {
+    const f = await fixture(), bill = await oneOff(f, 'membership'); await checkout(f, bill.id);
+    const expire = f.provider.expireCheckout.bind(f.provider);
+    vi.spyOn(f.provider, 'expireCheckout').mockImplementationOnce(async id => {
+      const result = await expire(id);
+      await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'paid', paidAt: f.clock.now(), checkoutSessionId: null,
+        checkoutExpiresAt: null }).where(eq(invoices.id, bill.id)));
+      return result;
+    });
+    expect(await f.runner.charge(f.gymId, bill.id)).toEqual({ status: 'skipped', reason: 'not_payable' });
+    const rows = await f.read();
+    expect(rows.attempts.filter(row => row.invoiceId === bill.id)).toHaveLength(0);
+    expect(rows.invoices.find(row => row.id === bill.id)).toMatchObject({ status: 'paid' });
+  });
   it.each(['paid', 'void'])('keeps a %s historical cycle unchanged while holding the late membership and advancing to the next cycle', async status => {
     const f = await fixture({ now: '2028-04-01T17:00:00Z' }); const old = await invoice(f);
     await db.forGym(f.gymId, tx => tx.update(invoices).set({ status }).where(eq(invoices.id, old.id)));

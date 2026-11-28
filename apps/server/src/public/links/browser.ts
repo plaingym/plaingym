@@ -92,8 +92,15 @@ export function linkBrowser() {
   const keep = document.querySelector<HTMLButtonElement>('[data-keep-card]');
   keep?.addEventListener('click', () => { void busy(keep, async () => {
     const result = await call('/complete', { keepCard: true });
-    if (result.data.completed) done();
-    else say('incomplete');
+    if (result.data.completed) { done(); return; }
+    // Refused: a fresh page still offering the method means a waiver is unsigned; otherwise the method can't be kept.
+    const response = await fetch(location.pathname, { credentials: 'same-origin', cache: 'no-store' });
+    if (!response.ok) throw new Error('request failed');
+    const updated = new DOMParser().parseFromString(await response.text(), 'text/html');
+    if (!activePage) return;
+    if (updated.querySelector('[data-keep-card]')) { say('keepUnsigned'); return; }
+    keep.remove();
+    say('keepGone');
   }); });
   const complete = document.querySelector<HTMLButtonElement>('[data-complete]');
   complete?.addEventListener('click', () => { void busy(complete, async () => {

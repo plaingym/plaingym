@@ -66,21 +66,31 @@ payment was deleted) refuses `debit_unknown`. A `debit_unknown` debit can't be
 released in the app: the invoice stays `processing` (and on the dashboard's
 count) until a Stripe read under the gym's key reports the debit failed or
 cancelled. No Stripe key saved refuses `debit_unconfigured`; a read Stripe
-refuses for a lasting reason (such as a restricted key that can't read payments)
-refuses `debit_unreadable` and logs the error as
-`billing.processing_release.unreadable`; an outage (Stripe unreachable, timed out, rate
-limited, a Stripe server error or the key rejected), or a gym whose Stripe
-settings can't be read, is 503 `payments_unavailable`. The
-release transition takes the invoice lock, makes a cycle or assignment invoice
-`past_due` and any other `open`, clears the Checkout session fields and writes one
-`billing.invoice.processing_released` audit with the intent and failure code.
+refuses for a lasting reason (such as a restricted key that can't read payments,
+or a key Stripe rejects because it was rolled or revoked) refuses
+`debit_unreadable` and logs the error as `billing.processing_release.unreadable`;
+an outage (Stripe unreachable, timed out, rate limited or a Stripe server error)
+is 503 `payments_unavailable`, and so is a gym whose Stripe settings can't be
+read, logged as `billing.processing_release.provider_failed` with the gym and
+invoice IDs. The release transition takes the invoice lock, rechecks that the
+invoice is still processing on the same intent, makes a cycle or assignment
+invoice `past_due` and any other `open`, clears the Checkout session fields and
+writes one `billing.invoice.processing_released` audit with the intent and
+failure code. A release that loses that recheck refuses `debit_not_stuck` when a
+new bank debit started meanwhile (the invoice is processing again, on a debit
+not yet flagged) and `not_processing` otherwise.
 When Stripe reports the debit failed with `payment_method_unusable` and names its
-payment method, and the intent's metadata names this invoice, the same transaction revokes that household's saved bank method
+payment method, the intent's metadata names this invoice, and the debit's Stripe
+customer is the household's, the same transaction revokes that household's saved bank method
 (or records an unsaved one's revocation) as an ordinary bank failure does. It
 makes no Stripe write, sends no notice, starts no dunning or retries, leaves
 payments, attempts and other saved methods as they are, and doesn't count toward
 failed bank attempts. A later failure for that intent finds the invoice no longer
-processing and is ignored.
+processing and is ignored. The invoice detail (`GET /api/billing/invoices/{invoiceId}`)
+carries `debitFlagged`, true only for a `processing` invoice whose latest
+processing intent the sweep flagged, and the admin invoice page offers **Stop
+waiting for this bank debit** only then. After a release, the page says so when
+the household has no active default payment method left.
 
 They may also void an open or past-due invoice through
 `POST /api/billing/invoices/{invoiceId}/void` (`refunds.create`) with a required

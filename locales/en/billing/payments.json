@@ -110,8 +110,9 @@
   "releaseHoldHelpNoCard": "Confirm collection of this overdue invoice. This household has no active default payment method, so the billing run won’t charge it. Send a pay link or record a payment.",
   "holdReleasedNoCard": "Review hold released. This household has no active default payment method, so the billing run won’t charge it. Send a pay link or record a payment.",
   "releaseProcessing": "Stop waiting for this bank debit",
-  "releaseProcessingHelp": "Use this when the dashboard counts this invoice under bank debits to check. Stripe is checked first: the invoice can be collected again only if Stripe reports the debit failed or cancelled, so no money can arrive.",
+  "releaseProcessingHelp": "Use this when the dashboard counts this invoice under bank debits to check. Stripe is checked first: the invoice can be collected again only if Stripe reports the debit failed or cancelled. If that debit is later confirmed in the Stripe Dashboard, the app records the payment, or refunds it if the invoice was paid another way.",
   "processingReleased": "The invoice no longer waits for the bank debit. Collect it, send a pay link or void it.",
+  "processingReleasedNoMethod": "The invoice no longer waits for the bank debit. This household has no active default payment method, so send a pay link, record a payment or void it.",
   "remainingRefundable": "Remaining refundable amount",
   "errors.billing_disabled": "Billing is disabled. Enable billing before charging a saved payment method.",
   "errors.not_payable": "This invoice is no longer available for collection. Reload it to see its status.",
@@ -201,5 +202,5 @@
   "errors.debit_unknown": "Stripe has no record of this debit under the gym's current Stripe key, for example after the key was changed or the payment was deleted, so the invoice keeps waiting for it and can't be released here. Check the debit in the Stripe Dashboard of the account that made it.",
   "errors.release_unavailable": "Stripe couldn't be reached, so the invoice still waits for the bank debit. Try again shortly.",
   "errors.debit_unconfigured": "No Stripe key is saved for this gym, so the bank debit can't be checked and the invoice keeps waiting for it. Save the gym's Stripe key in Settings, then try again.",
-  "errors.debit_unreadable": "Stripe wouldn't show this debit to the gym's current Stripe key, so the invoice keeps waiting for it. Check that the key can read payments, then try again."
+  "errors.debit_unreadable": "Stripe wouldn't show this debit to the gym's current Stripe key, so the invoice keeps waiting for it. Check that the saved key is current and can read payments, then try again."
 }

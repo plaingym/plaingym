@@ -3,7 +3,7 @@ import { createHmac } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-import { auditEvents, households, invoices, paymentMethods, uuidv7, writeAudit } from '@plaingym/db';
+import { auditEvents, households, invoices, paymentMethods, signedLinks, uuidv7, writeAudit } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError, createTranslator } from '@plaingym/shared';
@@ -1019,6 +1019,48 @@ describe('an onboarding link keeping a card already on file', () => {
       .where(eq(paymentMethods.id, revoked.saved.id)));
     expect(await revoked.keep()).toBe(false);
     expect(await revoked.usedAt()).toBeNull();
+  });
+  it('offers a bank account only of the gym currency’s kind, and a PAD only with a mandate', async () => {
+    const cases: [Method, { currency?: string }, boolean][] = [
+      [{ type: 'us_bank_account', bankName: 'Test Bank' }, { currency: 'USD' }, true],
+      [{ type: 'acss_debit', mandateId: 'mandate_test' }, { currency: 'CAD' }, true],
+      [{ type: 'us_bank_account', bankName: 'Test Bank' }, { currency: 'CAD' }, false],
+      [{ type: 'acss_debit' }, { currency: 'CAD' }, false],
+    ];
+    for (const [method, options, expected] of cases) {
+      const f = await kept(method, options), label = JSON.stringify([method, options]);
+      expect(await f.checkout.keepableCard(f.gymId, f.linkId), label)
+        .toEqual(expected ? expect.objectContaining({ type: method.type, last4: f.saved.last4 }) : null);
+    }
+  });
+  it('answers used for a completed link, and not_found for a revoked or expired one', async () => {
+    const f = await kept();
+    expect(await f.keep()).toBe(true);
+    expect(await f.checkout.keepableCard(f.gymId, f.linkId)).toBe('used');
+    const revoked = await kept();
+    await db.forGym(revoked.gymId, tx => tx.update(signedLinks).set({ revokedAt: revoked.clock.now() }).where(eq(signedLinks.id, revoked.linkId)));
+    await expect(revoked.checkout.keepableCard(revoked.gymId, revoked.linkId)).rejects.toMatchObject({ code: 'not_found' });
+    const expired = await kept();
+    expired.clock.set(new Date('2026-11-28T12:00:00Z'));
+    await expect(expired.checkout.keepableCard(expired.gymId, expired.linkId)).rejects.toMatchObject({ code: 'not_found' });
+  });
+  it('reads the offer without waiting on a completion that holds the link lock', async () => {
+    const f = await kept();
+    let release!: () => void, locked!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; }), lockTaken = new Promise<void>(resolve => { locked = resolve; });
+    const holder = db.forGym(f.gymId, async tx => {
+      await tx.select().from(signedLinks).where(eq(signedLinks.id, f.linkId)).for('update');
+      locked();
+      await held;
+    });
+    await lockTaken;
+    // A read that waited on the held row lock would lose to this two-second timer.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waited = new Promise<'waited'>(resolve => { timer = setTimeout(() => resolve('waited'), 2000); });
+    try {
+      expect(await Promise.race([f.checkout.keepableCard(f.gymId, f.linkId), waited]))
+        .toEqual({ type: 'card', bankName: null, last4: '4242' });
+    } finally { clearTimeout(timer); release(); await holder; }
   });
   it.each(['update_card', 'pay_invoice'] as const)('ignores keepCard on a %s link', async purpose => {
     const f = await kept({}, { purpose });

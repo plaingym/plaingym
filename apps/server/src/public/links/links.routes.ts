@@ -154,7 +154,10 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
         const data = await config.service.read(verified);
         if (data.purpose === 'sign_waiver' && await config.service.completeWaiverOnOpen(verified))
           return html(c, { ...common, state: 'alreadyDone' });
-        return html(c, { ...common, data, keepCard: await config.service.keepableCard(verified) });
+        const keepCard = await config.service.keepableCard(verified);
+        // Completed while this page rendered: the used page, without its processing note until a reload.
+        if (keepCard === 'used') return html(c, { ...common, state: 'alreadyDone' });
+        return html(c, { ...common, data, keepCard });
       } catch (error) {
         if (error instanceof AppError && error.code === 'not_found') return html(c, { ...common, state: 'unavailable' }, 404);
         throw error;

@@ -42,7 +42,7 @@ async function fixture(options: { kind?: 'one_off' | 'cycle'; reason?: string; f
   await factory('auditEvents', gymId, { action: checkoutReviewAction, targetType: 'invoice', targetId: bill.id,
     after: { reason: options.reason ?? 'customer_mismatch', paymentIntentId: options.findingFor ?? 'pi_1' } });
   const answers: Answer[] = [];
-  const identity = { id: 'pi_1', amount: 2500, currency: 'usd', customerId: 'cus_other', metadata: { gymId, invoiceId: bill.id } };
+  const identity = { id: 'pi_1', amount: 2500, currency: 'usd', customerId: 'cus_1', metadata: { gymId, invoiceId: bill.id } };
   const findCharge = vi.fn(async (): Promise<ChargeOutcome> => {
     assertNoTransaction('findCharge');
     const answer = answers.length > 1 ? answers.shift()! : answers[0] ?? { ...identity, status: 'failed', code: 'canceled' };
@@ -141,6 +141,70 @@ describe('releasing an invoice stuck on a flagged Checkout bank debit', () => {
     expect((await f.audits()).length).toBe(before);
   });
 
+  it('answers debit_unreadable for a rejected key and logs it once, while a connection error stays an outage', async () => {
+    const f = await fixture();
+    const lines: string[] = [], previous = setLogSink(line => { lines.push(line); });
+    try {
+      f.answers.splice(0, f.answers.length, Object.assign(new Error('Invalid API key'), { type: 'StripeAuthenticationError', statusCode: 401 }));
+      await expect(f.service.releaseProcessing(f.context, f.bill.id)).rejects.toMatchObject(refused('debit_unreadable'));
+      f.answers.splice(0, f.answers.length, Object.assign(new Error('Expired key'), { statusCode: 401 }));
+      await expect(f.service.releaseProcessing(f.context, f.bill.id)).rejects.toMatchObject(refused('debit_unreadable'));
+      f.answers.splice(0, f.answers.length, Object.assign(new Error('Stripe timed out'), { type: 'StripeConnectionError' }));
+      await expect(f.service.releaseProcessing(f.context, f.bill.id)).rejects.toMatchObject(refused('payments_unavailable', 'unavailable'));
+    } finally { setLogSink(previous); }
+    expect((await f.row()).status).toBe('processing');
+    const logged = lines.map(line => JSON.parse(line) as Record<string, unknown>);
+    expect(logged.map(line => line.event)).toEqual(['billing.processing_release.unreadable', 'billing.processing_release.unreadable']);
+    for (const line of logged) expect(line).toMatchObject({ level: 'error', gymId: f.gymId, invoiceId: f.bill.id });
+  });
+
+  it('logs a provider lookup that throws with the gym and invoice only, and answers payments_unavailable', async () => {
+    const f = await fixture();
+    const service = createPaymentService({ scope: db.forGym, clock: f.clock, transitions: f.transitions,
+      paymentsFor: async () => { throw new Error('Stripe settings unreadable'); } });
+    const lines: string[] = [], previous = setLogSink(line => { lines.push(line); });
+    try {
+      await expect(service.releaseProcessing(f.context, f.bill.id)).rejects.toMatchObject(refused('payments_unavailable', 'unavailable'));
+    } finally { setLogSink(previous); }
+    const logged = lines.map(line => JSON.parse(line) as Record<string, unknown>);
+    expect(logged).toHaveLength(1);
+    // Nothing else of the request: no key, customer or debit.
+    expect(Object.keys(logged[0]!).sort()).toEqual(['error', 'event', 'gymId', 'invoiceId', 'level', 'time']);
+    expect(logged[0]).toMatchObject({ event: 'billing.processing_release.provider_failed', gymId: f.gymId, invoiceId: f.bill.id, level: 'error' });
+    expect(f.findCharge).not.toHaveBeenCalled();
+  });
+
+  it('answers debit_not_stuck when a new bank debit started while Stripe was read, and not_processing once paid', async () => {
+    const f = await fixture();
+    f.findCharge.mockImplementationOnce(async () => {
+      await f.transitions.processingFailed(f.system, { invoiceId: f.bill.id, paymentIntentId: 'pi_1', code: 'canceled' });
+      await f.transitions.paymentProcessing(f.system, { invoiceId: f.bill.id, paymentIntentId: 'pi_2' });
+      return { ...f.identity, status: 'failed', code: 'canceled' };
+    });
+    await expect(f.service.releaseProcessing(f.context, f.bill.id)).rejects.toMatchObject(refused('debit_not_stuck'));
+    expect((await f.row()).status).toBe('processing');
+    expect(await f.audits(processingReleased)).toEqual([]);
+
+    const g = await fixture();
+    g.findCharge.mockImplementationOnce(async () => {
+      await db.forGym(g.gymId, tx => tx.update(invoices).set({ status: 'paid', paidAt: g.clock.now(), checkoutSessionId: null,
+        checkoutExpiresAt: null }).where(eq(invoices.id, g.bill.id)));
+      return { ...g.identity, status: 'failed', code: 'canceled' };
+    });
+    await expect(g.service.releaseProcessing(g.context, g.bill.id)).rejects.toMatchObject(refused('not_processing'));
+    expect((await g.row()).status).toBe('paid');
+    expect(await g.audits(processingReleased)).toEqual([]);
+  });
+
+  it('marks only a processing invoice whose latest debit was flagged in the invoice detail', async () => {
+    const f = await fixture();
+    expect(await f.service.getInvoice(f.gymId, f.bill.id)).toMatchObject({ debitFlagged: true });
+    const older = await fixture({ older: true, findingFor: 'pi_0' });
+    expect(await older.service.getInvoice(older.gymId, older.bill.id)).toMatchObject({ debitFlagged: false });
+    await f.service.releaseProcessing(f.context, f.bill.id);
+    expect(await f.service.getInvoice(f.gymId, f.bill.id)).toMatchObject({ invoice: { status: 'open' }, debitFlagged: false });
+  });
+
   it('releases a debit whose metadata names no invoice', async () => {
     const f = await fixture({ reason: 'pending' });
     f.answers.push({ ...f.identity, status: 'failed', code: 'declined', metadata: { gymId: f.gymId } });
@@ -214,6 +278,17 @@ describe('releasing a flagged bank debit that failed on an unusable account', ()
     expect(await f.transitions.releaseProcessing(f.system, { invoiceId: f.bill.id, paymentIntentId: 'pi_1',
       code: 'payment_method_unusable', paymentMethodId: 'pm_bank' })).toMatchObject({ outcome: 'ignored' });
     expect(await f.audits(revoked)).toHaveLength(1);
+  });
+
+  it("releases but leaves the bank method saved when the debit's customer isn't the household's", async () => {
+    const f = await fixture();
+    const { bank, card } = await withMethods(f);
+    f.answers.push({ ...f.identity, customerId: 'cus_other', status: 'failed', code: 'payment_method_unusable', paymentMethodId: 'pm_bank' });
+    expect(await f.service.releaseProcessing(f.context, f.bill.id)).toMatchObject({ status: 'open' });
+    expect(await method(f, bank.id)).toMatchObject({ revokedAt: null, isDefault: true });
+    expect(await method(f, card.id)).toMatchObject({ revokedAt: null, isDefault: false });
+    expect(await f.audits(revoked)).toEqual([]);
+    expect(await f.audits(unsavedRevoked)).toEqual([]);
   });
 
   it("releases but leaves the bank method saved when the debit's metadata names no invoice", async () => {

@@ -11,7 +11,7 @@ function fixture(purpose = 'update_card', tablet = false) {
   vi.stubGlobal('history', { replaceState: vi.fn() });
   document.body.dataset.purpose = purpose; document.body.dataset.tablet = String(tablet);
   document.body.innerHTML = '<main><p id="feedback"></p><button data-complete>Check again</button><footer>Source code</footer></main><template id="completed-message"><section tabindex="-1"><h1>You are all set</h1><p>Saved successfully</p></section></template>'
-    + ['busy', 'confirming', 'incomplete', 'conflict', 'retry', 'limited', 'failed'].map(key => `<span hidden data-message="${key}">${key}</span>`).join('');
+    + ['busy', 'confirming', 'incomplete', 'keepUnsigned', 'keepGone', 'conflict', 'retry', 'limited', 'failed'].map(key => `<span hidden data-message="${key}">${key}</span>`).join('');
   const fetch = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ data: { completed: false } })));
   vi.stubGlobal('fetch', fetch);
   return { location, fetch, feedback: document.getElementById('feedback')!, button: document.querySelector('button')! };
@@ -118,22 +118,49 @@ it.each([['email_sent', 'portalEmailSent'], ['claimed', 'portalReady']] as const
   expect(JSON.parse(String(claim[1]!.body))).toEqual({ email: 'member@example.test' });
   expect(f.feedback.textContent).toBe(key); expect(document.querySelector<HTMLFormElement>('[data-portal-claim]')!.hidden).toBe(true);
 });
+const cardPanel = '<section data-card-panel><p data-card-status>Card ending in 4242</p>'
+  + '<div data-card-actions><button data-keep-card>Keep this card</button><button data-checkout>Use a different card</button></div></section>';
 it.each([true, false])('keeps the saved card with keepCard, completed %s, while other completion checks send an empty body', async completed => {
   const f = fixture('onboarding'); f.location.href = 'https://gym.test/l/token';
-  document.body.insertAdjacentHTML('beforeend', '<section data-card-panel><p data-card-status>Card ending in 4242</p>'
-    + '<div data-card-actions><button data-keep-card>Keep this card</button><button data-checkout>Use a different card</button></div></section>');
-  f.fetch.mockResolvedValue(new Response(JSON.stringify({ data: { completed } })));
+  document.body.insertAdjacentHTML('beforeend', cardPanel);
+  f.fetch.mockResolvedValueOnce(new Response(JSON.stringify({ data: { completed } })));
+  // A refused keep reads the page again: still offering the card, so a document is left to sign.
+  if (!completed) f.fetch.mockResolvedValueOnce(new Response('<main>' + cardPanel + '</main>'));
   linkBrowser(); await vi.advanceTimersByTimeAsync(0);
   document.querySelector<HTMLButtonElement>('[data-keep-card]')!.click(); await vi.advanceTimersByTimeAsync(0);
-  expect(f.fetch).toHaveBeenCalledOnce();
+  expect(f.fetch).toHaveBeenCalledTimes(completed ? 1 : 2);
   expect(f.fetch.mock.calls[0]![0]).toBe('/api/links/onboarding/complete');
   expect(f.fetch.mock.calls[0]![1]!.body).toBe('{"keepCard":true}');
   if (completed) expect(document.querySelector('h1')?.textContent).toBe('You are all set');
   else {
-    expect(f.feedback.textContent).toBe('incomplete');
+    expect(f.fetch.mock.calls[1]![0]).toBe('/l/token');
+    expect(f.feedback.textContent).toBe('keepUnsigned');
+    expect(document.querySelector('[data-keep-card]')).not.toBeNull();
     f.fetch.mockResolvedValue(new Response(JSON.stringify({ data: { completed: false } })));
     f.button.click(); await vi.advanceTimersByTimeAsync(0);
     const manual = f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')[1]!;
     expect(manual[0]).toBe('/api/links/onboarding/complete'); expect(manual[1]!.body).toBe('{}');
   }
+});
+it('removes the keep button and says so when a refused keep finds the method no longer offered', async () => {
+  const f = fixture('onboarding'); f.location.href = 'https://gym.test/l/token';
+  document.body.insertAdjacentHTML('beforeend', cardPanel);
+  f.fetch.mockResolvedValueOnce(new Response(JSON.stringify({ data: { completed: false } })))
+    .mockResolvedValueOnce(new Response('<main><section data-card-panel><div data-card-actions><button data-checkout>Add card</button></div></section></main>'));
+  linkBrowser(); await vi.advanceTimersByTimeAsync(0);
+  document.querySelector<HTMLButtonElement>('[data-keep-card]')!.click(); await vi.advanceTimersByTimeAsync(0);
+  expect(f.fetch).toHaveBeenCalledTimes(2);
+  expect(f.feedback.textContent).toBe('keepGone');
+  expect(document.querySelector('[data-keep-card]')).toBeNull();
+  expect(document.querySelector('[data-checkout]')).not.toBeNull();
+});
+it('says failed when the page read after a refused keep fails', async () => {
+  const f = fixture('onboarding'); f.location.href = 'https://gym.test/l/token';
+  document.body.insertAdjacentHTML('beforeend', cardPanel);
+  f.fetch.mockResolvedValueOnce(new Response(JSON.stringify({ data: { completed: false } })))
+    .mockResolvedValueOnce(new Response('', { status: 503 }));
+  linkBrowser(); await vi.advanceTimersByTimeAsync(0);
+  document.querySelector<HTMLButtonElement>('[data-keep-card]')!.click(); await vi.advanceTimersByTimeAsync(0);
+  expect(f.feedback.textContent).toBe('failed');
+  expect(document.querySelector('[data-keep-card]')).not.toBeNull();
 });

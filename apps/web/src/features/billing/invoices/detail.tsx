@@ -55,7 +55,12 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
         creditChanged = true;
       }
       if (action.kind === 'releaseHold') { await client.releaseHold(invoiceId); setMessage(text(allCards.data === false ? 'holdReleasedNoCard' : 'holdReleased')); }
-      if (action.kind === 'releaseProcessing') { await client.releaseProcessing(invoiceId); setMessage(text('processingReleased')); }
+      if (action.kind === 'releaseProcessing') {
+        await client.releaseProcessing(invoiceId);
+        // A debit that failed on an unusable bank account revokes that method, which may have been the only one.
+        const left = homeId ? await client.activeDefaultCard(homeId).catch(() => true) : true;
+        setMessage(text(left ? 'processingReleased' : 'processingReleasedNoMethod'));
+      }
       if (action.kind === 'voidInvoice') {
         await client.call('voidInvoice', { reason: String(form.get('reason') ?? '') }, { invoiceId });
         setMessage(text('invoiceVoided'));
@@ -122,7 +127,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
       <div className="flex flex-col flex-wrap gap-2 sm:flex-row">
         {collectible && access.record && <><Button onClick={() => open({ kind: 'cash' })}>{text('recordCash')}</Button><Button variant="outline" disabled={invoice.needsReview || allCards.data !== true} onClick={() => open({ kind: 'charge' })}>{text('charge')}</Button></>}
         {collectible && invoice.needsReview && access.refund && <Button variant="outline" onClick={() => open({ kind: 'releaseHold' })}>{text('releaseHold')}</Button>}
-        {invoice.status === 'processing' && access.refund && <Button variant="outline" onClick={() => open({ kind: 'releaseProcessing' })}>{text('releaseProcessing')}</Button>}
+        {invoice.status === 'processing' && access.refund && data.debitFlagged === true && <Button variant="outline" onClick={() => open({ kind: 'releaseProcessing' })}>{text('releaseProcessing')}</Button>}
         {collectible && access.refund && <Button variant="destructive" onClick={() => open({ kind: 'voidInvoice' })}>{text('voidInvoice')}</Button>}
         {collectible && invoice.amountCents > 0 && access.links && <Button variant="outline" onClick={() => open({ kind: 'link' })}>{text('payLink')}</Button>}
         {invoice.paidAt && <Button variant="outline" onClick={() => open({ kind: 'viewReceipt' })}>{text('viewReceipt')}</Button>}

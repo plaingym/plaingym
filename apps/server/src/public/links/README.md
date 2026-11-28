@@ -226,12 +226,18 @@ time zone, a bank account of the gym currency's kind, a Canadian PAD only with
 a mandate; its last four digits on record, and the household still linked to
 its Stripe customer), the page shows **Keep this card** (`data-keep-card`, with the
 method's masked text) beside **Use a different card**, which opens Checkout as
-before; without one the page is unchanged. The keep button posts
+before; without one the page is unchanged. The offer is read without the link
+lock, so a page opened while a completion holds it doesn't wait; a link found
+used by then renders the *alreadyDone* page (200, without the bank-processing
+note, which a reload shows). The keep button posts
 `{ "keepCard": true }` to `/api/links/onboarding/complete`, the only complete
 route that takes a body field (the other two refuse one with 400). The link
 completes only once every waiver is signed, and the method is checked again
-under the link lock, with no provider call; otherwise the page shows its
-`incomplete` message and the link stays open (`areas/links/campaigns.README.md`).
+under the link lock, with no provider call; otherwise the link stays open
+(`areas/links/campaigns.README.md`) and the page reads itself again: when it
+still offers the method it says `keepUnsigned` (sign the documents above, then
+keep again); when it no longer does, it removes the keep button and says
+`keepGone` (use a different card).
 
 ## Composition
 

@@ -60,6 +60,8 @@
   "checkCompletion": "Check completion",
   "confirming": "Confirming your card or payment…",
   "incomplete": "Complete the card step and any unsigned documents, then check again. Card confirmation may take a moment.",
+  "keepUnsigned": "Sign the documents above, then press Keep this card again.",
+  "keepGone": "This saved payment method can no longer be kept. Use a different card.",
   "done": "You're all set",
   "doneBody": "Thank you. Your details have been received.",
   "reload": "Reload page",

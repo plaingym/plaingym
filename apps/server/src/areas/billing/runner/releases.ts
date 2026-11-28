@@ -24,6 +24,8 @@ export async function releaseCheckout(gymId: string, invoiceId: string, sessionI
     // Released only when the provider confirmed the expiry and no other session took its place.
     if (expiry.status === 'expired' && current && current.checkoutSessionId === null
       && ['open', 'past_due'].includes(current.status)) return 'released';
+    // A payment that landed between the expiry and this read answers as paid, as the reconciled branch does.
+    if (current && ['paid', 'partially_refunded', 'refunded'].includes(current.status)) return 'paid';
     if (current?.checkoutSessionId !== sessionId) return 'changed';
     throw new Error('Checkout must be reconciled before collecting payment');
   }

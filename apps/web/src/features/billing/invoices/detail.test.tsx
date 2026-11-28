@@ -170,12 +170,14 @@ it('keeps the refund dialog open with the refusal when a refund is already pendi
   expect(screen.queryByText(failedText)).toBeNull();
 });
 
-const processing: InvoiceDetail ={ ...detail, invoice: { ...invoice, status: 'processing' } };
-function startProcessing(refund: boolean, release?: () => Response) {
+const processing: InvoiceDetail ={ ...detail, invoice: { ...invoice, status: 'processing' }, debitFlagged: true };
+function startProcessing(refund: boolean, release?: () => Response,
+  { shown = processing, cards = () => [{ ...card, isDefault: true }] }: { shown?: InvoiceDetail; cards?: () => MaskedPaymentMethod[] } = {}) {
   const calls: string[] = [];
   const processingClient = createInvoiceClient(async (path, init) => {
     const url = new URL(String(path), 'http://gym.test');
-    if (url.pathname === '/api/billing/invoices/' + invoice.id) return Response.json({ data: processing });
+    if (url.pathname === '/api/billing/invoices/' + invoice.id) return Response.json({ data: shown });
+    if (url.pathname.endsWith('/payment-methods')) return Response.json(page(cards()));
     if (url.pathname === `/api/billing/invoices/${invoice.id}/release-processing` && init?.method === 'POST') {
       calls.push(url.pathname);
       return release?.() ?? Response.json({ data: { ...invoice, status: 'open' } });
@@ -200,6 +202,29 @@ it('offers to stop waiting for a bank debit on a processing invoice only to staf
   expect(screen.queryByText('$25.00', { selector: 'form p' })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
   await screen.findByText('The invoice no longer waits for the bank debit. Collect it, send a pay link or void it.');
+  expect(calls).toEqual([`/api/billing/invoices/${invoice.id}/release-processing`]);
+});
+
+it.each([
+  ['not flagged', { ...processing, debitFlagged: false }],
+  ['without the flag', (({ debitFlagged: _flag, ...rest }) => rest)(processing)],
+])('offers no bank debit release on a processing invoice %s', async (_name, shown) => {
+  startProcessing(true, undefined, { shown });
+  await screen.findByRole('heading', { name: 'Invoice items' });
+  expect(screen.queryByRole('button', { name: 'Stop waiting for this bank debit' })).toBeNull();
+});
+
+it('says when a bank debit release left the household without an active default payment method', async () => {
+  // The release revoked the only bank account: the list read after it has no active default left.
+  let released = false;
+  const calls = startProcessing(true, () => { released = true; return Response.json({ data: { ...invoice, status: 'open' } }); },
+    { cards: () => [{ ...card, type: 'us_bank_account', brand: null, bankName: 'Test Bank', expiryMonth: null, expiryYear: null,
+      isDefault: !released, revokedAt: released ? createdAt : null }] });
+  fireEvent.click(await screen.findByRole('button', { name: 'Stop waiting for this bank debit' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Confirm' }));
+  await screen.findByText('The invoice no longer waits for the bank debit. This household has no active default payment method, '
+    + 'so send a pay link, record a payment or void it.');
+  expect(screen.queryByText(/Collect it/)).toBeNull();
   expect(calls).toEqual([`/api/billing/invoices/${invoice.id}/release-processing`]);
 });
 
@@ -234,7 +259,7 @@ it.each([
   ['debit_unconfigured', "No Stripe key is saved for this gym, so the bank debit can't be checked and the invoice keeps waiting for it. "
     + "Save the gym's Stripe key in Settings, then try again."],
   ['debit_unreadable', "Stripe wouldn't show this debit to the gym's current Stripe key, so the invoice keeps waiting for it. "
-    + 'Check that the key can read payments, then try again.'],
+    + 'Check that the saved key is current and can read payments, then try again.'],
 ])('shows the %s refusal of a bank debit release in the form', async (reason, text) => {
   startProcessing(true, () => Response.json({ error: { code: 'conflict', message: 'Refused', details: { reason: [reason] } } }, { status: 409 }));
   fireEvent.click(await screen.findByRole('button', { name: 'Stop waiting for this bank debit' }));

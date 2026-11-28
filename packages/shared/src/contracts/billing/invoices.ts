@@ -97,6 +97,8 @@ export const invoiceDetailSchema = z.strictObject({
   lineItems: z.array(invoiceLineItemSchema),
   payments: z.array(paymentSchema),
   refunds: z.array(refundSchema),
+  /** True when the invoice is processing and its latest bank debit was flagged for checking; a release is offered only then. */
+  debitFlagged: z.boolean().optional(),
 }).superRefine((detail, context) => {
   for (const [index, line] of detail.lineItems.entries()) {
     if (line.currency !== detail.invoice.currency || line.invoiceId !== detail.invoice.id ||

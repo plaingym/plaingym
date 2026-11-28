@@ -14,7 +14,7 @@ import { isAssignmentInvoice } from './assignment-invoices.js';
 import { readGymSettings } from '../settings/settings.js';
 import { createCardHandlers } from './webhooks/handlers/methods.js';
 import { completeCampaignIn } from '../links/campaigns.model.js';
-import { bankAccountType } from './customer-card-import.js';
+import { defaultRefusal } from './payments.mutations.js';
 import { localDate } from '@plaingym/shared/time';
 
 const t = createTranslator(locales.en ?? {});
@@ -37,10 +37,7 @@ async function usableDefaultMethod(tx: Transaction, gymId: string, householdId: 
     const expiry = `${String(method.expiryYear).padStart(4, '0')}-${String(method.expiryMonth).padStart(2, '0')}`;
     return expiry >= localDate(now, gym.timezone).slice(0, 7) ? method : null;
   }
-  const bank = bankAccountType(gym.currency);
-  if (method.type === 'us_bank_account') return bank === 'us_bank_account' ? method : null;
-  if (method.type === 'acss_debit') return bank === 'acss_debit' && method.mandateId ? method : null;
-  return null;
+  return defaultRefusal(method, gym.currency) === null ? method : null;
 }
 function missing(): never { throw new AppError('not_found', 'Signed link or resource not found'); }
 function unavailable(): never { throw new AppError('unavailable', 'Checkout is not available'); }
@@ -383,10 +380,18 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     const method = await usableDefaultMethod(tx, gymId, household.id, clock.now());
     return method?.last4 ? method : null;
   }
-  /** The saved default method an onboarding link may keep instead of card setup, masked; null for other purposes. */
-  async function keepableCard(gymId: string, linkId: string) {
+  /**
+   * The saved default method an onboarding link may keep instead of card setup, masked; null for other purposes. A
+   * read-only view, so the link is read without its lock; `'used'` once the link was completed, even while rendering.
+   */
+  async function keepableCard(gymId: string, linkId: string): Promise<{ type: string; bankName: string | null; last4: string } | null | 'used'> {
     return scope(gymId, async tx => {
-      const { link, household } = await locked(tx, gymId, linkId);
+      const [link] = await tx.select().from(signedLinks).where(eq(signedLinks.id, linkId));
+      if (!link || link.gymId !== gymId || link.revokedAt || link.expiresAt <= clock.now()
+        || !['pay_invoice', 'update_card', 'onboarding'].includes(link.purpose)) missing();
+      if (link.usedAt) return 'used';
+      const [household] = await tx.select().from(households).where(eq(households.id, link.householdId));
+      if (!household) missing();
       if (link.purpose !== 'onboarding') return null;
       const method = await keptMethod(tx, gymId, household);
       return method ? { type: method.type, bankName: method.bankName, last4: method.last4! } : null;
