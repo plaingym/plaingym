@@ -35,9 +35,12 @@ jobs:
           fi
           node scripts/release/check-commits.mjs "$base" "$head"
           migration_base=$base
-          # A branch or pull request can sit behind main: compare it with where it left main, not main's tip.
-          if [ "$GITHUB_REF" != refs/heads/main ]; then
-            migration_base=$(git merge-base origin/main "$head")
+          # main and next only move forward, so a push to either compares with its previous tip. Every other ref can
+          # sit behind next (main while there is no next): compare it with where it left that branch.
+          if [ "$GITHUB_REF" != refs/heads/main ] && [ "$GITHUB_REF" != refs/heads/next ]; then
+            against=origin/main
+            if git rev-parse --verify --quiet refs/remotes/origin/next >/dev/null; then against=origin/next; fi
+            migration_base=$(git merge-base "$against" "$head")
           fi
           node scripts/release/check-migrations.mjs "$migration_base" "$head"
           node scripts/release/check-rollback.mjs "$migration_base" "$head"
