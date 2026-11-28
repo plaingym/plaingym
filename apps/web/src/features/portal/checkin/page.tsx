@@ -91,6 +91,11 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
   useEffect(() => {
     if (confirming !== null && !code.isError && document.activeElement === document.body) keep.current?.focus();
   }, [code.isError]);
+  // The dialog's retry is off while the code is read, so the browser drops its focus. A read that fails again gives it back.
+  const retry = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (confirming !== null && code.isError && !code.isFetching && document.activeElement === document.body) retry.current?.focus();
+  }, [code.isError, code.isFetching]);
   async function regenerate() {
     if (!code.data || code.isError || rereading.has(memberId) || locked.current) return;
     const id = memberId, creating = !code.data.code;
@@ -153,7 +158,7 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
       <div className="space-y-4"><p>{text('confirmBody')}</p>{error && <Alert variant="error" focusOnReveal role="alert">{errorText}</Alert>}
         {unread && <p className="text-sm text-muted-foreground">{text('waiting')}</p>}
         {/* The dialog covers the page's own retry. */}
-        {code.isError && <Button variant="outline" className="w-full sm:w-auto" disabled={code.isFetching} onClick={() => void code.refetch()}>{text('retry')}</Button>}
+        {code.isError && <Button ref={retry} variant="outline" className="w-full sm:w-auto" disabled={code.isFetching} onClick={() => void code.refetch()}>{text('retry')}</Button>}
         <div className="flex flex-col gap-3 sm:flex-row"><Button disabled={busy || unread} onClick={() => void regenerate()}>{text(busy ? 'saving' : 'confirm')}</Button>
           <Button ref={keep} variant="outline" disabled={busy} onClick={dismiss}>{text('keep')}</Button></div></div>
     </Dialog>}

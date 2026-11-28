@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
+import { useState } from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from '@tanstack/react-router';
 import { AccountMenu } from './account-menu.js';
@@ -23,6 +24,7 @@ async function openThemeMenu(user: ReturnType<typeof userEvent.setup>) {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   localStorage.clear();
   sessionStorage.clear();
@@ -272,7 +274,7 @@ it('shows a sign-out being sent while the menu is closed', async () => {
   renderMenu('portal', vi.fn(), true);
   const account = await screen.findByRole('button', { name: 'Account' });
   const status = screen.getByRole('status');
-  expect(status.textContent).toBe('Signing out…');
+  await waitFor(() => expect(status.textContent).toBe('Signing out…'));
   expect(status.classList.contains('sr-only')).toBe(false);
   expect(status.classList.contains('pointer-events-none')).toBe(true);
   await user.click(account);
@@ -282,6 +284,42 @@ it('shows a sign-out being sent while the menu is closed', async () => {
   expect(status.textContent).toBe('');
   expect((screen.getByRole('button', { name: 'Sign out' }) as HTMLButtonElement).disabled).toBe(true);
   await user.keyboard('{Escape}');
+  expect(status.textContent).toBe('Signing out…');
+});
+
+/** Renders the menu under fake timers, with a way to start its sign-out afterwards. */
+async function renderTimedMenu(sending: boolean) {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  let send!: () => void;
+  function Menu() {
+    const [signingOut, setSigningOut] = useState(sending);
+    send = () => setSigningOut(true);
+    return <AccountMenu accountPath="/portal/account" onSignOut={vi.fn()} signingOut={signingOut} />;
+  }
+  const root = createRootRoute({ component: Menu });
+  const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/portal'] }) });
+  await act(async () => { await router.load(); });
+  render(<RouterProvider router={router} />);
+  return { send: () => act(() => send()), advance: (ms: number) => act(() => { vi.advanceTimersByTime(ms); }) };
+}
+
+it('mounts an empty status during a sign-out and fills it 100 ms later, so that it is announced', async () => {
+  const { advance } = await renderTimedMenu(true);
+  const status = screen.getByRole('status');
+  expect(status.textContent).toBe('');
+  advance(99);
+  expect(status.textContent).toBe('');
+  advance(1);
+  expect(screen.getByRole('status')).toBe(status);
+  expect(status.textContent).toBe('Signing out…');
+});
+
+it('says it at once for a sign-out started after the menu mounted', async () => {
+  const { send, advance } = await renderTimedMenu(false);
+  advance(200);
+  const status = screen.getByRole('status');
+  expect(status.textContent).toBe('');
+  send();
   expect(status.textContent).toBe('Signing out…');
 });
 
